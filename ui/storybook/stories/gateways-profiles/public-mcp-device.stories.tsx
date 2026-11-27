@@ -6,7 +6,16 @@ import { installPublicMcpFixture } from "../../fixtures/publicMcp";
 const meta = {
   id: "assistant-connections-device-authorization",
   title: "Apps, channels, and extensions/Tool gateways and access profiles/Assistant connections/Device authorization", component: McpDevicePage,
-  parameters: { layout: "padded", fixture: {}, docs: { description: { component: "Production device consent. The assistant's private device code stays in its credential client; only the human verification code appears here. These isolated fixtures issue no credentials." } } },
+  parameters: { layout: "padded", fixture: {}, docs: { description: { component: "Production device consent. The assistant's private device code stays in its credential client; only the human verification code appears here. These isolated fixtures issue no credentials." } },
+    paperclip: {
+      "capabilities": [
+        "gateways-profiles/client-connect"
+      ],
+      "status": "current",
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
   args: { initialCode: "BCDF-GHJK" },
   beforeEach: ({ parameters }) => installPublicMcpFixture(parameters.fixture),
 } satisfies Meta<typeof McpDevicePage>;

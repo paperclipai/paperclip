@@ -1023,6 +1023,15 @@ const meta = {
           "Chat and comments stories exercise CommentThread, RunChatSurface, and IssueChatThread across empty, single, long, markdown, mention, timeline, queued, linked-run, and streaming transcript states.",
       },
     },
+    paperclip: {
+      "capabilities": [
+        "tasks/discussion",
+        "runs-adapters/runs"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+    },
   },
 } satisfies Meta<typeof ChatCommentsStories>;
 

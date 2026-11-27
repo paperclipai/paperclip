@@ -1,0 +1,97 @@
+{
+  "parentPR": 16086,
+  "parentBranch": "codex/test-audit-r15-environment-runtime",
+  "parentHead": "c0414ac02e625a1e635857895b74581c37201500",
+  "result": "PROVEN",
+  "registrationsBefore": 399,
+  "registrationsAfter": 398,
+  "declarationsBefore": 249,
+  "declarationsAfter": 248,
+  "retiredCase": "heartbeat orphaned process recovery re-enqueues continuation for stranded in-progress work with no active run",
+  "keeper": "heartbeat orphaned process recovery re-enqueues stranded in-progress work after a failed/process_lost run before escalating",
+  "deletedTestLOC": 31,
+  "movedAssertionLOC": 5,
+  "netTestLOCDelta": -26,
+  "candidateTestSHA256": "645fd53b52e513e97c83f1e074dc1bded0749be18fb086138d154c19ea18d1d6",
+  "parentSourceHashes": {
+    "server/src/__tests__/heartbeat-process-recovery.test.ts": "bf7c888eaba44a56d12823bb948026d5db44f2249a75a6cf083343edbd7c0673",
+    "server/src/services/heartbeat/retries.ts": "9f29feb6d986f281cbfd849e0152f49cf56e18974c6df1bc801010dcce4c877a",
+    "server/src/services/heartbeat.ts": "9ac217e97e5319c850924f083df32be43df11f33f8970ff8efb4a5f776a0c1d9",
+    "server/src/services/recovery/service.ts": "c414df876e7df64e701a752513db8e5cf7365589294d50da0e1396788a9207db"
+  },
+  "sourceRestoredBeforeBranchCreation": true,
+  "controls": [
+    {
+      "phase": "baseline",
+      "exitCode": 0,
+      "tests": 399,
+      "passed": 399,
+      "failed": 0,
+      "pending": 0,
+      "failures": [],
+      "ownerSHA256": "9f29feb6d986f281cbfd849e0152f49cf56e18974c6df1bc801010dcce4c877a",
+      "testSHA256": "bf7c888eaba44a56d12823bb948026d5db44f2249a75a6cf083343edbd7c0673"
+    },
+    {
+      "phase": "candidate",
+      "exitCode": 0,
+      "tests": 398,
+      "passed": 398,
+      "failed": 0,
+      "pending": 0,
+      "failures": [],
+      "ownerSHA256": "9f29feb6d986f281cbfd849e0152f49cf56e18974c6df1bc801010dcce4c877a",
+      "testSHA256": "645fd53b52e513e97c83f1e074dc1bded0749be18fb086138d154c19ea18d1d6"
+    },
+    {
+      "phase": "revert",
+      "exitCode": 0,
+      "tests": 399,
+      "passed": 399,
+      "failed": 0,
+      "pending": 0,
+      "failures": [],
+      "ownerSHA256": "9f29feb6d986f281cbfd849e0152f49cf56e18974c6df1bc801010dcce4c877a",
+      "testSHA256": "bf7c888eaba44a56d12823bb948026d5db44f2249a75a6cf083343edbd7c0673"
+    },
+    {
+      "phase": "mutation-keeper",
+      "exitCode": 1,
+      "tests": 398,
+      "passed": 0,
+      "failed": 1,
+      "pending": 397,
+      "failures": [
+        {
+          "name": "heartbeat orphaned process recovery re-enqueues stranded in-progress work after a failed/process_lost run before escalating",
+          "messages": [
+            "AssertionError: expected { \u2026(78) } to match object { status: 'scheduled_retry', \u2026(1) }\n(84 matching properties omitted from actual)\n    at Proxy.<anonymous> (file://<dependency-checkout>/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:2050:10)\n    at Proxy.<anonymous> (file://<dependency-checkout>/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/index.C4tKZ0yW.js:1944:14)\n    at Proxy.methodWrapper (file://<dependency-checkout>/node_modules/.pnpm/chai@6.3.0/node_modules/chai/index.js:1737:25)\n    at server/src/__tests__/heartbeat-process-recovery.test.ts:10386:24\n    at processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at file://<dependency-checkout>/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+          ]
+        }
+      ],
+      "ownerSHA256": "cff836de7a98e47e845ad7f7393e4c98fcfea3fecb0ba5bdb9fcc92fc9673c84",
+      "testSHA256": "645fd53b52e513e97c83f1e074dc1bded0749be18fb086138d154c19ea18d1d6"
+    },
+    {
+      "phase": "restoration",
+      "exitCode": 0,
+      "tests": 398,
+      "passed": 398,
+      "failed": 0,
+      "pending": 0,
+      "failures": [],
+      "ownerSHA256": "9f29feb6d986f281cbfd849e0152f49cf56e18974c6df1bc801010dcce4c877a",
+      "testSHA256": "645fd53b52e513e97c83f1e074dc1bded0749be18fb086138d154c19ea18d1d6"
+    }
+  ],
+  "temporaryMutation": {
+    "owner": "server/src/services/heartbeat/retries.ts",
+    "line": 1049,
+    "before": "scheduledRetryAttempt: schedule.attempt",
+    "after": "scheduledRetryAttempt: schedule.attempt + 1",
+    "keeperAssertionLine": 10386,
+    "selection": "Only exact failed/process_lost keeper selected; all other cases are unselected.",
+    "expectedAttempt": 1,
+    "observedAttempt": 2
+  }
+}

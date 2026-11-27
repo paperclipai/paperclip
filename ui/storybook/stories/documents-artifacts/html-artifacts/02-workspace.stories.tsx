@@ -33,7 +33,16 @@ function Workspace({ sheet = false }: { sheet?: boolean }) {
   </FileViewerProvider></QueryClientProvider>;
 }
 const meta = { id: "html-artifacts-02-workspace",
-  title: "Tasks and conversations/Documents, attachments, and work products/HTML artifacts/02 Workspace", component: Workspace, render: (args, context) => <Workspace key={context.id} {...args} />, parameters: { layout: "fullscreen", docs: { story: { inline: false } } } } satisfies Meta<typeof Workspace>;
+  title: "Tasks and conversations/Documents, attachments, and work products/HTML artifacts/02 Workspace", component: Workspace, render: (args, context) => <Workspace key={context.id} {...args} />, parameters: { layout: "fullscreen", docs: { story: { inline: false } },
+    paperclip: {
+      "capabilities": [
+        "documents-artifacts/attachments",
+        "workspaces/files-git"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  } } satisfies Meta<typeof Workspace>;
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const TaskPanel: Story = {};

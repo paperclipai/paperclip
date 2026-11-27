@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { AiConnectionLoginIntent, LocalAiLoginAttempt, LocalAiLoginStatus } from "@paperclipai/shared";
 import { aiConnectionsApi } from "@/api/ai-connections";
+import { describeError } from "@/api/errors";
 
 /** Every authentication host uses the same local credential check and login lifecycle. */
 export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLoginIntent, enabled: boolean) {
@@ -11,9 +12,12 @@ export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLo
   const [authorizationUrl, setAuthorizationUrl] = useState<string | null>(null);
   const [code, setCode] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [accountLabel, setAccountLabel] = useState<string | null>(null);
   const [generation, setGeneration] = useState(0);
   const latestIntent = useRef(intent);
   const restartRequested = useRef(false);
+  const checkRef = useRef<(() => Promise<void>) | null>(null);
+  const fastPollRemaining = useRef(0);
   const pending = useRef<Promise<unknown>>(Promise.resolve());
   const current = useRef<{ key: string; companyId: string; request: Promise<LocalAiLoginAttempt> } | null>(null);
   function cancelCurrent() {
@@ -28,6 +32,7 @@ export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLo
   useEffect(() => {
     setAttempt(null);
     setError(null);
+    setAccountLabel(null);
     setStatus(null);
     setAuthorizationUrl(null);
     setCode(null);
@@ -46,34 +51,44 @@ export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLo
     }
     const request = isolated ? current.current!.request : Promise.resolve(null);
     async function check() {
-      if (checking || cancelled) return;
+      if (checking || cancelled || (isolated && current.current?.request !== request)) return;
       checking = true;
       clearTimeout(timer);
       try {
         const result = await request;
-        if (cancelled) return;
+        if (cancelled || (isolated && current.current?.request !== request)) return;
         setAttempt(result);
         const next = await aiConnectionsApi.checkLocalLogin(companyId!, {
           ...latestIntent.current, ...(result ? { localSessionId: result.sessionId } : {}),
         });
-        if (cancelled) return;
+        if (cancelled || (isolated && current.current?.request !== request)) return;
         setStatus(next.status);
         setAuthorizationUrl(next.authorizationUrl ?? null);
         setCode(next.code ?? null);
+        setAccountLabel(next.accountLabel ?? null);
         setError(next.error ?? (next.status === "expired" ? "This sign-in attempt expired. Start sign-in again." : null));
         // Stop polling a verified account. Focus rechecks after the provider
         // browser visit; sign-in never requires repeated Connect clicks.
-        if (next.status === "sign_in_required") timer = setTimeout(() => void check(), 5000);
+        if (next.status === "sign_in_required") {
+          const delayMs = fastPollRemaining.current > 0 ? 1000 : 5000;
+          if (fastPollRemaining.current > 0) fastPollRemaining.current -= 1;
+          timer = setTimeout(() => void check(), delayMs);
+        } else {
+          fastPollRemaining.current = 0;
+        }
       } catch (cause) {
-        if (!cancelled) setError(cause instanceof Error ? cause.message : "Could not check local sign-in.");
+        if (!cancelled && (!isolated || current.current?.request === request)) setError(describeError(cause).body);
       } finally { checking = false; }
     }
+    checkRef.current = check;
     const onFocus = () => { if (!document.hidden) void check(); };
     void check();
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onFocus);
     return () => {
       cancelled = true;
+      checkRef.current = null;
+      fastPollRemaining.current = 0;
       clearTimeout(timer);
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onFocus);
@@ -86,16 +101,32 @@ export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLo
     command: attempt?.command,
     authorizationUrl,
     code,
+    accountLabel,
     status,
     preparing: active && !status && !error,
     error,
+    cancel: () => {
+      cancelCurrent();
+      setAttempt(null);
+      setStatus(null);
+      setAuthorizationUrl(null);
+      setCode(null);
+      setError(null);
+    },
     retry: () => { restartRequested.current = true; cancelCurrent(); setGeneration((value) => value + 1); },
     submitCode: async (browserCode: string) => {
       if (!companyId || !attempt) throw new Error("Start sign-in before submitting a code.");
       try {
         await aiConnectionsApi.submitLocalLoginCode(companyId, attempt.sessionId, browserCode);
+        setError(null);
+        fastPollRemaining.current = 10;
+        void checkRef.current?.();
       } catch (cause) {
-        setError("Could not submit the authorization code. Start sign-in again.");
+        if (latestIntent.current.provider === "google") {
+          void checkRef.current?.();
+        } else {
+          setError("Could not submit the authorization code. Start sign-in again.");
+        }
         throw cause;
       }
     },

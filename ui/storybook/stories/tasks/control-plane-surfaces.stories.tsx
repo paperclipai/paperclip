@@ -257,6 +257,17 @@ const meta = {
           "Product-surface stories exercise the board UI components that carry Paperclip's task, approval, budget, activity, and agent governance workflows.",
       },
     },
+    paperclip: {
+      "capabilities": [
+        "tasks/organize",
+        "questions-and-approvals/governance",
+        "budgets-costs/budgets",
+        "activity/activity"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+    },
   },
 } satisfies Meta<typeof ControlPlaneSurfaces>;
 

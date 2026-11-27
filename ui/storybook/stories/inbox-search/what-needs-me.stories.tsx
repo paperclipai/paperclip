@@ -78,6 +78,13 @@ function item(
     detail: null,
     dismissal: null,
     ...overrides,
+    audience: overrides.audience ?? { kind: "pool", userId: null, reason: "none" },
+    stale: overrides.stale ?? null,
+    changeFingerprint: overrides.changeFingerprint ?? "fixture.other",
+    closeModes: overrides.closeModes ?? ["archive", "snooze"],
+    obligationKey: overrides.obligationKey ?? null,
+    obligationLeadId: overrides.obligationLeadId ?? null,
+    required: overrides.required ?? false,
     expiresAt: overrides.expiresAt ?? null,
     ruleKey: overrides.ruleKey ?? null,
     originAgentName: overrides.originAgentName ?? null,
@@ -448,7 +455,6 @@ function Queue({
                       key={it.id}
                       item={it}
                       companyId={companyId}
-                      variant="hidden"
                       expanded={false}
                       onToggleExpand={() => {}}
                       onDismiss={() => {}}
@@ -462,7 +468,7 @@ function Queue({
 
           {dismissed.length > 0 && (
             <section className="space-y-2">
-              <IssueGroupHeader label={`Dismissed (${dismissed.length})`} collapsible collapsed={!openCurtains} className="text-muted-foreground" />
+              <IssueGroupHeader label={`Archived (${dismissed.length})`} collapsible collapsed={!openCurtains} className="text-muted-foreground" />
               {openCurtains && (
                 <div className="space-y-2">
                   {dismissed.map((it) => (
@@ -470,7 +476,6 @@ function Queue({
                       key={it.id}
                       item={it}
                       companyId={companyId}
-                      variant="hidden"
                       expanded={false}
                       onToggleExpand={() => {}}
                       onDismiss={() => {}}
@@ -491,7 +496,16 @@ const meta: Meta<typeof Queue> = {
   id: "pages-decisions",
   title: "Tasks and conversations/Inbox, decisions, and search/Pages/Decisions",
   component: Queue,
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "inbox-search/decisions"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+    },
+  },
 };
 export default meta;
 

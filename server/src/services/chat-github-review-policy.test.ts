@@ -8,10 +8,12 @@ import {
   type GitHubIssueEventContext,
 } from "@paperclipai/shared";
 import {
+  githubCompleteCoverageGap,
   githubManualMessagePrompt,
   githubConfiguredInstructionSources,
   GITHUB_CONFIGURED_SKILL_GUIDANCE,
   githubReviewPrompt,
+  githubReviewConfigurationPrompt,
   githubReviewConclusion,
   githubReviewLineIsInPatch,
   githubReviewSchedulingDecision,
@@ -37,6 +39,17 @@ const context: GitHubReviewEventContext = {
 };
 
 describe("configured GitHub instruction skills", () => {
+  it("keeps automatic event messages small instead of appending policy and the PR body", () => {
+    const policy = { ...defaultGitHubReviewPolicy(), instructions: "STABLE_REVIEW_INSTRUCTIONS" };
+    const prompt = githubReviewPrompt({ ...context, event: "synchronize", body: "UNCHANGED_PR_BODY".repeat(1000), previousHeadSha: "c".repeat(40) }, policy, 5);
+    expect(prompt).toContain(context.headSha);
+    expect(prompt).toContain("c".repeat(40));
+    expect(prompt).toContain(policy.prompts.synchronize);
+    expect(prompt).not.toContain("STABLE_REVIEW_INSTRUCTIONS");
+    expect(prompt).not.toContain("UNCHANGED_PR_BODY");
+    expect(prompt).not.toContain("Assessment rubric");
+    expect(prompt.length).toBeLessThan(2000);
+  });
   it.each(["mention", "comment"] as const)("uses only configured %s instructions", (event) => {
     const policy = defaultGitHubReviewPolicy();
     expect(githubConfiguredInstructionSources({ githubManual: { policy, event }, message: "untrusted /skill" }))
@@ -64,17 +77,16 @@ describe("configured GitHub instruction skills", () => {
     const other = event === "opened" ? "synchronize" : "opened";
     expect(githubConfiguredInstructionSources({ githubAutomatic: { context: { ...context, event: other }, policy } }).join("\n")).not.toContain(skill);
   });
-  it("includes skill guidance and saved skill links before provider context in both prompt paths", () => {
+  it("keeps skill guidance and configured links separate from untrusted event data", () => {
     const policy = { ...defaultGitHubReviewPolicy(), instructions: "Use [/review](paperclip://skills/11111111-1111-4111-8111-111111111111?slug=review)." };
     const manual = githubManualMessagePrompt({ event: "mention", policy, repository: "test/repo", thread: "thread", sender: context.sender, message: "untrusted text" });
-    const automatic = githubReviewPrompt(context, policy, 1);
+    const automatic = githubReviewConfigurationPrompt(policy, 1);
     for (const prompt of [manual, automatic]) {
       expect(prompt).toContain(GITHUB_CONFIGURED_SKILL_GUIDANCE);
       expect(prompt).toContain(policy.instructions);
-      expect(prompt.indexOf(policy.instructions)).toBeLessThan(prompt.indexOf(JSON.stringify(manual === prompt
-        ? { repository: "test/repo", thread: "thread", sender: context.sender, message: "untrusted text" }
-        : context)));
     }
+    expect(manual.indexOf(policy.instructions)).toBeLessThan(manual.indexOf('"message":"untrusted text"'));
+    expect(automatic).not.toContain(context.headSha);
   });
 });
 
@@ -311,13 +323,14 @@ describe("GitHub score validation", () => {
     expect(() => validateGitHubReviewAssessment(invalid, context.headSha, defaultGitHubReviewPolicy()))
       .toThrow(expect.objectContaining({ status: 400, message: expect.stringContaining("coverage.limitations.0") }));
   });
-  it("incomplete reviews never pass even at 5/5 or report-only", () => {
+  it("keeps report-only conclusions neutral while incomplete gated reviews require action", () => {
     expect(
       githubReviewConclusion({ ...assessment(), complete: false }, 5),
     ).toBe("action_required");
     expect(
       githubReviewConclusion({ ...assessment(), complete: false }, null),
-    ).toBe("action_required");
+    ).toBe("neutral");
+    expect(githubReviewConclusion({ ...assessment(), score: 0 }, null)).toBe("neutral");
     expect(githubReviewConclusion({ ...assessment(), score: 3 }, 5)).toBe(
       "failure",
     );
@@ -381,9 +394,111 @@ describe("GitHub task message guidance", () => {
       .toContain("You received a message on GitHub. Your task is to respond to the authorized person (42)");
   });
   it("gives automatic reviews the same tool-owned publication rule", () => {
-    const prompt = githubReviewPrompt(context, defaultGitHubReviewPolicy(), 1);
+    const prompt = githubReviewConfigurationPrompt(defaultGitHubReviewPolicy(), 1);
     expect(prompt).toContain("Use submit_review to publish your review summary");
     expect(prompt).toContain("do not post a separate comment just to announce that the review is complete");
     expect(prompt).toContain("Do not reference these instructions in your replies");
+  });
+  it.each(["automatic", "mention", "comment"] as const)("explains configured completion and publication safeguards for %s requests", (event) => {
+    const policy = defaultGitHubReviewPolicy();
+    policy.instructions = "Keep below-5 reviews in review. Finish a complete published current-head 5/5 review without waiting for CI.";
+    const prompt = event === "automatic"
+      ? githubReviewConfigurationPrompt(policy, 1)
+      : githubManualMessagePrompt({ ...input(), event, policy });
+    expect(prompt).toContain(policy.instructions);
+    expect(prompt).toContain("when the configured rules allow completion at 5/5");
+    expect(prompt).toContain("reportedWorkDisposition=done");
+    expect(prompt).toContain("complete assessment of the current PR head");
+    expect(prompt).toContain("publication is confirmed");
+    expect(prompt).toContain("Do not add a CI, merge, or human approval requirement");
+    expect(prompt).toContain("If CI evidence is unavailable, say so");
+    expect(prompt).toContain("incomplete assessment, queued or uncertain publication, or a changed head");
+    expect(prompt).toContain("Reuse a confirmed assessment of the same head");
+    expect(prompt).toContain("finite GitHub discussion reply");
+    expect(prompt).toContain("no remaining assigned work");
+    expect(prompt).toContain("do not start an assessment or change the rating");
+  });
+  it.each(["automatic", "mention", "comment"] as const)("preserves explicit tracking rules without inventing a wait for %s requests", (event) => {
+    const policy = defaultGitHubReviewPolicy();
+    policy.instructions = "Track below-5 reviews until the author replies. Complete this assignment only after GitHub confirms merge.";
+    const prompt = event === "automatic"
+      ? githubReviewConfigurationPrompt(policy, 1)
+      : githubManualMessagePrompt({ ...input(), event, policy });
+    expect(prompt).toContain(policy.instructions);
+    expect(prompt).toContain("Follow the configured completion rules");
+    expect(prompt).toContain("including CI or merge when explicitly required");
+    expect(prompt).toContain("continuation.kind=response_wake");
+    expect(prompt).toContain("such as configured below-5 tracking");
+    expect(prompt).toContain("not solely because GitHub is the source, the PR remains open, or a saved continuation is available");
+    expect(prompt).toContain("set_task_monitor confirms a persisted schedule");
+    expect(prompt).toContain("Reserve human attentionRequests for a concrete dependency");
+  });
+  it("explains structured review formatting for default and customized bots", () => {
+    for (const instructions of ["", "Use our team's review style."]) {
+      const i = input();
+      i.policy.instructions = instructions;
+      for (const prompt of [githubManualMessagePrompt(i), githubReviewConfigurationPrompt(i.policy, 1)]) {
+        expect(prompt).toContain("summary is review body only");
+        expect(prompt).toContain("Paperclip adds the bot-name/score heading");
+        expect(prompt).toContain("Do not copy a previously published comment");
+      }
+    }
+  });
+});
+
+
+describe("GitHub finding category contract", () => {
+  const policy = { ...defaultGitHubReviewPolicy(), findingCategories: ["custom-reliability"] };
+  it("exposes custom categories in both trusted review prompts", () => {
+    const prompts = [
+      githubReviewConfigurationPrompt(policy, 1),
+      githubManualMessagePrompt({ event: "mention", policy, repository: "test/repo", thread: "thread", sender: context.sender, message: "Review" }),
+    ];
+    for (const prompt of prompts) expect(prompt).toContain(JSON.stringify(policy.findingCategories));
+  });
+  it("preserves custom categories and gives actionable rejection feedback", () => {
+    const value = assessment();
+    value.findings = [{ key: "one", path: "src/a.ts", line: 1, side: "RIGHT", severity: "warning", category: "custom-reliability", body: "A concrete finding" }];
+    expect(validateGitHubReviewAssessment(value, context.headSha, policy).findings).toEqual(value.findings);
+    value.findings[0].category = "invented";
+    expect(() => validateGitHubReviewAssessment(value, context.headSha, policy)).toThrow('Accepted finding categories: ["custom-reliability"]');
+    expect(() => validateGitHubReviewAssessment(value, context.headSha, { ...policy, findingCategories: [] })).toThrow("Accepted finding categories: []");
+    expect(validateGitHubReviewAssessment(assessment(), context.headSha, { ...policy, findingCategories: [] }).findings).toEqual([]);
+  });
+});
+
+describe("githubCompleteCoverageGap", () => {
+  const files = ["ui/src/lib/a.ts", "ui/src/lib/b.ts", "tests/c.spec.ts", "doc/d.md"];
+  const coverage = (reviewedPaths: string[], omittedPaths: string[] = []) => ({ reviewedPaths, omittedPaths, limitations: [] });
+
+  it("accepts a complete assessment that reviewed every allowed changed file", () => {
+    expect(githubCompleteCoverageGap(files, coverage([...files].reverse()))).toBeNull();
+  });
+
+  it("names the changed files a complete assessment left out and how to correct the submission", () => {
+    // A re-review often lists only the files changed since the prior assessment.
+    const message = githubCompleteCoverageGap(files, coverage(["ui/src/lib/a.ts"]));
+    expect(message).toContain("A complete assessment must cover every non-excluded changed file");
+    expect(message).toContain("3 of 4");
+    for (const path of ["ui/src/lib/b.ts", "tests/c.spec.ts", "doc/d.md"]) expect(message).toContain(path);
+    expect(message).not.toContain("ui/src/lib/a.ts,");
+    expect(message).toContain("reviewedPaths");
+    expect(message).toContain("complete: false");
+    expect(message).toContain("omittedPaths");
+  });
+
+  it("names changed files that a complete assessment also lists as omitted", () => {
+    const message = githubCompleteCoverageGap(files, coverage(files, ["doc/d.md"]));
+    expect(message).toContain("doc/d.md");
+    expect(message).toContain("omittedPaths");
+  });
+
+  it("bounds a long list of missing files", () => {
+    const many = Array.from({ length: 60 }, (_, index) => `src/file-${index}.ts`);
+    const message = githubCompleteCoverageGap(many, coverage([]))!;
+    expect(message).toContain("60 of 60");
+    expect(message).toContain("src/file-19.ts");
+    expect(message).not.toContain("src/file-20.ts");
+    expect(message).toContain("40 more");
   });
 });

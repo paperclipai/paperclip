@@ -2,7 +2,17 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { DecisionHistoryTable } from "@/components/decision-models/DecisionHistory";
 import { entry } from "../../../support/decision-models/fixtures";
 
-const meta = { id: "decision-models-02-history",
+const meta = {
+  parameters: { paperclip: {
+      "capabilities": [
+        "companies/identity",
+        "budgets-costs/cost-reporting",
+        "companies/decision-models"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "Related decision-service examples show connection/model configuration, bounded test receipts or invocation history using shipped subjects and simulated data. No paid provider or authorization proof."
+    } }, id: "decision-models-02-history",
   title: "Getting started and access/Companies and portability/Decision models/02 History", component: DecisionHistoryTable,
   decorators: [Story => <main className="p-6"><Story /></main>], args: { entries: [entry] },
 } satisfies Meta<typeof DecisionHistoryTable>;

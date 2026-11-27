@@ -63,6 +63,10 @@ const stalledReviewRow: AttentionItem = {
   createdAt: "2026-08-02T00:00:00.000Z",
   updatedAt: "2026-08-02T00:30:00.000Z",
   relatedIssue: null,
+  audience: { kind: "pool", userId: null, reason: "none" },
+  stale: null,
+  required: false,
+  changeFingerprint: "fixture.other", closeModes: ["archive", "snooze"], obligationKey: null, obligationLeadId: null,
   project: null,
   workspace: null,
   detail: null,
@@ -99,6 +103,13 @@ const meta = {
         component:
           "Stalled reviews remain actionable in the Decisions queue after removing decision summaries from the issue header.",
       },
+    },
+    paperclip: {
+      "capabilities": [
+        "task-coordination/signoff"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
     },
   },
 } satisfies Meta<typeof AttentionQueueRow>;

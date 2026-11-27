@@ -55,7 +55,15 @@ export default {
   id: "connections-slack-task-tools",
   title: "Apps, channels, and extensions/External chat and email/Connections/Slack/Task tools",
   component: Preview,
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "chat-channels/conversation"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 } satisfies Meta<typeof Preview>;
 type Story = StoryObj<typeof Preview>;
 export const Capabilities: Story = {};

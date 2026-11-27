@@ -35,6 +35,7 @@ import {
   notCreatorRequestConfirmationInteraction,
   pendingToolActionDestructiveInteraction,
   pendingToolActionWriteInteraction,
+  pendingToolActionLongProposalInteraction,
   runningToolActionInteraction,
   issueThreadInteractionComments,
   issueThreadInteractionEvents,
@@ -440,6 +441,18 @@ const meta = {
         component:
           "Interaction cards for `suggest_tasks`, `ask_user_questions`, `request_confirmation`, and `request_checkbox_confirmation`, shown both in isolation and inside the real `IssueChatThread` feed.",
       },
+    },
+    paperclip: {
+      "capabilities": [
+        "questions-and-approvals/questions",
+        "questions-and-approvals/confirmations",
+        "questions-and-approvals/audience",
+        "questions-and-approvals/plan-review",
+        "questions-and-approvals/continuation"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "Plan approval Pending, Confirmed, ExpiredByTargetChange and ResumeFailed states use shipped interaction cards. The continuation association covers accepted-but-resume-failed presentation only; no successful resumption, retry or duplicate-suppression proof."
     },
   },
 } satisfies Meta;
@@ -906,12 +919,25 @@ export const ToolActionPendingWrite: Story = {
     <StoryFrame>
       <ScenarioCard
         title="Pending · write"
-        description="A write tool call awaits approval: identity header, WRITE risk badge, humanized preview, collapsible technical details, expiry countdown, and an Approve & run CTA."
+        description="A write tool call awaits approval: app identity, a short preview, optional redacted arguments and audit hash, and Approve & run or Decline."
       >
         <ToolActionCard
           interaction={pendingToolActionWriteInteraction}
           interactive
         />
+      </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
+export const ToolActionLongProposal: Story = {
+  render: () => (
+    <StoryFrame>
+      <ScenarioCard
+        title="Pending · proposal beyond the short preview"
+        description="Open Arguments and audit hash to inspect the server-redacted proposal, including its final launch date, before approving. Inspection does not submit a decision."
+      >
+        <ToolActionCard interaction={pendingToolActionLongProposalInteraction} interactive />
       </ScenarioCard>
     </StoryFrame>
   ),

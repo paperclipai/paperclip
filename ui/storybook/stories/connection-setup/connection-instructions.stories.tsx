@@ -66,7 +66,16 @@ const meta = {
   title: "Apps, channels, and extensions/Connection setup/Design explorations/Connections/Agent instructions",
   component: ConnectionInstructionsPrototype,
   args: { providedInstructions: HONCHO },
-  parameters: { layout: "fullscreen", docs: { description: { component: "Production Layout, ConnectionSetupFlow, AppDetail, identity/access controls, and searchable Actions list with local API fixtures. The production instructions editor saves and reloads through mocked APIs. Baseline stories omit template metadata. No provider calls." } } },
+  parameters: { layout: "fullscreen", docs: { description: { component: "Production Layout, ConnectionSetupFlow, AppDetail, identity/access controls, and searchable Actions list with local API fixtures. The production instructions editor saves and reloads through mocked APIs. Baseline stories omit template metadata. No provider calls." } },
+    paperclip: {
+      "capabilities": [
+        "connection-setup/credentials",
+        "agents/instructions"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 } satisfies Meta<typeof ConnectionInstructionsPrototype>;
 export default meta;
 type Story = StoryObj<typeof meta>;

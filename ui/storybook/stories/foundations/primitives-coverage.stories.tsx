@@ -78,6 +78,16 @@ const meta = {
           "Static snapshot coverage for shared ui/ primitives not exercised by existing stories: alert-dialog, avatar, breadcrumb, collapsible, command, dropdown-menu, radio-card, scroll-area, sheet, skeleton.",
       },
     },
+    paperclip: {
+      "capabilities": [
+        "developer-labs/design"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "Related design reference: demonstrates shared production controls and visual states in an isolated contributor fixture; retains its Foundations home. No product-journey or baseline comparison claim.",
+      "home": "foundations",
+      "exception": "Shared foundations or contributor guide; no single business capability owns this suite."
+    },
   },
 } satisfies Meta;
 

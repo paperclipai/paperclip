@@ -1,21 +1,18 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, writeFile, readFile, realpath, rm, symlink } from "node:fs/promises";
+import { mkdir, writeFile, readFile, realpath, rm, symlink } from "node:fs/promises";
 import fs from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, authUsers, companies, companyMemberships, createDb, executionWorkspaceRepositoryRoots, executionWorkspaceRepositoryAccess, executionWorkspaceRepositories, executionWorkspaces,
-  heartbeatRuns, issueAccessGrants, issues, projects, projectWorkspaces, projectAccessMembers, principalPermissionGrants, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
-import { assertExecutionWorkspaceRootReadAccess, assertExecutionWorkspaceRootWriteAccess, assertIsolatedWorkspaceSourceReadAccess, retainIsolatedWorkspaceSourceAccess, executionWorkspaceRepositoryService } from "../services/execution-workspace-repositories.js";
-import { executionWorkspaceService } from "../services/execution-workspaces.js";
-import { projectService } from "../services/projects.js";
+import { agents, createDb, executionWorkspaceRepositoryRoots, executionWorkspaceRepositoryAccess, executionWorkspaceRepositories, executionWorkspaces,
+  heartbeatRuns, issues, projects, projectWorkspaces, projectAccessMembers, companyMemberships, authUsers, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
+import { executionWorkspaceRepositoryService } from "../services/execution-workspace-repositories.js";
 import { buildNativeExecutionInput } from "../services/native-runtime/native-execution-input.js";
 import { nativeRuntimeContextFixture } from "../services/native-runtime/runtime-context.test-fixture.js";
 import { buildGitAuthInvocation } from "../services/git-credentials.js";
-import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { getEmbeddedPostgresTestSupport } from "./helpers/embedded-postgres.js";
 
 import { createRepositoryTrustFixture } from "./helpers/repository-trust-fixture.js";
 
@@ -36,369 +33,207 @@ const support = await getEmbeddedPostgresTestSupport();
   let db: ReturnType<typeof createDb>;
   let root: string;
   beforeAll(async () => { ({ db, root } = await context.setup()); }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
-  afterEach(() => { vi.clearAllMocks(); vi.restoreAllMocks(); });
+  afterEach(() => { acquisition.materialize.mockReset(); vi.clearAllMocks(); vi.restoreAllMocks(); });
   afterAll(context.cleanup);
-  const { fixture, lowTrustPeer, standardPeer, privateTask, grantPeer, localPrivateClone } = context;
+  const { fixture, lowTrustPeer, standardPeer, privateTask, localPrivateClone } = context;
 
-  it.each(["empty", "different_identity", "unreadable_alias", "loop_alias", "anonymous_private_edits", "authorized_peer"] as const)(
-    "authorizes every physical repository source for a standard reader with %s", async scenario => {
-      const f = await fixture(), peer = await standardPeer(f);
-      if (scenario === "different_identity") await f.service.request({ companyId: f.companyId, issueId: peer.issueId, actor: peer.actor,
-        request: { repository: { kind: "url", url: "https://github.com/public/other" }, requestKey: randomUUID() } });
-      await privateTask(f);
-      const intent = await f.request(scenario === "anonymous_private_edits" ? { kind: "url", url: "https://github.com/public/source" } : { kind: "catalog", id: "private-repo" });
-      await localPrivateClone(f);
-      const [prepared] = await f.service.prepareForAdmission(f.admission);
-      expect(await readFile(path.join(prepared.cwd, "private.txt"), "utf8")).toBe("Private task edits\n");
-      if (scenario === "unreadable_alias" || scenario === "loop_alias") {
-        const alias = path.join(root, `${f.issueId}-private-alias`);
-        await symlink(scenario === "loop_alias" ? alias : f.admission.cwd, alias);
-        await db.update(executionWorkspaces).set({ cwd: alias }).where(eq(executionWorkspaces.id, f.workspace.id));
-        await db.delete(executionWorkspaceRepositoryAccess).where(eq(executionWorkspaceRepositoryAccess.companyId, f.companyId));
-        const actual = fs.realpath.bind(fs);
-        vi.spyOn(fs, "realpath").mockImplementation(async pathname => {
-          if (scenario === "unreadable_alias" && String(pathname) === alias) throw Object.assign(new Error("Private alias unavailable"), { code: "EACCES" });
-          return actual(pathname);
-        });
-      }
-      if (scenario === "authorized_peer") {
-        await grantPeer(f, peer);
-        await expect(f.service.prepareForAdmission(peer.admission)).resolves.toEqual([]);
-      } else await expect(f.service.prepareForAdmission(peer.admission)).rejects.toThrow(/workspace access|authorization boundary/);
-      expect((await f.service.list(f.companyId, f.workspace.id))[0].id).toBe(intent.operationId);
-      expect(acquisition.materialize).toHaveBeenCalledOnce();
-    },
-  );
-
-  it.each(["retained", "legacy", "known_origin_removed"] as const)("keeps independent copies of the same repository separate (%s provenance)", async provenance => {
+  it.each(["same_root", "ancestor", "descendant", "symlink"] as const)("ignores private historical filesystem owners at a %s path", async relation => {
     const f = await fixture(), peer = await standardPeer(f);
-    const peerCwd = path.join(root, peer.issueId);
-    await mkdir(peerCwd);
-    await db.update(executionWorkspaces).set({ cwd: peerCwd }).where(eq(executionWorkspaces.id, peer.workspace.id));
-    peer.admission.cwd = peerCwd;
     await privateTask(f);
-    const repository = { kind: "url" as const, url: "https://github.com/public/source" };
-    await f.request(repository);
-    await localPrivateClone(f);
-    const [privateCheckout] = await f.service.prepareForAdmission(f.admission);
-    await f.service.request({ companyId: f.companyId, issueId: peer.issueId, actor: peer.actor,
-      request: { repository, requestKey: randomUUID() } });
-    await localPrivateClone({ ...f, issueId: peer.issueId });
-    const [peerCheckout] = await f.service.prepareForAdmission(peer.admission);
-    expect(peerCheckout.cwd).not.toBe(privateCheckout.cwd);
-    expect(await readFile(path.join(peerCheckout.cwd, "private.txt"), "utf8")).toBe("Private task edits\n");
-    if (provenance === "legacy") await db.delete(executionWorkspaceRepositoryAccess).where(eq(executionWorkspaceRepositoryAccess.companyId, f.companyId));
-    if (provenance === "known_origin_removed") await rm(f.admission.cwd, { recursive: true });
-    const actual = await vi.importActual<typeof import("../services/managed-repository-checkout.js")>("../services/managed-repository-checkout.js");
-    acquisition.materialize.mockImplementationOnce(actual.materializeManagedProjectWorkspace);
-    await expect(f.service.prepareForAdmission(peer.admission)).resolves.toHaveLength(1);
-    const beforeRead = await db.select().from(executionWorkspaceRepositoryAccess).where(eq(executionWorkspaceRepositoryAccess.companyId, f.companyId));
-    await expect(assertExecutionWorkspaceRootReadAccess(db, { companyId: f.companyId, cwd: peerCwd,
-      sourceWorkspaceId: peer.workspace.id, actor: peer.actor })).resolves.toBeUndefined();
-    await expect(assertExecutionWorkspaceRootReadAccess(db, { companyId: f.companyId, cwd: f.admission.cwd,
-      sourceWorkspaceId: f.workspace.id, actor: peer.actor })).rejects.toThrow(/workspace access|authorization boundary/);
-    expect(await db.select().from(executionWorkspaceRepositoryAccess).where(eq(executionWorkspaceRepositoryAccess.companyId, f.companyId))).toEqual(beforeRead);
+    let historicalRoot = f.admission.cwd;
+    if (relation === "ancestor") historicalRoot = root;
+    if (relation === "descendant") { historicalRoot = path.join(f.admission.cwd, "old-task"); await mkdir(historicalRoot); }
+    if (relation === "symlink") { historicalRoot = path.join(root, `${f.issueId}-alias`); await symlink(f.admission.cwd, historicalRoot); }
+    await db.update(executionWorkspaces).set({ cwd: historicalRoot }).where(eq(executionWorkspaces.id, f.workspace.id));
+    const canonicalCwd = await realpath(f.admission.cwd);
+    await db.insert(executionWorkspaceRepositoryAccess).values([
+      { companyId: f.companyId, canonicalCwd, rootKey: createHash("sha256").update(canonicalCwd).digest("hex"), kind: "source", scopeId: f.workspace.id },
+      { companyId: f.companyId, canonicalCwd, rootKey: createHash("sha256").update(canonicalCwd).digest("hex"), kind: "reader", scopeId: randomUUID(), issueId: randomUUID(), agentId: randomUUID(), responsibleUserId: "deleted-user" },
+    ]);
+    await expect(f.service.prepareForAdmission(peer.admission)).resolves.toEqual([]);
+    await expect(f.service.assertPublicationAllowed(peer.admission)).resolves.toBeUndefined();
+    const { authorizationService, canActorReadExecutionWorkspace } = await import("../services/authorization.js");
+    expect((await authorizationService(db).decide({ actor: peer.actor, action: "issue:read",
+      resource: { type: "issue", companyId: f.companyId, issueId: f.issueId } })).allowed).toBe(false);
+    expect(await canActorReadExecutionWorkspace(db, peer.actor, f.workspace.id)).toBe(false);
   });
 
-  it.each(["update", "archive"] as const)("preserves legacy private publishers before %s moves their workspace away from shared files", async operation => {
-    const f = await fixture(), peer = await standardPeer(f);
-    const repository = { kind: "url" as const, url: "https://github.com/public/legacy-shared" };
-    await f.service.request({ companyId: f.companyId, issueId: peer.issueId, actor: peer.actor,
-      request: { repository, requestKey: randomUUID() } });
-    await privateTask(f);
-    const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Private legacy source", visibility: "private" }).returning();
+  it.each(["anonymous_only", "managed"] as const)("ignores a legacy %s directory reservation while preserving current acquisition restrictions", async mode => {
+    const f = await fixture(), peer = await lowTrustPeer(f);
+    const canonicalCwd = await realpath(f.admission.cwd);
+    await db.insert(executionWorkspaceRepositoryRoots).values({ companyId: f.companyId, canonicalCwd,
+      rootKey: createHash("sha256").update(canonicalCwd).digest("hex"), mode });
+    await expect(f.service.prepareForAdmission(peer.admission)).resolves.toEqual([]);
+    await expect(f.request({ kind: "catalog", id: "private-repo" })).resolves.toMatchObject({ kind: "requires_next_admission" });
+    await expect(f.service.request({ companyId: f.companyId, issueId: peer.admission.issueId, actor: peer.actor,
+      request: { repository: { kind: "url", url: "https://github.com/public/new" }, requestKey: randomUUID() } })).rejects.toThrow(/trusted task|Selected workspace source trust/);
+    expect(await db.select().from(executionWorkspaceRepositoryRoots).where(eq(executionWorkspaceRepositoryRoots.companyId, f.companyId)))
+      .toHaveLength(1);
+  });
+
+  it("ignores unselected private/protected project aliases but rechecks the directly selected project", async () => {
+    const f = await fixture();
+    const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Private source", visibility: "private",
+      executionWorkspacePolicy: { authorizationPolicy: { assignmentPolicy: { mode: "protected" } } } }).returning();
+    await db.insert(projectWorkspaces).values({ companyId: f.companyId, projectId: project.id, name: "Other configuration", cwd: f.admission.cwd });
+    await expect(f.service.prepareForAdmission(f.admission)).resolves.toEqual([]);
+    await expect(f.service.assertPublicationAllowed(f.admission)).resolves.toBeUndefined();
+    await db.update(executionWorkspaces).set({ projectId: project.id }).where(eq(executionWorkspaces.id, f.workspace.id));
+    await expect(f.service.prepareForAdmission(f.admission)).rejects.toThrow();
     await db.insert(projectAccessMembers).values([
       { companyId: f.companyId, projectId: project.id, subjectType: "agent", subjectId: f.agentId },
       { companyId: f.companyId, projectId: project.id, subjectType: "user", subjectId: f.userId },
     ]);
-    await db.update(executionWorkspaces).set({ projectId: project.id, sourceIssueId: f.issueId }).where(eq(executionWorkspaces.id, f.workspace.id));
-    await f.request(repository);
-    await localPrivateClone(f);
-    const [checkout] = await f.service.prepareForAdmission(f.admission);
-    expect(await readFile(path.join(checkout.cwd, "private.txt"), "utf8")).toBe("Private task edits\n");
-    await db.delete(executionWorkspaceRepositoryAccess).where(eq(executionWorkspaceRepositoryAccess.companyId, f.companyId));
-    const moved = path.join(root, `${f.issueId}-legacy-moved`);
-    await mkdir(moved);
-    const patch = { cwd: moved, projectId: null, sourceIssueId: null, metadata: {} };
-    const svc = executionWorkspaceService(db);
-    if (operation === "archive") {
-      const result = await svc.archiveWorkspaceUnderLifecycleLock({ id: f.workspace.id, patch, closedAt: new Date() });
-      expect(result?.outcome).toBe("archived");
-      if (result?.outcome === "archived") {
-        expect(result.capturedGeneration).toBeGreaterThan(0);
-        expect(result.workspace.status).toBe("archived");
-        expect(result.workspace.metadata?._issuePrivacySources).toHaveProperty(f.issueId);
-      }
-    } else await svc.update(f.workspace.id, patch);
+    await expect(f.service.prepareForAdmission(f.admission)).resolves.toEqual([]);
+    await db.delete(projectAccessMembers).where(eq(projectAccessMembers.subjectId, f.userId));
+    await expect(f.service.assertPublicationAllowed(f.admission)).rejects.toThrow();
+  });
+
+  it("rejects current identity and binding changes before publication", async () => {
+    const f = await fixture();
+    await expect(f.service.assertPublicationAllowed(f.admission)).resolves.toBeUndefined();
+    await expect(f.service.assertPublicationAllowed({ ...f.admission, runId: randomUUID() })).rejects.toThrow(/identity/);
+    await expect(f.service.prepareForAdmission({ ...f.admission, responsibleUserId: randomUUID() })).rejects.toThrow(/responsible user/);
     await db.update(issues).set({ executionWorkspaceId: null }).where(eq(issues.id, f.issueId));
-    await expect(assertExecutionWorkspaceRootReadAccess(db, { companyId: f.companyId, cwd: peer.admission.cwd,
-      sourceWorkspaceId: peer.workspace.id, actor: peer.actor })).rejects.toThrow(/workspace access|authorization boundary|source project/);
-    await expect(f.service.prepareForAdmission(peer.admission)).rejects.toThrow(/workspace access|authorization boundary|source project/);
-    const retained = await db.select().from(executionWorkspaceRepositoryAccess).where(eq(executionWorkspaceRepositoryAccess.companyId, f.companyId));
-    expect(retained.some(entry => entry.kind === "source" && entry.scopeId === f.workspace.id)).toBe(true);
-    expect(retained.some(entry => entry.kind === "project_source" && entry.scopeId === project.id)).toBe(true);
-    expect(retained.some(entry => entry.kind === "repository" || entry.kind === "reader")).toBe(false);
-    expect(await readFile(path.join(checkout.cwd, "private.txt"), "utf8")).toBe("Private task edits\n");
+    await expect(f.service.assertPublicationAllowed(f.admission)).rejects.toThrow(/binding/);
   });
 
-  it("requires the admitted actor's write grant for a projectless alias of a protected configured root", async () => {
+  it("rechecks source, destination, configuration, and current identity when copying", async () => {
     const f = await fixture();
-    await db.update(companyMemberships).set({ membershipRole: "member" }).where(eq(companyMemberships.principalId, f.userId));
-    const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Protected shared root",
-      executionWorkspacePolicy: { authorizationPolicy: { assignmentPolicy: { mode: "protected" } } } }).returning();
-    const alias = path.join(root, `${f.issueId}-protected-alias`);
-    await symlink(f.admission.cwd, alias);
-    const [source] = await db.insert(projectWorkspaces).values({ companyId: f.companyId, projectId: project.id, name: "Protected source", cwd: alias }).returning();
-    const read = () => assertExecutionWorkspaceRootReadAccess(db, { companyId: f.companyId, cwd: f.admission.cwd,
-      sourceWorkspaceId: f.workspace.id, actor: f.actor });
-    await expect(read()).resolves.toBeUndefined();
-    await expect(f.service.prepareForAdmission(f.admission)).rejects.toThrow(/protected|not authorized/);
-    await expect(f.request({ kind: "url", url: "https://github.com/public/writable" })).rejects.toThrow(/protected|not authorized/);
-    await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "agent", principalId: f.agentId,
-      permissionKey: "tasks:assign_scope", scope: { projectId: project.id, assigneeAgentId: f.agentId } });
-    await expect(f.service.prepareForAdmission(f.admission)).rejects.toThrow(/Responsible user.*not authorized/);
-    const [grant] = await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: f.userId,
-      permissionKey: "tasks:assign_scope", scope: { projectId: project.id, assigneeAgentId: f.agentId } }).returning();
-    await expect(f.service.prepareForAdmission(f.admission)).resolves.toEqual([]);
-    await expect(f.service.guardForPublication(f.admission)).resolves.toBeUndefined();
-    await db.delete(projectWorkspaces).where(eq(projectWorkspaces.id, source.id));
-    await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.id, grant.id));
-    await expect(read()).resolves.toBeUndefined();
-    await expect(f.service.prepareForAdmission(f.admission)).rejects.toThrow(/Responsible user.*not authorized/);
-    await expect(f.service.guardForPublication(f.admission)).rejects.toThrow(/Responsible user.*not authorized/);
+    const source = path.join(root, `${f.issueId}-source`), moved = path.join(root, `${f.issueId}-moved`);
+    await mkdir(source); await mkdir(moved);
+    const alias = path.join(root, `${f.issueId}-source-alias`);
+    await symlink(source, alias);
+    const verify = await f.service.prepareConfiguredRepositoryCopy({ ...f.admission, sourceCwd: alias });
+    await expect(verify()).resolves.toBeUndefined();
+    await fs.unlink(alias); await symlink(moved, alias);
+    await expect(verify()).rejects.toThrow(/source or destination changed/);
+    const verifyIdentity = await f.service.prepareConfiguredRepositoryCopy({ ...f.admission, sourceCwd: source });
+    await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    await expect(verifyIdentity()).rejects.toThrow(/identity/);
   });
 
-  it("keeps genuine isolated Git copies read-only against their protected source project", async () => {
+  it("captures the bound workspace's source configuration even when the task has no source pointer", async () => {
     const f = await fixture();
-    const sourceRoot = path.join(root, `${f.issueId}-isolated-source`);
-    await mkdir(sourceRoot);
-    const exec = promisify(execFileCallback);
-    await exec("git", ["init", "--initial-branch=main", sourceRoot]);
-    await writeFile(path.join(sourceRoot, "README.md"), "Protected source\n");
-    await exec("git", ["-C", sourceRoot, "add", "."]);
-    await exec("git", ["-C", sourceRoot, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "source"]);
-    await exec("git", ["-C", sourceRoot, "worktree", "add", "-b", "isolated-task", f.admission.cwd]);
-    const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Protected copy source",
-      executionWorkspacePolicy: { authorizationPolicy: { assignmentPolicy: { mode: "protected" } } } }).returning();
-    const [source] = await db.insert(projectWorkspaces).values({ companyId: f.companyId, projectId: project.id, name: "Original", cwd: sourceRoot }).returning();
-    await db.update(executionWorkspaces).set({ projectId: project.id, projectWorkspaceId: source.id, strategyType: "git_worktree" }).where(eq(executionWorkspaces.id, f.workspace.id));
-    await expect(f.service.prepareForAdmission(f.admission)).resolves.toEqual([]);
-    await expect(f.service.prepareForAdmission(f.admission)).resolves.toEqual([]);
-    await expect(f.service.guardForPublication(f.admission)).resolves.toBeUndefined();
-    await db.update(projectWorkspaces).set({ cwd: f.admission.cwd }).where(eq(projectWorkspaces.id, source.id));
-    await expect(f.service.prepareForAdmission(f.admission)).rejects.toThrow(/protected|not authorized/);
+    const source = path.join(root, `${f.issueId}-configured-source`);
+    await mkdir(source);
+    const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Selected configuration" }).returning();
+    const [configuration] = await db.insert(projectWorkspaces).values({ companyId: f.companyId, projectId: project.id,
+      name: "Source", cwd: source }).returning();
+    await db.update(executionWorkspaces).set({ projectId: project.id, projectWorkspaceId: configuration.id }).where(eq(executionWorkspaces.id, f.workspace.id));
+    const verify = await f.service.prepareConfiguredRepositoryCopy({ ...f.admission, sourceCwd: source });
+    await expect(verify()).resolves.toBeUndefined();
+    await db.update(projectWorkspaces).set({ cwd: f.admission.cwd }).where(eq(projectWorkspaces.id, configuration.id));
+    await expect(verify()).rejects.toThrow(/configuration changed/);
   });
 
-  it.each(["move", "delete"] as const)("retains protected shared execution-source write scope after %s", async change => {
-    const f = await fixture(), source = await standardPeer(f);
-    const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Protected execution owner",
-      executionWorkspacePolicy: { authorizationPolicy: { assignmentPolicy: { mode: "protected" } } } }).returning();
-    await db.update(executionWorkspaces).set({ projectId: project.id }).where(eq(executionWorkspaces.id, source.workspace.id));
-    await expect(f.service.prepareForAdmission(f.admission)).rejects.toThrow(/protected|not authorized/);
-    const grants = await db.insert(principalPermissionGrants).values([
-      { companyId: f.companyId, principalType: "agent", principalId: f.agentId, permissionKey: "tasks:assign_scope", scope: { projectId: project.id, assigneeAgentId: f.agentId } },
-      { companyId: f.companyId, principalType: "user", principalId: f.userId, permissionKey: "tasks:assign_scope", scope: { projectId: project.id, assigneeAgentId: f.agentId } },
-    ]).returning();
-    await expect(f.service.prepareForAdmission(f.admission)).resolves.toEqual([]);
-    if (change === "move") {
-      const moved = path.join(root, `${source.issueId}-shared-moved`);
-      await mkdir(moved);
-      await executionWorkspaceService(db).update(source.workspace.id, { cwd: moved, projectId: null });
-    } else await db.delete(executionWorkspaces).where(eq(executionWorkspaces.id, source.workspace.id));
-    for (const grant of grants) await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.id, grant.id));
-    await expect(f.service.prepareForAdmission(f.admission)).rejects.toThrow(/protected|not authorized|workspace access/);
+  it("validates a prebinding configured copy without requiring a destination workspace row", async () => {
+    const f = await fixture();
+    await db.update(issues).set({ executionWorkspaceId: null }).where(eq(issues.id, f.issueId));
+    const verify = await f.service.prepareConfiguredRepositoryCopy({ ...f.admission, workspaceId: randomUUID(),
+      cwd: path.join(root, `${f.issueId}-not-created`), sourceCwd: f.admission.cwd });
+    await expect(verify()).resolves.toBeUndefined();
   });
 
-  it("does not require historical readers to retain write grants for another authorized writer", async () => {
+  it("reuses the marker's exact private-origin receipt without requiring its task's app access", async () => {
     const f = await fixture(), peer = await standardPeer(f);
-    const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Shared source writers",
-      executionWorkspacePolicy: { authorizationPolicy: { assignmentPolicy: { mode: "protected" } } } }).returning();
-    await db.insert(projectWorkspaces).values({ companyId: f.companyId, projectId: project.id, name: "Shared", cwd: f.admission.cwd });
-    const prior = await db.insert(principalPermissionGrants).values([
-      { companyId: f.companyId, principalType: "agent", principalId: f.agentId, permissionKey: "tasks:assign_scope", scope: { projectId: project.id, assigneeAgentId: f.agentId } },
-      { companyId: f.companyId, principalType: "user", principalId: f.userId, permissionKey: "tasks:assign_scope", scope: { projectId: project.id, assigneeAgentId: f.agentId } },
-    ]).returning();
-    await f.service.prepareForAdmission(f.admission);
-    await db.insert(principalPermissionGrants).values([
-      { companyId: f.companyId, principalType: "agent", principalId: peer.agentId, permissionKey: "tasks:assign_scope", scope: { projectId: project.id, assigneeAgentId: peer.agentId } },
-      { companyId: f.companyId, principalType: "user", principalId: peer.userId, permissionKey: "tasks:assign_scope", scope: { projectId: project.id, assigneeAgentId: peer.agentId } },
+    await privateTask(f);
+    const first = await f.request({ kind: "catalog", id: "private-repo" });
+    await localPrivateClone(f);
+    const [published] = await f.service.prepareForAdmission(f.admission);
+    const next = await f.service.request({ companyId: f.companyId, issueId: peer.issueId, actor: peer.actor,
+      request: { repository: { kind: "catalog", id: "private-repo" }, requestKey: randomUUID() } });
+    const decoys = await db.insert(executionWorkspaces).values(Array.from({ length: 500 }, () => ({
+      companyId: f.companyId, name: "Unrelated matching receipt", cwd: f.admission.cwd,
+      mode: "shared_workspace", strategyType: "operator_directory" }))).returning({ id: executionWorkspaces.id });
+    await db.insert(executionWorkspaceRepositories).values(decoys.map(workspace => ({ companyId: f.companyId,
+      executionWorkspaceId: workspace.id, requestedByIssueId: f.issueId, repositoryIdentity: first.repository.repositoryIdentity,
+      repoUrl: first.repository.repoUrl, catalogRepositoryId: "private-repo", relativePath: first.repository.relativePath,
+      requestedRef: first.repository.requestedRef, requestKey: randomUUID(), state: "ready", pinnedCommit: "b".repeat(40) })));
+    const actual = await vi.importActual<typeof import("../services/managed-repository-checkout.js")>("../services/managed-repository-checkout.js");
+    acquisition.materialize.mockImplementationOnce(actual.materializeManagedProjectWorkspace);
+    await expect(f.service.prepareForAdmission(peer.admission)).resolves.toEqual([
+      expect.objectContaining({ id: next.operationId, cwd: published.cwd, pinnedCommit: published.pinnedCommit }),
     ]);
-    for (const grant of prior) await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.id, grant.id));
-    await expect(f.service.prepareForAdmission(peer.admission)).resolves.toEqual([]);
-    await expect(f.service.guardForPublication(peer.admission)).resolves.toBeUndefined();
+    expect(JSON.parse(await readFile(path.join(published.cwd, ".git", "paperclip-workspace-owner.json"), "utf8")))
+      .toMatchObject({ repositoryId: next.operationId, pinnedCommit: published.pinnedCommit });
+    const { authorizationService } = await import("../services/authorization.js");
+    expect((await authorizationService(db).decide({ actor: peer.actor, action: "issue:read",
+      resource: { type: "issue", companyId: f.companyId, issueId: f.issueId } })).allowed).toBe(false);
   });
 
-  it("checks configured private aliases against both admitted agent and responsible user before capture and publication", async () => {
-    const f = await fixture();
-    const alias = path.join(root, `${f.issueId}-configured-alias`);
-    await symlink(f.admission.cwd, alias);
-    const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Private configured files", visibility: "private" }).returning();
-    const [configured] = await db.insert(projectWorkspaces).values({ companyId: f.companyId, projectId: project.id, name: "Configured alias", cwd: alias }).returning();
-    await writeFile(path.join(f.admission.cwd, "private-configured.txt"), "Private configured project bytes\n");
-    await db.insert(projectAccessMembers).values({ companyId: f.companyId, projectId: project.id, subjectType: "agent", subjectId: f.agentId });
-    await expect(assertExecutionWorkspaceRootReadAccess(db, { companyId: f.companyId, cwd: f.admission.cwd,
-      sourceWorkspaceId: f.workspace.id, actor: f.actor })).rejects.toThrow(/source project/);
-    await expect(f.service.prepareForAdmission(f.admission)).rejects.toThrow(/source project/);
-    expect(await db.select().from(executionWorkspaceRepositoryAccess).where(eq(executionWorkspaceRepositoryAccess.companyId, f.companyId))).toEqual([]);
-    const [grant] = await db.insert(projectAccessMembers).values({ companyId: f.companyId, projectId: project.id,
-      subjectType: "user", subjectId: f.userId }).returning();
-    await expect(f.service.prepareForAdmission(f.admission)).resolves.toEqual([]);
-    await expect(f.service.guardForPublication(f.admission)).resolves.toBeUndefined();
-    const moved = path.join(root, `${f.issueId}-configured-moved`);
+  it("keeps shared checkout ownership current when an earlier workspace moves", async () => {
+    const f = await fixture(), peer = await standardPeer(f);
+    await f.request({ kind: "catalog", id: "private-repo" });
+    await localPrivateClone(f);
+    const [published] = await f.service.prepareForAdmission(f.admission);
+    const next = await f.service.request({ companyId: f.companyId, issueId: peer.issueId, actor: peer.actor,
+      request: { repository: { kind: "catalog", id: "private-repo" }, requestKey: randomUUID() } });
+    const actual = await vi.importActual<typeof import("../services/managed-repository-checkout.js")>("../services/managed-repository-checkout.js");
+    acquisition.materialize.mockImplementationOnce(actual.materializeManagedProjectWorkspace);
+    await f.service.prepareForAdmission(peer.admission);
+    const moved = path.join(root, `${f.issueId}-moved-after-reuse`);
     await mkdir(moved);
-    await db.update(projectWorkspaces).set({ cwd: moved }).where(eq(projectWorkspaces.id, configured.id));
-    await db.delete(projectAccessMembers).where(eq(projectAccessMembers.id, grant.id));
-    await expect(f.service.prepareForAdmission(f.admission)).rejects.toThrow(/source project/);
-    await expect(f.service.guardForPublication(f.admission)).rejects.toThrow(/source project/);
-    await expect(assertExecutionWorkspaceRootReadAccess(db, { companyId: f.companyId, cwd: f.admission.cwd,
-      sourceWorkspaceId: f.workspace.id, actor: f.actor })).rejects.toThrow(/source project/);
-    await db.insert(projectAccessMembers).values({ companyId: f.companyId, projectId: project.id, subjectType: "user", subjectId: f.userId });
-    await expect(f.service.prepareForAdmission(f.admission)).resolves.toEqual([]);
-    await db.delete(projectWorkspaces).where(eq(projectWorkspaces.id, configured.id));
-    await expect(f.service.prepareForAdmission(f.admission)).resolves.toEqual([]);
-    await expect(assertExecutionWorkspaceRootReadAccess(db, { companyId: f.companyId, cwd: f.admission.cwd,
-      sourceWorkspaceId: f.workspace.id, actor: f.actor })).resolves.toBeUndefined();
-    await db.delete(projects).where(eq(projects.id, project.id));
-    await expect(f.service.prepareForAdmission(f.admission)).rejects.toThrow(/source project/);
-    await expect(assertExecutionWorkspaceRootReadAccess(db, { companyId: f.companyId, cwd: f.admission.cwd,
-      sourceWorkspaceId: f.workspace.id, actor: f.actor })).rejects.toThrow(/source project/);
-    expect(acquisition.materialize).not.toHaveBeenCalled();
-  });
-
-  it("retains execution-source project privacy after its workspace project pointer is cleared", async () => {
-    const f = await fixture();
-    const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Execution source owner", visibility: "private" }).returning();
-    await db.update(executionWorkspaces).set({ projectId: project.id }).where(eq(executionWorkspaces.id, f.workspace.id));
-    await db.insert(projectAccessMembers).values({ companyId: f.companyId, projectId: project.id, subjectType: "agent", subjectId: f.agentId });
-    const [grant] = await db.insert(projectAccessMembers).values({ companyId: f.companyId, projectId: project.id, subjectType: "user", subjectId: f.userId }).returning();
-    await expect(f.service.prepareForAdmission(f.admission)).resolves.toEqual([]);
-    await db.update(executionWorkspaces).set({ projectId: null }).where(eq(executionWorkspaces.id, f.workspace.id));
-    await db.delete(projectAccessMembers).where(eq(projectAccessMembers.id, grant.id));
-    await expect(f.service.prepareForAdmission(f.admission)).rejects.toThrow(/source project/);
-    await expect(assertExecutionWorkspaceRootReadAccess(db, { companyId: f.companyId, cwd: f.admission.cwd,
-      sourceWorkspaceId: f.workspace.id, actor: f.actor })).rejects.toThrow(/source project/);
-    await db.insert(projectAccessMembers).values({ companyId: f.companyId, projectId: project.id, subjectType: "user", subjectId: f.userId });
-    await expect(f.service.prepareForAdmission(f.admission)).resolves.toEqual([]);
-    await db.delete(projects).where(eq(projects.id, project.id));
-    await expect(f.service.prepareForAdmission(f.admission)).rejects.toThrow(/source project/);
-    await expect(f.service.guardForPublication(f.admission)).rejects.toThrow(/source project/);
-  });
-
-  it.each(["configured", "execution"] as const)("ignores an unrelated %s workspace symlink loop", async kind => {
-    const f = await fixture();
-    const loop = path.join(root, `${f.issueId}-unrelated-loop`);
-    await symlink(loop, loop);
-    if (kind === "configured") {
-      const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Unavailable unrelated project", visibility: "private" }).returning();
-      await db.insert(projectWorkspaces).values({ companyId: f.companyId, projectId: project.id, name: "Loop", cwd: loop });
-    } else {
-      await db.insert(executionWorkspaces).values({ companyId: f.companyId, name: "Unrelated loop", cwd: loop, mode: "isolated_workspace", strategyType: "task_directory" });
-    }
-    await expect(f.service.prepareForAdmission(f.admission)).resolves.toEqual([]);
-    await expect(assertExecutionWorkspaceRootReadAccess(db, { companyId: f.companyId, cwd: f.admission.cwd,
-      sourceWorkspaceId: f.workspace.id, actor: f.actor })).resolves.toBeUndefined();
-  });
-
-  it("rejects an unusable selected root without releasing a retained private source", async () => {
-    const f = await fixture();
-    await privateTask(f);
-    await f.service.prepareForAdmission(f.admission);
-    const peer = await standardPeer(f);
-    const loop = path.join(root, `${f.issueId}-selected-loop`);
-    await symlink(loop, loop);
-    await db.update(executionWorkspaces).set({ cwd: loop }).where(eq(executionWorkspaces.id, f.workspace.id));
-    await expect(f.service.prepareForAdmission({ ...f.admission, cwd: loop })).rejects.toThrow(/ELOOP/);
-    await expect(assertExecutionWorkspaceRootReadAccess(db, { companyId: f.companyId, cwd: loop,
-      sourceWorkspaceId: f.workspace.id, actor: f.actor })).rejects.toThrow(/ELOOP/);
-    await expect(f.service.prepareForAdmission(peer.admission)).rejects.toThrow(/workspace access|authorization boundary/);
-    await expect(assertExecutionWorkspaceRootReadAccess(db, { companyId: f.companyId, cwd: peer.admission.cwd,
-      sourceWorkspaceId: peer.workspace.id, actor: peer.actor })).rejects.toThrow(/workspace access|authorization boundary/);
-  });
-
-  it("rechecks retained own-workspace privacy without adding an empty-admission membership gate", async () => {
-    const f = await fixture();
-    await db.delete(companyMemberships).where(eq(companyMemberships.companyId, f.companyId));
-    await expect(f.service.prepareForAdmission(f.admission)).resolves.toEqual([]);
-    await expect(executionWorkspaceRepositoryService(db).prepareForAdmission(f.admission)).resolves.toEqual([]);
-    const [privateSource] = await db.insert(issues).values({ companyId: f.companyId, title: "Other private writer", visibility: "private",
-      executionWorkspaceId: f.workspace.id }).returning();
-    await db.update(issues).set({ executionWorkspaceId: null }).where(eq(issues.id, privateSource.id));
-    await expect(f.service.prepareForAdmission(f.admission)).rejects.toThrow(/workspace access/);
-  });
-
-  it("does not publish managed bytes to a retained low-trust reader even with private source grants", async () => {
-    const f = await fixture(), peer = await standardPeer(f);
-    await db.update(issues).set({ visibility: "private", privacyRootIssueId: peer.issueId, responsibleUserId: peer.userId,
-      parentId: f.issueId }).where(eq(issues.id, peer.issueId));
-    await db.insert(issueAccessGrants).values([
-      { issueId: peer.issueId, subjectType: "agent", subjectId: f.agentId, source: "explicit", grantedByUserId: peer.userId },
-      { issueId: peer.issueId, subjectType: "user", subjectId: f.userId, source: "explicit", grantedByUserId: peer.userId },
+    await db.update(executionWorkspaces).set({ cwd: moved }).where(eq(executionWorkspaces.id, f.workspace.id));
+    const latest = await standardPeer(f);
+    const last = await f.service.request({ companyId: f.companyId, issueId: latest.issueId, actor: latest.actor,
+      request: { repository: { kind: "catalog", id: "private-repo" }, requestKey: randomUUID() } });
+    acquisition.materialize.mockImplementationOnce(actual.materializeManagedProjectWorkspace);
+    await expect(f.service.prepareForAdmission(latest.admission)).resolves.toEqual([
+      expect.objectContaining({ id: last.operationId, cwd: published.cwd, pinnedCommit: published.pinnedCommit }),
     ]);
-    await expect(f.service.prepareForAdmission(f.admission)).resolves.toEqual([]);
-    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, executionPolicy: f.policy } }).where(eq(heartbeatRuns.id, f.runId));
-    await expect(f.service.request({ companyId: f.companyId, issueId: peer.issueId, actor: peer.actor,
-      request: { repository: { kind: "catalog", id: "private-repo" }, requestKey: randomUUID() } })).rejects.toThrow(/anonymous public URLs only|trusted task/);
-    expect(await f.service.list(f.companyId, peer.workspace.id)).toEqual([]);
-    expect(acquisition.materialize).not.toHaveBeenCalled();
+    expect(JSON.parse(await readFile(path.join(published.cwd, ".git", "paperclip-workspace-owner.json"), "utf8")))
+      .toMatchObject({ repositoryId: last.operationId, pinnedCommit: published.pinnedCommit });
+    expect((await f.service.list(f.companyId, peer.workspace.id))[0])
+      .toMatchObject({ id: next.operationId, state: "ready", pinnedCommit: published.pinnedCommit });
+    expect(await readFile(path.join(published.cwd, "private.txt"), "utf8")).toBe("Private task edits\n");
+    expect(acquisition.managedAuth).not.toHaveBeenCalled();
   });
 
-  it("retains private direct files from an admitted workspace with no repository inventory", async () => {
+  it("does not transfer shared ownership after the current task binding changes", async () => {
     const f = await fixture(), peer = await standardPeer(f);
-    await privateTask(f);
-    await expect(f.service.prepareForAdmission(f.admission)).resolves.toEqual([]);
-    await writeFile(path.join(f.admission.cwd, "private-direct.txt"), "Private direct task output");
-    await db.update(executionWorkspaces).set({ cwd: path.join(root, "moved-direct-source"), metadata: {} }).where(eq(executionWorkspaces.id, f.workspace.id));
-    await expect(f.service.prepareForAdmission(peer.admission)).rejects.toThrow(/workspace access|authorization boundary/);
-    await grantPeer(f, peer);
-    await expect(f.service.prepareForAdmission(peer.admission)).resolves.toEqual([]);
-    expect(await readFile(path.join(f.admission.cwd, "private-direct.txt"), "utf8")).toBe("Private direct task output");
-    expect(acquisition.materialize).not.toHaveBeenCalled();
+    const first = await f.request({ kind: "catalog", id: "private-repo" });
+    await localPrivateClone(f);
+    const [published] = await f.service.prepareForAdmission(f.admission);
+    await f.service.request({ companyId: f.companyId, issueId: peer.issueId, actor: peer.actor,
+      request: { repository: { kind: "catalog", id: "private-repo" }, requestKey: randomUUID() } });
+    const actual = await vi.importActual<typeof import("../services/managed-repository-checkout.js")>("../services/managed-repository-checkout.js");
+    acquisition.materialize.mockImplementationOnce(async (cwd, input) => {
+      const result = await actual.materializeManagedProjectWorkspace(cwd, input);
+      await db.update(issues).set({ executionWorkspaceId: null }).where(eq(issues.id, peer.issueId));
+      return result;
+    });
+    await expect(f.service.prepareForAdmission(peer.admission)).rejects.toThrow(/publication binding/);
+    expect(JSON.parse(await readFile(path.join(published.cwd, ".git", "paperclip-workspace-owner.json"), "utf8")))
+      .toMatchObject({ repositoryId: first.operationId, pinnedCommit: published.pinnedCommit });
   });
 
-  it("blocks a future private source after an empty standard reader was admitted and moved", async () => {
+  it.each(["missing", "malformed", "symlink", "foreign_company", "conflicting_pin"] as const)("rejects unverified shared publication ownership (%s) without overwriting files", async marker => {
     const f = await fixture(), peer = await standardPeer(f);
-    await expect(f.service.prepareForAdmission(peer.admission)).resolves.toEqual([]);
-    await db.update(executionWorkspaces).set({ cwd: path.join(root, "moved-standard-reader"), metadata: {}, status: "archived" }).where(eq(executionWorkspaces.id, peer.workspace.id));
-    await privateTask(f);
-    await expect(executionWorkspaceRepositoryService(db).request({ companyId: f.companyId, issueId: f.issueId, actor: f.actor,
-      request: { repository: { kind: "catalog", id: "private-repo" }, requestKey: randomUUID() } })).rejects.toThrow(/workspace access|authorization boundary/);
-    expect(await f.service.list(f.companyId, f.workspace.id)).toEqual([]);
-    expect(acquisition.materialize).not.toHaveBeenCalled();
-  });
-
-  it("rechecks configured-source publication against retained readers after grant revocation", async () => {
-    const f = await fixture(), peer = await standardPeer(f);
-    await privateTask(f);
-    const grants = await grantPeer(f, peer);
-    await expect(f.service.prepareForAdmission(f.admission)).resolves.toEqual([]);
-    await expect(f.service.prepareForAdmission(peer.admission)).resolves.toEqual([]);
-    await expect(f.service.guardForPublication(f.admission)).resolves.toBeUndefined();
-    await db.update(issueAccessGrants).set({ revokedAt: new Date() }).where(eq(issueAccessGrants.id, grants[0].id));
-    await expect(f.service.guardForPublication(f.admission)).rejects.toThrow(/workspace access|authorization boundary/);
-    await expect(f.service.guardForPublication({ ...f.admission, workspaceId: peer.workspace.id })).rejects.toThrow(/publication binding/);
-    expect(acquisition.materialize).not.toHaveBeenCalled();
-    expect(acquisition.catalog).not.toHaveBeenCalled();
-  });
-
-  it("fences pending private clones and rechecks granted readers before actual publication", async () => {
-    const f = await fixture(), peer = await standardPeer(f);
-    await privateTask(f);
-    const intent = await f.request({ kind: "catalog", id: "private-repo" });
-    let release!: () => void, started!: () => void;
-    const gate = new Promise<void>(resolve => { release = resolve; });
-    const staged = new Promise<void>(resolve => { started = resolve; });
-    await localPrivateClone(f, async () => { started(); await gate; });
-    const preparation = f.service.prepareForAdmission(f.admission);
-    const outcome = preparation.then(value => ({ value, error: null }), error => ({ value: null, error }));
-    try {
-      await Promise.race([staged, outcome.then(() => { throw new Error("Clone ended before publication barrier"); })]);
-      await expect(f.service.prepareForAdmission(peer.admission)).rejects.toThrow(/workspace access|authorization boundary/);
-      await grantPeer(f, peer);
-      await expect(f.service.prepareForAdmission(peer.admission)).resolves.toEqual([]);
-      await db.update(issueAccessGrants).set({ revokedAt: new Date() }).where(eq(issueAccessGrants.issueId, f.issueId));
-    } finally { release(); }
-    expect((await outcome).error).toBeTruthy();
-    expect(await fs.lstat(path.join(f.admission.cwd, intent.repository.relativePath)).catch(() => null)).toBeNull();
+    const first = await f.request({ kind: "catalog", id: "private-repo" });
+    await localPrivateClone(f);
+    const [published] = await f.service.prepareForAdmission(f.admission);
+    const next = await f.service.request({ companyId: f.companyId, issueId: peer.issueId, actor: peer.actor,
+      request: { repository: { kind: "catalog", id: "private-repo" }, requestKey: randomUUID() } });
+    const ownerPath = path.join(published.cwd, ".git", "paperclip-workspace-owner.json");
+    await rm(ownerPath);
+    if (marker === "malformed") await writeFile(ownerPath, "{not-json");
+    if (marker === "symlink") {
+      const outside = path.join(root, `${f.issueId}-owner.json`);
+      await writeFile(outside, JSON.stringify({ repositoryId: first.operationId, pinnedCommit: published.pinnedCommit }));
+      await symlink(outside, ownerPath);
+    }
+    if (marker === "foreign_company") {
+      const foreign = await fixture();
+      const foreignReceipt = await foreign.request({ kind: "catalog", id: "private-repo" });
+      await writeFile(ownerPath, JSON.stringify({ repositoryId: foreignReceipt.operationId, pinnedCommit: published.pinnedCommit }));
+    }
+    if (marker === "conflicting_pin") {
+      await writeFile(ownerPath, JSON.stringify({ repositoryId: first.operationId, pinnedCommit: "b".repeat(40) }));
+    }
+    await expect(f.service.prepareForAdmission(peer.admission)).rejects.toThrow(/matching preparation receipt|receipts disagree/);
+    expect((await f.service.list(f.companyId, peer.workspace.id))[0]).toMatchObject({ id: next.operationId, state: "needs_repair" });
+    expect(await readFile(path.join(published.cwd, "private.txt"), "utf8")).toBe("Private task edits\n");
   });
 
   it.each(["agent", "issue", "project", "workspace_source_project", "run"] as const)(
@@ -416,7 +251,7 @@ const support = await getEmbeddedPostgresTestSupport();
           await db.update(executionWorkspaces).set({ projectId: project.id, strategyType: "git_worktree" }).where(eq(executionWorkspaces.id, f.workspace.id));
         }
       }
-      await expect(f.request({ kind: "catalog", id: "private-repo" })).rejects.toThrow(/anonymous public URLs only|trusted task/);
+      await expect(f.request({ kind: "catalog", id: "private-repo" })).rejects.toThrow(/anonymous public URLs only|trusted task|Selected workspace source trust/);
       expect(await db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.companyId, f.companyId))).toHaveLength(0);
       expect(acquisition.managedAuth).not.toHaveBeenCalled();
     },
@@ -444,7 +279,7 @@ const support = await getEmbeddedPostgresTestSupport();
         }
       }
       for (const url of ["https://github.com/public/example", "https://github.com/sponsor/private"]) {
-        await expect(f.request({ kind: "url", url })).rejects.toThrow(/trusted task/);
+        await expect(f.request({ kind: "url", url })).rejects.toThrow(/trusted task|Selected workspace source trust/);
       }
       expect(await f.service.list(f.companyId, f.workspace.id)).toEqual([]);
       expect(acquisition.materialize).not.toHaveBeenCalled();
@@ -456,7 +291,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const receipt = await f.request({ kind: "url", url: "https://github.com/public/example" });
     await db.update(executionWorkspaceRepositories).set({ state }).where(eq(executionWorkspaceRepositories.id, receipt.operationId));
     await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, executionPolicy: f.policy } }).where(eq(heartbeatRuns.id, f.runId));
-    await expect(f.service.prepareForAdmission(f.admission)).rejects.toThrow(/trusted task/);
+    await expect(f.service.prepareForAdmission(f.admission)).rejects.toThrow(/trusted task|Selected workspace source trust/);
     expect((await f.service.list(f.companyId, f.workspace.id))[0].state).toBe(state);
     expect(acquisition.materialize).not.toHaveBeenCalled();
     expect(acquisition.managedAuth).not.toHaveBeenCalled();
@@ -479,8 +314,8 @@ const support = await getEmbeddedPostgresTestSupport();
     const checkout = path.join(f.admission.cwd, receipt.repository.relativePath);
     if (state === "ready") { await mkdir(checkout, { recursive: true }); await writeFile(path.join(checkout, "private.txt"), "retained private bytes"); }
     await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, executionPolicy: f.policy } }).where(eq(heartbeatRuns.id, f.runId));
-    await expect(f.request({ kind: "url", url: receipt.repository.repoUrl })).rejects.toThrow(/anonymous public URLs only|trusted task/);
-    await expect(f.service.prepareForAdmission(f.admission)).rejects.toThrow(/anonymous public URLs only|trusted task/);
+    await expect(f.request({ kind: "url", url: receipt.repository.repoUrl })).rejects.toThrow(/anonymous public URLs only|trusted task|Selected workspace source trust/);
+    await expect(f.service.prepareForAdmission(f.admission)).rejects.toThrow(/anonymous public URLs only|trusted task|Selected workspace source trust/);
     expect(acquisition.materialize).not.toHaveBeenCalled();
     expect(acquisition.managedAuth).not.toHaveBeenCalled();
     if (state === "ready") expect(await readFile(path.join(checkout, "private.txt"), "utf8")).toBe("retained private bytes");
@@ -499,12 +334,38 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(acquisition.materialize).not.toHaveBeenCalled();
   });
 
-  it.each(["sponsored", "local_board", "routine"] as const)("prepares public Git from an idle workspace for a trusted %s task and reuses verified bytes after trust downgrade", async principal => {
+  it.each([
+    { name: "missing task owner", patch: { sourceIssueId: null } },
+    { name: "configured directory source", patch: { metadata: { source: "project_primary" } } },
+    { name: "agent directory source", patch: { metadata: { source: "agent_home" } } },
+    { name: "worktree strategy", patch: { strategyType: "git_worktree" } },
+    { name: "adapter-managed mode", patch: { mode: "adapter_managed" } },
+    { name: "configured root repository", patch: { repoUrl: "https://github.com/public/anchor" } },
+  ])("keeps strict Git validation for $name", async ({ patch }) => {
+    const f = await fixture();
+    await f.request({ kind: "url", url: "https://github.com/public/example" });
+    await db.update(executionWorkspaces).set({ strategyType: "project_primary", sourceIssueId: f.issueId,
+      metadata: { source: "task_session" }, ...patch }).where(eq(executionWorkspaces.id, f.workspace.id));
+    await mkdir(path.join(f.admission.cwd, ".git", "info"), { recursive: true });
+    await writeFile(path.join(f.admission.cwd, ".git", "info", "exclude"), "/.paperclip-repositories/\n");
+    await expect(f.service.prepareForAdmission(f.admission)).rejects.toThrow("not a git repository");
+    expect(acquisition.materialize).not.toHaveBeenCalled();
+  });
+
+  it.each(["sponsored", "sponsored_git_residue", "sponsored_shared_git_residue", "local_board", "local_board_jwt", "routine"] as const)("prepares public Git from an idle workspace for a trusted %s task and reuses verified bytes after trust downgrade", async principal => {
     const f = await fixture();
     await db.update(executionWorkspaces).set({ status: "idle" }).where(eq(executionWorkspaces.id, f.workspace.id));
-    if (principal === "local_board") await db.update(heartbeatRuns).set({ responsibleUserId: "local-board" }).where(eq(heartbeatRuns.id, f.runId));
-    const receipt = await f.request({ kind: "url", url: "https://github.com/public/example" });
-    const responsibleUserId = principal === "local_board" ? "local-board" : principal === "routine" ? null : f.userId;
+    const localBoard = principal === "local_board" || principal === "local_board_jwt";
+    if (localBoard) await db.update(heartbeatRuns).set({ responsibleUserId: "local-board" }).where(eq(heartbeatRuns.id, f.runId));
+    if (principal === "local_board_jwt") {
+      await db.insert(authUsers).values({ id: "local-board", name: "Local Board", email: "local-board@example.invalid",
+        emailVerified: true, createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
+      await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: "local-board", membershipRole: "owner", status: "active" });
+    }
+    const receipt = await f.service.request({ companyId: f.companyId, issueId: f.issueId,
+      actor: localBoard ? { ...f.actor, onBehalfOfUserId: principal === "local_board_jwt" ? "local-board" : null } : f.actor,
+      request: { repository: { kind: "url", url: "https://github.com/public/example" }, requestKey: randomUUID() } });
+    const responsibleUserId = localBoard ? "local-board" : principal === "routine" ? null : f.userId;
     await db.update(heartbeatRuns).set({ responsibleUserId }).where(eq(heartbeatRuns.id, f.runId));
     const admission = { ...f.admission, responsibleUserId };
     const source = path.join(root, `${f.issueId}-public-source`);
@@ -523,6 +384,12 @@ const support = await getEmbeddedPostgresTestSupport();
       await exec("git", ["-C", cwd, "remote", "set-url", "origin", input.repoUrl]);
       return result;
     });
+    if (principal === "sponsored_git_residue" || principal === "sponsored_shared_git_residue") {
+      await db.update(executionWorkspaces).set({ strategyType: "project_primary", sourceIssueId: f.issueId,
+        mode: principal === "sponsored_shared_git_residue" ? "shared_workspace" : "isolated_workspace", metadata: { source: "task_session" } }).where(eq(executionWorkspaces.id, f.workspace.id));
+      await mkdir(path.join(f.admission.cwd, ".git", "info"), { recursive: true });
+      await writeFile(path.join(f.admission.cwd, ".git", "info", "exclude"), "/.paperclip-repositories/\n");
+    }
     const [prepared] = await f.service.prepareForAdmission(admission);
     expect(prepared.id).toBe(receipt.operationId);
     expect(await readFile(path.join(prepared.cwd, "public.txt"), "utf8")).toBe("Public fixture bytes\n");
@@ -536,14 +403,22 @@ const support = await getEmbeddedPostgresTestSupport();
     acquisition.materialize.mockClear();
     await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, executionPolicy: f.policy } }).where(eq(heartbeatRuns.id, f.runId));
     await expect(f.service.prepareForAdmission(admission)).resolves.toEqual([prepared]);
-    await expect(f.service.reserveForRecovery(admission)).resolves.toBeUndefined();
+    await expect(f.service.assertRecoveryBinding(admission)).resolves.toBeUndefined();
     expect(acquisition.materialize).not.toHaveBeenCalled();
     expect(await readFile(path.join(prepared.cwd, "public.txt"), "utf8")).toBe("Public fixture bytes\n");
     expect((await exec("git", ["-C", prepared.cwd, "rev-parse", "HEAD"])).stdout.trim()).toBe(editedHead);
     expect(await readFile(path.join(prepared.cwd, "dirty.txt"), "utf8")).toBe("Uncommitted task bytes\n");
     await rm(prepared.cwd, { recursive: true });
-    await expect(f.service.prepareForAdmission(admission)).rejects.toThrow(/trusted task/);
+    await expect(f.service.prepareForAdmission(admission)).rejects.toThrow(/trusted task|Selected workspace source trust/);
     expect(acquisition.materialize).not.toHaveBeenCalled();
+  });
+
+  it.each(["local-board", null, "changed-human"])("rejects the former sponsor after responsibility changes to %s", async responsibleUserId => {
+    const f = await fixture();
+    await db.update(heartbeatRuns).set({ responsibleUserId }).where(eq(heartbeatRuns.id, f.runId));
+    await expect(f.request({ kind: "url", url: "https://github.com/public/example" })).rejects.toThrow(
+      responsibleUserId === null ? "Repository access requires a responsible user" : "Task workspace responsible user changed");
+    expect(await f.service.list(f.companyId, f.workspace.id)).toEqual([]);
   });
 
   it("reauthorizes a public clone before publication after trust changes during Git", async () => {
@@ -552,91 +427,24 @@ const support = await getEmbeddedPostgresTestSupport();
     await localPrivateClone(f, async () => {
       await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, executionPolicy: f.policy } }).where(eq(heartbeatRuns.id, f.runId));
     });
-    await expect(f.service.prepareForAdmission(f.admission)).rejects.toThrow(/trusted task/);
+    await expect(f.service.prepareForAdmission(f.admission)).rejects.toThrow(/trusted task|Selected workspace source trust/);
     await expect(fs.lstat(path.join(f.admission.cwd, receipt.repository.relativePath))).rejects.toMatchObject({ code: "ENOENT" });
     expect((await f.service.list(f.companyId, f.workspace.id))[0]).toMatchObject({ pinnedCommit: null, state: "needs_repair" });
     expect(acquisition.materialize).toHaveBeenCalledOnce();
     expect(acquisition.managedAuth).not.toHaveBeenCalled();
   });
 
-  it.each(["same_repository", "different_repository", "empty_inventory", "unpinned_publication", "pending_intent"] as const)(
-    "rejects managed peer bytes in the same physical root with %s", async scenario => {
-      const f = await fixture();
-      const managed = await f.request({ kind: "catalog", id: "private-repo" });
-      const checkout = path.join(f.admission.cwd, managed.repository.relativePath);
-      if (scenario !== "pending_intent") {
-        await mkdir(path.join(checkout, ".git"), { recursive: true });
-        await writeFile(path.join(checkout, "private.txt"), "Private peer bytes");
-      } else {
-        await db.delete(executionWorkspaceRepositoryRoots).where(eq(executionWorkspaceRepositoryRoots.companyId, f.companyId));
-      }
-      if (scenario !== "unpinned_publication" && scenario !== "pending_intent") await db.update(executionWorkspaceRepositories)
-        .set({ state: "ready", pinnedCommit: "b".repeat(40) }).where(eq(executionWorkspaceRepositories.id, managed.operationId));
-      const [peer] = await db.insert(executionWorkspaces).values({ companyId: f.companyId, name: "Same physical folder",
-        cwd: f.admission.cwd, mode: "isolated_workspace", strategyType: "task_directory" }).returning();
-      const issueId = randomUUID(), runId = randomUUID();
-      await db.insert(issues).values({ id: issueId, companyId: f.companyId, title: "Low-trust peer", assigneeAgentId: f.agentId,
-        executionWorkspaceId: peer.id });
-      const policy = { ...f.policy, authorizationPolicy: { ...f.policy.authorizationPolicy,
-        trustBoundary: { ...f.policy.authorizationPolicy.trustBoundary, rootIssueId: issueId } } };
-      await db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: f.agentId, status: "running",
-        responsibleUserId: f.userId, contextSnapshot: { issueId, executionPolicy: policy } });
-      await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
-      if (scenario !== "empty_inventory") await expect(f.service.request({ companyId: f.companyId, issueId, actor: { ...f.actor, runId },
-        request: { requestKey: randomUUID(), repository: { kind: "url", url: scenario === "same_repository" ? managed.repository.repoUrl : "https://github.com/public/other" } } }))
-        .rejects.toThrow(/anonymous public URLs only|trusted task/);
-      await expect(f.service.prepareForAdmission({ ...f.admission, issueId, runId, workspaceId: peer.id })).rejects.toThrow(/anonymous public URLs only|trusted task/);
-      expect(acquisition.materialize).not.toHaveBeenCalled();
-      expect(acquisition.managedAuth).not.toHaveBeenCalled();
-      if (scenario !== "pending_intent") expect(await readFile(path.join(checkout, "private.txt"), "utf8")).toBe("Private peer bytes");
-    },
-  );
-
-  it.each([
-    { marker: "valid", reserved: false }, { marker: "malformed", reserved: false }, { marker: "symlink", reserved: false },
-    { marker: "valid", reserved: true }, { marker: "malformed", reserved: true }, { marker: "symlink", reserved: true },
-  ])("rejects readable private publication behind an unreadable alias ($marker marker, reserved=$reserved)", async ({ marker, reserved }) => {
+  it.each(["catalog_revocation", "binding_change", "responsible_user_change"] as const)("rejects a staged clone before publication after %s", async change => {
     const f = await fixture();
     const receipt = await f.request({ kind: "catalog", id: "private-repo" });
-    await db.delete(executionWorkspaceRepositoryRoots).where(eq(executionWorkspaceRepositoryRoots.companyId, f.companyId));
-    const checkout = path.join(f.admission.cwd, receipt.repository.relativePath);
-    await mkdir(checkout, { recursive: true });
-    const exec = promisify(execFileCallback);
-    await exec("git", ["init", "--initial-branch=main", checkout]);
-    await writeFile(path.join(checkout, "private.txt"), "Private published bytes must never enter low-trust capture\n");
-    await exec("git", ["-C", checkout, "add", "."]);
-    await exec("git", ["-C", checkout, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "private source"]);
-    const pin = (await exec("git", ["-C", checkout, "rev-parse", "HEAD"])).stdout.trim();
-    const owner = path.join(checkout, ".git", "paperclip-workspace-owner.json");
-    const ownerJson = JSON.stringify({ version: 1, repositoryId: receipt.operationId, pinnedCommit: pin });
-    if (marker === "symlink") {
-      const target = path.join(root, `${f.issueId}-untrusted-owner`);
-      await writeFile(target, ownerJson);
-      await symlink(target, owner);
-    } else await writeFile(owner, marker === "valid" ? ownerJson : "{unverifiable owner");
-    await db.update(executionWorkspaceRepositories).set({ state: "ready", pinnedCommit: pin }).where(eq(executionWorkspaceRepositories.id, receipt.operationId));
-    const aliasParent = path.join(root, `${f.issueId}-unreadable`);
-    await mkdir(aliasParent);
-    const alias = path.join(aliasParent, "workspace");
-    await symlink(f.admission.cwd, alias);
-    await db.update(executionWorkspaces).set({ cwd: alias }).where(eq(executionWorkspaces.id, f.workspace.id));
-    const peer = await lowTrustPeer(f);
-    const canonicalCwd = await realpath(f.admission.cwd);
-    if (reserved) await db.insert(executionWorkspaceRepositoryRoots).values({ companyId: f.companyId, canonicalCwd,
-      rootKey: createHash("sha256").update(canonicalCwd).digest("hex"), mode: "anonymous_only" });
-    const actual = fs.realpath.bind(fs);
-    vi.spyOn(fs, "realpath").mockImplementation(async pathname => {
-      if (String(pathname).startsWith(aliasParent)) throw Object.assign(new Error("Unreadable legacy alias"), { code: "EACCES" });
-      return actual(pathname);
+    await localPrivateClone(f, async () => {
+      if (change === "catalog_revocation") acquisition.catalog.mockResolvedValue({ repositories: [] });
+      if (change === "binding_change") await db.update(issues).set({ executionWorkspaceId: null }).where(eq(issues.id, f.issueId));
+      if (change === "responsible_user_change") await db.update(heartbeatRuns).set({ responsibleUserId: randomUUID() }).where(eq(heartbeatRuns.id, f.runId));
     });
-    await expect(f.service.prepareForAdmission(peer.admission)).rejects.toThrow(/anonymous public URLs only|trusted task/);
-    await expect(f.service.request({ companyId: f.companyId, issueId: peer.admission.issueId, actor: peer.actor,
-      request: { repository: { kind: "url", url: "https://github.com/public/unrelated" }, requestKey: randomUUID() } }))
-      .rejects.toThrow(/anonymous public URLs only|trusted task/);
-    expect(await f.service.list(f.companyId, peer.workspace.id)).toEqual([]);
-    expect(acquisition.materialize).not.toHaveBeenCalled();
-    expect(acquisition.managedAuth).not.toHaveBeenCalled();
-    expect(await readFile(path.join(checkout, "private.txt"), "utf8")).toContain("Private published bytes");
+    await expect(f.service.prepareForAdmission(f.admission)).rejects.toThrow(/no longer available|binding|responsible user/);
+    await expect(fs.lstat(path.join(f.admission.cwd, receipt.repository.relativePath))).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await f.service.list(f.companyId, f.workspace.id))[0]).toMatchObject({ state: "needs_repair", pinnedCommit: null });
   });
 
   it.each(["standard", "retained_low_trust", "current_low_trust"] as const)("recovers an exact legacy run-ID binding with %s trust", async trust => {
@@ -652,161 +460,14 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.update(heartbeatRuns).set({ runtimeMode: "native", runnerProfileJson: { nativeExecutionInput: execution },
       contextSnapshot: { issueId: f.issueId, ...(trust === "retained_low_trust" ? { executionPolicy: f.policy } : {}) } }).where(eq(heartbeatRuns.id, f.runId));
     if (trust === "current_low_trust") await db.update(agents).set({ permissions: f.policy }).where(eq(agents.id, f.agentId));
-    await expect(f.service.reserveForRecovery({ ...f.admission, workspaceId: f.runId })).resolves.toBeUndefined();
+    await expect(f.service.assertRecoveryBinding({ ...f.admission, workspaceId: f.runId })).resolves.toBeUndefined();
     const reservations = await db.select().from(executionWorkspaceRepositoryRoots).where(eq(executionWorkspaceRepositoryRoots.companyId, f.companyId));
-    expect(reservations).toHaveLength(trust === "standard" ? 0 : 1);
-    if (trust !== "standard") expect(reservations[0].mode).toBe("anonymous_only");
-    await expect(f.service.reserveForRecovery({ ...f.admission, workspaceId: randomUUID() })).rejects.toThrow(/recovery identity/);
+    expect(reservations).toHaveLength(0);
+    await expect(f.service.assertRecoveryBinding({ ...f.admission, workspaceId: randomUUID() })).rejects.toThrow(/recovery identity/);
     execution.binding.agentId = randomUUID();
     await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeExecutionInput: execution } }).where(eq(heartbeatRuns.id, f.runId));
-    await expect(f.service.reserveForRecovery({ ...f.admission, workspaceId: f.runId })).rejects.toThrow(/recovery identity/);
+    await expect(f.service.assertRecoveryBinding({ ...f.admission, workspaceId: f.runId })).rejects.toThrow(/recovery identity/);
     expect(acquisition.materialize).not.toHaveBeenCalled();
-  });
-
-  it.each(["ENOTDIR", "EACCES"] as const)("ignores unrelated unavailable legacy managed paths (%s) while preserving anonymous roots", async code => {
-    const f = await fixture();
-    await f.request({ kind: "catalog", id: "private-repo" });
-    await db.delete(executionWorkspaceRepositoryRoots).where(eq(executionWorkspaceRepositoryRoots.companyId, f.companyId));
-    const peerRoot = path.join(root, `${f.issueId}-anonymous`);
-    await mkdir(peerRoot);
-    const peer = await lowTrustPeer(f, peerRoot);
-    const unavailableParent = path.join(root, `${f.issueId}-unavailable`);
-    await writeFile(unavailableParent, "Archived directory replaced by a file");
-    const unavailableCwd = path.join(unavailableParent, "checkout");
-    await db.update(executionWorkspaces).set({ cwd: unavailableCwd, status: "archived" }).where(eq(executionWorkspaces.id, f.workspace.id));
-    if (code === "EACCES") {
-      const actual = fs.realpath.bind(fs);
-      vi.spyOn(fs, "realpath").mockImplementation(async pathname => {
-        if (String(pathname).startsWith(unavailableParent)) throw Object.assign(new Error("fixture access denied"), { code: "EACCES" });
-        return actual(pathname);
-      });
-    }
-    await expect(f.service.prepareForAdmission(peer.admission)).resolves.toEqual([]);
-    vi.restoreAllMocks();
-    const actual = fs.realpath.bind(fs);
-    vi.spyOn(fs, "realpath").mockImplementation(async pathname => {
-      if (String(pathname) === unavailableCwd) throw Object.assign(new Error("Historical path remains unavailable"), { code: "EACCES" });
-      return actual(pathname);
-    });
-    await expect(executionWorkspaceRepositoryService(db).prepareForAdmission(peer.admission)).resolves.toEqual([]);
-  });
-
-  it("still rejects a legacy pending managed receipt through a canonical path alias", async () => {
-    const f = await fixture();
-    await f.request({ kind: "catalog", id: "private-repo" });
-    await db.delete(executionWorkspaceRepositoryRoots).where(eq(executionWorkspaceRepositoryRoots.companyId, f.companyId));
-    const alias = path.join(root, `${f.issueId}-legacy-alias`);
-    await symlink(f.admission.cwd, alias);
-    await db.update(executionWorkspaces).set({ cwd: alias }).where(eq(executionWorkspaces.id, f.workspace.id));
-    const peer = await lowTrustPeer(f);
-    await expect(f.service.prepareForAdmission(peer.admission)).rejects.toThrow(/anonymous public URLs only|trusted task/);
-  });
-
-  it("reserves a legacy low-trust recovery folder after its task binding moves", async () => {
-    const f = await fixture();
-    const peer = await lowTrustPeer(f);
-    await db.update(issues).set({ parentId: peer.admission.issueId }).where(eq(issues.id, f.issueId));
-    await db.update(issues).set({ executionWorkspaceId: null }).where(eq(issues.id, peer.admission.issueId));
-    await db.update(executionWorkspaces).set({ cwd: path.join(root, "moved-recovery"), metadata: {}, status: "archived" })
-      .where(eq(executionWorkspaces.id, peer.workspace.id));
-    await f.service.reserveForRecovery(peer.admission);
-    await expect(executionWorkspaceRepositoryService(db).request({ companyId: f.companyId, issueId: f.issueId, actor: f.actor,
-      request: { repository: { kind: "catalog", id: "private-repo" }, requestKey: randomUUID() } }))
-      .rejects.toThrow(/anonymous public URLs only|trusted task/);
-    const [reservation] = await db.select().from(executionWorkspaceRepositoryRoots).where(eq(executionWorkspaceRepositoryRoots.companyId, f.companyId));
-    expect(reservation).toMatchObject({ canonicalCwd: await realpath(f.admission.cwd), mode: "anonymous_only" });
-    expect(acquisition.materialize).not.toHaveBeenCalled();
-    expect(acquisition.managedAuth).not.toHaveBeenCalled();
-  });
-
-  it("reserves a legacy managed recovery folder before a low-trust peer resumes", async () => {
-    const f = await fixture();
-    await f.request({ kind: "catalog", id: "private-repo" });
-    await db.delete(executionWorkspaceRepositoryRoots).where(eq(executionWorkspaceRepositoryRoots.companyId, f.companyId));
-    const peer = await lowTrustPeer(f);
-    await f.service.reserveForRecovery(f.admission);
-    await db.update(executionWorkspaces).set({ cwd: path.join(root, "moved-managed-recovery") }).where(eq(executionWorkspaces.id, f.workspace.id));
-    await expect(executionWorkspaceRepositoryService(db).reserveForRecovery(peer.admission)).rejects.toThrow(/anonymous public URLs only|trusted task/);
-    expect(acquisition.materialize).not.toHaveBeenCalled();
-  });
-
-  it("serializes a managed request against anonymous admission through physical aliases", async () => {
-    const f = await fixture();
-    const alias = path.join(root, `${f.issueId}-alias`);
-    await symlink(f.admission.cwd, alias);
-    const peer = await lowTrustPeer(f, alias);
-    await db.update(issues).set({ parentId: peer.admission.issueId }).where(eq(issues.id, f.issueId));
-    const outcomes = await Promise.allSettled([
-      f.service.prepareForAdmission(peer.admission),
-      f.request({ kind: "catalog", id: "private-repo" }),
-    ]);
-    expect(outcomes.filter(result => result.status === "fulfilled")).toHaveLength(1);
-    expect(outcomes.filter(result => result.status === "rejected")).toHaveLength(1);
-    const [reservation] = await db.select().from(executionWorkspaceRepositoryRoots).where(eq(executionWorkspaceRepositoryRoots.companyId, f.companyId));
-    expect(reservation.mode).toBe(outcomes[0].status === "fulfilled" ? "anonymous_only" : "managed");
-    const restarted = executionWorkspaceRepositoryService(db);
-    if (reservation.mode === "anonymous_only") {
-      await expect(f.request({ kind: "catalog", id: "private-repo" })).rejects.toThrow(/anonymous public URLs only|trusted task/);
-      await expect(restarted.prepareForAdmission(peer.admission)).resolves.toEqual([]);
-    } else await expect(restarted.prepareForAdmission(peer.admission)).rejects.toThrow(/anonymous public URLs only|trusted task/);
-    expect(acquisition.materialize).not.toHaveBeenCalled();
-  });
-
-  it("keeps anonymous root ownership across workspace moves and blocks future catalog promotion", async () => {
-    const f = await fixture();
-    const pending = await f.request({ kind: "url", url: "https://github.com/public/later-catalog" });
-    const peer = await lowTrustPeer(f);
-    await db.update(issues).set({ parentId: peer.admission.issueId }).where(eq(issues.id, f.issueId));
-    await f.service.prepareForAdmission(peer.admission);
-    await db.update(executionWorkspaces).set({ cwd: path.join(root, "moved-anonymous-workspace"), metadata: {}, status: "archived" })
-      .where(eq(executionWorkspaces.id, peer.workspace.id));
-    const restarted = executionWorkspaceRepositoryService(db);
-    await expect(restarted.request({ companyId: f.companyId, issueId: f.issueId, actor: f.actor,
-      request: { repository: { kind: "catalog", id: "private-repo" }, requestKey: randomUUID() } })).rejects.toThrow(/anonymous public URLs only|trusted task/);
-    acquisition.catalog.mockResolvedValue({ repositories: [{ id: "later", fullName: "public/later-catalog", private: true,
-      url: pending.repository.repoUrl, connections: ["sponsor-github"] }] });
-    await expect(restarted.prepareForAdmission(f.admission)).rejects.toThrow(/anonymous public URLs only|trusted task/);
-    expect(acquisition.managedAuth).not.toHaveBeenCalled();
-    expect(acquisition.materialize).not.toHaveBeenCalled();
-    expect((await db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.id, pending.operationId)))[0].catalogRepositoryId).toBeNull();
-  });
-
-  it("rejects anonymous admission while a managed clone is waiting to publish", async () => {
-    const f = await fixture();
-    const receipt = await f.request({ kind: "catalog", id: "private-repo" });
-    const peer = await lowTrustPeer(f);
-    const source = path.join(root, `${f.issueId}-private-source`);
-    await mkdir(source);
-    const exec = promisify(execFileCallback);
-    await exec("git", ["init", "--initial-branch=main", source]);
-    await writeFile(path.join(source, "private.txt"), "Private fixture bytes\n");
-    await exec("git", ["-C", source, "add", "."]);
-    await exec("git", ["-C", source, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "private source"]);
-    let release!: () => void, started!: () => void;
-    const gate = new Promise<void>(resolve => { release = resolve; });
-    const staged = new Promise<void>(resolve => { started = resolve; });
-    const actual = await vi.importActual<typeof import("../services/managed-repository-checkout.js")>("../services/managed-repository-checkout.js");
-    acquisition.materialize.mockImplementationOnce(async (cwd, input) => {
-      const result = await actual.materializeManagedProjectWorkspace(cwd, { ...input, localSource: source,
-        beforePublish: async cloneCwd => {
-          await input.beforePublish(cloneCwd);
-          started();
-          await gate;
-        } });
-      await exec("git", ["-C", cwd, "remote", "set-url", "origin", input.repoUrl]);
-      return result;
-    });
-    const preparation = f.service.prepareForAdmission(f.admission);
-    try {
-      await Promise.race([staged, preparation.then(() => { throw new Error("Managed preparation finished before publication barrier"); })]);
-      const [pending] = await db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.id, receipt.operationId));
-      expect(pending).toMatchObject({ state: "preparing", pinnedCommit: null });
-      await db.update(executionWorkspaces).set({ cwd: path.join(root, "moved-managed-workspace"), metadata: {} }).where(eq(executionWorkspaces.id, f.workspace.id));
-      await expect(executionWorkspaceRepositoryService(db).prepareForAdmission(peer.admission)).rejects.toThrow(/anonymous public URLs only|trusted task/);
-    } finally { release(); }
-    const [prepared] = await preparation;
-    expect(await readFile(path.join(prepared.cwd, "private.txt"), "utf8")).toBe("Private fixture bytes\n");
-    await expect(executionWorkspaceRepositoryService(db).prepareForAdmission(peer.admission)).rejects.toThrow(/anonymous public URLs only|trusted task/);
   });
 
   it("retains previous run trust without confusing a board request's reassigned agent", async () => {
@@ -819,12 +480,11 @@ const support = await getEmbeddedPostgresTestSupport();
       request: { requestKey: randomUUID(), repository: { kind: "catalog", id: "private-repo" } } });
     await expect(request()).resolves.toMatchObject({ kind: "requires_next_admission" });
     await db.update(heartbeatRuns).set({ contextSnapshot: { taskId: f.issueId, executionPolicy: f.policy } }).where(eq(heartbeatRuns.id, f.runId));
-    await expect(request()).rejects.toThrow(/anonymous public URLs only|trusted task/);
+    await expect(request()).rejects.toThrow(/anonymous public URLs only|trusted task|Selected workspace source trust/);
   });
 
-  it("preserves standard empty-inventory admission without repository mutation authority", async () => {
+  it("keeps standard empty-inventory admission free of repository acquisition work", async () => {
     const f = await fixture();
-    await db.delete(companyMemberships).where(eq(companyMemberships.companyId, f.companyId));
     await expect(f.service.prepareForAdmission(f.admission)).resolves.toEqual([]);
     expect(acquisition.catalog).not.toHaveBeenCalled();
     expect(acquisition.materialize).not.toHaveBeenCalled();
@@ -835,10 +495,9 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(acquisition.materialize).not.toHaveBeenCalled();
   });
 
-  it("keeps low-trust empty-inventory admission free of acquisition-only filesystem and membership requirements", async () => {
+  it("keeps low-trust empty-inventory admission free of acquisition-only filesystem requirements", async () => {
     const f = await fixture();
     await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, executionPolicy: f.policy } }).where(eq(heartbeatRuns.id, f.runId));
-    await db.delete(companyMemberships).where(eq(companyMemberships.companyId, f.companyId));
     await expect(f.service.prepareForAdmission({ ...f.admission, cwd: path.join(root, "not-materialized") })).resolves.toEqual([]);
     expect(acquisition.catalog).not.toHaveBeenCalled();
     expect(acquisition.materialize).not.toHaveBeenCalled();

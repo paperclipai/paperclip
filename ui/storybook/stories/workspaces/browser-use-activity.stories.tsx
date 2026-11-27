@@ -21,6 +21,15 @@ const meta = {
           "The task-thread browser entry point, placed at the moment the browser was opened, including history and reopening a session. All data is simulated.",
       },
     },
+    paperclip: {
+      "capabilities": [
+        "workspaces/services",
+        "tasks/discussion"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+    },
   },
   args: { browser: browserFixture, onOpen: () => {} },
   decorators: [

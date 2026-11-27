@@ -5,13 +5,13 @@ import { COMPANY_ID, SOURCE_ID, installFixtures, type RepositoryScenario } from 
 import { Link, Route, Routes, useNavigate } from "@/lib/router";
 import { SkillSources } from "@/pages/SkillSources";
 
-function SourcesStory({ view = "sources", empty = false, needsConnection = false, repositories = "single", repositoryUrl = "", scan }: {
-  view?: "sources" | "import" | "manage"; empty?: boolean; needsConnection?: boolean; repositories?: RepositoryScenario; repositoryUrl?: string; scan?: "live" | "large" | "interrupted";
+function SourcesStory({ view = "sources", empty = false, needsConnection = false, repositories = "single", repositoryUrl = "", scan, disconnected = false }: {
+  disconnected?: boolean; view?: "sources" | "import" | "manage"; empty?: boolean; needsConnection?: boolean; repositories?: RepositoryScenario; repositoryUrl?: string; scan?: "live" | "large" | "interrupted";
 }) {
   const [ready, setReady] = useState(false);
   const navigate = useNavigate();
   useEffect(() => {
-    const cleanup = installFixtures(empty, needsConnection, { repositories, scan });
+    const cleanup = installFixtures(empty, needsConnection, { repositories, scan, disconnected });
     for (const id of ["new", SOURCE_ID]) sessionStorage.removeItem(`paperclip.skill-source-draft:${COMPANY_ID}:${id}`);
     if (repositoryUrl) sessionStorage.setItem(`paperclip.skill-source-draft:${COMPANY_ID}:new`, JSON.stringify({ repositoryUrl }));
     navigate(`/skills/sources${view === "import" ? "/new" : view === "manage" ? `/${SOURCE_ID}` : ""}`, { replace: true });
@@ -19,7 +19,7 @@ function SourcesStory({ view = "sources", empty = false, needsConnection = false
     return cleanup;
     // Install each story's fixtures only once; route changes belong to the user.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [empty, needsConnection, view, repositories, repositoryUrl, scan]);
+  }, [empty, needsConnection, view, repositories, repositoryUrl, scan, disconnected]);
   if (!ready) return null;
   return <Routes>
     <Route path="/:companyPrefix/skills/sources/:sourceId" element={<SkillSources />} />
@@ -39,6 +39,15 @@ const meta = {
   parameters: {
     layout: "fullscreen",
     docs: { description: { component: "Production Sources page with local fixture data. Try importing a repository, searching and selecting skills, saving the selection, and refreshing. GitHub OAuth and external destinations require the running app." } },
+    paperclip: {
+      "capabilities": [
+        "skills/versions",
+        "skills/discovery"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "Production Sources page with fixture APIs. Disconnect and legacy removal stories show a required keep-or-delete choice; the real copy, delete, and reimport flows were also tested locally. Other routes remain unreviewed."
+    },
   },
 } satisfies Meta<typeof SourcesStory>;
 export default meta;
@@ -97,4 +106,22 @@ export const LargeRepository: Story = {
 };
 export const InterruptedScan: Story = {
   name: 'Import · Interrupted scan', args: { view: 'import', empty: true, repositoryUrl: 'https://github.com/acme/team-skills', scan: 'interrupted' }, play: startScan,
+};
+
+export const DisconnectSource: Story = {
+  name: 'Sources · Disconnect source',
+  play: async ({ canvasElement }) => {
+    const page = within(canvasElement.ownerDocument.body);
+    await userEvent.click(await page.findByRole('button', { name: 'More actions for acme/team-skills' }));
+    await userEvent.click(await page.findByRole('menuitem', { name: 'Disconnect source' }));
+  },
+};
+export const RemoveDisconnectedSource: Story = {
+  name: 'Sources · Remove disconnected source', args: { disconnected: true },
+  play: async ({ canvasElement }) => {
+    const page = within(canvasElement.ownerDocument.body);
+    await userEvent.click(await page.findByRole('button', { name: 'More actions for acme/team-skills' }));
+    await userEvent.click(await page.findByRole('menuitem', { name: 'Remove source' }));
+    await userEvent.click(await page.findByRole('radio', { name: /^Delete skills/ }));
+  },
 };

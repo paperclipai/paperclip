@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { removeTestHome } from "./remove-test-home.js";
 
@@ -61,6 +61,17 @@ describe("removeTestHome", () => {
     const home = makeHome();
     fs.mkdirSync(path.join(home, "instances", "default"), { recursive: true });
     fs.writeFileSync(path.join(home, "instances", "default", "paperclip.json"), "{}\n");
+    const error = Object.assign(new Error("unrelated nonempty directory"), { code: "ENOTEMPTY" });
+    const removal = vi.spyOn(fs, "rmSync").mockImplementation(() => { throw error; });
+    const permissionChange = vi.spyOn(fs, "chmodSync");
+    try {
+      expect(() => removeTestHome(home)).toThrow(error);
+      expect(removal).toHaveBeenCalledTimes(1);
+      expect(permissionChange).not.toHaveBeenCalled();
+    } finally {
+      removal.mockRestore();
+      permissionChange.mockRestore();
+    }
     removeTestHome(home);
     expect(fs.existsSync(home)).toBe(false);
     expect(() => removeTestHome(home)).not.toThrow();

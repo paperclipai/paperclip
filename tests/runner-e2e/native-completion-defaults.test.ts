@@ -32,11 +32,13 @@ describe("native production defaults", () => {
     const completion = suite.tasks.find(value => value.id === original.id)!;
     expect({ ...completion, automaticRetryPolicy: undefined }).toEqual({ ...original, automaticRetryPolicy: undefined });
     expect(suite.manualOnly).toBe(true);
-    expect(suite.expectedMatrixSize).toBe(6);
+    // Six default cells plus two cells for the opt-in Antigravity profile.
+    expect(suite.expectedMatrixSize).toBe(8);
+    expect(suite.profiles.filter(profile => !profile.explicitOnly)).toHaveLength(3);
     expect(suite.tasks).toHaveLength(2);
     expect(suite.tasks.every(task => task.expectedRunCount === 1 && task.automaticRetryPolicy === "single_attempt")).toBe(true);
     expect(suite.environments.map(value => value.id)).toEqual(["local"]);
-    expect(suite.profiles.map(value => value.id).sort()).toEqual(["runner-acpx-claude", "runner-codex", "runner-opencode"]);
+    expect(suite.profiles.filter(value => !value.explicitOnly).map(value => value.id).sort()).toEqual(["runner-acpx-claude", "runner-codex", "runner-opencode"]);
   });
   it("accepts only the unchanged master default and bounded budgets", () => expect(gradeNativeDefault(receipt()).passed).toBe(true));
   it.each(["qa", "reduced", "extra-file", "wrong-entry", "company-unbounded", "agent-unbounded"])("rejects %s override", name => {

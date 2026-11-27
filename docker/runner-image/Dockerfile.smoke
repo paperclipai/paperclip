@@ -1,0 +1,64 @@
+# syntax=docker/dockerfile:1.20
+# Smoke matrix for the Runner image (doc/runner-image-contract.md).
+#
+# Runs the daemon from a built Runner image on every base image a consumer
+# puts it on, so a libc or loader mismatch fails the Runner build and not a
+# consumer's build. Supply the image as the `runner-artifacts` build context:
+#
+#   docker buildx build -f docker/runner-image/Dockerfile.smoke \
+#     --build-context runner-artifacts=<exported tree or docker-image://...@sha256:...> \
+#     docker/runner-image
+#
+# The stages read only `COPY --from=runner-artifacts <path>`, which is the
+# consumer contract. Each base is pinned by its multi-platform index digest so
+# the same file runs natively on amd64 and arm64. These pins are not part of
+# the Runner image identity: they change what is tested, not what is built.
+
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc AS smoke-debian-bookworm-slim
+COPY --from=runner-artifacts /paperclip-runnerd /usr/local/bin/paperclip-runnerd
+RUN paperclip-runnerd --build-metadata > /tmp/runnerd-metadata.json \
+  && grep -q '"paperclip-runner/runnerd-build-metadata/v1"' /tmp/runnerd-metadata.json \
+  && grep -q '"dial_ws_loopback"' /tmp/runnerd-metadata.json \
+  && grep -q '"dial_wss"' /tmp/runnerd-metadata.json \
+  && grep -q '"listen_ws"' /tmp/runnerd-metadata.json
+
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS smoke-debian-trixie-slim
+COPY --from=runner-artifacts /paperclip-runnerd /usr/local/bin/paperclip-runnerd
+RUN paperclip-runnerd --build-metadata > /tmp/runnerd-metadata.json \
+  && grep -q '"paperclip-runner/runnerd-build-metadata/v1"' /tmp/runnerd-metadata.json \
+  && grep -q '"dial_ws_loopback"' /tmp/runnerd-metadata.json \
+  && grep -q '"dial_wss"' /tmp/runnerd-metadata.json \
+  && grep -q '"listen_ws"' /tmp/runnerd-metadata.json
+
+FROM node:24-trixie-slim@sha256:af02d57b57719b9657a45199a79264a9437940cd55b3c7b3fc99615654f124a0 AS smoke-node-24-trixie-slim
+COPY --from=runner-artifacts /paperclip-runnerd /usr/local/bin/paperclip-runnerd
+RUN paperclip-runnerd --build-metadata > /tmp/runnerd-metadata.json \
+  && grep -q '"paperclip-runner/runnerd-build-metadata/v1"' /tmp/runnerd-metadata.json \
+  && grep -q '"dial_ws_loopback"' /tmp/runnerd-metadata.json \
+  && grep -q '"dial_wss"' /tmp/runnerd-metadata.json \
+  && grep -q '"listen_ws"' /tmp/runnerd-metadata.json
+
+FROM python:3.13-slim-trixie@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90 AS smoke-python-3.13-slim-trixie
+COPY --from=runner-artifacts /paperclip-runnerd /usr/local/bin/paperclip-runnerd
+RUN paperclip-runnerd --build-metadata > /tmp/runnerd-metadata.json \
+  && grep -q '"paperclip-runner/runnerd-build-metadata/v1"' /tmp/runnerd-metadata.json \
+  && grep -q '"dial_ws_loopback"' /tmp/runnerd-metadata.json \
+  && grep -q '"dial_wss"' /tmp/runnerd-metadata.json \
+  && grep -q '"listen_ws"' /tmp/runnerd-metadata.json
+
+FROM daytonaio/sandbox:0.8.0@sha256:edb66f95f2f09a28a029a0e03d516cf5482ef13a218e93ab1d80954f6ee7ebbb AS smoke-daytonaio-sandbox-0.8.0
+COPY --from=runner-artifacts /paperclip-runnerd /usr/local/bin/paperclip-runnerd
+RUN paperclip-runnerd --build-metadata > /tmp/runnerd-metadata.json \
+  && grep -q '"paperclip-runner/runnerd-build-metadata/v1"' /tmp/runnerd-metadata.json \
+  && grep -q '"dial_ws_loopback"' /tmp/runnerd-metadata.json \
+  && grep -q '"dial_wss"' /tmp/runnerd-metadata.json \
+  && grep -q '"listen_ws"' /tmp/runnerd-metadata.json
+
+# The default target. It copies one result from every base, so building it
+# runs the whole matrix.
+FROM scratch AS smoke
+COPY --from=smoke-debian-bookworm-slim /tmp/runnerd-metadata.json /debian-bookworm-slim.json
+COPY --from=smoke-debian-trixie-slim /tmp/runnerd-metadata.json /debian-trixie-slim.json
+COPY --from=smoke-node-24-trixie-slim /tmp/runnerd-metadata.json /node-24-trixie-slim.json
+COPY --from=smoke-python-3.13-slim-trixie /tmp/runnerd-metadata.json /python-3.13-slim-trixie.json
+COPY --from=smoke-daytonaio-sandbox-0.8.0 /tmp/runnerd-metadata.json /daytonaio-sandbox-0.8.0.json
