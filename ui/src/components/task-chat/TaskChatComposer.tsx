@@ -403,7 +403,6 @@ export function TaskChatComposer({
   const sentModeChoice = useRef<{ attemptId: string; generation: number } | null>(null);
   const pendingMode = creation ? workMode : pendingModeOverride ?? workMode;
   const [requestAction, setRequestAction] = useState(false);
-  useEffect(() => setRequestAction(false), [draftKey, currentAssigneeValue]);
   const [pendingAssignee, setPendingAssignee] = useState<string | null>(null);
   const coordinator = useCoordinatorPresentation();
   const [localRunSettings, setLocalRunSettings] = useState<ComposerRunSettings | null>(null);
@@ -621,6 +620,8 @@ export function TaskChatComposer({
     enableReassign && reassignOptions && reassignOptions.length > 0,
   );
   const assigneeValue = creation || conversationMode ? currentAssigneeValue : pendingAssignee ?? suggestedAssigneeValue ?? currentAssigneeValue;
+  // Action intent belongs to the selected current recipient, not a later reassignment.
+  useEffect(() => setRequestAction(false), [draftKey, currentAssigneeValue, assigneeValue]);
   const showConversationModel = coordinator && conversationMode && supportsComposerModel(modelAgents?.get(assigneeValue.slice(6)));
   const swarmSetting = useAntigravitySwarmSetting();
   // A light hint that the message will start a swarm (the server decides on send).

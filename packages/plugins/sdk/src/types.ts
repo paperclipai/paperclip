@@ -1661,11 +1661,20 @@ export interface PluginIssuesClient {
    * capability. The host independently verifies that `actorUserId` is an
    * active human member of the issue's company before applying the
    * attribution — a plugin can only ever attribute comments to identities
-   * that could have posted them in the web app. A human-attributed comment
-   * also participates in the normal wake-the-assignee behavior a board
-   * user's comment gets in the web app (subject to the same closed-issue /
-   * no-assignee exclusions) — unlike a plugin's own agent-attributed
-   * comments, which never wake anyone.
+   * that could have posted them in the web app. Attribution alone does not
+   * request execution: ordinary comments are stored without waking an agent.
+   * To request action, pass `commentIntent: { kind: "actionable",
+   * recipientAgentId, request }`. The recipient must be the issue's current
+   * assigned agent, `request` must contain 1–2000 characters after trimming,
+   * and `body` must include a structured mention of that same recipient:
+   * `[@Recipient](agent://<recipientAgentId>)`.
+   *
+   * The server validates and persists this input under the attributed actor;
+   * caller-supplied metadata or a plugin wake cannot substitute for it.
+   * Actionable input does not grant permission or override paused/blocked/
+   * closed-task admission. Blocked evidence can be stored without execution;
+   * resuming work requires a separate authorized continuation. Agent-attributed
+   * plugin comments do not independently wake agents.
    */
   createComment(
     issueId: string,
