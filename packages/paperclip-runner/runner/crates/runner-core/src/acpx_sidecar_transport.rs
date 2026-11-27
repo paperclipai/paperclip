@@ -310,6 +310,9 @@ impl AcpxSidecarTransport {
             // The sidecar checks this controller-minted provider/session marker.
             keys.push("PAPERCLIP_ACPX_CREDENTIAL_BINDING");
         }
+        if agent == "pi" {
+            keys.push("PAPERCLIP_RUNNER_LOCAL_PI");
+        }
         if agent == "claude" {
             if std::env::var("PAPERCLIP_GITHUB_LAUNCHER_DIR")
                 .is_ok_and(|directory| !directory.trim().is_empty())

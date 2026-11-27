@@ -1,3 +1,4 @@
+import { operatorLocalPiConfig } from "./local-pi-runner-config.js";
 import { currentControllerProcess } from "../controller-process-identity.js";
 import { isConfirmedStoppedUnavailablePluginCheckpoint } from "../environment-task-runtime.js";
 import { remoteExecutionHasStopped } from "../remote-execution-termination.js";
@@ -18838,6 +18839,11 @@ async function createRunnerdBackendWithinSessionClaim(
   // Codex sandbox for a local runner by supplying the same key.
   delete effectiveRunnerEnvironmentBase.PAPERCLIP_RUNNER_EXTERNAL_SANDBOX;
   delete effectiveRunnerEnvironmentBase.PAPERCLIP_RUNNER_HOME_MODE;
+  delete effectiveRunnerEnvironmentBase.PAPERCLIP_RUNNER_LOCAL_PI;
+  if (!remoteTarget && input.execution.provider.kind === "acpx" && input.execution.provider.agent === "pi") {
+    const localPi = operatorLocalPiConfig(input.execution.binding.companyId, input.execution.binding.agentId);
+    if (localPi !== undefined) effectiveRunnerEnvironmentBase.PAPERCLIP_RUNNER_LOCAL_PI = localPi;
+  }
   delete effectiveRunnerEnvironmentBase.PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME;
   if (preconfiguredHome) {
     if (remoteCommandRunner) {

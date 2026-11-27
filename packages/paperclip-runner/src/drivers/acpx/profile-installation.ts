@@ -1,3 +1,4 @@
+import { resolveLocalPiConfiguration, verifyLocalPiInstallation } from "./local-pi-installation.js";
 import { verifyKimiInstallation } from "./kimi-installation.js";
 import { assertAcpxExecutionAdmission, type AcpxCandidateStartupAdmission } from "./candidate-admission.js";
 import { assertCopilotCredentials, classifyCopilotFailure } from "./copilot-profile.js";
@@ -78,8 +79,11 @@ export async function probeAcpxCursorInstallation(model: string): Promise<void> 
   await (await installation.openCommand()).close();
 }
 
-export async function probeAcpxPiInstallation(model: string): Promise<void> {
-  const installation = await verifyAcpxProfileInstallation(resolveQualifiedAcpxProfile("pi", model));
+export async function probeAcpxPiInstallation(model: string, operatorConfiguration?: string): Promise<void> {
+  const localPi = await resolveLocalPiConfiguration(operatorConfiguration);
+  const installation = localPi
+    ? await verifyLocalPiInstallation(localPi)
+    : await verifyAcpxProfileInstallation(resolveQualifiedAcpxProfile("pi", model));
   await (await installation.openCommand()).close();
 }
 

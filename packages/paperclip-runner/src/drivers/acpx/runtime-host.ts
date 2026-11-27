@@ -1,3 +1,4 @@
+import { LOCAL_PI_CONFIGURATION_ENV, resolveLocalPiConfiguration, verifyLocalPiInstallation } from "./local-pi-installation.js";
 import { retainAcpxCredentialRefresh } from "./credential-refresh.js";
 import type { AcpxTurnDispatchJournal } from "./turn-dispatch-journal.js";
 import { assertAcpxExecutionAdmission, parseAcpxCandidateStartupAdmission, type AcpxCandidateStartupAdmission } from "./candidate-admission.js";
@@ -416,6 +417,10 @@ export class AcpxRuntimeHost {
       throw new Error("assigned native MCP launch binding is unavailable");
     }
     const profile = resolveQualifiedAcpxProfile(options.agent, options.model);
+    const localPi = options.agent === "pi"
+      ? await resolveLocalPiConfiguration(options.environment?.[LOCAL_PI_CONFIGURATION_ENV])
+      : undefined;
+    if (localPi) assertAcpxExecutionAdmission(profile, options.candidateAdmission);
     if (options.candidateAdmission) {
       assertAcpxExecutionAdmission(profile, options.candidateAdmission);
       options = { ...options, candidateAdmission: parseAcpxCandidateStartupAdmission(options.candidateAdmission, { agent: options.agent, model: options.model, normalizedSessionId: options.normalizedSessionId }) };
@@ -430,7 +435,7 @@ export class AcpxRuntimeHost {
           workingDirectory: options.workingDirectory,
           profile,
           requestedModel: options.model,
-          ...(options.agent === "pi" ? { providerConfigurationDigest: piProviderConfiguration(options.environment)?.digest } : {}),
+          ...(options.agent === "pi" ? { providerConfigurationDigest: piProviderConfiguration(options.environment)?.digest, localPiIdentity: localPi?.identity } : {}),
           permissionMode: options.permissionMode,
           mode: resolveAcpxProviderMode(options.agent, options.mode),
           piThinkingLevel: resolvePiThinkingLevel(options.agent, options.piThinkingLevel),
@@ -470,6 +475,7 @@ export class AcpxRuntimeHost {
       () =>
         dependencies.verifyInstallation
           ? dependencies.verifyInstallation(profile)
+          : localPi ? verifyLocalPiInstallation(localPi)
           : swarmRoute
             // The trusted /swarm turn runs the pinned Antigravity CLI, not the registry server.
             ? verifyAntigravitySwarmInstallation(() => {
@@ -479,7 +485,7 @@ export class AcpxRuntimeHost {
             : verifyAcpxProfileInstallation(profile, options.candidateAdmission),
       dependencies.retainAdmissionCleanup,
     ).catch(error => { throw recordAcpxAdmissionFailure(error, "installation"); });
-    if (!swarmRoute && installation.commandDigest !== profile.commandDigest) {
+    if (!swarmRoute && installation.commandDigest !== (localPi ? `sha256:${localPi.sha256}` : profile.commandDigest)) {
       throw new Error("Verified ACPX installation does not match its profile");
     }
     let admissionSucceeded = false;
@@ -532,7 +538,8 @@ export class AcpxRuntimeHost {
           (dependencies.prepareSandbox ?? prepareAcpxRuntimeSandbox)({
             binding,
             agent: options.agent,
-            environment: options.environment,
+            environment: localPi ? { ...options.environment, [LOCAL_PI_CONFIGURATION_ENV]: undefined } : options.environment,
+            localPiProfile: localPi?.profile,
             tools: options.semanticTools?.tools,
             ...(options.providerPolicy === undefined ? {} : { providerPolicy: {
               ...options.providerPolicy,

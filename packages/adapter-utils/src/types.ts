@@ -372,6 +372,7 @@ export interface AdapterSkillContext {
 
 export interface AdapterEnvironmentTestContext {
   companyId: string;
+  agentId?: string;
   adapterType: string;
   config: Record<string, unknown>;
   managedAiCredentialHome?: string;

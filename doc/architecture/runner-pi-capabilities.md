@@ -1277,8 +1277,47 @@ alone. Repeat `--extension` for each extension you trust to run as your OS user.
 Use `--expect-command` for an extension that registers a command. The probe
 leaves automatic discovery disabled and uses the specified profile in place.
 
-The probe runs a standalone process. The production Runner still uses the
+The probe runs a standalone process. By default the Runner uses the
 qualified distribution and its own isolated profile. A passing probe shows
 that the Paperclip extension initialized and that Pi can select the requested
 model. A successful provider call, Runner admission, and session recovery
 require separate verification.
+
+## Operator-selected local Pi Runner
+
+On a trusted local execution host, an operator can opt one agent into an
+installed Pi distribution. Use a dedicated npm directory with Pi,
+`pi-acp@0.0.33`, `@agentclientprotocol/sdk@0.26.0`, `zod@3.25.76`, and
+the extensions you explicitly trust. Install exact versions with lifecycle
+scripts disabled. Sign in to Pi under the same OS account that runs the server.
+The profile needs an owner-only `auth.json`.
+
+```sh
+node packages/paperclip-runner/scripts/prepare-local-pi-runner.mjs \
+  --installation /absolute/path/to/npm-installation \
+  --output /absolute/path/to/new-runtime-pack \
+  --profile /absolute/path/to/pi/agent \
+  --company <company-uuid> --agent <agent-uuid> \
+  --extension node_modules/example-extension/index.js \
+  > local-pi-runner.json
+```
+
+Set the server environment variable `PAPERCLIP_RUNNER_LOCAL_PI` to the JSON
+output. Select Paperclip Runner with the Pi ACP agent and an explicit
+`provider/model`. The native launcher verifies the runtime against the
+operator's digest before it uses the selected extension files. Use extensions
+from a trusted installation. They run inside Pi and can access provider state
+as the local OS user. Task repositories cannot choose the pack or its extensions.
+
+The designated agent uses the profile's authentication file in place, so Pi
+owns credential refresh. Runner still owns task sessions, settings and bound
+provider configuration. Automatic extension discovery stays off. The
+Paperclip tool policy continues to govern native tools and assigned MCP.
+An extension that adds its own model-facing tools still needs a Runner policy
+that admits those tools. Hooks on existing tools can run.
+
+The bundled distribution remains the default for the other agents and for
+remote execution. Change the installation or extension list by preparing a
+new pack and updating the server binding. Recovery checks the pack and profile
+identity and rejects state from a different binding. To return to the bundled
+distribution, remove the server setting and start a new Runner session.

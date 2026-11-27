@@ -70,6 +70,7 @@ export async function createAcpxRecoveryBinding(input: {
   grokEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
   grokDisableWebSearch?: boolean;
   providerConfigurationDigest?: string;
+  localPiIdentity?: string;
   homeBinding?: Readonly<Record<string, string>>;
   providerPolicy?: { readOnly: boolean; readRoots?: readonly string[]; protectedPaths?: readonly string[] };
 }): Promise<AcpxRecoveryBinding> {
@@ -107,6 +108,7 @@ export async function createAcpxRecoveryBinding(input: {
       commandDigest: input.profile.commandDigest,
       qualificationModel: input.profile.qualificationModel,
       ...(input.homeBinding === undefined ? {} : { homeMode: "preconfigured", homeBinding: input.homeBinding }),
+      ...(input.localPiIdentity === undefined ? {} : { localPiIdentity: input.localPiIdentity }),
       reportedModelId: input.profile.reportedModelId,
       permissionPolicy: input.profile.permissionPolicy,
       ...(input.providerConfigurationDigest === undefined ? {} : { providerConfigurationDigest: input.providerConfigurationDigest }),

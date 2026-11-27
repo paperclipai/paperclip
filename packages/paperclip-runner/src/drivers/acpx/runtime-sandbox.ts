@@ -1,3 +1,4 @@
+import { bindLocalPiProfile } from "./local-pi-installation.js";
 import { kimiManagedConfiguration } from "./kimi-config.js";
 import { kimiInstructionBinding } from "./kimi-instructions.js";
 import { acpxInstructionsAdmissionError } from "./admission-diagnostics.js";
@@ -347,6 +348,7 @@ export async function prepareAcpxRuntimeSandbox(input: {
   binding: AcpxRecoveryBinding;
   agent: QualifiedAcpxAgent;
   environment?: NodeJS.ProcessEnv;
+  localPiProfile?: string;
   /** Public operations on the runner-owned Paperclip MCP bridge only. */
   tools?: readonly Readonly<Record<string, unknown>>[];
   providerPolicy?: AcpxProviderRuntimePolicy;
@@ -419,7 +421,7 @@ export async function prepareAcpxRuntimeSandbox(input: {
     join(root, `${input.agent}-home`),
     root,
   );
-  const protectedPaths = Object.freeze([...new Set([physicalRuntimeDirectory, ...(preparedHome ? [preparedHome] : []), ...policy.protectedPaths])]);
+  const protectedPaths = Object.freeze([...new Set([physicalRuntimeDirectory, ...(preparedHome ? [preparedHome] : []), ...(input.localPiProfile ? [input.localPiProfile] : []), ...policy.protectedPaths])]);
   const workspaceRecordPath = join(root, "workspace");
   await writePrivateFile(
     workspaceRecordPath,
@@ -429,6 +431,7 @@ export async function prepareAcpxRuntimeSandbox(input: {
     await writePrivateFile(join(agentHomeDirectory, "config.toml"), kimiManagedConfiguration(input.binding.requestedModel));
   }
   if (input.agent === "pi") {
+    if (input.localPiProfile !== undefined) await bindLocalPiProfile(input.localPiProfile, agentHomeDirectory);
     const configuration = piProviderConfiguration(input.environment);
     if (configuration) await writePrivateFile(join(agentHomeDirectory, "models.json"), configuration.json);
   }
