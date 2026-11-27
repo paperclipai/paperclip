@@ -92,6 +92,7 @@ of a private JSON file. The file uses the following fields.
 | `gatewayHost`, `ports` | The address Paperclip uses to reach the profile gateways and the ports reserved for them. |
 | `paperclipApiUrl` | The Paperclip URL that Hermes uses to report work. |
 | `profileConfig` | The Hermes model and tools to configure for each new profile. Use the Paperclip task helper for reporting. |
+| `allowReportingLineHires` | Optional. Set this to `true` to approve this profile configuration for native agent hires in the configured company. The default is `false`. |
 
 Each profile gateway listens on IPv4 loopback. Run Paperclip in the same
 network namespace or use a private HTTPS proxy that forwards `/p/<profile>`.
@@ -111,8 +112,16 @@ As an instance admin, send the following body to
 }
 ```
 
-If the request needs approval, an instance admin must approve it. Paperclip
-creates and checks the connection before marking the agent `ready`.
+With `allowReportingLineHires: true`, a manager with Paperclip hiring
+permission can submit the same selection through either native hire route.
+It can hire under itself or another agent in its reporting line. Extra adapter
+settings are refused, including custom gateway URLs and credentials.
+
+Paperclip records the manager and a digest of the operator's policy before
+provisioning. If the policy or reporting line changes while the hire waits,
+Paperclip refuses provisioning. Company-level approval rules still apply.
+When delegated hiring is off, an instance administrator authorizes managed
+hires. Paperclip checks the gateway before marking the agent `ready`.
 
 ### Stop or recover a profile
 

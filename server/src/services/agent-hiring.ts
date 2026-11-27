@@ -1,4 +1,5 @@
 import { usesManagedHermesProfile } from "../lib/hermes-gateway-binding.js";
+import { approvedManagedHermesPolicy, assertManagedHermesReportingLine } from "./hermes-gateway-policy.js";
 import { accessService } from "./access.js";
 import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import { assertNoInitialAgentInteractionPermissions, preserveAgentInteractionPermissions } from "../lib/agent-interaction-permissions.js";
@@ -25,14 +26,33 @@ import { instanceSettingsService } from "./instance-settings.js";
 import { assertProviderApiPlacementPolicy, isProviderApiSetupDraft, resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
 
 async function authorizeManagedHermesProfile(
-  db: Db, adapterType: string, config: Record<string, unknown>, userId?: string | null,
+  db: Db,
+  companyId: string,
+  adapterType: string,
+  config: Record<string, unknown>,
+  actor: { userId?: string | null; agentId?: string | null; manager?: string | null; policyDigest?: string },
 ) {
-  const { managedProfileAuthorizedBy: _callerValue, ...adapterConfig } = config;
+  const {
+    managedProfileAuthorizedBy: _callerValue,
+    managedProfilePolicyDigest: _callerDigest,
+    ...adapterConfig
+  } = config;
   if (!usesManagedHermesProfile(adapterType, adapterConfig)) return adapterConfig;
-  if (!userId || !await accessService(db).isInstanceAdmin(userId)) {
+  if (actor.agentId) {
+    if (Object.keys(adapterConfig).some(key => key !== "managedProfile")) {
+      throw forbidden("Use the operator-approved Hermes configuration without adapter overrides");
+    }
+    const { digest } = await approvedManagedHermesPolicy(companyId);
+    if (actor.policyDigest !== undefined && actor.policyDigest !== digest) {
+      throw forbidden("The approved managed Hermes configuration changed before approval");
+    }
+    await assertManagedHermesReportingLine(db, companyId, actor.agentId, actor.manager);
+    return { ...adapterConfig, managedProfileAuthorizedBy: actor.agentId, managedProfilePolicyDigest: digest };
+  }
+  if (!actor.userId || !await accessService(db).isInstanceAdmin(actor.userId)) {
     throw forbidden("Managed Hermes profiles require instance administrator authorization");
   }
-  return { ...adapterConfig, managedProfileAuthorizedBy: userId };
+  return { ...adapterConfig, managedProfileAuthorizedBy: actor.userId };
 }
 
 export async function prepareAgentHire(db: Db, companyId: string, input: CreateAgentData, options?: CreateAgentOptions): Promise<CreateAgentData> {
@@ -48,6 +68,10 @@ export async function prepareAgentHire(db: Db, companyId: string, input: CreateA
       });
   data.adapterType = selection.adapterType;
   data.adapterConfig = selection.adapterConfig;
+  if (options?.createdByAgentId && data.reportsTo === undefined
+      && usesManagedHermesProfile(data.adapterType, selection.adapterConfig)) {
+    data.reportsTo = options.createdByAgentId;
+  }
   const { ensureManager, assertBuiltInAgentMetadataMutationAllowed } = agentRecordQueries(db);
   if (data.appearance?.customAvatarAssetId) throw unprocessable("Create the agent before uploading its avatar");
   assertBuiltInAgentMetadataMutationAllowed(null, data.metadata, options);
@@ -72,8 +96,9 @@ export async function prepareAgentHire(db: Db, companyId: string, input: CreateA
     ? await secretService(db).normalizeAdapterConfigForPersistence(companyId, data.adapterConfig, { adapterType })
     : {};
   const adapterConfig = await authorizeManagedHermesProfile(
-    db, adapterType, normalizePaperclipRunnerAdapterConfig(adapterType, rawAdapterConfig),
-    options?.managedHermesApproverUserId ?? options?.createdByUserId,
+    db, companyId, adapterType, normalizePaperclipRunnerAdapterConfig(adapterType, rawAdapterConfig),
+    { userId: options?.managedHermesApproverUserId ?? options?.createdByUserId,
+      agentId: options?.createdByAgentId, manager: data.reportsTo },
   );
   const profile = { adapterType, adapterConfig };
   const providerApiDraft = options?.setupOnly === true && isProviderApiSetupDraft(profile);
@@ -156,7 +181,21 @@ export async function prepareAgentHireApproval(txDb: Db, existing: AgentHireReco
   const effectiveType = patch.adapterType ?? existing.adapterType;
   const effectiveConfig = patch.adapterConfig ?? existing.adapterConfig ?? {};
   if (patch.adapterConfig !== undefined || usesManagedHermesProfile(effectiveType, effectiveConfig)) {
-    patch.adapterConfig = await authorizeManagedHermesProfile(txDb, effectiveType, effectiveConfig, approverUserId);
+    const prior = existing.adapterConfig ?? {};
+    const expectedDigest = prior.managedProfilePolicyDigest;
+    const requester = prior.managedProfileAuthorizedBy;
+    const delegated = typeof expectedDigest === "string" && typeof requester === "string"
+      && usesManagedHermesProfile(existing.adapterType, prior);
+    if (delegated && !usesManagedHermesProfile(effectiveType, effectiveConfig)) {
+      throw forbidden("An approved managed Hermes hire cannot switch to a different adapter");
+    }
+    patch.adapterConfig = await authorizeManagedHermesProfile(
+      txDb, existing.companyId, effectiveType, effectiveConfig,
+      delegated
+        ? { agentId: requester, manager: patch.reportsTo === undefined ? existing.reportsTo : patch.reportsTo,
+          policyDigest: expectedDigest }
+        : { userId: approverUserId },
+    );
   }
   if (patch.permissions !== undefined) {
     // The pending-approval activation replays the original hire

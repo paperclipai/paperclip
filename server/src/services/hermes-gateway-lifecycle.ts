@@ -9,38 +9,9 @@ import { agentCredentialService } from "./agent-credentials.js";
 import { persistActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
 
-const policySchema = z.object({
-  companyId: z.string().uuid(),
-  projectId: z.string().uuid(),
-  adminUrl: z.string().url(),
-  adminTokenFile: z.string().min(1),
-  gatewayHost: z.string().url(),
-  ports: z.array(z.number().int().min(1024).max(65535)).min(1).max(256),
-  paperclipApiUrl: z.string().url(),
-  profileConfig: z.record(z.string(), z.unknown()),
-});
-type Policy = z.infer<typeof policySchema>;
+import { assertManagedHermesReportingLine, loadManagedHermesPolicy, origin, type Policy } from "./hermes-gateway-policy.js";
+
 type AgentRow = typeof agents.$inferSelect;
-
-function origin(value: string): URL {
-  const url = new URL(value);
-  if (
-    !(url.protocol === "https:" || (url.protocol === "http:" && url.hostname === "127.0.0.1")) ||
-    url.username || url.password || url.search || url.hash || url.pathname !== "/"
-  ) throw new Error("Hermes lifecycle needs a private HTTPS or IPv4 loopback origin");
-  return url;
-}
-
-async function loadPolicy(companyId: string): Promise<Policy> {
-  const file = process.env.PAPERCLIP_HERMES_PROFILE_POLICY_FILE;
-  if (!file) throw new Error("No managed Hermes profile policy is configured");
-  const policy = policySchema.parse(JSON.parse(await readFile(file, "utf8")));
-  if (policy.companyId !== companyId) throw new Error("Managed Hermes profiles are unavailable for this company");
-  origin(policy.adminUrl);
-  origin(policy.gatewayHost);
-  origin(policy.paperclipApiUrl);
-  return policy;
-}
 
 class HermesAdmin {
   constructor(private readonly base: URL, private readonly token: string) {}
@@ -117,15 +88,24 @@ async function audit(tx: Db, agent: AgentRow, action: string) {
   });
 }
 
-async function reserveConnection(db: Db, snapshot: LifecycleAgent, policy: Policy): Promise<boolean> {
+async function reserveConnection(
+  db: Db, snapshot: LifecycleAgent, { policy, digest }: Awaited<ReturnType<typeof loadManagedHermesPolicy>>,
+): Promise<boolean> {
   return db.transaction(async transaction => {
     const tx = transaction as unknown as Db;
     // All Paperclip processes sharing this database reserve from the same port pool.
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${origin(policy.gatewayHost).origin}, 0))`);
     const agent = await lockedAgent(tx, snapshot);
     if (!agent) return false;
-    if (typeof agent.adapterConfig.managedProfileAuthorizedBy !== "string") {
-      throw new Error("Managed Hermes profile has no instance administrator authorization");
+    const { managedProfileAuthorizedBy: requester, managedProfilePolicyDigest } = agent.adapterConfig;
+    if (typeof requester !== "string") {
+      throw new Error("Managed Hermes profile has no hire authorization");
+    }
+    if (managedProfilePolicyDigest !== undefined) {
+      if (!policy.allowReportingLineHires || managedProfilePolicyDigest !== digest) {
+        throw new Error("The approved managed Hermes configuration changed before provisioning");
+      }
+      await assertManagedHermesReportingLine(tx, agent.companyId, requester, agent.reportsTo);
     }
 
     const secrets = secretService(tx);
@@ -252,8 +232,9 @@ export async function reconcileManagedHermesGateway(db: Db, snapshot: LifecycleA
   const [row] = await db.select({ type: agents.adapterType, config: agents.adapterConfig }).from(agents)
     .where(and(eq(agents.companyId, snapshot.companyId), eq(agents.id, snapshot.id)));
   if (row?.type !== "hermes_gateway" || row.config.managedProfile !== true) return "complete" as const;
-  const policy = await loadPolicy(snapshot.companyId);
-  if (snapshot.lifecycleState === "preparing" && !await reserveConnection(db, snapshot, policy)) return "pending" as const;
+  const binding = await loadManagedHermesPolicy(snapshot.companyId);
+  if (snapshot.lifecycleState === "preparing" && !await reserveConnection(db, snapshot, binding)) return "pending" as const;
+  const { policy } = binding;
 
   const token = (await readFile(policy.adminTokenFile, "utf8")).trim();
   if (!token) throw new Error("Hermes management credential is missing");
