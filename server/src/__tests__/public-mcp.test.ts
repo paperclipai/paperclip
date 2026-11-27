@@ -1071,6 +1071,8 @@ describe.skipIf(!support.supported)("public MCP OAuth and tool boundary", () => 
     expect((await rpc("initialize", { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "test", version: "1" } })).body.result.serverInfo.name).toBe("paperclip");
     const catalog = await rpc("tools/list");
     expect(catalog.body.result.tools).toHaveLength(publicMcpCapabilities.length);
+    expect(catalog.body.result).not.toHaveProperty("ttlMs");
+    expect(catalog.body.result).not.toHaveProperty("cacheScope");
     expect(catalog.body.result.tools.find((t: { name: string }) => t.name === "paperclip_create_task").annotations.readOnlyHint).toBe(false);
     const result = await rpc("tools/call", { name: "paperclip_list_agents", arguments: { companyId: f.company.id } });
     expect(JSON.stringify(result.body)).not.toContain("hidden");
