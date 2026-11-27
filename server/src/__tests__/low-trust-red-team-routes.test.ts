@@ -2278,6 +2278,24 @@ describeEmbeddedPostgres(
         expect(referenced.body.wakeComment).toMatchObject({ id: scopedComment.id, body: LOW_TRUST_QUARANTINED_BODY });
         expect(referenced.body.continuationSummary.body).toBe(LOW_TRUST_QUARANTINED_BODY);
         expectNoCanary(referenced.body, fixture.canaries.raw);
+        // Same gateway receiver and live receiving run: stock permits ordinary
+        // company task reads, but must conceal genuinely cross-company sources.
+        const siblingRead = await request(recipient).get(`/api/issues/${fixture.issues.siblingOutOfScope.id}/heartbeat-context`);
+        expect(siblingRead.status).toBe(200);
+        const [foreignCompany] = await db.insert(companies).values({ name: `Foreign receiver boundary ${randomUUID()}` }).returning();
+        const foreignMarker = `FOREIGN_RECEIVER_ONLY_${randomUUID()}`;
+        const [forbiddenSource] = await db.insert(issues).values({ companyId: foreignCompany!.id,
+          title: foreignMarker, description: foreignMarker, status: "todo", priority: "medium" }).returning();
+        const receiverDenied = await request(recipient).get(`/api/issues/${forbiddenSource!.id}/heartbeat-context`);
+        const receiverMissing = await request(recipient).get(`/api/issues/${randomUUID()}/heartbeat-context`);
+        expect(receiverDenied.status).toBe(404);
+        expect(receiverDenied.body).toEqual(receiverMissing.body);
+        expectNoCanary(receiverDenied.body, foreignMarker);
+        recordGatewayReceipt("receiver-boundary", { recipientAgentId: fixture.agents.standard.id, runId: run!.id,
+          companyId: fixture.company.id, sourceCompanyId: foreignCompany!.id, sourceIssueId: forbiddenSource!.id,
+          sameCompanySiblingStatus: siblingRead.status, forbiddenStatus: receiverDenied.status,
+          missingStatus: receiverMissing.status, identicalConcealment: true, rawCanaryAbsent: true,
+          originalQuarantineCrossAgentContractProved: false });
         const denialActor = agentActor(fixture);
         const denied = await request(createApp(db, denialActor)).get(`/api/issues/${fixture.issues.siblingOutOfScope.id}/heartbeat-context`);
         expect([403,404]).toContain(denied.status);
