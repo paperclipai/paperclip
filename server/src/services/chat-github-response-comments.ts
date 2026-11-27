@@ -6,7 +6,7 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { registerGitHubTerminalResponseWork } from "./chat-channels/github/terminal-response-work.js";
-import { githubResponseExecution, githubResponseRunColumns as responseRunColumns } from "./chat-channels/github/response-execution.js";
+import { githubResponseExecution, githubResponseRunColumns as responseRunColumns, latestResponseNotice } from "./chat-channels/github/response-execution.js";
 import { FINISHED_RUN_STATUSES, finishedRunStatusSql, runBoundToIssue, runWokeForComment } from "./chat-channels/github/response-run-state.js";
 import { notifyChatResponseAvailability } from "./chat-response-availability.js";
 import { registerGitHubAcknowledgementWork } from "./chat-channels/github/acknowledgement-work.js";
@@ -19,12 +19,12 @@ import { withGitHubPublicationLease } from "./chat-github-publication-lease.js";
 import { projectSafeChatPublicationText } from "./chat-publication-projection.js";
 import type { GitHubAutomaticPolicyContext } from "./chat-github-review-policy.js";
 import { githubResponseAuthorityFields } from "./chat-channels/github/response-authority-read.js";
-import { githubLatestTaskResponseUrl, githubRunReplyState } from "./chat-run-publications.js";
+import { githubRunReplyState } from "./chat-run-publications.js";
 import { logActivity } from "./activity-log.js";
 import { boundRunIssueId } from "./run-task-binding.js";
 import { chatRunSourceMessageId } from "./chat-channels/run-origin.js";
 import { isMainPullResponse, legacyPullResponseMarkers, pullResponseMarker, requestResponseMarker,
-  retireLegacyResponsePlaceholder, stagePullResponse, baseThreadId, type GitHubResponseSource } from "./chat-channels/github/response-target.js";
+  retireLegacyResponsePlaceholder, stagePullResponse, type GitHubResponseSource } from "./chat-channels/github/response-target.js";
 
 type Transaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type Api = { request<T>(path: string, options?: { method?: string; body?: unknown }): Promise<T> };
@@ -428,9 +428,9 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
         if (await githubRunReplyState(db, input) !== "none") throw conflict("GitHub reply is still being resolved");
       };
       const source = await context(link.deliveryId);
-      const latestResponse = await githubLatestTaskResponseUrl(db, { companyId: input.companyId, endpointId: input.endpointId,
-        issueId: input.issueId, since: source.delivery.createdAt, baseThreadId: baseThreadId(source.conversation.externalThreadId) });
-      receipt = await acknowledge(link.deliveryId, latestResponse ? `See the [latest response](${latestResponse}).` : input.body, assertRun);
+      const notice = source.issueStatus === "blocked" ? null : await latestResponseNotice(db, { companyId: input.companyId,
+        endpointId: input.endpointId, issueId: input.issueId, since: source.delivery.createdAt, threadId: source.conversation.externalThreadId });
+      receipt = await acknowledge(link.deliveryId, notice ?? input.body, assertRun);
     }
     if (!receipt) throw forbidden("GitHub failure has no request binding");
     return receipt;
