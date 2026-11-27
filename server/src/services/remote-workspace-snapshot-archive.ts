@@ -72,7 +72,10 @@ export async function workspaceArchive(input: {
         GIT_AUTHOR_NAME: "Paperclip", GIT_COMMITTER_NAME: "Paperclip", GIT_AUTHOR_EMAIL: "workspace@paperclip.invalid", GIT_COMMITTER_EMAIL: "workspace@paperclip.invalid",
         GIT_AUTHOR_DATE: "@0 +0000", GIT_COMMITTER_DATE: "@0 +0000", GIT_NO_LAZY_FETCH: "1" },
     }, (error, stdout) => error ? reject(error) : resolve(stdout));
-    if (stdin !== undefined) command.stdin?.end(stdin);
+    if (stdin !== undefined) {
+      command.stdin?.on("error", () => {});
+      command.stdin?.end(stdin);
+    }
   });
   const portableRemoteUrl = (value: string) => {
     if (!value || /[\u0000-\x20\u007f\\]/u.test(value)) return false;

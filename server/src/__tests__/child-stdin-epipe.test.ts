@@ -1,10 +1,13 @@
+import { execFile, execFileSync } from "node:child_process";
 import express from "express";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { presentCommits } from "../services/isolated-repository-rehome.js";
+import { workspaceArchive } from "../services/remote-workspace-snapshot-archive.js";
 
 const mockGetExperimental = vi.hoisted(() => vi.fn());
 const mockIssueService = vi.hoisted(() => ({
@@ -117,4 +120,57 @@ describe("POST /api/board/chat/stream when the CLI closes stdin", () => {
       uncaught.detach();
     }
   }, 30_000);
+});
+
+describe("workspace archive capture when git update-ref closes stdin", () => {
+  const savedPath = process.env.PATH;
+  const execute = promisify(execFile);
+  const gitEnv = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: os.devNull,
+    GIT_AUTHOR_NAME: "Snapshot", GIT_COMMITTER_NAME: "Snapshot",
+    GIT_AUTHOR_EMAIL: "snapshot@example.test", GIT_COMMITTER_EMAIL: "snapshot@example.test" };
+  let root: string;
+  let binDir: string;
+  let realGit: string;
+
+  beforeEach(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-epipe-archive-"));
+    realGit = (await execute("sh", ["-c", "command -v git"])).stdout.trim();
+    // Forward every call to the real git except `update-ref`, which closes its
+    // stdin and exits like a child that never reads the streamed updates.
+    binDir = await fakeBin("git", `#!/bin/sh\nfor arg in "$@"; do\n  if [ "$arg" = "update-ref" ]; then\n    exec 0<&-\n    sleep 0.2\n    exit 7\n  fi\ndone\nexec ${JSON.stringify(realGit)} "$@"\n`);
+    process.env.PATH = `${binDir}${path.delimiter}${savedPath}`;
+  });
+
+  afterEach(async () => {
+    process.env.PATH = savedPath;
+    await fs.rm(binDir, { recursive: true, force: true });
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("rejects with the child exit instead of an uncaught EPIPE", async () => {
+    const cwd = path.join(root, "source");
+    await fs.mkdir(cwd);
+    const git = (...args: string[]) => execute(realGit, ["-C", cwd, ...args], { env: gitEnv }).then((r) => r.stdout.trim());
+    await git("init", "-q", "-b", "main");
+    await fs.writeFile(path.join(cwd, "work.txt"), "base work\n");
+    await git("add", ".");
+    await git("commit", "-qm", "base");
+    const head = await git("rev-parse", "HEAD");
+    // Ref count sized so the `update-ref --stdin` payload exceeds the pipe
+    // buffer and the parent is still writing when the child closes stdin.
+    const creates = Array.from({ length: 2000 }, (_, index) => `create refs/tags/epipe-${index.toString().padStart(5, "0")} ${head}`).join("\n");
+    execFileSync(realGit, ["-C", cwd, "update-ref", "--stdin"], { input: `${creates}\n`, env: gitEnv });
+
+    const uncaught = uncaughtCollector();
+    try {
+      await expect(workspaceArchive({
+        kind: "capture", cwd, archivePath: path.join(root, "snapshot.pcws"),
+        gitSourceRoots: [await fs.realpath(root)],
+      })).rejects.toMatchObject({ code: 7 });
+      await uncaught.flush();
+      expect(uncaught.errors).toEqual([]);
+    } finally {
+      uncaught.detach();
+    }
+  }, 60_000);
 });
