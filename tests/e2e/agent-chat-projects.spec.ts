@@ -5,49 +5,50 @@ import { idle, json, send, setup } from "./agent-chat.shared";
 test.use({ trace: "retain-on-failure" });
 test.setTimeout(120_000);
 
-test("cleanup restores agent chat experiments when cancellation fails", async ({ request }) => {
-  const original = await json(await request.get("/api/instance/settings/experimental"));
-  const response = (status: number, body: unknown) => ({
-    ok: () => status >= 200 && status < 300,
-    status: () => status,
-    text: async () => JSON.stringify(body),
-    json: async () => body,
-  }) as APIResponse;
-  const failingRequest = new Proxy(request, {
-    get(target, property) {
-      if (property === "get") return async (...args: Parameters<APIRequestContext["get"]>) =>
-        args[0].endsWith("/live-runs")
-          ? response(200, [{ id: "cleanup-cancellation-fixture" }])
-          : target.get(...args);
-      if (property === "post") return async (...args: Parameters<APIRequestContext["post"]>) =>
-        args[0].endsWith("/heartbeat-runs/cleanup-cancellation-fixture/cancel")
-          ? response(500, { error: "simulated cancellation failure" })
-          : target.post(...args);
-      const value = Reflect.get(target, property, target);
-      return typeof value === "function" ? value.bind(target) : value;
-    },
-  });
-  try {
-    const f = await setup(failingRequest);
-    await expect(f.restore()).rejects.toThrow("500");
-    const restored = await json(await request.get("/api/instance/settings/experimental"));
-    expect(restored).toMatchObject({
-      enableAgentChat: original.enableAgentChat,
-      enableClassicTaskInterface: original.enableClassicTaskInterface,
+for (const cancellationStatus of [200, 500]) {
+  test(`cleanup restores agent chat experiments after cancellation returns ${cancellationStatus}`, async ({ request }) => {
+    const original = { enableAgentChat: false, enableClassicTaskInterface: true };
+    const settings = { ...original };
+    const settingsPath = "/api/instance/settings/experimental";
+    const cancelPath = "/api/heartbeat-runs/cleanup-cancellation-fixture/cancel";
+    let cancelAttempts = 0;
+    const response = (status: number, body: unknown) => ({
+      ok: () => status >= 200 && status < 300,
+      status: () => status,
+      text: async () => JSON.stringify(body),
+      json: async () => body,
+    }) as APIResponse;
+    const fixtureRequest = new Proxy(request, {
+      get(target, property) {
+        if (property === "get") return async (...args: Parameters<APIRequestContext["get"]>) => {
+          if (args[0] === settingsPath) return response(200, { ...settings });
+          if (args[0].endsWith("/live-runs")) return response(200, [{ id: "cleanup-cancellation-fixture" }]);
+          return target.get(...args);
+        };
+        if (property === "patch") return async (...args: Parameters<APIRequestContext["patch"]>) => {
+          if (args[0] !== settingsPath) return target.patch(...args);
+          Object.assign(settings, args[1]?.data);
+          return response(200, { ...settings });
+        };
+        if (property === "post") return async (...args: Parameters<APIRequestContext["post"]>) => {
+          if (args[0] !== cancelPath) return target.post(...args);
+          cancelAttempts++;
+          return response(cancellationStatus, cancellationStatus === 500
+            ? { error: "simulated cancellation failure" }
+            : { status: "cancelled" });
+        };
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
     });
-  } finally {
-    const current = await json(await request.get("/api/instance/settings/experimental"));
-    if (
-      current.enableAgentChat !== original.enableAgentChat ||
-      current.enableClassicTaskInterface !== original.enableClassicTaskInterface
-    ) {
-      await json(await request.patch("/api/instance/settings/experimental", { data: {
-        enableAgentChat: original.enableAgentChat,
-        enableClassicTaskInterface: original.enableClassicTaskInterface,
-      } }));
-    }
-  }
-});
+    const f = await setup(fixtureRequest);
+    expect(settings).toEqual({ enableAgentChat: true, enableClassicTaskInterface: false });
+    if (cancellationStatus === 500) await expect(f.restore()).rejects.toThrow("500");
+    else await f.restore();
+    expect(settings).toEqual(original);
+    expect(cancelAttempts).toBe(1);
+  });
+}
 
 /**
  * Agent chat project and content coverage: project cards, split handoff,

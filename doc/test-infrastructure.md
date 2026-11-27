@@ -566,3 +566,18 @@ It checks the actual manifest generation, refusal of work under the owned hold,
 and a second useful write after release. This boundary does not exercise the
 production plugin database loader or plugin jobs. Unsupported manifests, active
 manual resources, and missing completion receipts remain sleep blockers.
+
+## Agent Chat fixture restore
+
+The shared fixture restores its original experimental settings whether live-run
+cancellation succeeds or fails. The cancellation error still propagates.
+
+## Plugin scheduling and heartbeat environment tests
+
+Plugin scheduling tests settle at the coordinator's registered wake instead of
+advancing its virtual clock on every PostgreSQL assertion retry. The cron-change
+regression holds a real table lock and checks the recomputed deadline.
+
+Heartbeat environment-inheritance tests drain active run executions before
+asserting terminal state. Instance-wide environment names include the fixture
+UUID so attempts cannot collide on the unique name.
