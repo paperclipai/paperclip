@@ -142,9 +142,9 @@ function ConfigurationEditor({ agent, initial, onDirtyChange, onSaved, onSavingC
       <p className="mt-2 text-muted-foreground">Changes save in this order. If one fails, earlier changes remain saved.</p>
     </details>}
     {(validation.error || error) && <p role="alert" className="whitespace-pre-wrap text-sm text-destructive">{validation.error || error}</p>}
-    <footer className="sticky bottom-0 z-10 flex items-center justify-between gap-3 border-t border-border bg-background py-4">
+    <footer className="mobile-nav-composer sticky bottom-(--tc-composer-bottom) z-20 flex flex-wrap items-center justify-between gap-3 border-t border-border bg-background py-4 md:bottom-0">
       <Button variant="ghost" disabled={busy} onClick={() => { if (!operationPending.current) { operationPending.current = true; reload.mutate(); } }}>Reload saved</Button>
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <span role="status" className="flex items-center gap-2 text-xs text-muted-foreground">
           {!save.isPending && !reload.isPending && dirty ? <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-(--agent-detail-dot-unsaved)" /> : null}
           {save.isPending ? `Saving: ${progress || "configuration"}…` : reload.isPending ? "Loading configuration…" : dirty ? validation.document && !validation.changes.length ? "No configuration changes" : "Unsaved changes" : "No unsaved changes"}

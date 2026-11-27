@@ -21,7 +21,7 @@ export function VoiceCallProvider({ children, companyId, userId }: {
   const value = useMemo(() => ({ active: Boolean(current), open }), [current, open]);
   return <VoiceCallContext.Provider value={value}>
     {children}
-    {current && <aside aria-label="Current voice call" className="fixed inset-x-4 bottom-4 z-50 max-h-(--sz-calc-18) overflow-y-auto rounded-lg border border-border bg-background p-4 shadow-lg sm:left-auto sm:w-96">
+    {current && <aside aria-label="Current voice call" className="fixed inset-x-4 bottom-(--mobile-nav-overlay-bottom) z-50 max-h-(--mobile-nav-overlay-max-h) overflow-y-auto rounded-lg border border-border bg-background p-4 shadow-lg sm:left-auto sm:w-96 md:bottom-4 md:max-h-(--sz-calc-18)">
       <NativeVoiceConversation {...current.props} key={current.id} managed autoStart onEndedChange={setEnded} />
       {ended && <Button variant="ghost" size="sm" onClick={() => { setCall(null); requestAnimationFrame(() => { if (returnFocus.current?.isConnected) returnFocus.current.focus(); }); }}>Close voice panel</Button>}
     </aside>}

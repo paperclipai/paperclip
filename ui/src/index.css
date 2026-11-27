@@ -612,9 +612,12 @@
   --tc-composer-bottom: var(--sz-calc-8);
   --mobile-chat-viewport-height: 100dvh;
   --tc-composer-editor-max-height: min(var(--sz-28dvh), calc(var(--mobile-chat-viewport-height) * 0.4));
-  --tc-composer-visible-nav-offset: calc(4rem + var(--spacing) * 1.5 + var(--sz-safe-bottom));
+  --mobile-nav-height: 4rem;
+  --tc-composer-visible-nav-offset: calc(var(--mobile-nav-height) + var(--spacing) * 1.5 + var(--sz-safe-bottom));
   /* With the dock's pb-1, leave 12px below the card when the nav hides. */
   --tc-composer-hidden-nav-offset: calc(var(--sz-safe-bottom) + var(--spacing) * 2);
+  --mobile-nav-overlay-bottom: calc(var(--mobile-nav-height) + var(--spacing) * 3 + var(--sz-safe-bottom));
+  --mobile-nav-overlay-max-h: calc(100dvh - var(--mobile-nav-overlay-bottom) - var(--spacing) * 4);
 
   /* Dashboard Board (experimental Responsibilities). Every card is this one
      height whatever it says, sized to a full card: padding 1.5rem, title
@@ -4922,6 +4925,9 @@ html:has(.design-proposal-theme) .design-navigation-group-label {
 .design-view-toggle .design-toolbar-button:last-child { border-start-end-radius: var(--design-page-control-radius); border-end-end-radius: var(--design-page-control-radius); }
 .design-view-toggle .design-toolbar-button:focus-visible { position: relative; z-index: var(--z-1); }
 .design-toolbar-actions { display: flex; align-items: center; gap: var(--design-page-action-gap); margin-inline-start: auto; }
+@media (width < 48rem) {
+  .design-toolbar-actions { flex-wrap: wrap; min-width: 0; max-width: 100%; }
+}
 .design-page-toolbar .design-new-task { margin-inline-start: var(--design-page-toolbar-gap); background: var(--foreground); color: var(--background); font-weight: var(--font-weight-semibold); }
 .design-page-toolbar .design-new-task:hover { background: color-mix(in oklab, var(--foreground) 90%, var(--task-list-surface)); color: var(--background); }
 .design-task-results { margin-block-end: calc(-1 * var(--design-page-toolbar-gap)); font-size: var(--design-page-type-size); line-height: var(--design-page-type-leading); color: var(--muted-foreground); }
@@ -5295,6 +5301,9 @@ html:not(.dark) .coordinator-sidebar {
 /* The Needs You toolbar fits one row: the search takes what the filters leave. */
 [data-canonical-toolbar="inbox"] { justify-content: space-between; }
 [data-canonical-toolbar="inbox"] .design-toolbar-actions { margin-inline-start: 0; }
+@media (width < 48rem) {
+  [data-canonical-toolbar="inbox"] [data-toolbar-search] { width: 100%; }
+}
 .coordinator-needs-you:not([data-coordinator-decision-history]) > :not([role="toolbar"], [data-inbox-folders]) { max-width: var(--container-4xl); margin-inline: auto; }
 [data-coordinator-decision-history] > :not([data-decision-history]),
 [data-coordinator-decision-history] > [data-decision-history] > :not([role="toolbar"], [data-inbox-folders]) { max-width: var(--container-4xl); }
@@ -5556,6 +5565,11 @@ html:not(.dark) .coordinator-sidebar {
   transform: translate(-50%, 0);
   transition: opacity var(--selection-bar-enter) var(--selection-bar-ease-out), transform var(--selection-bar-enter) var(--selection-bar-ease-out), visibility 0s;
 }
+@media (width < 48rem) {
+  .agent-selection-bar {
+    --selection-bar-bottom: calc(var(--mobile-nav-height) + var(--spacing) * 3);
+  }
+}
 .agent-identity-chip { background: var(--agent-identity-chip-bg); color: var(--foreground); }
 /* Raised modules use the Skills chip surface to keep agent chips distinct from their tile. */
 [data-agent-tile] .agent-identity-chip { --agent-identity-chip-bg: var(--agent-detail-tile-chip); }
@@ -5620,11 +5634,24 @@ span.paperclip-patch-line { display: block; }
 }
 .agent-config-save-bar[data-visible="true"] { transform: translateY(0); visibility: visible; transition-timing-function: var(--motion-ease-out-expo); }
 .agent-file-copy-notice { transition: opacity var(--motion-duration-fast); }
+.agent-settings-with-save-bar { padding-bottom: calc(var(--agent-save-bar-clearance) + var(--spacing) * 4); }
+@media (width < 48rem) {
+  .agent-config-save-bar {
+    bottom: var(--tc-composer-bottom);
+    z-index: var(--z-20);
+    padding: calc(var(--spacing) * 3) calc(var(--spacing) * 4);
+    transition: transform var(--agent-save-bar-motion) var(--motion-ease-standard), visibility var(--agent-save-bar-motion), bottom var(--mobile-nav-motion-duration, var(--motion-mobile-nav-enter)) var(--mobile-nav-motion-ease, var(--motion-ease-out-expo));
+  }
+  .agent-config-save-bar:not([data-visible="true"]) {
+    transform: translateY(calc(100% + var(--tc-composer-bottom)));
+  }
+  .agent-settings-with-save-bar {
+    padding-bottom: calc(var(--agent-save-bar-clearance) + var(--tc-composer-visible-nav-offset));
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   .agent-config-save-bar, .agent-file-copy-notice { transition: none; }
 }
-
-.agent-settings-with-save-bar { padding-bottom: calc(var(--agent-save-bar-clearance) + var(--spacing) * 4); }
 
 /* Identity file chrome uses the same input surface and keeps filenames on one line. */
 :root {
@@ -5876,6 +5903,7 @@ html:has(.design-proposal-theme) .agent-markdown-name-field [data-slot="input"],
 .org-task-mask-card { fill: var(--org-mask-card); }
 @media (width < 48rem) {
   .agents-org-toolbar { padding: calc(var(--spacing) * 4); }
+  .agents-org-controls-reveal:not([data-visible="true"]) { display: none; }
   .paperclip-app-shell:has(.agents-org-surface) { display: flex; flex-direction: column; height: 100dvh; min-height: 0; overflow: hidden; }
   .paperclip-app-shell:has(.agents-org-surface) :is(.app-main-row, .app-content-row) { display: flex; flex: 1; min-height: 0; overflow: hidden; }
   .paperclip-app-shell:has(.agents-org-surface) .app-content-column { flex: 1; min-height: 0; }
