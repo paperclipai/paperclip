@@ -13,7 +13,7 @@ export function connectionHealthSchedule(db: Db, checkHealth: ConnectionHealth["
   async function load(companyId?: string, connectionId?: string, applicationId?: string, signal?: AbortSignal): Promise<ConnectionHealthDeadline[]> {
     if (connectionId === undefined && applicationId === undefined) {
       signal?.throwIfAborted();
-      await repairUnsupportedVoiceConnectionHealth(db, { companyId });
+      await repairUnsupportedVoiceConnectionHealth(db, { companyId, signal });
     }
     const deadlines: ConnectionHealthDeadline[] = [];
     let cursor: string | undefined;

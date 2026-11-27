@@ -1,7 +1,7 @@
 import { notifyChatConnectionObservation } from "../../chat-channels/configuration-work-notifications.js";
 import { assertPluginConnectionWorker, PLUGIN_CONNECTOR_UNAVAILABLE_CODE } from "../../plugin-connector-runtime.js";
 import { findPluginWorkerUnavailableError } from "../../plugin-worker-unavailable-error.js";
-import { writeToolConnectionHealthChange } from "../../tool-connection-health-notifications.js";
+import { notifyToolConnectionHealth, writeToolConnectionHealthChange } from "../../tool-connection-health-notifications.js";
 import { connectionActorUserId } from "../actor.js";
 import { assertSupportedConnection } from "../connections/setup-policy.js";
 import { connectionSetupUrl, connectionReconnectUrl } from "../identifiers.js";
@@ -47,52 +47,84 @@ export function healthSweepConnectionWhere() {
  */
 export async function repairUnsupportedVoiceConnectionHealth(
   db: Db,
-  options: { companyId?: string; connectionId?: string; now?: () => Date; limit?: number } = {},
+  options: {
+    companyId?: string;
+    connectionId?: string;
+    now?: () => Date;
+    batchSize?: number;
+    signal?: AbortSignal;
+  } = {},
 ): Promise<number> {
-  const limit = options.limit ?? 100;
-  const rows = await db
-    .select({
-      connection: toolConnections,
-      endpointHealthMessage: chatEndpoints.healthMessage,
-    })
-    .from(toolConnections)
-    .innerJoin(chatEndpoints, and(
-      eq(chatEndpoints.connectionId, toolConnections.id),
-      eq(chatEndpoints.companyId, toolConnections.companyId),
-    ))
-    .where(and(
-      eq(toolConnections.transport, "voice"),
-      eq(toolConnections.enabled, true),
-      eq(toolConnections.status, "active"),
-      eq(toolConnections.healthStatus, "error"),
-      eq(toolConnections.healthMessage, UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE),
-      eq(chatEndpoints.provider, "speko"),
-      eq(chatEndpoints.status, "active"),
-      options.companyId === undefined ? undefined : eq(toolConnections.companyId, options.companyId),
-      options.connectionId === undefined ? undefined : eq(toolConnections.id, options.connectionId),
-    ))
-    .orderBy(asc(toolConnections.id))
-    .limit(limit);
-  if (rows.length === 0) return 0;
-  const repairedAt = (options.now ?? (() => new Date()))();
-  for (const { connection, endpointHealthMessage } of rows) {
-    await db.transaction(async (tx) => {
-      await tx
-        .update(toolConnections)
-        .set({
-          healthStatus: "healthy",
-          healthMessage: endpointHealthMessage ?? "Connected",
-          lastError: null,
-          updatedAt: repairedAt,
-        })
-        .where(and(
-          eq(toolConnections.id, connection.id),
-          eq(toolConnections.healthStatus, "error"),
-          eq(toolConnections.healthMessage, UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE),
-        ));
+  const batchSize = Math.max(1, options.batchSize ?? 100);
+  const nowFn = options.now ?? (() => new Date());
+  let totalRepaired = 0;
+  let cursor: string | undefined;
+  while (true) {
+    options.signal?.throwIfAborted();
+    const candidates = await db
+      .selectDistinctOn([toolConnections.id], {
+        id: toolConnections.id,
+      })
+      .from(toolConnections)
+      .innerJoin(chatEndpoints, and(
+        eq(chatEndpoints.connectionId, toolConnections.id),
+        eq(chatEndpoints.companyId, toolConnections.companyId),
+      ))
+      .where(and(
+        eq(toolConnections.transport, "voice"),
+        eq(toolConnections.enabled, true),
+        eq(toolConnections.status, "active"),
+        eq(toolConnections.healthStatus, "error"),
+        eq(toolConnections.healthMessage, UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE),
+        eq(chatEndpoints.provider, "speko"),
+        eq(chatEndpoints.status, "active"),
+        options.companyId === undefined ? undefined : eq(toolConnections.companyId, options.companyId),
+        options.connectionId === undefined ? undefined : eq(toolConnections.id, options.connectionId),
+        cursor === undefined ? undefined : sql`${toolConnections.id} > ${cursor}`,
+      ))
+      .orderBy(asc(toolConnections.id), asc(chatEndpoints.id))
+      .limit(batchSize);
+    if (candidates.length === 0) break;
+    const candidateIds = candidates.map((row) => row.id);
+    cursor = candidateIds[candidateIds.length - 1];
+    const repairedAt = nowFn().toISOString();
+    const repairedRows = await db.transaction(async (tx) => {
+      const updated = await tx.execute<{ id: string; company_id: string }>(sql`
+        update ${toolConnections} as tc
+        set
+          health_status = 'healthy',
+          health_message = coalesce(ce.health_message, 'Connected'),
+          last_error = null,
+          updated_at = ${repairedAt}::timestamptz
+        from (
+          select distinct on (connection_id)
+            connection_id,
+            company_id,
+            health_message
+          from ${chatEndpoints}
+          where provider = 'speko' and status = 'active'
+          order by connection_id, id
+        ) as ce
+        where tc.id in (${sql.join(candidateIds.map((id) => sql`${id}`), sql`, `)})
+          and tc.id = ce.connection_id
+          and tc.company_id = ce.company_id
+          and tc.transport = 'voice'
+          and tc.enabled = true
+          and tc.status = 'active'
+          and tc.health_status = 'error'
+          and tc.health_message = ${UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE}
+        returning tc.id, tc.company_id
+      `);
+      for (const row of updated) {
+        await notifyToolConnectionHealth(tx, { id: row.id, companyId: row.company_id });
+        await notifyChatConnectionObservation(tx, row.id, "voice");
+      }
+      return updated;
     });
+    totalRepaired += repairedRows.length;
+    if (candidates.length < batchSize) break;
   }
-  return rows.length;
+  return totalRepaired;
 }
 function asRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value))

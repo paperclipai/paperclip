@@ -1,5 +1,6 @@
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE } from "../services/tool-access/catalog/failures.js";
+import { repairUnsupportedVoiceConnectionHealth } from "../services/tool-access/catalog/health.js";
 const googleSignIn = vi.hoisted(() => ({ cloudHosted: true }));
 vi.mock("../services/google-sign-in-availability.js", () => ({ paperclipGoogleSignInAvailable: () => googleSignIn.cloudHosted }));
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
@@ -21183,6 +21184,46 @@ describeEmbeddedPostgres("tool access service", () => {
       healthMessage: "Connected; conversation test optional",
       lastError: null,
     });
+
+    // Multi-batch repair drains beyond a single batch size.
+    const [secondCorruptedVoice] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: voiceApplication!.id,
+      name: "Speko second corrupted",
+      uid: `chat-speko-${randomUUID()}`,
+      connectionKind: "managed",
+      connectionPurpose: "channel",
+      ownership: "customer",
+      transport: "voice",
+      authKind: "api_key",
+      credentialPolicy: "shared",
+      status: "active",
+      enabled: true,
+      config: { provider: "speko" },
+      transportConfig: {},
+      healthStatus: "error",
+      healthMessage: UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE,
+      lastError: UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE,
+      healthCheckedAt: new Date(0),
+      lastHealthAt: new Date(0),
+    }).returning();
+    await db.insert(chatEndpoints).values({
+      companyId: company.id,
+      connectionId: secondCorruptedVoice!.id,
+      provider: "speko",
+      publicId: `speko-${randomUUID()}`,
+      status: "active",
+      assignedAgentId: agent!.id,
+      healthMessage: "Connected",
+    });
+    await db.update(toolConnections).set({
+      healthStatus: "error",
+      healthMessage: UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE,
+      lastError: UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE,
+    }).where(eq(toolConnections.id, corruptedVoice!.id));
+    expect(await repairUnsupportedVoiceConnectionHealth(db, { companyId: company.id, batchSize: 1 })).toBe(2);
+    const [repairedSecond] = await db.select().from(toolConnections).where(eq(toolConnections.id, secondCorruptedVoice!.id));
+    expect(repairedSecond).toMatchObject({ healthStatus: "healthy", healthMessage: "Connected", lastError: null });
   });
 
   it("enriches listConnections with lastUsedAt from the most recent tool-call event", async () => {
