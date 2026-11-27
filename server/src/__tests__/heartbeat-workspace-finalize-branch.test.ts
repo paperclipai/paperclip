@@ -228,8 +228,8 @@ async function seedRunTarget(db: Db, repoRoot: string) {
   return { companyId, projectId, projectWorkspaceId, issueId, agentId };
 }
 
-async function wakeIssue(heartbeat: Heartbeat, agentId: string, issueId: string) {
-  return heartbeat.wakeup(agentId, {
+async function wakeIssue(db: Db, heartbeat: Heartbeat, agentId: string, issueId: string) {
+  return actionableFixtureWake(db, heartbeat, agentId, {
     source: "automation",
     triggerDetail: "system",
     reason: "issue_commented",
@@ -260,6 +260,20 @@ async function listRunWorkspaceOperations(db: Db, runId: string) {
     .from(workspaceOperations)
     .where(eq(workspaceOperations.heartbeatRunId, runId))
     .orderBy(asc(workspaceOperations.startedAt), asc(workspaceOperations.createdAt));
+}
+
+async function actionableFixtureWake(db: ReturnType<typeof createDb>, heartbeat: ReturnType<typeof heartbeatService>, agentId: string, input: Parameters<ReturnType<typeof heartbeatService>["wakeup"]>[1]) {
+  if (input.reason === "issue_commented") {
+    const issueId = String(input.contextSnapshot?.issueId ?? input.payload?.issueId);
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then(rows => rows[0]!);
+    const commentId = randomUUID();
+    await db.insert(issueComments).values({ id: commentId, companyId: issue.companyId, issueId,
+      authorUserId: "responsible-user", body: `[@Agent](agent://${agentId}) Continue the requested fixture work.`,
+      metadata: { version: 1, sections: [], commentWake: { version: 1, kind: "actionable", companyId: issue.companyId,
+        issueId, actorType: "user", actorId: "responsible-user", recipientAgentId: agentId, request: "Continue the requested fixture work." } } });
+    input = { ...input, payload: { ...input.payload, issueId, commentId } };
+  }
+  return heartbeat.wakeup(agentId, input);
 }
 
 describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => {
@@ -349,7 +363,7 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
     });
 
     const heartbeat = heartbeatService(db);
-    const run = await wakeIssue(heartbeat, agentId, issueId);
+    const run = await wakeIssue(db, heartbeat, agentId, issueId);
     expect(run).not.toBeNull();
 
     const finishedRun = await waitForRunToFinish(heartbeat, run!.id);
@@ -437,7 +451,7 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
     });
 
     const heartbeat = heartbeatService(db);
-    const run = await wakeIssue(heartbeat, agentId, issueId);
+    const run = await wakeIssue(db, heartbeat, agentId, issueId);
     expect(run).not.toBeNull();
 
     const finishedRun = await waitForRunToFinish(heartbeat, run!.id);
@@ -508,7 +522,7 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
     });
 
     const heartbeat = heartbeatService(db);
-    const run = await wakeIssue(heartbeat, agentId, issueId);
+    const run = await wakeIssue(db, heartbeat, agentId, issueId);
     expect(run).not.toBeNull();
 
     const finishedRun = await waitForRunToFinish(heartbeat, run!.id);

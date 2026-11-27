@@ -3921,7 +3921,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
 
           if (!await ordinaryCommentWakeAllowed(tx as unknown as Db, { companyId: issue.companyId,
             issueId: issue.id, agentId: agent.id, assigneeAgentId: issue.assigneeAgentId,
-            status: issue.status, context: enrichedContextSnapshot, reason })) {
+            status: issue.status === "done" && opts.queuedCommentInterruptId &&
+              executionWaitRequestId === opts.queuedCommentInterruptId ? "todo" : issue.status,
+            context: enrichedContextSnapshot, reason })) {
             return { kind: "skipped" as const };
           }
 

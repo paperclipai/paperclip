@@ -118,7 +118,7 @@ describeEmbeddedPostgres("Stop on a task whose run is still waiting in line", ()
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user",
       status: "active", membershipRole: "member" });
     await db.insert(agents).values({ id: agentId, companyId, name: "Codie", role: "engineer", status: "active",
-      adapterType: "codex_local", adapterConfig: {},
+      adapterType: "codex_local", adapterConfig: { cwd: process.cwd() },
       runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } }, permissions: {} });
     return { companyId, agentId };
   }
@@ -186,7 +186,7 @@ describeEmbeddedPostgres("Stop on a task whose run is still waiting in line", ()
         } });
         await issueService(db).update(issue.id, { status: "done" });
       };
-      const message = await request(app).post(`/api/issues/${issue.id}/comments`).send({ body: "Continue with the corrected request." });
+      const message = await request(app).post(`/api/issues/${issue.id}/comments`).send({ body: `[@Agent](agent://${agentId}) Continue with the corrected request.`, commentIntent: { kind: "actionable", recipientAgentId: agentId, request: "Continue with the corrected request." } });
       expect(message.status).toBe(201);
       // Comment dispatch is asynchronous; wait for its wake to register before
       // draining the process-wide executor set or tearing down its task rows.

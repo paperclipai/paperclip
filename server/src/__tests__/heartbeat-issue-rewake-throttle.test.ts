@@ -249,17 +249,29 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     expect(admittedWake).not.toBeNull();
   });
 
+
+  async function saveActionableComment(companyId: string, issueId: string, agentId: string, commentId: string, authorAgentId?: string) {
+    if (authorAgentId) await db.insert(agents).values({ id: authorAgentId, companyId, name: "Fixture commenter", adapterType: "process", status: "idle" });
+    await db.insert(issueComments).values({ id: commentId, companyId, issueId,
+      authorUserId: authorAgentId ? null : "board-user", authorAgentId: authorAgentId ?? null,
+      body: `[@Agent](agent://${agentId}) Continue the requested work.`,
+      metadata: { version: 1, sections: [], commentWake: { version: 1, kind: "actionable", companyId, issueId,
+        actorType: authorAgentId ? "agent" : "user", actorId: authorAgentId ?? "board-user", recipientAgentId: agentId,
+        request: "Continue the requested work." } } });
+  }
   it("does not throttle system comment-driven wakes even during a no-progress streak", async () => {
     const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
 
     await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 40 });
     await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 10 });
 
+    const systemCommentId = randomUUID();
+    await saveActionableComment(companyId, issueId, agentId, systemCommentId);
     const commentWake = await heartbeat.wakeup(agentId, {
       source: "automation",
       triggerDetail: "system",
       reason: "issue_commented",
-      payload: { issueId, commentId: randomUUID() },
+      payload: { issueId, commentId: systemCommentId },
       contextSnapshot: { issueId, wakeReason: "issue_commented" },
       requestedByActorType: "system",
       requestedByActorId: "test",
@@ -274,6 +286,8 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 10 });
 
     const agentCommentId = randomUUID();
+    const commenterId = randomUUID();
+    await saveActionableComment(companyId, issueId, agentId, agentCommentId, commenterId);
     await db.insert(activityLog).values({
       companyId,
       actorType: "agent",
@@ -293,7 +307,7 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
         wakeCommentId: agentCommentId,
       },
       requestedByActorType: "agent",
-      requestedByActorId: randomUUID(),
+      requestedByActorId: commenterId,
     });
     expect(throttledAgentCommentWake).toBeNull();
     expect((await latestWakeRequest(agentId))?.reason).toBe("issue_rewake_throttled");
@@ -307,6 +321,8 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
       entityId: issueId,
     });
     const nextAgentCommentId = randomUUID();
+    const nextCommenterId = randomUUID();
+    await saveActionableComment(companyId, issueId, agentId, nextAgentCommentId, nextCommenterId);
     const admittedAfterHumanInput = await heartbeat.wakeup(agentId, {
       source: "automation",
       triggerDetail: "system",
@@ -318,7 +334,7 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
         wakeCommentId: nextAgentCommentId,
       },
       requestedByActorType: "agent",
-      requestedByActorId: randomUUID(),
+      requestedByActorId: nextCommenterId,
     });
     expect(admittedAfterHumanInput).not.toBeNull();
   });

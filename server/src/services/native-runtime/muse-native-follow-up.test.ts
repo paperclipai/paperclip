@@ -41,7 +41,7 @@ describe("Muse native comment follow-up", () => {
       status: "accepted", projection: {}, acceptBy: new Date(Date.now() + 60000), expiresAt: new Date(Date.now() + 60000),
       claimedAt: new Date(), nativeAcceptedAt: new Date() }).returning();
     const comments = await db.insert(issueComments).values([1, 2].map(index => ({ companyId, issueId: task!.id,
-      authorUserId: userId, body: `Follow-up ${index}` }))).returning();
+      authorUserId: userId, body: `[@Agent](agent://${agentId}) Follow-up ${index}`, metadata: { version: 1, sections: [], commentWake: { version: 1, kind: "actionable", companyId, issueId: task!.id, actorType: "user", actorId: userId, recipientAgentId: agentId, request: `Handle follow-up ${index}.` } } }))).returning();
     const wake = (commentId: string) => heartbeatService(db).wakeup(agentId, { source: "assignment", triggerDetail: "system",
       reason: "issue_commented", payload: { issueId: task!.id, commentId }, requestedByActorType: "user", requestedByActorId: userId,
       contextSnapshot: { issueId: task!.id, wakeCommentId: commentId, wakeReason: "issue_commented" } });

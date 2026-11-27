@@ -534,7 +534,7 @@ import {
       }))?.body).toBe("QUARANTINED_PLAN_BODY");
     });
     it("keeps concurrent delivery and multiple resets in separate ordered queue entries", async () => {
-      const issue = await create();
+      const issue = await create("local-board");
       const first = await issueService(db).addComment(issue.id, "First", {
         userId: "local-board",
       });

@@ -154,14 +154,16 @@ describe("Board upload receipt to native wake staging", () => {
           ? await request(app)
               .post(`/api/issues/${issueId}/comments`)
               .send({
-                body: "Inspect only this new file; keep this internal and open.",
+                commentIntent: { kind: "actionable", recipientAgentId: agentId, request: "Inspect only this new file; keep this internal and open." },
+                body: `[@Agent](agent://${agentId}) Inspect only this new file; keep this internal and open.`,
                 attachmentIds: [attachment.id],
               })
           : await request(app)
               .patch(`/api/issues/${issueId}`)
               .send({
+                commentIntent: { kind: "actionable", recipientAgentId: otherAgentId, request: "Inspect only this new file; keep this internal and open." },
                 comment:
-                  "Inspect only this new file; keep this internal and open.",
+                  `[@Agent](agent://${otherAgentId}) Inspect only this new file; keep this internal and open.`,
                 attachmentIds: [attachment.id],
                 assigneeAgentId: otherAgentId,
               });
@@ -264,7 +266,7 @@ describe("Board upload receipt to native wake staging", () => {
     const { attachment } = await upload();
     const response = await request(app)
       .post(`/api/issues/${issueId}/comments`)
-      .send({ body: `[old file](${attachment.contentPath})` });
+      .send({ commentIntent: { kind: "actionable", recipientAgentId: agentId, request: "Inspect the referenced file." }, body: `[@Agent](agent://${agentId}) [old file](${attachment.contentPath})` });
     expect(response.status).toBe(201);
     const [retained] = await db
       .select()
@@ -341,7 +343,7 @@ describe("Board upload receipt to native wake staging", () => {
       } else if (mode === "already_bound") {
         const first = await request(app)
           .post(`/api/issues/${issueId}/comments`)
-          .send({ body: "First binding", attachmentIds: [attachment.id] });
+          .send({ commentIntent: { kind: "actionable", recipientAgentId: agentId, request: "Inspect this first binding." }, body: `[@Agent](agent://${agentId}) First binding`, attachmentIds: [attachment.id] });
         expect(first.status).toBe(201);
         originalCommentId = first.body.id;
         await vi.waitFor(() => expect(wakeup).toHaveBeenCalled());

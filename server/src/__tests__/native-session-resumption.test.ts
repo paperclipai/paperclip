@@ -89,6 +89,12 @@ import { heartbeatService } from "../services/heartbeat.js";
 import { persistHeartbeatRunProcessMetadata } from "../services/heartbeat/run-lifecycle.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 
+function actionableWakeFixture(companyId: string, issueId: string, agentId: string, userId: string) {
+  return { version: 1 as const, sections: [], commentWake: { version: 1 as const, kind: "actionable" as const,
+    companyId, issueId, actorType: "user" as const, actorId: userId, recipientAgentId: agentId,
+    request: "Continue the requested work." } };
+}
+
 describe("P6-25 pre-result native session recovery", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let db: ReturnType<typeof createDb>;
@@ -1050,7 +1056,8 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
           companyId,
           issueId,
           authorUserId: "responsible-user",
-          body: "Verify the newest user instruction before completing this task.",
+          metadata: actionableWakeFixture(companyId, issueId, agentId, "responsible-user"),
+          body: `[@Agent](agent://${agentId}) Verify the newest user instruction before completing this task.`,
         });
     }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
@@ -1494,11 +1501,13 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
         await db.update(issues).set({ status: "done" }).where(eq(issues.id, freshIssueId));
         return directExecute();
       });
+      const freshCommentId = randomUUID();
+      await db.insert(issueComments).values({ id: freshCommentId, companyId, issueId: freshIssueId, authorUserId: "responsible-user", body: `[@Agent](agent://${agentId}) Start after the native kill switch is off.`, metadata: actionableWakeFixture(companyId, freshIssueId, agentId, "responsible-user") });
       const fresh = await heartbeat.wakeup(agentId, {
         source: "automation",
         triggerDetail: "system",
         reason: "issue_commented",
-        payload: { issueId: freshIssueId },
+        payload: { issueId: freshIssueId, commentId: freshCommentId },
         contextSnapshot: {
           issueId: freshIssueId,
           taskId: freshIssueId,
@@ -1654,8 +1663,10 @@ describe("goal-less native task-session publication", () => {
         executionWorkspaceSettings: { mode: "shared_workspace" } });
       await db.insert(issueWorkProducts).values({ id: workProductId, companyId, issueId, type: "artifact", provider: "paperclip",
         title: "Saved artifact", status: "ready_for_review", reviewState: "approved" });
+      const initialCommentId = randomUUID();
+      await db.insert(issueComments).values({ id: initialCommentId, companyId, issueId, authorUserId: "pointer-user", body: `[@Agent](agent://${agentId}) Deliver the saved artifact.`, metadata: actionableWakeFixture(companyId, issueId, agentId, "pointer-user") });
       const first = await heartbeat.wakeup(agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
-        requestedByActorType: "user", requestedByActorId: "pointer-user", payload: { issueId }, contextSnapshot: { issueId, taskId: issueId, skipIssueComment: true } });
+        requestedByActorType: "user", requestedByActorId: "pointer-user", payload: { issueId, commentId: initialCommentId }, contextSnapshot: { issueId, taskId: issueId, skipIssueComment: true } });
       expect(first).not.toBeNull();
       await closeEntered;
       const [persisted] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, first!.id));
@@ -1687,7 +1698,7 @@ describe("goal-less native task-session publication", () => {
       // Use those public services; a raw comment on a still-done task is stale.
       const issuesSvc = issueService(db);
       await issuesSvc.update(issueId, { status: "todo", actorUserId: "pointer-user" });
-      const comment = await issuesSvc.addComment(issueId, "Continue using the saved artifact.", { userId: "pointer-user" });
+      const comment = await issuesSvc.addComment(issueId, `[@Agent](agent://${agentId}) Continue using the saved artifact.`, { userId: "pointer-user" }, { commentIntent: { kind: "actionable", recipientAgentId: agentId, request: "Continue using the saved artifact." } });
       const second = await heartbeat.wakeup(agentId, { source: "automation", triggerDetail: "system", reason: "issue_reopened_via_comment",
         requestedByActorType: "user", requestedByActorId: "pointer-user", payload: { issueId, commentId: comment.id, mutation: "comment", reopenedFrom: "done" },
         contextSnapshot: { issueId, taskId: issueId, wakeCommentId: comment.id, reopenedFrom: "done", skipIssueComment: true,
@@ -1718,7 +1729,7 @@ describe("goal-less native task-session publication", () => {
           sessionDisplayId: after!.sessionIdAfter,
         })]);
         await issuesSvc.update(issueId, { status: "todo", actorUserId: "pointer-user" });
-        const followup = await issuesSvc.addComment(issueId, "Continue the fresh session's saved work.", { userId: "pointer-user" });
+        const followup = await issuesSvc.addComment(issueId, `[@Agent](agent://${agentId}) Continue the fresh session's saved work.`, { userId: "pointer-user" }, { commentIntent: { kind: "actionable", recipientAgentId: agentId, request: "Continue the fresh session's saved work." } });
         const third = await heartbeat.wakeup(agentId, { source: "automation", triggerDetail: "system", reason: "issue_reopened_via_comment",
           requestedByActorType: "user", requestedByActorId: "pointer-user",
           payload: { issueId, commentId: followup.id, mutation: "comment", reopenedFrom: "done" },

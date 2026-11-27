@@ -66910,10 +66910,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await initializeRunIdentity(db, { companyId, runId: f.runId, issueId, responsibleUserId: "owner-user",
         messageIds: [String(f.action.payload.commentId)], cause: "chat_message" });
       const [comment] = await db.insert(issueComments).values({ companyId, issueId, authorType: "user",
-        authorUserId: "owner-user", body: "Continue from saved work and review the current head." }).returning();
+        authorUserId: "owner-user", body: `[@Agent](agent://${agentId}) Continue from saved work and review the current head.`,
+        metadata: { version: 1, sections: [], commentWake: { version: 1, kind: "actionable", companyId, issueId,
+          actorType: "user", actorId: "owner-user", recipientAgentId: agentId, request: "Continue from saved work and review the current head." } } }).returning();
       await db.update(agents).set({ status: "running", runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } } })
         .where(eq(agents.id, agentId));
       const [capacity] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running" }).returning();
+      // A separate entitled unblock precedes the saved board-message turn.
+      await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, issueId));
       const heartbeat = heartbeatService(db);
       const current = await heartbeat.wakeup(agentId, { source: "automation", triggerDetail: "system",
         reason: "issue_reopened_via_comment", requestedByActorType: "user", requestedByActorId: "owner-user",
@@ -67654,7 +67658,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           if (mode === "committed_delayed_cleanup" || queuedBoard) {
             const [boardComment] = queuedBoard ? await db.insert(issueComments).values({
               companyId, issueId: context.issue.id, authorType: "user", authorUserId: "owner-user",
-              body: "Keep this independent continuation for its own authorized turn.",
+              body: `[@Agent](agent://${context.fixture.assignedAgentId}) Keep this independent continuation for its own authorized turn.`,
+              metadata: { version: 1, sections: [], commentWake: { version: 1, kind: "actionable", companyId, issueId: context.issue.id,
+                actorType: "user", actorId: "owner-user", recipientAgentId: context.fixture.assignedAgentId,
+                request: "Keep this independent continuation for its own authorized turn." } },
             }).returning() : [];
             const [boardWake] = boardComment ? await db.insert(agentWakeupRequests).values({ companyId,
               agentId: context.fixture.assignedAgentId, source: "automation", triggerDetail: "system",

@@ -104,6 +104,20 @@ async function createGitRepoWithOrigin() {
   return { repoRoot, originRoot };
 }
 
+async function actionableFixtureWake(db: ReturnType<typeof createDb>, heartbeat: ReturnType<typeof heartbeatService>, agentId: string, input: Parameters<ReturnType<typeof heartbeatService>["wakeup"]>[1]) {
+  if (input.reason === "issue_commented") {
+    const issueId = String(input.contextSnapshot?.issueId ?? input.payload?.issueId);
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then(rows => rows[0]!);
+    const commentId = randomUUID();
+    await db.insert(issueComments).values({ id: commentId, companyId: issue.companyId, issueId,
+      authorUserId: "responsible-user", body: `[@Agent](agent://${agentId}) Continue the requested fixture work.`,
+      metadata: { version: 1, sections: [], commentWake: { version: 1, kind: "actionable", companyId: issue.companyId,
+        issueId, actorType: "user", actorId: "responsible-user", recipientAgentId: agentId, request: "Continue the requested fixture work." } } });
+    input = { ...input, payload: { ...input.payload, issueId, commentId } };
+  }
+  return heartbeat.wakeup(agentId, input);
+}
+
 describeEmbeddedPostgres("accepted plan workspace refresh", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
@@ -409,7 +423,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
     });
 
     const heartbeat = heartbeatService(db);
-    const run = await heartbeat.wakeup(agentId, {
+    const run = await actionableFixtureWake(db, heartbeat, agentId, {
       source: "automation",
       triggerDetail: "system",
       reason: "issue_commented",
@@ -571,7 +585,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       model: "test-model",
     }; });
 
-    const sourceRun = await heartbeat.wakeup(agentId, {
+    const sourceRun = await actionableFixtureWake(db, heartbeat, agentId, {
       source: "automation",
       triggerDetail: "system",
       reason: "issue_commented",
@@ -679,7 +693,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       };
     });
 
-    const childRun = await heartbeat.wakeup(agentId, {
+    const childRun = await actionableFixtureWake(db, heartbeat, agentId, {
       source: "automation",
       triggerDetail: "system",
       reason: "issue_assigned",
@@ -824,7 +838,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
     });
 
     const heartbeat = heartbeatService(db);
-    const run = await heartbeat.wakeup(agentId, {
+    const run = await actionableFixtureWake(db, heartbeat, agentId, {
       source: "automation",
       triggerDetail: "system",
       reason: "issue_blockers_resolved",
@@ -984,7 +998,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
     });
 
     const heartbeat = heartbeatService(db);
-    const run = await heartbeat.wakeup(agentId, {
+    const run = await actionableFixtureWake(db, heartbeat, agentId, {
       source: "automation",
       triggerDetail: "system",
       reason: "issue_commented",
@@ -1128,7 +1142,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
     });
 
     const heartbeat = heartbeatService(db);
-    const run = await heartbeat.wakeup(agentId, {
+    const run = await actionableFixtureWake(db, heartbeat, agentId, {
       source: "automation",
       triggerDetail: "system",
       reason: "issue_blockers_resolved",

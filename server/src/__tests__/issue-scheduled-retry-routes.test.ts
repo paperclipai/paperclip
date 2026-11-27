@@ -683,8 +683,8 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
       const app = createApp(boardActor(f.companyId));
 
       const res = method === "post"
-        ? await request(app).post(`/api/issues/${f.issueId}/comments`).send({ body: "Verified source recovery; continue the original work." })
-        : await request(app).patch(`/api/issues/${f.issueId}`).send({ comment: "Verified source recovery; continue the original work." });
+        ? await request(app).post(`/api/issues/${f.issueId}/comments`).send({ body: `[@Agent](agent://${f.agentId}) Verified source recovery; continue the original work.`, commentIntent: { kind: "actionable", recipientAgentId: f.agentId, request: "Verified source recovery; continue the original work." } })
+        : await request(app).patch(`/api/issues/${f.issueId}`).send({ comment: `[@Agent](agent://${f.agentId}) Verified source recovery; continue the original work.`, commentIntent: { kind: "actionable", recipientAgentId: f.agentId, request: "Verified source recovery; continue the original work." } });
 
       expect(res.status, JSON.stringify(res.body)).toBe(method === "post" ? 201 : 200);
       const [comment] = await db.select({ id: issueComments.id }).from(issueComments)

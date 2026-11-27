@@ -135,7 +135,9 @@ async function fixture() {
       companyId,
       issueId,
       authorUserId: "alice",
-      body: "Fix the border styling",
+      body: `[@Alex](agent://${agentId}) Fix the border styling`,
+      metadata: { version: 1, sections: [], commentWake: { version: 1, kind: "actionable", companyId, issueId,
+        actorType: "user", actorId: "alice", recipientAgentId: agentId, request: "Fix the border styling" } },
     })
     .returning();
   const source = {
@@ -352,7 +354,7 @@ describe("fast response accepted turns", () => {
     const untrusted = "QUARANTINED_PRIVATE_FINDING_DO_NOT_PROMOTE";
     const sourceTrust = buildLowTrustSourceTrust({ issueId: f.issueId, agentId: f.agentId });
     if (location === "source") {
-      await db.update(issueComments).set({ body: untrusted, sourceTrust }).where(eq(issueComments.id, f.comment.id));
+      await db.update(issueComments).set({ body: `[@Alex](agent://${f.agentId}) ${untrusted}`, sourceTrust }).where(eq(issueComments.id, f.comment.id));
     } else {
       await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId, authorAgentId: f.agentId,
         body: untrusted, sourceTrust, createdAt: new Date(f.source.acceptedAt.getTime() - 1) });
