@@ -129,12 +129,13 @@ To enable the restriction through the API, send this body to
 {
   "reportingLineHiringPolicy": {
     "enabled": true,
-    "maxDepth": 50,
-    "maxDirectReports": 12
+    "maxDepth": 10,
+    "maxDirectReports": 30
   }
 }
 ```
 
+If omitted, the limits default to 10 levels and 30 direct reports.
 Depth counts the links from the top of the org chart, which is at depth zero.
 Direct reports count until they are terminated or rejected, including pending
 hires and paused agents. The limits apply to new hires and reporting-line moves

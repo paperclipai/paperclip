@@ -32,8 +32,8 @@ export type CreateCompany = z.infer<typeof createCompanySchema>;
 
 export const reportingLineHiringPolicySchema = z.object({
   enabled: z.boolean(),
-  maxDepth: z.number().int().min(1).max(1000).default(50),
-  maxDirectReports: z.number().int().min(1).max(1000).default(12),
+  maxDepth: z.number().int().min(1).max(1000).default(10),
+  maxDirectReports: z.number().int().min(1).max(1000).default(30),
 }).strict();
 
 export const updateCompanySchema = objectWithoutDefaults(

@@ -4,6 +4,7 @@ import { AgentObservabilitySettingsSection } from "../components/observability/A
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  reportingLineHiringPolicySchema,
   type InteractionResolverGovernance,
   type ReportingLineHiringPolicy,
   type IssueThreadInteractionKind,
@@ -37,6 +38,8 @@ import {
   ToggleField,
 } from "../components/agent-config-primitives";
 import { InstanceGeneralSettings } from "./InstanceGeneralSettings";
+
+const defaultReportingLineHiringPolicy = reportingLineHiringPolicySchema.parse({ enabled: false });
 
 export function CompanySettings() {
   const {
@@ -103,7 +106,7 @@ export function CompanySettings() {
   const canManageReportingLineHiringPolicy = boardAuthority?.source === "local_implicit" || boardAuthority?.isInstanceAdmin ||
     boardAuthority?.memberships?.some(member => member.companyId === selectedCompanyId &&
       member.status === "active" && member.membershipRole === "owner");
-  const reportingLineHiringPolicy = selectedCompany?.reportingLineHiringPolicy ?? { enabled: false, maxDepth: 50, maxDirectReports: 12 };
+  const reportingLineHiringPolicy = selectedCompany?.reportingLineHiringPolicy ?? defaultReportingLineHiringPolicy;
   const reportingLineHiringMutation = useMutation({
     mutationFn: (policy: ReportingLineHiringPolicy) => companiesApi.update(selectedCompanyId!, { reportingLineHiringPolicy: policy }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.companies.all }),
