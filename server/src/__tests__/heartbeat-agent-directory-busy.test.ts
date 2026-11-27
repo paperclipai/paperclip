@@ -23,6 +23,14 @@ import { AGENT_DIRECTORY_BUSY_ERROR_CODE, AGENT_DIRECTORY_BUSY_RETRY_REASON } fr
 import { undeliveredLegacyUserCommentIds } from "../services/explicit-native-continuation.js";
 import { isResolvedInteractionContinuationWakeContext } from "../modules/run-dispatch/index.js";
 
+
+function deliberateInput(companyId: string, issueId: string, agentId: string, userId: string, request: string) {
+  return { body: `[@Agent](agent://${agentId}) ${request}`, metadata: { version: 1 as const, sections: [], commentWake: {
+    version: 1 as const, kind: "actionable" as const, companyId, issueId, recipientAgentId: agentId,
+    actorType: "user" as const, actorId: userId, request,
+  } } };
+}
+
 const busyPrepares = vi.hoisted(() => ({ remaining: 0, calls: 0, beforeBusy: null as null | (() => Promise<void>) }));
 vi.mock("../services/agent-instruction-working-copies.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../services/agent-instruction-working-copies.js")>();
@@ -113,7 +121,7 @@ describeEmbeddedPostgres("a new run that meets a busy agent directory", () => {
       responsibleUserId: "busy-directory-user", assigneeAgentId: agentId, checkoutRunId: runId, executionRunId: runId, issueNumber: 2 });
     await db.update(heartbeatRuns).set({ scopeKind: "issue", issueId }).where(eq(heartbeatRuns.id, runId));
     const [comment] = await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorType: "user",
-      authorUserId: "busy-directory-user", body: "Continue the task." }).returning();
+      authorUserId: "busy-directory-user", ...deliberateInput(companyId, issueId, agentId, "busy-directory-user", "Continue the task.") }).returning();
     await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId, kind: "active_run_watchdog",
       cause: "legacy_execution_requires_reconciliation", fingerprint: sourceRunId, status: "resolved", outcome: "cancelled",
       nextAction: "User continued.", evidence: { explicitUserContinuation: { runId, previousRunId: sourceRunId, commentId,

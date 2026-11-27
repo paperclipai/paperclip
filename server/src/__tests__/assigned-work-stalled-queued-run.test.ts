@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, agentWakeupRequests, automaticRunBrakes, companies, createDb, heartbeatRuns, issues, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
+import { activityLog, authUsers, companyMemberships, issueComments, agents, agentWakeupRequests, automaticRunBrakes, companies, createDb, heartbeatRuns, issues, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { createHeartbeatQueueTestDependencies } from "./helpers/heartbeat-queue.js";
 import { createHeartbeatQueue, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake } from "../services/heartbeat/queue.js";
@@ -14,6 +14,14 @@ import { ASSIGNED_WORK_CONTINUED_ACTION, assignedWorkSweep } from "../services/r
 import { CONTINUATION_CAP_WINDOW_MS } from "../services/recovery/assigned-work-invariant.js";
 import { logger } from "../middleware/logger.js";
 import { automaticRunBrake, automaticRunCreationHeldUntil } from "../services/recovery/automatic-run-brake.js";
+
+
+function deliberateInput(companyId: string, issueId: string, agentId: string, userId: string, request: string) {
+  return { body: `[@Agent](agent://${agentId}) ${request}`, metadata: { version: 1 as const, sections: [], commentWake: {
+    version: 1 as const, kind: "actionable" as const, companyId, issueId, recipientAgentId: agentId,
+    actorType: "user" as const, actorId: userId, request,
+  } } };
+}
 
 const support = await getEmbeddedPostgresTestSupport();
 const MINUTE = 60_000;
@@ -190,10 +198,15 @@ describe.skipIf(!support.supported)("a queued run the dispatcher keeps passing o
     const f = await seed();
     const stalled = await f.queuedRun();
     await f.otherStarts(OLDEST_DISPATCH_SHARE + 1, QUEUED_RUN_AGING_MS / 2);
+    const now = new Date();
+    await db.insert(authUsers).values({ id: "person-1", name: "Person", email: "person-1@stalled.test", createdAt: now, updatedAt: now }).onConflictDoNothing();
+    await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: "person-1", status: "active", membershipRole: "member" });
     const joined = await f.sweep(async () => {
+      const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issue.id,
+        authorType: "user", authorUserId: "person-1", ...deliberateInput(f.companyId, f.issue.id, f.agentId, "person-1", "Continue this task.") }).returning();
       await f.queue.enqueueWakeup(f.agentId, { source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
-        payload: { issueId: f.issue.id }, requestedByActorType: "user", requestedByActorId: "person-1",
-        contextSnapshot: { issueId: f.issue.id, taskId: f.issue.id, wakeReason: "issue_commented" } });
+        payload: { issueId: f.issue.id, commentId: comment.id }, requestedByActorType: "user", requestedByActorId: "person-1",
+        contextSnapshot: { issueId: f.issue.id, taskId: f.issue.id, wakeReason: "issue_commented", wakeCommentId: comment.id } });
     }).checkIssue({ companyId: f.companyId, issueId: f.issue.id });
     expect(joined).toMatchObject({ verdict: { reason: "queued_run_stalled" }, outcome: "changed" });
     expect((await f.readRun(stalled.id)).status).toBe("queued");
