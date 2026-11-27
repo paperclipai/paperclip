@@ -1,5 +1,3 @@
-import { agentConfigurationRevision } from "../lib/agent-configuration-revision.js";
-import { isDeepStrictEqual } from "node:util";
 import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
 import { type BudgetServiceHooks } from "./budgets.js";
@@ -96,7 +94,7 @@ export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
     rollbackConfigRevision: async (
       id: string,
       revisionId: string,
-      actor: { agentId?: string | null; userId?: string | null; reportingLineActor?: import("./authorization.js").AuthorizationActor; requiresReportingLinePolicy?: boolean },
+      actor: { agentId?: string | null; userId?: string | null },
     ) => {
       const revision = await db
         .select()
@@ -109,13 +107,7 @@ export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       }
 
       const patch = configPatchFromSnapshot(revision.afterConfig);
-      const existing = actor.requiresReportingLinePolicy ? await getById(id) : null;
-      if (actor.requiresReportingLinePolicy && !existing) return null;
-      return updateAgent(id, existing ? Object.fromEntries(Object.entries(patch).filter(([key, value]) =>
-        !isDeepStrictEqual(value, (existing as Record<string, unknown>)[key]))) : patch, {
-        reportingLineActor: actor.reportingLineActor,
-        requiresReportingLinePolicy: actor.requiresReportingLinePolicy,
-        ...(existing ? { expectedConfigurationRevision: agentConfigurationRevision(existing) } : {}),
+      return updateAgent(id, patch, {
         recordRevision: {
           createdByAgentId: actor.agentId ?? null,
           createdByUserId: actor.userId ?? null,

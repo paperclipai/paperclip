@@ -2,7 +2,6 @@ import type { AgentAppearance, AgentLifecycleState, AgentLifecycleOperation } fr
 import {
   type AnyPgColumn,
   pgTable,
-  boolean,
   numeric,
   uuid,
   text,
@@ -35,7 +34,6 @@ export const agents = pgTable(
     /** Digest of the effective configuration and runner image whose harness verification passed. */
     harnessVerifiedDigest: text("harness_verified_digest"),
     harnessVerifiedAt: timestamp("harness_verified_at", { withTimezone: true }),
-    delegatedHire: boolean("delegated_hire").notNull().default(false),
     reportsTo: uuid("reports_to").references((): AnyPgColumn => agents.id),
     capabilities: text("capabilities"),
     adapterType: text("adapter_type").notNull().default("process"),

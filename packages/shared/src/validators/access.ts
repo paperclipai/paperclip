@@ -93,16 +93,6 @@ export const createBoardApiKeySchema = z.object({
 
 export type CreateBoardApiKey = z.infer<typeof createBoardApiKeySchema>;
 
-export const delegatedRuntimeScopeSchema = z.object({
-  choices: z.array(z.object({
-    environmentId: z.string().guid(),
-    adapterType: z.literal("paperclip_runner"),
-    provider: z.string().min(1),
-    model: z.string().min(1),
-    includeDescendants: z.boolean().optional(),
-  }).strict()).min(1),
-}).strict();
-
 export const updateMemberPermissionsSchema = z.object({
   grants: z.array(
     z.object({

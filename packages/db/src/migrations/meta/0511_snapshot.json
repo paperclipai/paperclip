@@ -1,5 +1,5 @@
 {
-  "id": "1726f6cb-8aed-4fbd-9e78-8510bd8c1479",
+  "id": "8cfe12a4-6282-44fc-9b44-d246eb7243a7",
   "prevId": "bd7706ab-f548-43f0-9dbb-4f1d52d9c135",
   "version": "7",
   "dialect": "postgresql",
@@ -4509,13 +4509,6 @@
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
-        },
-        "delegated_hire": {
-          "name": "delegated_hire",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
         },
         "reports_to": {
           "name": "reports_to",

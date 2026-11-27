@@ -1,6 +1,3 @@
-import { getActorInfo } from "./authz.js";
-import { unprocessable } from "../errors.js";
-import { assertReportingLinePolicyOwner } from "../services/reporting-line-management.js";
 import { notifyRetentionWork, writeJoinRequestChange } from "../services/retention-work-notifications.js";
 import { isPublicIpAddress, parseIpv4Address } from "../lib/ip-address.js";
 import { createAgentLifecycle } from "../services/agent-lifecycle.js";
@@ -4538,27 +4535,13 @@ export function accessRoutes(
       await assertCompanyPermission(req, companyId, "users:manage_permissions");
       const memberToUpdate = await access.getMemberById(companyId, memberId);
       if (!memberToUpdate) throw notFound("Member not found");
-      const grants = (req.body as import("@paperclipai/shared").UpdateMemberPermissions).grants ?? [];
-      if (memberToUpdate.principalType === "agent") {
-        await assertReportingLinePolicyOwner(db, companyId, req.actor);
-        if (grants.length > 1 || grants.some(grant => grant.permissionKey !== "agents:delegate_runtime")) {
-          throw unprocessable("This route accepts only runtime delegation grants for agents");
-        }
-        const saved = await access.setRuntimeDelegationGrant(companyId, memberToUpdate.principalId,
-          grants.length ? grants[0].scope ?? null : undefined, getActorInfo(req).actorId);
-        await logActivity(db, {
-          companyId, ...getActorInfo(req), action: "company_member.permissions_updated",
-          entityType: "company_membership", entityId: memberId,
-          details: { permissionKey: "agents:delegate_runtime", enabled: saved.length > 0 },
-        });
-        res.json({ ...memberToUpdate, grants: saved });
-        return;
-      }
-      if (grants.some(grant => grant.permissionKey === "agents:delegate_runtime")) {
-        throw unprocessable("Runtime delegation grants apply to agents");
-      }
       await assertCanManageCompanyMember(req, access, companyId, memberToUpdate);
-      const updated = await access.setMemberPermissions(companyId, memberId, grants, req.actor.userId ?? null);
+      const updated = await access.setMemberPermissions(
+        companyId,
+        memberId,
+        req.body.grants ?? [],
+        req.actor.userId ?? null
+      );
       if (!updated) throw notFound("Member not found");
       await logActivity(db, {
         companyId,

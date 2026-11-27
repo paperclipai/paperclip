@@ -1,7 +1,5 @@
-import { assertReportRoleDescriptionUpdate, reportingLinePolicyFor } from "./reporting-line-management.js";
 import { and, eq, isNull } from "drizzle-orm";
 import {
-  agents,
   agentApiKeys,
   authUsers,
   companyMemberships,
@@ -157,10 +155,6 @@ export async function authorizeInstructionRead(
     resource,
     scope: { targetAgentId: target.id },
   });
-  if (!decision.allowed && peer && await reportingLinePolicyFor(db as Db, target.companyId)) {
-    const [agent] = await db.select().from(agents).where(and(eq(agents.id, target.id), eq(agents.companyId, target.companyId)));
-    if (agent && await assertReportRoleDescriptionUpdate(db as Db, agent, bound)) return bound;
-  }
   if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
   return bound;
 }
@@ -172,10 +166,6 @@ export async function authorizeInstructionCommit(
   target: { companyId: string; id: string },
 ) {
   const bound = await resolveInstructionActor(db, actor);
-  if (bound.type === "agent" && bound.agentId !== target.id && await reportingLinePolicyFor(db as Db, target.companyId)) {
-    const [agent] = await db.select().from(agents).where(and(eq(agents.id, target.id), eq(agents.companyId, target.companyId)));
-    if (agent && await assertReportRoleDescriptionUpdate(db as Db, agent, bound)) return bound;
-  }
   const access = authorizationService(db);
   const input = {
     actor: bound,

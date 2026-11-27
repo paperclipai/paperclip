@@ -1,4 +1,3 @@
-import { assertReportingLineActor, assertReportingLineHireInput, assertReportingLinePolicyOwner, assertReportingLineHireReplay, reportingLinePolicyFor } from "../services/reporting-line-management.js";
 import { resolveLoginEnvironmentTarget } from "../services/login-environment.js";
 import { supportsUnscopedHeartbeat } from "../services/heartbeat-policy.js";
 import { checkAgentProtectedEnvironmentKeys } from "../services/protected-environment-keys.js";
@@ -1851,7 +1850,7 @@ export function agentRoutes(
    * other actors a ready profile link, so they can send a person to the control.
    */
   async function assertBoardCanTerminateAgent(req: Request, target: { id: string; companyId: string }) {
-    if (req.actor.type === "board" || (req.actor.type === "agent" && await reportingLinePolicyFor(db, target.companyId))) return;
+    if (req.actor.type === "board") return;
     const [company] = await db.select({ issuePrefix: companies.issuePrefix }).from(companies)
       .where(eq(companies.id, target.companyId));
     const profile = company?.issuePrefix ? `[the agent's profile](/${company.issuePrefix}/agents/${target.id})` : "the agent's profile";
@@ -4411,8 +4410,7 @@ export function agentRoutes(
     const revisionId = req.params.revisionId as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
-    const delegated = req.actor.type === "agent" && req.actor.agentId !== id && !!await reportingLinePolicyFor(db, existing.companyId);
-    if (!delegated) await assertCanUpdateAgent(req, existing);
+    await assertCanUpdateAgent(req, existing);
 
     const revision = await svc.getConfigRevision(id, revisionId);
     if (!revision) {
@@ -4475,8 +4473,6 @@ export function agentRoutes(
     const updated = await svc.rollbackConfigRevision(id, revisionId, {
       agentId: actor.agentId,
       userId: actor.actorType === "user" ? actor.actorId : null,
-      reportingLineActor: req.actor,
-      requiresReportingLinePolicy: delegated,
     });
     if (!updated) {
       res.status(404).json({ error: "Revision not found" });
@@ -4559,11 +4555,7 @@ export function agentRoutes(
 
   const handleAgentHire = async (req: Request, res: Response) => {
     const companyId = req.params.companyId as string;
-    const delegated = req.actor.type === "agent" && !!await reportingLinePolicyFor(db, companyId);
-    if (delegated) {
-      await assertReportingLineActor(db, companyId, req.actor);
-      assertReportingLineHireInput(req.body);
-    } else await assertCanCreateAgentsForCompany(req, companyId, { hiring: true });
+    await assertCanCreateAgentsForCompany(req, companyId, { hiring: true });
     const company = await db
       .select()
       .from(companies)
@@ -4769,7 +4761,6 @@ export function agentRoutes(
         if (match) {
           const existingAgent = await svc.getById(match.entityId);
           if (existingAgent && existingAgent.status !== "terminated") {
-            if (delegated) await assertReportingLineHireReplay(db, existingAgent.id, companyId, req.actor);
             const priorApprovalId = (match.details as Record<string, unknown> | null)?.approvalId;
             const existingApproval =
               typeof priorApprovalId === "string" ? await approvalsSvc.getById(priorApprovalId) : null;
@@ -4796,7 +4787,6 @@ export function agentRoutes(
         },
         {
           ...(setupAgentId ? { setupAgentId } : {}),
-          ...(req.actor.type === "agent" ? { reportingLineActor: req.actor, requiresReportingLinePolicy: delegated, reportingLineHireInput: req.body } : {}),
           createdByUserId: req.actor.type === "board" ? req.actor.userId : null,
           createdByAgentId: req.actor.type === "agent" ? req.actor.agentId : null,
           interactionTexts: [JSON.stringify(req.body)],
@@ -4862,7 +4852,7 @@ export function agentRoutes(
             title: normalizedHireInput.title ?? null,
             icon: normalizedHireInput.icon ?? null,
             appearance: agent.appearance,
-            reportsTo: normalizedHireInput.reportsTo ?? null,
+            reportsTo: createdAgent.reportsTo,
             capabilities: normalizedHireInput.capabilities ?? null,
             adapterType: requestedAdapterType,
             adapterConfig: requestedAdapterConfig,
@@ -4933,7 +4923,7 @@ export function agentRoutes(
         );
       }
 
-      if (!createdAgent.delegatedHire) await applyDefaultAgentTaskAssignGrant(
+      await applyDefaultAgentTaskAssignGrant(
         companyId,
         agent.id,
         actor.actorType === "user" ? actor.actorId : null,
@@ -4971,11 +4961,7 @@ export function agentRoutes(
 
   router.post("/companies/:companyId/agents", validate(createAgentSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    const delegated = req.actor.type === "agent" && !!await reportingLinePolicyFor(db, companyId);
-    if (delegated) {
-      await assertReportingLineActor(db, companyId, req.actor);
-      assertReportingLineHireInput(req.body);
-    } else await assertCanCreateAgentsForCompany(req, companyId, { hiring: true });
+    await assertCanCreateAgentsForCompany(req, companyId, { hiring: true });
     if (req.body.budgetMonthlyCents > 0) assertBoard(req, COMPANY_BUDGETS_PAGE);
 
     const company = await db
@@ -5102,7 +5088,6 @@ export function agentRoutes(
       },
       {
         ...(setupId ? { setupOnly: true } : {}),
-        ...(req.actor.type === "agent" ? { reportingLineActor: req.actor, requiresReportingLinePolicy: delegated, reportingLineHireInput: req.body } : {}),
         createdByUserId: req.actor.type === "board" ? req.actor.userId : null,
         createdByAgentId: req.actor.type === "agent" ? req.actor.agentId : null,
         interactionTexts: [JSON.stringify(req.body)],
@@ -5162,7 +5147,7 @@ export function agentRoutes(
       trackAgentCreated(telemetryClient, { agentRole: agent.role, agentId: agent.id });
     }
 
-    if (!createdAgent.delegatedHire) await applyDefaultAgentTaskAssignGrant(
+    await applyDefaultAgentTaskAssignGrant(
       companyId,
       agent.id,
       req.actor.type === "board" ? (req.actor.userId ?? null) : null,
@@ -5180,7 +5165,6 @@ export function agentRoutes(
     if (!existing) return;
 
     if (req.actor.type === "agent") {
-      if (await reportingLinePolicyFor(db, existing.companyId)) throw forbidden("Only an owner can change agent permissions while the reporting-line policy is on");
       const actorAgent = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
       if (!actorAgent || actorAgent.companyId !== existing.companyId) {
         res.status(403).json({ error: "Forbidden" });
@@ -5693,9 +5677,8 @@ export function agentRoutes(
       return;
     }
 
-    const delegated = req.actor.type === "agent" && req.actor.agentId !== existing.id && !!await reportingLinePolicyFor(db, existing.companyId);
     const runtimeSettings = req.body.runtimeSettings;
-    if (runtimeSettings && !delegated) await assertCanConfigureAgentSetup(req, existing);
+    if (runtimeSettings) await assertCanConfigureAgentSetup(req, existing);
     const patchData = runtimeSettings
       ? prepareRuntimeSettingsPatch(existing, req.body)
       : { ...(req.body as Record<string, unknown>) };
@@ -5707,7 +5690,7 @@ export function agentRoutes(
       throw conflict("Agent configuration changed while you were editing. Reload the saved configuration and apply your changes again.");
     }
     if (expectedConfigurationRevision) {
-      if (!delegated) await assertCanConfigureAgentSetup(req, existing);
+      await assertCanConfigureAgentSetup(req, existing);
       const displayed = redactAgentConfiguration(existing)!;
       for (const key of ["adapterConfig", "runtimeConfig", "metadata"] as const) {
         if (hasOwn(patchData, key)) {
@@ -5721,9 +5704,9 @@ export function agentRoutes(
     // Status changes are lifecycle commands. Apply the authority of the dedicated
     // routes (POST /terminate, /pause, /resume) so PATCH is never a way around them.
     if (requestedStatus === "terminated") await assertBoardCanTerminateAgent(req, existing);
-    if (requestedStatus === "paused" && !delegated) assertBoard(req);
+    if (requestedStatus === "paused") assertBoard(req);
     if (requestedStatus === "idle") {
-      if (!delegated) await assertCanResumeAgent(req, existing);
+      await assertCanResumeAgent(req, existing);
       if (existing.orgChainHealth?.status === "invalid_org_chain") {
         throw conflict(existing.orgChainHealth.repairGuidance ?? "Repair this agent's reporting chain before resuming it");
       }
@@ -5762,7 +5745,7 @@ export function agentRoutes(
       && [undefined, "acpx"].includes(requestedRunnerConfig.provider as string | undefined)
       && [undefined, "grok"].includes(requestedRunnerConfig.acpxAgent as string | undefined);
     if (runner !== undefined || convertingPi || convertingGrok) {
-      if (!delegated) await assertCanConfigureAgentSetup(req, existing);
+      await assertCanConfigureAgentSetup(req, existing);
       const config = hasOwn(patchData, "adapterConfig") ? { ...(replaceAdapterConfig ? {} : existing.adapterConfig), ...asRecord(patchData.adapterConfig) } : existing.adapterConfig;
       Object.assign(patchData, await resolveNewAgentRunnerForCompany(db, existing.companyId, {
         adapterType: convertingPi || convertingGrok ? existing.adapterType : typeof patchData.adapterType === "string" ? patchData.adapterType : existing.adapterType,
@@ -5933,7 +5916,7 @@ export function agentRoutes(
     }
     const nextAiBinding = aiRuntimeConnectionBindingSchema.safeParse(requestedRuntimeConfig ? requestedRuntimeConfig.aiConnection : existing.runtimeConfig.aiConnection).data;
     if (nextAiBinding) {
-      if (!delegated) await assertCanConfigureAgentSetup(req, existing);
+      await assertCanConfigureAgentSetup(req, existing);
       const changed = !isDeepStrictEqual(nextAiBinding, existing.runtimeConfig.aiConnection);
       if (changed && req.actor.type === "agent") {
         await connectionManagementService(db).authorize(req.actor, "connections:profiles", {
@@ -5980,16 +5963,14 @@ export function agentRoutes(
     const profileOnlyChange = touchesProfileFields && Object.keys(patchData).every((key) =>
       (AGENT_PROFILE_CHANGE_CONSENT_FIELDS as readonly string[]).includes(key),
     );
-    if (profileOnlyChange && !delegated) {
+    if (profileOnlyChange) {
       await assertCanApplyAgentProfileChange(req, existing);
     } else {
-      if (!delegated) await assertCanConfigureAgentSetup(req, existing);
+      await assertCanConfigureAgentSetup(req, existing);
     }
 
     const actor = getActorInfo(req);
     const updateOptions = {
-      reportingLineActor: req.actor,
-      requiresReportingLinePolicy: delegated,
       expectedConfigurationRevision,
       ...(runtimeSettings ? { expectedConfiguration: {
         adapterType: existing.adapterType, adapterConfig: existing.adapterConfig,
@@ -6016,9 +5997,6 @@ export function agentRoutes(
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-
-    if (command === "pause" && delegated) await heartbeat.cancelActiveForAgent(id);
-    if (command === "terminate" && delegated) await cancelTerminatedReportRuns(agent.companyId, id);
 
     await logActivity(db, {
       companyId: agent.companyId,
@@ -6052,11 +6030,12 @@ export function agentRoutes(
   });
 
   router.post("/agents/:id/pause", async (req, res) => {
+    assertBoard(req);
     const id = req.params.id as string;
-    const existing = await getAccessibleAgent(req, res, id);
-    if (!existing) return;
-    if (req.actor.type !== "agent" || !await reportingLinePolicyFor(db, existing.companyId)) assertBoard(req);
-    const agent = await svcLifecycle.pauseAgent(id, "manual", req.actor);
+    if (!(await getAccessibleAgent(req, res, id))) {
+      return;
+    }
+    const agent = await svcLifecycle.pauseAgent(id);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
@@ -6066,7 +6045,8 @@ export function agentRoutes(
 
     await logActivity(db, {
       companyId: agent.companyId,
-      ...getActorInfo(req),
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
       action: "agent.paused",
       entityType: "agent",
       entityId: agent.id,
@@ -6081,14 +6061,14 @@ export function agentRoutes(
     if (!existing) {
       return;
     }
-    if (req.actor.type !== "agent" || !await reportingLinePolicyFor(db, existing.companyId)) await assertCanResumeAgent(req, existing);
+    await assertCanResumeAgent(req, existing);
     if (existing.orgChainHealth?.status === "invalid_org_chain") {
       res.status(409).json({
         error: existing.orgChainHealth?.repairGuidance ?? "Repair this agent's reporting chain before resuming it",
       });
       return;
     }
-    const agent = await svcLifecycle.resumeAgent(id, "user", req.actor);
+    const agent = await svcLifecycle.resumeAgent(id);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
@@ -6178,7 +6158,22 @@ export function agentRoutes(
     res.json(redactAgentRowForResponse(agent));
   });
 
-  async function cancelTerminatedReportRuns(companyId: string, id: string) {
+  router.post("/agents/:id/terminate", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await getAccessibleAgent(req, res, id);
+    if (!existing) {
+      return;
+    }
+    await assertBoardCanTerminateAgent(req, existing);
+
+    const agent = existing.status === "pending_approval"
+      ? (await approvalsSvc.rejectHire(id, req.actor.userId ?? "board"))?.agent
+      : await svcLifecycle.terminateAgent(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+
     const companyAgentRows = await db
       .select({
         id: agentsTable.id,
@@ -6188,38 +6183,17 @@ export function agentRoutes(
         status: agentsTable.status,
       })
       .from(agentsTable)
-      .where(eq(agentsTable.companyId, companyId));
+      .where(eq(agentsTable.companyId, agent.companyId));
     const invalidOrgChainDescendantIds = listInvalidOrgChainDescendantIds(id, companyAgentRows);
     const cancellation = await heartbeat.cancelInvocationsForAgents(
       [id, ...invalidOrgChainDescendantIds],
       AGENT_TERMINATED_STOP_REASON,
     );
 
-    return { invalidOrgChainDescendantIds, cancellation };
-  }
-
-  router.post("/agents/:id/terminate", async (req, res) => {
-    const id = req.params.id as string;
-    const existing = await getAccessibleAgent(req, res, id);
-    if (!existing) {
-      return;
-    }
-    await assertBoardCanTerminateAgent(req, existing);
-
-    if (existing.status === "pending_approval") assertBoard(req);
-    const agent = existing.status === "pending_approval"
-      ? (await approvalsSvc.rejectHire(id, req.actor.userId ?? "board"))?.agent
-      : req.actor.type === "agent" ? await svcLifecycle.terminateAgent(id, req.actor) : await svcLifecycle.terminateAgent(id);
-    if (!agent) {
-      res.status(404).json({ error: "Agent not found" });
-      return;
-    }
-
-    const { invalidOrgChainDescendantIds, cancellation } = await cancelTerminatedReportRuns(agent.companyId, id);
-
     await logActivity(db, {
       companyId: agent.companyId,
-      ...getActorInfo(req),
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
       action: "agent.terminated",
       entityType: "agent",
       entityId: agent.id,
@@ -6243,10 +6217,8 @@ export function agentRoutes(
   router.delete("/agents/:id", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
-    const existing = await getAccessibleAgent(req, res, id);
-    if (!existing) return;
-    if (existing.delegatedHire || await reportingLinePolicyFor(db, existing.companyId)) {
-      await assertReportingLinePolicyOwner(db, existing.companyId, req.actor);
+    if (!(await getAccessibleAgent(req, res, id))) {
+      return;
     }
     const agent = await svc.remove(id);
     if (!agent) {

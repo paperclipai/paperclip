@@ -12,7 +12,6 @@ import {
   approvals,
   issueApprovals,
   authUsers,
-  companies,
   companyMemberships,
   chatConversations,
   chatDeliveries,
@@ -343,7 +342,6 @@ type AgentAuthorizationRow = {
   status: string;
   reportsTo: string | null;
   permissions: Record<string, unknown> | null | undefined;
-  delegatedHire: boolean;
 };
 type ProjectAuthorizationRow = {
   id: string;
@@ -456,12 +454,11 @@ function agentIsInSubtree(
   agentsById: Map<string, AgentHierarchyRow>,
   rootAgentId: string,
   targetAgentId: string,
-  maxDepth: number,
 ) {
   if (rootAgentId === targetAgentId) return true;
 
   let cursor: string | null = targetAgentId;
-  for (let depth = 0; cursor && depth < maxDepth; depth += 1) {
+  for (let depth = 0; cursor && depth < 50; depth += 1) {
     const current = agentsById.get(cursor);
     if (!current) return false;
     if (current.reportsTo === rootAgentId) return true;
@@ -478,11 +475,6 @@ async function loadCompanyAgentHierarchy(db: Db | DbTransaction, companyId: stri
   return new Map(rows.map((agent) => [agent.id, agent]));
 }
 
-async function subtreeMaxDepth(db: Db | DbTransaction, companyId: string) {
-  const [company] = await db.select({ policy: companies.reportingLinePolicy }).from(companies).where(eq(companies.id, companyId));
-  return company?.policy?.enabled ? company.policy.maxDepth : 50;
-}
-
 async function isAgentInSubtree(
   db: Db | DbTransaction,
   companyId: string,
@@ -493,24 +485,7 @@ async function isAgentInSubtree(
     await loadCompanyAgentHierarchy(db, companyId),
     rootAgentId,
     targetAgentId,
-    await subtreeMaxDepth(db, companyId),
   );
-}
-
-export function subtreeGrantRoots(grantScope: Record<string, unknown>) {
-  return [
-    ...scopeValuesForKeys(grantScope, [
-      "managerAgentId",
-      "managerAgentIds",
-      "managedSubtreeAgentId",
-      "managedSubtreeAgentIds",
-      "subtreeAgentId",
-      "subtreeAgentIds",
-      "subtreeRootAgentId",
-      "subtreeRootAgentIds",
-    ]),
-    ...prefixedScopeValues(grantScope, "subtree:"),
-  ];
 }
 
 async function scopeAllows(
@@ -577,15 +552,26 @@ async function scopeAllows(
     if (!scopeIncludesId(targetUserIds, requestedUserId)) return false;
   }
 
-  const subtreeRootAgentIds = subtreeGrantRoots(grantScope);
+  const subtreeRootAgentIds = [
+    ...scopeValuesForKeys(grantScope, [
+      "managerAgentId",
+      "managerAgentIds",
+      "managedSubtreeAgentId",
+      "managedSubtreeAgentIds",
+      "subtreeAgentId",
+      "subtreeAgentIds",
+      "subtreeRootAgentId",
+      "subtreeRootAgentIds",
+    ]),
+    ...prefixedScopeValues(grantScope, "subtree:"),
+  ];
   if (subtreeRootAgentIds.length > 0) {
     constrained = true;
     if (!targetAssigneeAgentId) return false;
     const agentsById = await loadCompanyAgentHierarchy(db, companyId);
-    const maxDepth = await subtreeMaxDepth(db, companyId);
     let matchesSubtree = false;
     for (const rootAgentId of subtreeRootAgentIds) {
-      if (agentIsInSubtree(agentsById, rootAgentId, targetAssigneeAgentId, maxDepth)) {
+      if (agentIsInSubtree(agentsById, rootAgentId, targetAssigneeAgentId)) {
         matchesSubtree = true;
         break;
       }
@@ -1144,7 +1130,6 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
           status: agents.status,
           reportsTo: agents.reportsTo,
           permissions: agents.permissions,
-          delegatedHire: agents.delegatedHire,
         })
         .from(agents)
         .where(eq(agents.id, agentId))
@@ -2447,24 +2432,6 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
         input.action === "secrets:propose"
       ) {
         return lowTrustDecision;
-      }
-    }
-
-    if (input.action === "agents:create" && actorAgent.delegatedHire) {
-      const [company] = await db.select({ policy: companies.reportingLinePolicy }).from(companies).where(eq(companies.id, companyId));
-      if (company?.policy?.enabled && scopeBoolean(input.scope, "reportingLineManagement") &&
-        isSimpleAssignableAgentStatus(actorAgent.status) && actorAgent.status !== "paused" &&
-        await getActiveMembership(companyId, "agent", actorAgentId)) {
-        return allow({ action: input.action, reason: "allow_explicit_grant", explanation: "Allowed by the reporting-line policy." });
-      }
-      return deny({ action: input.action, reason: "deny_scope", explanation: "Turn on the reporting-line policy to let this agent hire." });
-    }
-
-    if ((input.action === "agent_config:update" || input.action === "agent_instructions:update") &&
-      input.resource.type === "agent" && input.resource.agentId !== actorAgentId) {
-      const [company] = await db.select({ policy: companies.reportingLinePolicy }).from(companies).where(eq(companies.id, companyId));
-      if (company?.policy?.enabled || actorAgent.delegatedHire) {
-        return deny({ action: input.action, reason: "deny_scope", explanation: "Use authorized reporting-line configuration for this agent." });
       }
     }
 

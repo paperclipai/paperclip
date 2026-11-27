@@ -1,4 +1,4 @@
-import { assertReportingLineConfiguration } from "./reporting-line-management.js";
+import { assertReportingLineMove } from "./reporting-line-management.js";
 import { isDeepStrictEqual } from "node:util";
 import { currentPluginInteractionOrigin } from "./plugin-interaction-context.js";
 import { assertAgentInteraction } from "./agent-interaction-policy.js";
@@ -43,10 +43,6 @@ export async function lockAgentConfigurationInteractions(tx: Db, id: string, dat
 }
 
 export async function prepareAgentConfiguration(db: Db, existing: AgentConfigurationRecord, data: AgentConfigurationPatch, options?: UpdateAgentOptions): Promise<AgentConfigurationPatch> {
-  const reportingLineActor = options?.reportingLineActor ?? (options?.recordRevision?.createdByAgentId
-    ? { type: "agent" as const, agentId: options.recordRevision.createdByAgentId, companyId: existing.companyId }
-    : undefined);
-  await assertReportingLineConfiguration(db, existing, data, reportingLineActor, options?.requiresReportingLinePolicy);
   await assertAgentInteraction(db, { companyId: existing.companyId, actorAgentId: options?.recordRevision?.createdByAgentId,
     operation: "mention", texts: changedConfigurationText(data, existing) });
   if (data.permissions !== undefined) data = { ...data, permissions: preserveAgentInteractionPermissions(existing.permissions, data.permissions) };
@@ -55,6 +51,7 @@ export async function prepareAgentConfiguration(db: Db, existing: AgentConfigura
   }
   await notifyAttentionRetentionWork(db, { companyId: existing.companyId });
   const id = existing.id;
+  await assertReportingLineMove(db, existing, data.reportsTo, options?.recordRevision?.createdByAgentId);
   const { ensureManager, assertNoCycle, assertCompanyShortnameAvailable, assertBuiltInAgentMetadataMutationAllowed } = agentRecordQueries(db);
   if (existing.status === "pending_approval" && !options?.allowPendingApprovalConfigUpdate) {
     const changedFields = changedPendingApprovalConfigFields(agentRecordQueries(db).normalizeAgentRow(existing), data);

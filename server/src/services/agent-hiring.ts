@@ -1,4 +1,4 @@
-import { assertReportingLineConfiguration } from "./reporting-line-management.js";
+import { reportingLineForHire } from "./reporting-line-management.js";
 import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import { assertNoInitialAgentInteractionPermissions, preserveAgentInteractionPermissions } from "../lib/agent-interaction-permissions.js";
 import { assertEphemeralAgentInstructions } from "./agent-instructions.js";
@@ -7,7 +7,7 @@ import { notifyAttentionRetentionWork } from "./retention-work-notifications.js"
 import { notifySkillVersionRetention, notifySkillVersionPinChange } from "./skill-version-retention-notifications.js";
 import { agentAppearanceSchema, randomAgentAppearance } from "@paperclipai/shared";
 import { normalizePaperclipRunnerAdapterConfig } from "@paperclipai/adapter-utils/server-utils";
-import { agents, toolConnectionInstalls, companyMemberships, principalPermissionGrants, type Db } from "@paperclipai/db";
+import { agents, toolConnectionInstalls, principalPermissionGrants, type Db } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
 import { unprocessable } from "../errors.js";
 import { agentRecordQueries, isPlainRecord, configPatchFromApprovalPayload, normalizeRuntimeConfigForNewAgent,
@@ -25,10 +25,12 @@ import { assertProviderApiPlacementPolicy, isProviderApiSetupDraft, resolveProvi
 
 export async function prepareAgentHire(db: Db, companyId: string, input: CreateAgentData, options?: CreateAgentOptions): Promise<CreateAgentData> {
   assertNoInitialAgentInteractionPermissions(input.permissions);
+  const reportsTo = await reportingLineForHire(db, companyId, input, options?.createdByAgentId);
   await assertAgentInteraction(db, { companyId, actorAgentId: options?.createdByAgentId, actorCompanyId: options?.createdByAgentCompanyId,
     operation: "mention", texts: [JSON.stringify(input), ...(options?.interactionTexts ?? [])], lock: "update" });
   await notifyAttentionRetentionWork(db, { companyId });
   const { runner, ...data } = input;
+  if (reportsTo !== undefined) data.reportsTo = reportsTo;
   const selection = options?.runnerResolved
     ? { adapterType: data.adapterType ?? "process", adapterConfig: isPlainRecord(data.adapterConfig) ? data.adapterConfig : {} }
     : await resolveNewAgentRunnerForCompany(db, companyId, {
@@ -85,14 +87,9 @@ export async function initializeAgentHire(txDb: Db, created: AgentHireRecord, op
   assertEphemeralAgentInstructions({ ...created, name: "" });
   await initializeDurableAgentFiles(txDb, created);
   await agentIdentityService(txDb).ensureAgentIdentity(companyId, created.id);
-  if (created.delegatedHire) {
-    await tx.insert(companyMemberships).values({
-      companyId, principalType: "agent", principalId: created.id, membershipRole: "member", status: "active",
-    }).onConflictDoNothing();
-  }
   // New standard agents receive the standard direct grants at activation.
   // Low-trust and bundled agents keep their explicit, narrower grants.
-  if (!created.delegatedHire && !options?.setupOnly && created.status !== "pending_approval" && !permissionsImplyLowTrust(created.permissions) &&
+  if (!options?.setupOnly && created.status !== "pending_approval" && !permissionsImplyLowTrust(created.permissions) &&
       !readBuiltInAgentMarker(created.metadata)) {
     await tx.insert(principalPermissionGrants).values(
       NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS.map((permissionKey) => ({
@@ -122,10 +119,6 @@ export async function initializeAgentHire(txDb: Db, created: AgentHireRecord, op
 export async function prepareAgentHireApproval(txDb: Db, existing: AgentHireRecord, approvedPayload?: Record<string, unknown> | null): Promise<AgentConfigurationPatch> {
   const approvedPatch = approvedPayload ? configPatchFromApprovalPayload(approvedPayload) : {};
   const patch = { ...approvedPatch } as AgentConfigurationPatch;
-  if (patch.reportsTo !== undefined) {
-    const [current] = await txDb.select().from(agents).where(eq(agents.id, existing.id));
-    if (current) await assertReportingLineConfiguration(txDb, current, patch);
-  }
   const hasApprovedAdapterConfig = Object.prototype.hasOwnProperty.call(patch, "adapterConfig") && isPlainRecord(patch.adapterConfig);
   if (
     Object.prototype.hasOwnProperty.call(patch, "adapterConfig") &&
@@ -168,7 +161,7 @@ export async function prepareAgentHireApproval(txDb: Db, existing: AgentHireReco
 export async function completeAgentHireApproval(txDb: Db, updated: AgentHireRecord, existing: AgentHireRecord) {
   const tx = txDb;
   await agentCredentialService(txDb).syncAgentSecretBindings(updated, txDb, existing.adapterConfig);
-  if (!updated.delegatedHire && !permissionsImplyLowTrust(updated.permissions) && !readBuiltInAgentMarker(updated.metadata)) {
+  if (!permissionsImplyLowTrust(updated.permissions) && !readBuiltInAgentMarker(updated.metadata)) {
     await tx.insert(principalPermissionGrants).values(
       NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS.map((permissionKey) => ({
         companyId: updated.companyId,

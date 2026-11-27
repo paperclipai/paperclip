@@ -105,14 +105,12 @@ export function ToggleField({
   checked,
   onChange,
   toggleTestId,
-  disabled,
 }: {
   label: string;
   hint?: string;
   checked: boolean;
   onChange: (v: boolean) => void;
   toggleTestId?: string;
-  disabled?: boolean;
 }) {
   return (
     <div className="flex items-center justify-between">
@@ -127,7 +125,6 @@ export function ToggleField({
         data-testid={toggleTestId}
         aria-label={label}
         checked={checked}
-        disabled={disabled}
         onCheckedChange={onChange}
       />
     </div>

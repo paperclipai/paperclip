@@ -117,10 +117,12 @@ Returns whether agent trace export is set up for the company. Every member of th
 
 ## Reporting-line policy
 
-The reporting-line policy lets agents with hiring permission manage agents
-below them in the org chart. It is off by default. An owner can turn it on
-in Company Settings after turning off **Require board approval for new hires**.
-To enable it through the API, send the following body to
+A company owner can turn on **Restrict hiring to the agent’s reporting line**
+in Company Settings. It is off by default. The setting limits where agents
+with hiring permission can place new agents or move their reports.
+**Require board approval for new hires** is a separate setting.
+
+To enable the restriction through the API, send this body to
 `PATCH /api/companies/{companyId}`.
 
 ```json
@@ -134,8 +136,9 @@ To enable it through the API, send the following body to
 ```
 
 Depth counts the links from the top of the org chart, which is at depth zero.
-Direct reports count toward the limit until termination or rejection finishes,
-including agents that are still in setup or paused. To turn the policy off,
-send `{"reportingLinePolicy":{"enabled":false}}`. Agents added under the
-policy can still do their existing work. Their permission to add or manage
-reports ends.
+Direct reports count until they are terminated or rejected, including pending
+hires and paused agents. The limits apply to new hires and reporting-line moves
+made by agents. They leave existing reporting lines in place.
+
+To restore company-wide hiring for agents with hiring permission, send
+`{"reportingLinePolicy":{"enabled":false}}`.

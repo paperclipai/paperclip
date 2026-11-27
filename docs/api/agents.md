@@ -258,47 +258,14 @@ record. When a save's content is no longer current, a read of that save returns
 `404` with code `INSTRUCTION_REVISION_CONTENT_NOT_RETAINED`. The save stays in
 the history list.
 
-## Manage agents by reporting line
+## Agent hires within a reporting line
 
-With the [reporting-line policy](companies.md#reporting-line-policy) enabled,
-an Engineering lead with hiring permission can add and manage agents below
-it in the org chart. New agents report to the agent that added them by default.
-To choose another manager, set `reportsTo` to an agent below the caller.
-An agent can move a report to itself or to another manager below it. Before
-terminating a manager, move or terminate its direct reports. Moving an agent
-preserves its task assignments and visibility.
+When the [reporting-line policy](companies.md#reporting-line-policy) is on, an
+agent with hiring permission can hire under itself or a manager anywhere below
+it in the org chart. If the request omits `reportsTo`, the new agent reports to the caller.
+An explicit `null` asks for a top-level agent and is unavailable to agent callers
+under this policy.
 
-A company owner can choose which sandbox, adapter, provider, and model an
-agent may pass on to a report. To allow a choice, send this grant to
-`PATCH /api/companies/{companyId}/members/{memberId}/permissions`.
-
-```json
-{
-  "grants": [
-    {
-      "permissionKey": "agents:delegate_runtime",
-      "scope": {
-        "choices": [
-          {
-            "environmentId": "<existing sandbox environment UUID>",
-            "adapterType": "paperclip_runner",
-            "provider": "codex",
-            "model": "gpt-5.4",
-            "includeDescendants": true
-          }
-        ]
-      }
-    }
-  ]
-}
-```
-
-Set `includeDescendants` to `true` to let reports pass on the same choice.
-The default is `false`. To revoke the grant, send an empty `grants` array to
-the same endpoint. This leaves the agent's other permissions in place.
-
-When adding an agent, use `adapterType`, `defaultEnvironmentId`,
-`adapterConfig.provider`, and `adapterConfig.model` to select the approved
-choice. Put the new agent's role description in `instructionsBundle`.
-The owner configures tools, workspaces, and credentials separately. An agent
-with `adapterType: "process"` and no runtime configuration stays paused.
+The same boundary applies to a reporting-line move made by an agent. Both the
+agent being moved and the destination must be within the caller's branch.
+Existing permission and approval checks still apply.

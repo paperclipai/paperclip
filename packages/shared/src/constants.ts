@@ -1187,7 +1187,6 @@ export const PERMISSION_KEYS = [
   "agents:create",
   "agents:read",
   "agents:configure",
-  "agents:delegate_runtime",
   "agents:suggest-changes",
   "skills:create",
   "skills:suggest-changes",

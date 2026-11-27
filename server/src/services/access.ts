@@ -12,10 +12,8 @@ import { and, eq, inArray, ne, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
-  companies,
   companyMemberships,
   companySecretBindings,
-  environments,
   companySecrets,
   connectionGrantDelegations,
   connectionGrantMembers,
@@ -28,8 +26,7 @@ import {
   userSecretDeclarations,
 } from "@paperclipai/db";
 import type { PermissionKey, PrincipalType } from "@paperclipai/shared";
-import { conflict, forbidden } from "../errors.js";
-import { delegatedRuntimeScopeSchema } from "@paperclipai/shared";
+import { conflict } from "../errors.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import { authorizationService, type AuthorizationActor, type AuthorizationResource } from "./authorization.js";
 import { ensureHumanRoleDefaultGrants } from "./principal-access-compatibility.js";
@@ -542,33 +539,6 @@ export function accessService(db: Db) {
     });
   }
 
-  async function setRuntimeDelegationGrant(companyId: string, agentId: string, input: unknown, ownerId: string | null) {
-    const scope = input === undefined ? null : delegatedRuntimeScopeSchema.parse(input);
-    return db.transaction(async tx => {
-      await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, companyId)).for("no key update");
-      const target = and(eq(principalPermissionGrants.companyId, companyId),
-        eq(principalPermissionGrants.principalType, "agent"), eq(principalPermissionGrants.principalId, agentId),
-        eq(principalPermissionGrants.permissionKey, "agents:delegate_runtime"));
-      if (!scope) {
-        await tx.delete(principalPermissionGrants).where(target);
-        return [];
-      }
-      const environmentIds = [...new Set(scope.choices.map(choice => choice.environmentId))];
-      const available = await tx.select({ id: environments.id }).from(environments).where(and(
-        inArray(environments.id, environmentIds), eq(environments.driver, "sandbox"), eq(environments.status, "active"),
-      ));
-      if (available.length !== environmentIds.length) throw conflict("A selected environment is unavailable");
-      return tx.insert(principalPermissionGrants).values({
-        companyId, principalType: "agent", principalId: agentId, permissionKey: "agents:delegate_runtime",
-        scope, grantedByUserId: ownerId,
-      }).onConflictDoUpdate({
-        target: [principalPermissionGrants.companyId, principalPermissionGrants.principalType,
-          principalPermissionGrants.principalId, principalPermissionGrants.permissionKey],
-        set: { scope, grantedByUserId: ownerId, updatedAt: new Date() },
-      }).returning();
-    });
-  }
-
   async function updateMemberAndPermissions(
     companyId: string,
     memberId: string,
@@ -579,9 +549,6 @@ export function accessService(db: Db) {
     },
     grantedByUserId: string | null,
   ) {
-    if (data.grants.some(grant => grant.permissionKey === "agents:delegate_runtime")) {
-      throw forbidden("Use the company member permissions route to grant runtime delegation");
-    }
     return memberAccessTransaction(async (tx) => {
       await tx.execute(sql`
         select ${companyMemberships.id}
@@ -657,7 +624,6 @@ export function accessService(db: Db) {
         .where(
           and(
             eq(principalPermissionGrants.companyId, companyId),
-            ne(principalPermissionGrants.permissionKey, "agents:delegate_runtime"),
             eq(principalPermissionGrants.principalType, existing.principalType),
             eq(principalPermissionGrants.principalId, existing.principalId),
           ),
@@ -1040,16 +1006,12 @@ export function accessService(db: Db) {
     grants: GrantInput[],
     grantedByUserId: string | null,
   ) {
-    if (grants.some(grant => grant.permissionKey === "agents:delegate_runtime")) {
-      throw forbidden("Use the company member permissions route to grant runtime delegation");
-    }
     await db.transaction(async (tx) => {
       await tx
         .delete(principalPermissionGrants)
         .where(
           and(
             eq(principalPermissionGrants.companyId, companyId),
-            ne(principalPermissionGrants.permissionKey, "agents:delegate_runtime"),
             eq(principalPermissionGrants.principalType, principalType),
             eq(principalPermissionGrants.principalId, principalId),
           ),
@@ -1131,7 +1093,6 @@ export function accessService(db: Db) {
     grantedByUserId: string | null,
     scope: Record<string, unknown> | null = null,
   ) {
-    if (permissionKey === "agents:delegate_runtime") throw forbidden("Use the company member permissions route to grant runtime delegation");
     if (!enabled) {
       await db
         .delete(principalPermissionGrants)
@@ -1286,7 +1247,6 @@ export function accessService(db: Db) {
     ensureRoleDefaultGrants,
     archiveMember,
     setMemberPermissions,
-    setRuntimeDelegationGrant,
     updateMemberAndPermissions,
     promoteInstanceAdmin,
     demoteInstanceAdmin,

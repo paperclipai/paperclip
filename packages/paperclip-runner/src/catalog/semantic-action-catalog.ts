@@ -368,7 +368,7 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
     operationId: "hire_agent",
     title: "Hire a native agent",
     description:
-      "Create one native Paperclip Runner teammate for the current company and task. The new agent reports to you. The native hiring policy selects its runtime and enforces any owner-approved delegation. Reuse an existing teammate when appropriate and follow any approval returned by the API.",
+      "Create one native Paperclip Runner teammate for the current company and task. The new agent reports to you, inherits your native runtime, and receives no provider, adapter, environment, or credential configuration from the tool. Reuse an existing teammate when appropriate and follow any approval returned by the API.",
     placement: "optional",
     effect: "write",
     requiredClaims: ["delegation:agents:create"],

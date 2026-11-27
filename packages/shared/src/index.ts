@@ -2601,7 +2601,6 @@ export {
   updateCompanyMemberWithPermissionsSchema,
   archiveCompanyMemberSchema,
   updateMemberPermissionsSchema,
-  delegatedRuntimeScopeSchema,
   updateAgentPermissionGrantSchema,
   type UpdateAgentPermissionGrant,
   searchAdminUsersQuerySchema,

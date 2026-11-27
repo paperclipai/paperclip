@@ -418,11 +418,11 @@ export function CompanySettings() {
         {canManageReportingLinePolicy && (
           <div className="space-y-3">
             <ToggleField
-              label="Let agents manage their reports"
-              hint="Agents with hiring permission can add and manage agents below them in the org chart. Turn off board approval for new hires to enable this."
+              label="Restrict hiring to the agent’s reporting line"
+              hint="Agents with hiring permission can hire under themselves or their reports. The approval setting above still applies."
               checked={reportingLinePolicy.enabled}
               onChange={(enabled) => reportingLineMutation.mutate({ ...reportingLinePolicy, enabled })}
-              disabled={reportingLineMutation.isPending || !!selectedCompany.requireBoardApprovalForNewAgents}
+              disabled={reportingLineMutation.isPending}
             />
             {reportingLinePolicy.enabled && (
               <div className="flex flex-wrap gap-3">

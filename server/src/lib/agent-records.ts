@@ -75,8 +75,6 @@ export interface ClaudeLoginContext {
 }
 
 export interface UpdateAgentOptions {
-  requiresReportingLinePolicy?: boolean;
-  reportingLineActor?: import("../services/authorization.js").AuthorizationActor;
   expectedConfigurationRevision?: string;
   expectedConfiguration?: Pick<AgentConfigurationRecord, "adapterType" | "adapterConfig" | "runtimeConfig" | "defaultEnvironmentId">;
   recordRevision?: RevisionMetadata;
@@ -85,16 +83,13 @@ export interface UpdateAgentOptions {
   claudeLogin?: ClaudeLoginContext;
 }
 
-export type CreateAgentData = Omit<typeof agents.$inferInsert, "companyId" | "delegatedHire" | "lifecycleState" | "lifecycleRequiredPluginIds" | "lifecycleHolds" | "lifecycleVersion" | "lifecycleError" | "lifecycleOperation"> & { runner?: AgentRunnerChoice };
+export type CreateAgentData = Omit<typeof agents.$inferInsert, "companyId" | "lifecycleState" | "lifecycleRequiredPluginIds" | "lifecycleHolds" | "lifecycleVersion" | "lifecycleError" | "lifecycleOperation"> & { runner?: AgentRunnerChoice };
 export type AgentConfigurationRecord = typeof agents.$inferSelect;
 export const AGENT_CONFIGURATION_FIELDS = [...CONFIG_REVISION_FIELDS, "permissions"] as const;
 export type AgentConfigurationPatch = Partial<Pick<typeof agents.$inferInsert, typeof AGENT_CONFIGURATION_FIELDS[number]>>;
-export type AgentHireRecord = Pick<typeof agents.$inferSelect, "id" | "companyId" | "adapterType" | "adapterConfig" | "permissions" | "metadata" | "status" | "delegatedHire">;
+export type AgentHireRecord = Pick<typeof agents.$inferSelect, "id" | "companyId" | "adapterType" | "adapterConfig" | "permissions" | "metadata" | "status">;
 
 export interface CreateAgentOptions {
-  requiresReportingLinePolicy?: boolean;
-  reportingLineHireInput?: Record<string, unknown>;
-  reportingLineActor?: import("../services/authorization.js").AuthorizationActor;
   createdByAgentId?: string | null;
   createdByAgentCompanyId?: string;
   interactionTexts?: readonly string[];
