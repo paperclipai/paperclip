@@ -180,4 +180,36 @@ describe("gemini_local ACP startup fallback", () => {
       await rm(cwd, { recursive: true, force: true });
     }
   });
+
+  it.each([
+    "Error resuming session: No previous sessions found for this project.",
+    'Error resuming session: Invalid session identifier "previous".\n  Searched for sessions.\n  Use --list-sessions to see available sessions, then use --resume {number}, --resume {uuid}, or --resume latest.',
+  ])("retries without --resume when the Gemini CLI rejects the saved session (%#)", async (stderr) => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "gemini-resume-rejected-"));
+    const attempts: string[][] = [];
+    try {
+      runAdapterExecutionTargetProcess
+        .mockResolvedValueOnce({
+          exitCode: 42, signal: null, timedOut: false, stdout: "",
+          stderr, pid: 123, startedAt: new Date().toISOString(),
+        })
+        .mockResolvedValueOnce({
+          exitCode: 0, signal: null, timedOut: false,
+          stdout: JSON.stringify({ type: "message", role: "assistant", content: "done" }),
+          stderr: "", pid: 123, startedAt: new Date().toISOString(),
+        });
+      const ctx = buildContext({ engine: "cli", cwd });
+      const result = await execute({
+        ...ctx,
+        runtime: { ...ctx.runtime, sessionId: "previous" },
+        onMeta: async (meta) => { attempts.push(meta.commandArgs ?? []); },
+      });
+      expect(result.exitCode).toBe(0);
+      expect(attempts).toHaveLength(2);
+      expect(attempts[0]).toContain("--resume");
+      expect(attempts[1]).not.toContain("--resume");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
 });
