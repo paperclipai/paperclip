@@ -1,0 +1,3 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "heartbeat_runs_attention_resumed_idx" ON "heartbeat_runs" USING btree ("company_id",coalesce("issue_id"::text, "native_issue_id"::text,
+        "context_snapshot"->>'issueId', "context_snapshot"->>'taskId'),"created_at") WHERE "heartbeat_runs"."status" in ('running', 'succeeded');--> statement-breakpoint
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "heartbeat_runs_attention_history_idx" ON "heartbeat_runs" USING btree ("company_id","created_at" DESC NULLS LAST,"id" DESC NULLS LAST) WHERE "heartbeat_runs"."status" in ('failed', 'timed_out') or "heartbeat_runs"."error_code" = 'provider_limit_wait';

@@ -74,6 +74,36 @@ Codex `turn/diff/updated` is normalized separately as the latest same-turn
 families can drive a turn-status UI without changing the public PRP family or
 adding a control-plane endpoint.
 
+## Governance activity: hooks and automatic approval reviews
+
+`hook.started` / `hook.completed` (`paperclip.hook.v1`) and
+`safety.review.started` / `safety.review.completed`
+(`paperclip.safety.review.v1`) are display records. They make decisions that
+no person clicked auditable. They never grant or deny execution authority.
+
+- A hook record has an `outcome`: `running`, `passed`, `context`, `feedback`,
+  `blocked`, `stopped` or `failed`. `message` holds the hook's own text for
+  that outcome. `source` names where the hook is configured (`user hooks`,
+  `project hooks`) or the script file name, never an absolute host path.
+  `toolName` is set only when the harness reports it.
+- A review record has a `decision`: `pending`, `allowed`, `denied`,
+  `user_required`, `timed_out`, `aborted` or `unknown`. `action` is a short
+  description of the reviewed action. Terminal input is never echoed.
+  `targetExecutionId` matches the `executionId` of the reviewed tool
+  execution when the harness reports one.
+- All fields after `summary` are optional. A record without them is a
+  valid v1 record.
+
+| Qualified adapter profile | Hooks | Approval reviews |
+|---|---|---|
+| Direct Codex App Server | `hook/started`, `hook/completed` | `item/autoApprovalReview/*` (only with an on-request approval policy) |
+| ACPX Claude | Claude Agent SDK hook messages, forwarded by the patched adapter on `session_info_update._meta.claudeCode.hook` | Unavailable |
+| Other ACPX profiles | Unavailable | Unavailable |
+
+Hooks run only when the harness home defines and trusts them. An isolated
+Paperclip home defines none, so these records appear for agents with a
+preconfigured home.
+
 ## Provider-neutral semantic receipts
 
 - `capabilities.semanticTools` advertises stable operation IDs, availability,
@@ -107,6 +137,21 @@ Codex answer objects, OpenCode answer arrays, and ACP typed content exist only
 inside their adapters; `origin` may retain the provider method and adapter name
 for diagnostics but never provider response data.
 
+Text-mode questions may include `initialText` (at most 100,000 Unicode code points,
+within the existing 196 KiB question-set bound). It supplies an editable starting
+draft, including empty text and whitespace. ACP plain-string `default` values map
+without trimming; numeric defaults become editable numeric text. Select questions
+do not accept this field. The UI preserves saved drafts and existing responses
+ahead of provider defaults. Initial text never submits or resolves a request:
+the operator must explicitly submit, and all existing response validation still
+applies. Canonical text answers retain submitted whitespace and literal escape
+sequences; legacy and select custom answers retain their existing normalization.
+JSON Schema, TypeScript and Rust count draft Unicode code points alike. Existing
+submitted-answer limits still count UTF-16 code units; a draft can require editing
+before it satisfies those limits or field-specific constraints. Required blank
+answers remain invalid. Redaction, company scope and durable
+replay rules remain in force.
+
 Question and option order is significant, while answers are keyed by stable
 question IDs and selections reference stable option IDs. The canonical modes
 are `text`, `single_select`, and `multi_select`. Text validation is repeated at
@@ -139,7 +184,16 @@ policy in the closed provider configuration: `approvalPolicy` for Codex and
 provider-session identity, so an incompatible idle or recovered session is
 replaced on the next execution. An active turn is never mutated in place.
 
-`paperclip.native-execution-input.v5` is the current input format. It retains
+`paperclip.native-execution-input.v5` remains the ordinary input format.
+Claude inputs with explicitly configured effort use v9 with the optional
+`provider.claudeEffort` field. V9 retains the compact v3 model envelope; effort
+is host configuration, never model-visible task text. V6 remains the separate
+OpenAI Dot format. Readers retain persisted v1-v8 contracts, including v7 home modes and v8 Muse. Claude effort is
+acknowledged on each ACP connection before prompting, bound into the session
+identity and recovery checkpoint, and cross-checked against the public provider
+descriptor. Missing effort retains the provider default; values are never clamped.
+
+The v5 input format retains
 the v4 permission pinning and adds optional completion-source references;
 `paperclip.native-model-envelope.v3` is the corresponding explicit model
 projection. Readers continue to accept persisted v1-v4 inputs, and v5 readers
@@ -230,9 +284,10 @@ Runnerd build-metadata contract v2 advertises the exact transport inventory:
 `dial_ws_loopback`, `dial_wss`, and `listen_ws`. Plaintext dial destinations
 must resolve entirely to loopback. Public dial targets require TLS trust and
 hostname validation; a private CA bundle augments the platform roots and must
-be a bounded, private, regular file. Listener mode is fixed to port 43127 and a
-single run-bound path. All modes retain the same message/frame bounds and PRP
-authentication.
+be a bounded, private, regular file. Listener mode binds to `0.0.0.0` and a
+single run-bound path. The optional `--listen-port` selects a port in
+`1..=65535` and defaults to `43127`. Warm attachments retain the existing
+listening port. All modes retain the same message/frame bounds and PRP authentication.
 
 These are package-local Durable recovery and transport rules. Control-plane
 admission and deployment policy remain separately reviewed work.
@@ -279,3 +334,30 @@ not part of the contract. Native attempt output is
 fields but rejects unknown required versions and inconsistent terminal,
 semantic-denial, usage, or transcript facts. Full fields and the deterministic
 gate are exercised by the package-local deterministic conformance suite.
+
+
+## Claude effort after the Codex default merge
+
+Native input v9 adds configured Claude effort while retaining v1–v8 readers.
+It carries the explicit home mode from v7; v8 Muse remains separate. The shared
+executor retains master's provider and cleanup behavior. Copilot's shared source
+attestation advances from pending profile 21 to 22 without replacing historical
+fixtures. Pi advances from master's profile 24 to 27 to bind the combined source,
+including master's OpenRouter attribution. The prior branch profile 24 is
+preserved separately from master's published profile 24.
+Provider executable bytes remain unchanged. These new source identities require
+fresh compatibility checks; earlier provider runs retain their original identities.
+
+## Claude essential task tools
+
+Claude's runner-owned MCP bridge marks `set_task_title`, `paperclip_finish` and
+`paperclip_block` with `_meta["anthropic/alwaysLoad"]: true`. The pinned SDK can
+include these definitions in its first request without a ToolSearch round trip.
+Other public tools keep their existing deferral policy. Private operations stay
+undiscoverable, and incoming tool definitions cannot set this metadata themselves.
+The host enables this only for Claude; Codex and Copilot catalogs are unchanged.
+No server-wide tool preloading, model change or permission change is introduced.
+
+The shared bridge's source binding advances pending Copilot profile 22 to 23.
+Profile 22 remains decodable and its fixture is immutable. Copilot remains pending;
+the revision does not qualify a new provider or change its executable closure.
