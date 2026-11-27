@@ -65,6 +65,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
             companyIds: memberships.map((row) => row.companyId),
             isInstanceAdmin: Boolean(roleRow),
             runId: runIdHeader ?? undefined,
+            sessionId: session.session?.id ?? undefined,
             source: "session",
           };
           next();
