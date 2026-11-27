@@ -3,15 +3,7 @@
 Guidance for human and AI contributors working in this repository.
 
 This codebase is yours: what it's for and how it's built are your call, and you'll keep building on it.
-The invariants and rules below record what has been decided so far. If you think one of them is wrong, say so and propose the change; do not work around it.
-
-## 1. Purpose
-
-Paperclip is a control plane for AI-agent companies.
-The code and its tests are the source of truth for current behavior.
-The focused docs under `doc/` are background. They can be out of date, so do not treat them as requirements when they disagree with the code or with the task.
-
-## 2. Read This First
+The invariants and rules below record what has been decided so far. If you think one of them is wrong, say so and propose the change; do not work around
 
 Read the doc that matches your change before you start:
 
