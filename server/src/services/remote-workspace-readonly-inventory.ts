@@ -9,14 +9,22 @@ export async function readWorkspaceInventory(root: string, controllerCopy = fals
   const digest = crypto.createHash("sha256"), exclude = [".paperclip-runtime"];
   const repositories: string[] = [], configs: string[] = [];
   let entries = 0, scannedEntries = 0, byteSize = 0, configBytes = 0;
+  const storageGuard = Object.fromEntries(["PAPERCLIP_GIT_MIN_FREE_BYTES", "PAPERCLIP_GIT_MIN_FREE_INODES", "PAPERCLIP_GIT_MAX_GROWTH_BYTES"]
+    .flatMap(name => typeof process.env[name] === "string" ? [[name, process.env[name]]] : []));
   const gitRead = async (cwd: string, args: string[]) => {
     check();
     const { execFile } = await import("node:child_process");
     return new Promise<string>((resolve, reject) => execFile("git", ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", cwd, ...args], {
       signal, timeout: 10_000, maxBuffer: 64 * 1024 * 1024,
-      env: { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_COUNT: "0",
+      env: { PATH: process.env.PATH, ...storageGuard, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_COUNT: "0",
         GIT_OPTIONAL_LOCKS: "0", GIT_NO_LAZY_FETCH: "1" },
-    }, (error, result) => error ? reject(new Error("remote_workspace_readonly_capture_unsafe")) : resolve(result)));
+    }, (error, result, stderr) => {
+      if (!error) return resolve(result);
+      const guard = /^paperclip_git_storage_limit:(.*)$/mu.exec(String(stderr ?? ""))?.[1];
+      reject(new Error(guard === undefined ? "remote_workspace_readonly_capture_unsafe"
+        : /too little free disk space|too few free inodes|stopped at its storage budget/u.test(guard)
+          ? "remote_workspace_readonly_capture_git_storage_limit" : "remote_workspace_readonly_capture_git_storage_guard_unavailable"));
+    }));
   };
   const visit = async (relative: string, parentRepository: string | null = null) => {
     check();
@@ -133,5 +141,5 @@ export async function readWorkspaceInventory(root: string, controllerCopy = fals
 export function readonlyWorkspaceInventoryScript() {
   const source = readWorkspaceInventory.toString().replaceAll("__vite_ssr_dynamic_import__", "import");
   // A refusal names only its fixed token or an errno-style code; never error text or paths.
-  return `const __name=value=>value;const inspect=${source};inspect(process.argv[1]).then(value=>process.stdout.write(JSON.stringify(value))).catch(error=>{const code=typeof error?.code==='string'&&/^E[A-Z0-9]{2,15}$/.test(error.code)?error.code.toLowerCase():null;process.stderr.write(error?.message==='remote_workspace_readonly_capture_budget'?error.message:code?'remote_workspace_readonly_capture_fs_'+code:'remote_workspace_readonly_capture_unsafe');process.exitCode=1});`;
+  return `const __name=value=>value;const inspect=${source};inspect(process.argv[1]).then(value=>process.stdout.write(JSON.stringify(value))).catch(error=>{const code=typeof error?.code==='string'&&/^E[A-Z0-9]{2,15}$/.test(error.code)?error.code.toLowerCase():null;process.stderr.write(/^remote_workspace_readonly_capture_(?:budget|git_storage_limit|git_storage_guard_unavailable)$/.test(error?.message)?error.message:code?'remote_workspace_readonly_capture_fs_'+code:'remote_workspace_readonly_capture_unsafe');process.exitCode=1});`;
 }
