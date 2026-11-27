@@ -232,6 +232,16 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     }) } }).where(eq(environmentLeases.id, lease.id));
     await db.update(agentWakeupRequests).set({ updatedAt: new Date(0) }).where(eq(agentWakeupRequests.id, seeded.wakeId));
     await Promise.all([heartbeatService(db).resumeQueuedRuns(), heartbeatService(db).resumeQueuedRuns()]);
+    const [held] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    expect(held.status).toBe("deferred_issue_execution");
+    expect(held.runId).toBeNull();
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, seeded.issueId))).toHaveLength(2);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, seeded.companyId))).toHaveLength(2);
+    // Cleanup is not an unblock. Use the existing independently authorized
+    // status operation; the saved interrupt still re-enters ordinary admission.
+    await issueService(db).update(seeded.issueId, { status: "todo", actorUserId: "queue-owner" });
+    await Promise.all([heartbeatService(db).resumeQueuedCommentInterrupt(seeded.companyId, seeded.wakeId),
+      heartbeatService(db).resumeQueuedCommentInterrupt(seeded.companyId, seeded.wakeId)]);
     const [delivered] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
     expect(delivered.status).toBe("coalesced");
     const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, delivered.runId!));
