@@ -42,4 +42,16 @@ const support = await getEmbeddedPostgresTestSupport();
     await expect(chatRunSourceMessageId(db, f.run, { provider: "github" })).resolves.toBeNull();
     await expect(chatRunSourceMessageId(db, f.run)).resolves.toBe(foreign.id);
   });
+
+  it("withholds chat tools from a same-task continuation whose ancestor links to another task's chat", async () => {
+    const f = await fixture();
+    const other = await seedGitHubReviewWait(db, { companyId: f.company.id, agentId: f.agent.id });
+    await db.update(runIdentityContexts).set({ messageId: other.commentId }).where(eq(runIdentityContexts.id, f.origin.id));
+    const [run] = await db.update(heartbeatRuns)
+      .set({ contextSnapshot: { wakeCommentId: f.messageId } })
+      .where(eq(heartbeatRuns.id, f.run.id)).returning();
+    await expect(chatRunSourceMessageId(db, run, { provider: "github" })).resolves.toBeNull();
+    await expect(chatRunSourceMessageId(db, run, { provider: "github", allowLegacyWakeComment: true }))
+      .resolves.toBe(f.messageId);
+  });
 });
