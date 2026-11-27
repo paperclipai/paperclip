@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
 import { createBufferedTextFileWriter, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
 import { closeRegisteredClients, createDb, ensurePostgresDatabase, getPostgresDataDirectory } from "./client.js";
@@ -14,8 +14,6 @@ import {
 } from "./test-embedded-postgres.js";
 
 const cleanups: Array<() => Promise<void> | void> = [];
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
-const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 function createTempDir(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -47,12 +45,6 @@ afterEach(async () => {
   }
 }, 60_000);
 
-if (!embeddedPostgresSupport.supported) {
-  console.warn(
-    `Skipping embedded Postgres backup tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
-  );
-}
-
 describe("createBufferedTextFileWriter", () => {
   it("preserves line boundaries across buffered flushes", async () => {
     const tempDir = createTempDir("paperclip-buffered-writer-");
@@ -76,7 +68,13 @@ describe("createBufferedTextFileWriter", () => {
   });
 });
 
-describeEmbeddedPostgres("runDatabaseBackup", () => {
+describe("runDatabaseBackup", () => {
+  let support: ReturnType<typeof getEmbeddedPostgresTestSupport> | undefined;
+  beforeEach(async ({ skip }) => {
+    const result = await (support ??= getEmbeddedPostgresTestSupport());
+    if (!result.supported) skip(result.reason ?? "Embedded PostgreSQL is not supported");
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
   it("preserves a post-pg_dump verification error without falling back or pruning", async () => {
     const connectionString = await createTempDatabase();
     const backupDir = createTempDir("checkpoint-pg-dump-");
@@ -665,6 +663,9 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
     20_000,
   );
 
+});
+
+describe("runDatabaseBackup (local PostgreSQL)", () => {
   it.skipIf(process.platform === "win32").for([
     { backupEngine: "javascript", native: false },
     { backupEngine: "auto", native: false },
@@ -686,7 +687,12 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
           nativeClientMajors.push(Number(major));
         }
       }
-      const tcpUrl = await createTempDatabase();
+      const options = { localOnly: true };
+      const support = await getEmbeddedPostgresTestSupport(options);
+      if (!support.supported) context.skip(support.reason ?? "Embedded PostgreSQL is not supported");
+      const db = await startEmbeddedPostgresTestDatabase("paperclip-db-backup-socket-", options);
+      context.onTestFinished(db.cleanup);
+      const tcpUrl = db.connectionString;
       const probe = postgres(tcpUrl, { max: 1 });
       let socketDir: string;
       try {
