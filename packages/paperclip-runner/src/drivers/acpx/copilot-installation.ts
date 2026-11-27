@@ -29,6 +29,7 @@ export async function verifyCopilotInstallation(profile: AcpxReleaseProfile): Pr
     executable: "copilot", fixedArguments: COPILOT_LAUNCH_ARGUMENTS,
     isolatedCacheEnvironmentName: "COPILOT_PKG_CACHE_HOME",
     copilotDistributionDirectory: "distribution",
+    storeFamily: "copilot",
   }); } catch {
     throw Object.assign(new Error("Install the verified Copilot runtime beside the admitted sidecar."), { code: "COPILOT_INSTALLATION_INVALID", retryable: false });
   }

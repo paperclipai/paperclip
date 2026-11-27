@@ -1,4 +1,4 @@
-import { slackThreadChannelId } from "../slack/messages.js";
+import { slackThreadChannelId, slackThreadRootMessageId } from "../slack/messages.js";
 
 import type { EndpointRow } from "../runtime-types.js";
 
@@ -30,8 +30,9 @@ type ChatSurfaceKind = "direct_message" | "linear_group" | "native_thread";
 function providerResourceType(
   provider: ChatProvider,
   surfaceKind: ChatSurfaceKind,
+  isDirectMessage: boolean,
 ): string {
-  if (surfaceKind === "direct_message") return "direct_message";
+  if (isDirectMessage) return "direct_message";
   if (provider === "github") return "repository";
   if (provider === "imessage-photon") return "group_chat";
   if (provider === "discord") return "channel";
@@ -116,6 +117,7 @@ function chatSurfaceKind(
   provider: ChatProvider,
   thread: Thread,
 ): ChatSurfaceKind {
+  if (provider === "slack" && slackThreadRootMessageId(thread.id)) return "native_thread";
   if (thread.isDM) return "direct_message";
   if (provider === "imessage-photon") return "linear_group";
   if (provider === "telegram") {

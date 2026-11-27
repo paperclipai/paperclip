@@ -6,12 +6,16 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
+import { acpxInternals } from "./support/acpx-bundle-internals.mjs";
 
 const require = createRequire(import.meta.url);
 const root = process.env.PAPERCLIP_TEST_ACPX_PACKAGE_ROOT ?? dirname(require.resolve("acpx/package.json"));
 const { createAcpRuntime } = await import(pathToFileURL(join(root, "dist/runtime.js")));
-const { dt: serialize, ut: parse } = await import(pathToFileURL(join(root, "dist/live-checkpoint-BSIrfgVo.js")));
+const { serializeSessionRecordForDisk: serialize, parseSessionRecord: parse } = await acpxInternals(["serializeSessionRecordForDisk", "parseSessionRecord"], root);
 const selectedModel = "custom/model";
+// Paperclip offers only models the provider advertises. Cursor-style bracketed
+// IDs are exact and must never be rewritten.
+const advertisedModel = "custom/model[variant=x]";
 
 // Exercise the installed ACPX manager and ACP wire, including saved model replay.
 // Only the provider process is a fixture; it never connects to a model service.
@@ -72,7 +76,7 @@ async function fixture(t, agent, behavior = {}) {
     async open() {
       const runtime = createAcpRuntime(options), owner = { runtime, handle: null };
       runtimes.push(owner);
-      owner.handle = await runtime.ensureSession({ sessionKey: "model-selection", agent, mode: "persistent", cwd, sessionOptions: { model: selectedModel, ...behavior.sessionOptions } });
+      owner.handle = await runtime.ensureSession({ sessionKey: "model-selection", agent, mode: "persistent", cwd, sessionOptions: { model: behavior.model ?? selectedModel, ...behavior.sessionOptions } });
       return owner;
     },
     async prompt(owner) {
@@ -87,11 +91,11 @@ async function fixture(t, agent, behavior = {}) {
   };
 }
 
-for (const agent of ["claude", "codex", "grok", "cursor", "copilot", "pi"]) {
-  test(`${agent}: unlisted model reaches the provider unchanged on startup and reconnect`, { timeout: 10_000 }, async t => {
-    const f = await fixture(t, agent);
+for (const agent of ["codex", "cursor", "copilot", "pi"]) {
+  test(`${agent}: an advertised exact model reaches the provider unchanged on startup and reconnect`, { timeout: 10_000 }, async t => {
+    const f = await fixture(t, agent, { model: advertisedModel });
     const first = await f.open();
-    assert.deepEqual(f.selected(), [selectedModel]);
+    assert.deepEqual(f.selected(), [advertisedModel]);
     assert.equal((await f.prompt(first)).status, "completed");
     await f.close(first);
     const beforeReconnect = f.selected().length;
@@ -99,49 +103,53 @@ for (const agent of ["claude", "codex", "grok", "cursor", "copilot", "pi"]) {
     assert.equal((await f.prompt(second)).status, "completed");
     assert.ok(f.requests.some(r => r.method === "session/load"));
     assert.ok(f.selected().length > beforeReconnect, "fresh connection replays the selected model");
-    assert.ok(f.selected().every(model => model === selectedModel), "never substitute an advertised variant");
+    assert.ok(f.selected().every(model => model === advertisedModel), "never substitute another advertised variant");
   });
 }
 
-for (const response of ["reject", "mismatch", "missing"]) {
-  const error = response === "reject" ? /fixture provider rejected model/ : response === "missing" ? /did not advertise model support/ : /effective model mismatch/;
-  test(`provider ${response} on startup prevents prompting without fallback`, async t => {
-    const f = await fixture(t, "cursor", { response });
-    await assert.rejects(f.open(), error);
-    assert.deepEqual(f.selected(), response === "missing" ? [] : [selectedModel]);
-    assert.equal(f.requests.some(r => r.method === "session/prompt"), false);
-  });
-  test(`provider ${response} on reconnect prevents prompting without fallback`, async t => {
-    const f = await fixture(t, "cursor");
-    const first = await f.open();
-    assert.equal((await f.prompt(first)).status, "completed");
-    await f.close(first);
-    const promptCount = f.requests.filter(r => r.method === "session/prompt").length;
-    f.setResponse(response);
-    try {
-      const second = await f.open();
-      const result = await f.prompt(second);
-      assert.equal(result.status, "failed");
-      assert.match(JSON.stringify(result), error);
-    } catch (failure) { assert.match(failure.message, error); }
-    assert.ok(f.selected().every(model => model === selectedModel));
-    assert.equal(f.requests.filter(r => r.method === "session/prompt").length, promptCount);
-  });
-}
+test("an unadvertised model is rejected before it reaches the provider", async t => {
+  const f = await fixture(t, "cursor");
+  await assert.rejects(f.open(), /did not advertise that model/);
+  assert.deepEqual(f.selected(), []);
+  assert.equal(f.requests.some(r => r.method === "session/prompt"), false);
+});
 
+test("Claude forwards a model outside its advertised list for the adapter to accept or reject", async t => {
+  const f = await fixture(t, "claude", { agentCommand: "/paperclip-verified/claude-agent-acp" });
+  const owner = await f.open();
+  assert.equal((await f.prompt(owner)).status, "completed");
+  assert.ok(f.selected().every(model => model === selectedModel));
+});
 
-test("an already selected unlisted model needs no replacement", async t => {
-  const f = await fixture(t, "cursor", { currentModel: selectedModel });
+test("provider rejection on startup prevents prompting without fallback", async t => {
+  const f = await fixture(t, "cursor", { model: advertisedModel, response: "reject" });
+  await assert.rejects(f.open(), /fixture provider rejected model/);
+  assert.deepEqual(f.selected(), [advertisedModel]);
+  assert.equal(f.requests.some(r => r.method === "session/prompt"), false);
+});
+
+test("provider rejection on reconnect prevents prompting without fallback", async t => {
+  const f = await fixture(t, "cursor", { model: advertisedModel });
+  const first = await f.open();
+  assert.equal((await f.prompt(first)).status, "completed");
+  await f.close(first);
+  const promptCount = f.requests.filter(r => r.method === "session/prompt").length;
+  f.setResponse("reject");
+  try {
+    const second = await f.open();
+    const result = await f.prompt(second);
+    assert.equal(result.status, "failed");
+    assert.match(JSON.stringify(result), /fixture provider rejected model/);
+  } catch (failure) { assert.match(failure.message, /fixture provider rejected model/); }
+  assert.ok(f.selected().every(model => model === advertisedModel));
+  assert.equal(f.requests.filter(r => r.method === "session/prompt").length, promptCount);
+});
+
+test("an already selected model needs no replacement on startup", async t => {
+  const f = await fixture(t, "cursor", { model: advertisedModel, currentModel: advertisedModel });
   const owner = await f.open();
   assert.equal((await f.prompt(owner)).status, "completed");
   assert.deepEqual(f.selected(), []);
-});
-
-test("Cursor command detection never expands a model into an advertised variant", async t => {
-  const f = await fixture(t, "cursor", { agentCommand: "cursor-agent acp" });
-  const owner = await f.open();
-  assert.equal((await f.prompt(owner)).status, "completed");
-  assert.deepEqual(f.selected(), [selectedModel]);
 });
 
 for (const includeUserSettings of [false, true]) for (const resume of [false, true]) test(`Claude ${resume ? "resume" : "load"} preserves native session options (user settings ${includeUserSettings})`, { timeout: 10_000 }, async t => {

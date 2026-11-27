@@ -104,12 +104,16 @@ const createActivitySchema = z.object({
   details: z.record(z.string(), z.unknown()).optional().nullable(),
 });
 
-const agentActionAuditActorScopeSchema = z.enum(["agents", "all"]);
+const companyActivityQuerySchema = z.object({
+  agentId: z.preprocess((value) => (value === "" ? undefined : value), z.string().guid().optional()),
+});
 
 const issueHistoryQuerySchema = z.object({
   limit: z.coerce.number().int().optional(),
   before: z.string().uuid().optional(),
 });
+
+const agentActionAuditActorScopeSchema = z.enum(["agents", "all"]);
 
 const agentActionAuditQuerySchema = z.object({
   actorScope: agentActionAuditActorScopeSchema.default("agents"),
@@ -238,17 +242,23 @@ export function activityRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     if (!(await assertCompanyScopeReadAllowed(req, res, companyId))) return;
 
+    const parsedQuery = companyActivityQuerySchema.safeParse({ agentId: req.query.agentId });
+    if (!parsedQuery.success) {
+      throw badRequest("Invalid activity query", parsedQuery.error.issues);
+    }
+
     const filters = {
       companyId,
-      agentId: req.query.agentId as string | undefined,
+      agentId: parsedQuery.data.agentId,
       entityType: req.query.entityType as string | undefined,
       entityId: req.query.entityId as string | undefined,
       limit: normalizeActivityLimit(Number(req.query.limit)),
       readCondition: await issueReadSqlCondition(db, req.actor),
+      dashboardUserId: req.actor.type === "board" ? req.actor.userId : null,
       caseReadCondition: await caseActivityReadSqlCondition(db, req.actor),
     };
     const result = await svc.list(filters);
-    res.json(result);
+    res.json(await svc.withActorNames(result));
   });
 
   router.get("/companies/:companyId/audit/agent-actions", async (req, res) => {
@@ -272,6 +282,7 @@ export function activityRoutes(db: Db) {
     }
     if (parsedQuery.data.actorScope === "agents") {
       const result = await agentAudit.list({ companyId, ...parsedQuery.data,
+        dashboardUserId: req.actor.type === "board" ? req.actor.userId : null,
         caseReadCondition: await caseActivityReadSqlCondition(db, req.actor) });
       res.json({ ...result, accessTier: "full" });
       return;
@@ -282,6 +293,7 @@ export function activityRoutes(db: Db) {
       throw forbidden("Audit filters require permission: audit:view_agent_actions");
     }
     const result = await agentAudit.list({ companyId, ...parsedQuery.data,
+      dashboardUserId: req.actor.type === "board" ? req.actor.userId : null,
       caseReadCondition: await caseActivityReadSqlCondition(db, req.actor) });
     res.json({
       ...(canViewAttribution ? result : stripAuditAttribution(result)),
@@ -303,7 +315,7 @@ export function activityRoutes(db: Db) {
     const rows: Awaited<ReturnType<typeof agentAudit.list>>["items"] = [];
     let cursor: string | undefined;
     do {
-      const page = await agentAudit.list({ companyId, ...filters, cursor, limit: AUDIT_CSV_PAGE_SIZE, caseReadCondition });
+      const page = await agentAudit.list({ companyId, ...filters, cursor, limit: AUDIT_CSV_PAGE_SIZE, dashboardUserId: req.actor.userId, caseReadCondition });
       for (const item of page.items) {
         if (rows.length >= AUDIT_CSV_EXPORT_MAX_ROWS) break;
         rows.push(item);
@@ -376,7 +388,7 @@ export function activityRoutes(db: Db) {
       limit: normalizeIssueHistoryLimit(parsedQuery.data.limit ?? (req.query.view === "recent" ? 50 : undefined)),
       before: parsedQuery.data.before,
     });
-    res.json(result);
+    res.json(await svc.withActorNames(result));
   });
 
   router.get("/issues/:id/runs", async (req, res) => {

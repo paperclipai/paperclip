@@ -40,8 +40,10 @@ export {
   ISSUE_LIST_MAX_LIMIT,
   issueService,
   type IssueFilters,
+  type IssueListOptions,
 } from "./issues.js";
 export { issueThreadInteractionService } from "./issue-thread-interactions.js";
+export { expirePendingInteractionsOnClosedIssues } from "./closed-issue-interaction-sweep.js";
 export { githubConnectionEventService, type GitHubConnectionEventPollResult } from "./github-connection-events.js";
 export {
   assertIssueReviewVerdictActorAllowed,
@@ -72,6 +74,7 @@ export {
   type ExternalObjectResolverSnapshot,
 } from "./external-objects.js";
 export { goalService } from "./goals.js";
+export { responsibilityService } from "./responsibilities.js";
 export { activityService, type ActivityFilters } from "./activity.js";
 export { workTimelineService, normalizeTimelineWindow } from "./work-timeline.js";
 export { attentionService } from "./attention.js";

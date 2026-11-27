@@ -281,6 +281,19 @@ describe("closeHttpListenerForShutdown", () => {
     expect(server.closeAllConnections).not.toHaveBeenCalled();
   });
 
+  it("closes run admission before it stops accepting requests", async () => {
+    const order: string[] = [];
+    const server = fakeServer({ listening: true, closeDelayMs: 0 });
+    server.close.mockImplementation((callback?: (err?: Error) => void) => { order.push("listener"); setTimeout(() => callback?.(), 0); });
+    await closeHttpListenerForShutdown({ server, signal: "SIGTERM", timeoutMs: 1_000, log: stubLogger(),
+      closeRunAdmission: () => order.push("run_admission") });
+    expect(order).toEqual(["run_admission", "listener"]);
+    const stopped = vi.fn();
+    await expect(closeHttpListenerForShutdown({ server: fakeServer({ listening: false }), signal: "SIGTERM", log: stubLogger(),
+      closeRunAdmission: stopped })).resolves.toBe("not_listening");
+    expect(stopped).toHaveBeenCalledOnce();
+  });
+
   it("closes the remaining connections when the drain outlives the grace period", async () => {
     vi.useFakeTimers();
     try {
@@ -392,6 +405,21 @@ describe("runBoundedShutdownStep", () => {
         expect.objectContaining({ step: "scheduler_idle", timeoutMs: 250 }),
         expect.stringContaining("timed out"),
       );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("aborts the signal of a step that outlives its bound, and only that step", async () => {
+    vi.useFakeTimers();
+    try {
+      const signals: AbortSignal[] = [];
+      const budget = createPreDrainShutdownBudget({ signal: "SIGTERM", budgetMs: 250, log: stubLogger() });
+      await budget.run("delivery_work_stop", async abort => { signals.push(abort); });
+      const pending = budget.run("hot_restart_prepare", abort => { signals.push(abort); return new Promise<void>(() => undefined); });
+      await vi.advanceTimersByTimeAsync(250);
+      await expect(pending).resolves.toMatchObject({ outcome: "timed_out" });
+      expect(signals.map(signal => signal.aborted)).toEqual([false, true]);
     } finally {
       vi.useRealTimers();
     }

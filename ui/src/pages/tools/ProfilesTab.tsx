@@ -1,3 +1,4 @@
+import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { useMemo, useState } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Layers, Plus, Pencil, Trash2, Link2, ShieldCheck } from "lucide-react";
@@ -14,7 +15,6 @@ import type {
   ToolRiskLevel,
 } from "@paperclipai/shared";
 import { agentsApi } from "@/api/agents";
-import { projectsApi } from "@/api/projects";
 import { routinesApi } from "@/api/routines";
 import {
   toolsApi,
@@ -313,8 +313,7 @@ function useLookupData(companyId: string) {
     queryFn: () => agentsApi.list(companyId),
   });
   const projects = useQuery({
-    queryKey: queryKeys.projects.list(companyId, { includeArchived: true }),
-    queryFn: () => projectsApi.list(companyId, { includeArchived: true }),
+    ...companyProjectsQuery(companyId, { includeArchived: true }),
   });
   const routines = useQuery({
     queryKey: queryKeys.routines.list(companyId),
@@ -586,9 +585,10 @@ function AllowList({ rows, catalogLoading }: { rows: AllowListRow[]; catalogLoad
             : "No tools resolved for this profile. Add an include selector or refresh the tool catalog."}
         </div>
       ) : (
-        <Card>
-          <CardContent className="px-0 py-0">
-            <table className="w-full text-sm">
+        <Card className="min-w-0 max-w-full">
+          <CardContent className="min-w-0 px-0 py-0">
+            <div className="max-w-full overflow-x-auto">
+              <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border text-left text-xs text-muted-foreground">
                   <th className="px-3 py-2.5 font-medium">Tool</th>
@@ -628,6 +628,7 @@ function AllowList({ rows, catalogLoading }: { rows: AllowListRow[]; catalogLoad
                 ))}
               </tbody>
             </table>
+            </div>
           </CardContent>
         </Card>
       )}

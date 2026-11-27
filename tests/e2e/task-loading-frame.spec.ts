@@ -128,25 +128,28 @@ test("Classic startup does not guess a chat layout while personal preferences ar
   }
 });
 
-test("a stalled web font does not hide an otherwise prepared conversation indefinitely", async ({ page, request }) => {
-  const fixture = await createTask(request);
-  let release!: () => void;
-  const fontReady = new Promise<void>(resolve => { release = resolve; });
-  try {
-    await page.route("**/api/workspace-preferences/me", async route => {
-      const response = await route.fetch();
-      await route.fulfill({ json: { ...await response.json(), coordinatorWorkspaceEnabled: true } });
-    });
-    await page.route("**/*.woff2", async route => { await fontReady; await route.abort(); });
-    await page.goto(fixture.route, { waitUntil: "domcontentloaded" });
-    await expect(page.getByTestId("task-chat-loading-frame")).toBeVisible();
-    await expect(page.getByTestId("task-chat-thread").locator(':scope > [aria-busy="false"]')).toBeVisible({ timeout: 5000 });
-    await expect(page.getByTestId("task-chat-composer-stack").locator('[contenteditable="true"]')).toBeEditable();
-  } finally {
-    release();
-    await page.unrouteAll({ behavior: "wait" });
-    await request.patch(`/api/companies/${fixture.company.id}`, { data: { status: "archived" } });
-  }
+test.describe(() => {
+  test.use({ serviceWorkers: "block" });
+  test("a stalled web font does not hide an otherwise prepared conversation indefinitely", async ({ page, request }) => {
+    const fixture = await createTask(request);
+    let release!: () => void;
+    const fontReady = new Promise<void>(resolve => { release = resolve; });
+    try {
+      await page.route("**/api/workspace-preferences/me", async route => {
+        const response = await route.fetch();
+        await route.fulfill({ json: { ...await response.json(), coordinatorWorkspaceEnabled: true } });
+      });
+      await page.route("**/*.woff2", async route => { await fontReady; await route.abort(); });
+      await page.goto(fixture.route, { waitUntil: "domcontentloaded" });
+      await expect(page.getByTestId("task-chat-loading-frame")).toBeVisible();
+      await expect(page.getByTestId("task-chat-thread").locator(':scope > [aria-busy="false"]')).toBeVisible({ timeout: 5000 });
+      await expect(page.getByTestId("task-chat-composer-stack").locator('[contenteditable="true"]')).toBeEditable();
+    } finally {
+      release();
+      await page.unrouteAll({ behavior: "wait" });
+      await request.patch(`/api/companies/${fixture.company.id}`, { data: { status: "archived" } });
+    }
+  });
 });
 
 for (const coordinator of [false, true]) test(`mobile chrome stays fixed when personal preferences resolve (Coordinator=${coordinator})`, async ({ page, request }, info) => {
@@ -233,7 +236,8 @@ test("a seeded Classic loading title uses the resolved title typography", async 
     await page.goto(`/${fixture.company.issuePrefix}/issues`);
     await page.getByRole("link").filter({ hasText: fixture.title }).first().click();
     await expect(page.getByTestId("issue-detail-header").getByRole("heading", { name: fixture.title, exact: true })).toBeVisible();
-    await page.route("**/api/issues/*", async route => { await coreReady; await route.continue(); });
+    // Also hold the hard load's early chat bootstrap: it carries the task too.
+    await page.route(/\/api\/issues\/[^/?]+(?:\/chat-bootstrap)?(?:\?|$)/, async route => { await coreReady; await route.continue(); });
     // Keep the recent-task title seed, but exercise the loading frame without
     // a persisted full task that would correctly reveal the resolved header.
     await page.addInitScript(() => Object.keys(localStorage).filter(key => key.startsWith("paperclip:query-cache:v1:")).forEach(key => localStorage.removeItem(key)));

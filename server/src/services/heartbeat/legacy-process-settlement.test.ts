@@ -2,8 +2,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 import { legacyControllerBootId, legacyControllerClaim } from "../legacy-controller-lease.js";
 import { legacySourceProcessSettled, recordLegacyProcessSettlement, type LegacyProcessSettlementSource } from "./legacy-process-settlement.js";
-const { pendingCleanup } = vi.hoisted(() => ({ pendingCleanup: vi.fn() }));
+const { pendingCleanup, notifyAccounting } = vi.hoisted(() => ({ pendingCleanup: vi.fn(), notifyAccounting: vi.fn() }));
 vi.mock("../execution-blocker.js", () => ({ hasPendingRunCleanup: pendingCleanup }));
+vi.mock("../delivery-work-notifications.js", () => ({ DELIVERY_QUEUES: { accounting: "accounting" }, notifyDeliveryWork: notifyAccounting }));
 const startedAt = new Date("2099-01-01T00:00:00Z"), finishedAt = new Date("2099-01-01T00:00:01Z");
 function source() {
   return { id: "run", companyId: "company", agentId: "agent", runtimeMode: "legacy", status: "failed",
@@ -23,7 +24,7 @@ function database(row: LegacyProcessSettlementSource | null, failure?: Error) {
   return { db, update };
 }
 describe("host-owned legacy process settlement", () => {
-  beforeEach(() => { pendingCleanup.mockReset(); pendingCleanup.mockResolvedValue(false); });
+  beforeEach(() => { pendingCleanup.mockReset(); pendingCleanup.mockResolvedValue(false); notifyAccounting.mockReset(); });
   it("binds every receipt field to the exact retained local process identity", () => {
     const run = source(); expect(legacySourceProcessSettled(run)).toBe(true);
     for (const [key, value] of Object.entries(run.legacyProcessSettlement!)) {
@@ -57,6 +58,13 @@ describe("host-owned legacy process settlement", () => {
     expect(await recordLegacyProcessSettlement(held.db, run, () => ++checks === 1)).toBe(false);
     expect(held.update).not.toHaveBeenCalled();
     expect(await recordLegacyProcessSettlement(database(null).db, run, () => true)).toBe(false);
+  });
+  it("does not publish after the normal work-intent await loses the current owner", async () => {
+    const run = source(), saved = database(run); let owned = true;
+    notifyAccounting.mockImplementation(async () => { owned = false; });
+    expect(await recordLegacyProcessSettlement(saved.db, run, () => owned)).toBe(false);
+    expect(notifyAccounting).toHaveBeenCalledOnce();
+    expect(saved.update).not.toHaveBeenCalled();
   });
   it("clears a prior receipt on the normal legacy claim", () => {
     expect(legacyControllerClaim("legacy")).toMatchObject({ legacyProcessSettlement: null });

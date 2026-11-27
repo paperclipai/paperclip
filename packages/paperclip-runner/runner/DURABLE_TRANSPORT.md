@@ -8,6 +8,21 @@ agent or recovery of its persisted run. On a fresh launch or restart,
 - With `--listen-address 0.0.0.0 --listen-path /api/runner/v1/connect/<run-id>`,
   the Runner listens for Core. `--listen-port` defaults to `43127`.
 
+A dialing Runner waits `--reconnect-delay-ms` (default 250) between
+connection attempts and backs off after a failed one. A listening Runner
+checks for an incoming connection every 10 ms (or sooner, when that delay is
+smaller). It never redials, so a connection does not wait out the reconnect
+delay after a disconnect or an authority rotation.
+
+A listening Runner accepts one controller at a time. Core pings the Runner
+every 20 seconds. When the current controller sends no frame, ping included,
+for 90 seconds, the Runner closes that connection and accepts the next one
+within its reconnect grace. A path that broke without a close therefore cannot
+block a replacement controller.
+
+In both modes, Runner enables `TCP_NODELAY` before the WebSocket handshake
+when the connected peer is on loopback.
+
 Choose one form. Both require `PAPERCLIP_RUNNER_BOOTSTRAP_TICKET`.
 Recovery uses the same entry point. The Runner rejects `--source-reconcile`.
 
@@ -57,15 +72,25 @@ If stdout stays open or the buffer lacks room for one maximum-size frame,
 runnerd reports uncertainty and keeps the events already committed to disk.
 
 Executors retain polled events until runnerd acknowledges each event after its
-outbox commit. Batches commit one event at a time, so a later oversized event or
-capacity failure cannot roll back the accepted prefix or discard the
-unacknowledged suffix. Each retained executor event has a stable identity that
-runnerd derives into its PRP `sourceEventId`. If the process stops after the
+outbox commit. Runnerd commits each polled batch of up to 128 events with one
+save, and only then acknowledges the batch to the executor. If an event is
+oversized or exceeds capacity, runnerd still saves and acknowledges the events
+before it, and the executor keeps the rejected event and everything after it.
+If the save fails, the executor keeps the whole batch. Each retained executor
+event has a stable identity that runnerd derives into its PRP `sourceEventId`. If the process stops after the
 outbox commit but before the executor acknowledgement, a bounded durable
 receipt journal recognizes and byte-validates the retained copy without
 appending a second event. Receipts outlive transport ACK removal; because the
 provider queue is ordered and bounded, a possibly retained front event cannot
 be evicted while later events advance the journal.
+
+The ACPX executor saves its provider state once for all the sidecar outputs
+that one poll reads, not once for each output. The save comes before an event,
+a command result, or a reply to the sidecar that depends on those outputs
+leaves the executor. An output that ends a turn, calls a tool, or reports a
+lost provider turn is saved at once, as is a provider failure. If the process
+stops before the save, nothing derived from the unsaved outputs has left the
+executor, so recovery is the same as a stop before runnerd read them.
 
 Commands require a contiguous controller sequence. The runner journals a
 pending command before invoking its executor and persists its result afterward.
@@ -99,6 +124,25 @@ accepted durable prefix. The ACPX sidecar separately caps queued stdout at
 4 MiB; exceeding that bound requests owned provider shutdown and records a
 failure rather than allowing unbounded process memory while the Runner cannot
 read.
+
+## Event generations and stale events
+
+Every runner event payload carries `generation`: the runner process generation
+that emitted it. A runner process that recovers existing durable state starts
+the next generation. The counter is saved with the next state write, so
+recovery adds no write before the first turn. Events that are still in the
+outbox keep the generation that emitted them. State saved before this field
+existed loads as generation 0.
+
+Consumers apply one rule to provider events. An event that names a turn which
+is not the active turn, and which an earlier generation accepted or this
+generation already settled, is history. The consumer records it and it never
+fails the current turn. This covers late usage, items, workspace changes, and
+terminals for a turn lost on restore. An event for a turn the consumer never
+saw is not history and still fails closed. A terminal that contradicts a turn
+the same generation settled is still a conflict. The ACPX provider state and
+the Codex driver (which Runnerd also uses for OpenCode) apply this rule, and a
+pending `turn.start` ignores a held failure that names another turn.
 
 ## Recovering Codex between turns
 
@@ -142,6 +186,16 @@ fresh snapshot and checkpoint and runs any recovery callback. B can then
 start work. If a write or callback fails, Core can retry the handoff.
 Cancellation cleanup only settles retained work.
 
+**What if the Runner starts as B?** Core can rotate the session to B before
+launch: it archives A's Runner state and starts a Runner under B's identity.
+That Runner starts with fresh durable state over A's saved Codex session. It
+does not restore Codex under A's settings. Until `run.attach`, it refuses
+commands that start work; snapshots and shutdown commands still work. The
+Runner saves the wait in the Codex state before it creates its durable state,
+so a restart before attachment keeps it.
+`run.attach` then starts Codex once with B's settings. ACPX follows the same
+rule.
+
 Live qualification still needs to verify that restoring a provider starts no
 work, deployed storage honors fsync, and the old process has exited.
 
@@ -183,7 +237,68 @@ that sidecar 100 ms to report its goal and session state. If the sidecar is slow
 or declines, Runner stays attached. Runner keeps at most one unanswered read and
 recognizes its late reply. Events received during that read still belong to A
 and are delivered before B attaches. The existing policy still replaces the
-sidecar at the next turn or run attachment; the saved provider identity continues.
+sidecar at park and run attachment; the saved provider identity continues.
+
+Between turns of the same run, Runner keeps a Claude sidecar only when the turn
+completed normally, its terminal reported `backgroundTasks: {"live": 0}`, and
+every condition of the turn-end restart holds. Before the next turn it reads
+`session.snapshot` again and requires the same report. A missing, live or
+malformed report, a failed, cancelled or interrupted turn, any other agent, a
+full settled-turn ledger or a full tool replay ledger replaces the sidecar as
+before. A kept sidecar keeps its tool call-ID tombstones and settled turn
+identities. The report's shape is `$defs.backgroundTasks` in
+`protocol/provider-schemas/acpx-sidecar.schema.json`; both readers are
+generated from it and tested against
+`protocol/fixtures/provider-boundary/acpx-background-tasks.json`.
+
+The Claude sidecar reports `{"live": N}` with N above zero only while N shell
+tasks are running and nothing has made the count unknown; finished tasks do
+not count. It reports `{"live": 0}` only while its provider process has never
+had a background task and Claude has not acted between prompts. Every other
+case is unknown and the field is omitted: once a background task has finished
+or a provider-started cycle has run and no shell is running, and permanently
+after a dropped, declined, failed or cancelled cycle, a task that is not a
+shell, a malformed task update, a scheduling tool, a full ledger, or idle
+activity that was not adopted. The ACP stream does not say which task a Claude
+cycle reports on, so the sidecar does not guess: after a provider-started turn,
+Runner keeps waiting only while a background command is still running, and a
+command that finishes while Claude is already reporting on an earlier one gets
+no turn of its own. An origin-tagged usage update that directly follows the
+previous one with the same context size and cost and zero usage is an empty
+result, not a cycle, and is ignored.
+
+A controller opts in per turn with `providerStartedTurns: true` on
+`turn.start`. Only then, when that completed Claude turn reported no accepted
+`paperclip_finish` or `paperclip_block` result for the run, its terminal reports
+`backgroundTasks: {"live": N}` with N above zero, and the same restart
+conditions hold, Runner sends the sidecar `session.provider_turn` with
+`armed: true` for that terminal. Only if the sidecar replies `armed: true` does
+Runner keep it and await a provider-started turn: the PRP `turn.completed`
+carries `awaitingProviderTurn: true` and no `run.terminal` follows. Without the
+opt-in, with a result, or when arming is refused, every event and the turn-end
+restart are exactly as before.
+
+The sidecar adopts Claude's own cycle only while armed. A cycle that starts
+after the terminal and before the arming command is held, with nothing lost,
+for at most 5 s; arming adopts it and anything else drops it. When armed, the
+sidecar emits `runtime.turn_started` with `{"origin": "provider"}` and a
+sidecar-minted turn id. Runner admits it only while awaiting and only for
+Claude, with the same settled-identity and receipt rules as a controller turn,
+and publishes PRP `turn.started` with `origin: "provider"`. Any other
+provider-started turn fails the session closed. A controller `turn.start` while
+awaiting disarms and replaces the sidecar first. If the provider exits while armed, the
+sidecar reports `runtime.diagnostic` with code `ACPX_PROVIDER_PROCESS_LOST`; that,
+or a failed sidecar transport, ends the wait and Runner publishes the
+`run.terminal` it held back for the completed turn. Park is refused while awaiting.
+Runner waits at most 5 s for the sidecar to answer an arm or a disarm. No answer
+is handled as a lost sidecar, and Runner still publishes the held `run.terminal`.
+When a `run.attach` from a different run succeeds, the wait ends and Runner
+discards the held `run.terminal`. If that attach fails, the wait and its held
+`run.terminal` stay with the old run. A `run.attach` from the same run publishes
+the held `run.terminal`.
+Runner saves the wait with its held `run.terminal` in the provider state; a
+Runner restart during the wait publishes that `run.terminal` once and resumes
+in a fresh process.
 
 The check also inspects the live provider
 after that drain, so a late active-goal notification cannot be hidden by the
@@ -226,6 +341,14 @@ retirement names the park request. Cancelling a claim additionally requires its
 claim ID, the unchanged authority and sequence cut, and provider quiescence.
 Retirement, parked host-channel loss, or process-lifetime expiry uses the existing
 suspended lifecycle and provider shutdown path. There is no new checkpoint state.
+
+When a trusted host relaunches an absent Runner from a verified ACPX park, it can
+pass `--acpx-park-relaunch` with the private host-control descriptor. For
+park-eligible ACPX providers, Runner validates the settled checkpoint and keeps
+the claim fence without starting the provider. The authenticated `run.attach`
+opens the provider with the incoming run's bindings and checks live session
+identity and dormancy before committing the attachment. An existing warm
+transition receipt follows the ordinary replay path.
 
 This native loop does not advertise hosted parking support: Launcher retention,
 Core orchestration, provider-specific qualification, and live VM sleep/wake

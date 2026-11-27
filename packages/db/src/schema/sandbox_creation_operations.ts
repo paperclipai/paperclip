@@ -23,5 +23,8 @@ export const sandboxCreationOperations = pgTable("sandbox_creation_operations", 
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, table => ({
   pendingDeadline: index("sandbox_creation_operations_pending_deadline_idx").on(table.nextAttemptAt).where(sql`${table.state} = 'pending'`),
-  owner: uniqueIndex("sandbox_creation_operations_owner_idx").on(table.companyId, table.originalEnvironmentId, table.runId, table.requestKey),
+  // A resolved operation's sandbox is proven stopped, so it no longer holds its
+  // creation key: a later attempt for the same run and request may create again.
+  owner: uniqueIndex("sandbox_creation_operations_owner_idx").on(table.companyId, table.originalEnvironmentId, table.runId, table.requestKey)
+    .where(sql`${table.state} <> 'resolved'`),
 }));

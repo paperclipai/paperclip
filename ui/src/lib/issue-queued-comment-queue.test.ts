@@ -39,6 +39,18 @@ describe("normalizeIssueQueuedCommentQueue", () => {
     expect(ids([run], { ...queue, targetRunId: "previous", state: "deferred" })).toEqual([]);
     expect(ids([run], { ...queue, entries: [{ ...queue.entries[0]!, source: { kind: "interaction", interactionId: "decision", interactionKind: "request_confirmation", requiresFreshSession: false } }] })).toEqual([]);
   });
+  it("shows an Interrupt hand-off's messages as sent, including on a fresh page load", () => {
+    const first = comment("first", "Wait, are the daily tests passing?");
+    const second = { ...comment("second", "And which ones fail?"), createdAt: new Date("2026-09-04T12:00:02Z") };
+    // No successor run exists yet: the stopped run is still settling.
+    const handoff = normalizeIssueQueuedCommentQueue({ queueId: "wake", state: "deferred", targetRunId: null,
+      executionWait: { reason: "interrupt_handoff", message: "Sending your messages." },
+      entries: [first, second].map(comment => ({ comment })) }, "issue-1");
+    expect([...startingQueuedCommentIds(handoff, [])]).toEqual(["first", "second"]);
+    // A real wait keeps the messages queued and editable.
+    expect([...startingQueuedCommentIds({ ...handoff,
+      executionWait: { reason: "remote_cleanup", message: "Waiting for the previous environment to stop." } }, [])]).toEqual([]);
+  });
   it("retains the immutable response and fresh-turn requirement", () => {
     const source = { kind: "interaction", interactionId: "approval-1", interactionKind: "request_confirmation", requiresFreshSession: true };
     const normalized = normalizeIssueQueuedCommentQueue({ entries: [{ comment: comment("approval-1", "Accepted: Plan"), source,

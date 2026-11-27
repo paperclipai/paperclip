@@ -28,9 +28,11 @@ const SECURE_FRAME_SCHEMA: &str = "paperclip.runner.secure-frame.v1";
 const AUTH_TIMEOUT: Duration = Duration::from_secs(2);
 const WELCOME_TIMEOUT: Duration = CONNECT_TOTAL_TIMEOUT;
 const RUNTIME_READ_TIMEOUT: Duration = Duration::from_millis(250);
+const QUEUED_CONTROL_READ_TIMEOUT: Duration = Duration::from_millis(1);
 const CONNECT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(3);
 const CONNECT_TOTAL_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_CA_BUNDLE_BYTES: u64 = 4 * 1024 * 1024;
+const LISTENER_ACCEPT_INTERVAL: Duration = Duration::from_millis(10);
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -251,6 +253,13 @@ impl RunnerTransportEndpoint {
         Ok(())
     }
 
+    pub(crate) fn retry_delay(&self, configured: Duration) -> Duration {
+        match self {
+            Self::Dial(_) => configured,
+            Self::Listen { .. } => configured.min(LISTENER_ACCEPT_INTERVAL),
+        }
+    }
+
     fn open(
         &self,
         max_frame_bytes: usize,
@@ -280,7 +289,7 @@ impl RunnerTransportEndpoint {
                 let deadline = bounded_operation_deadline(connect_deadline, AUTH_TIMEOUT)?;
                 let connector = ca_bundle_path.map(custom_tls_connector).transpose()?;
                 ensure_connection_deadline(deadline)?;
-                stream.set_nonblocking(true).map_err(|error| {
+                configure_prp_tcp_stream(&stream).map_err(|error| {
                     DurableRunnerError::invalid(format!(
                         "WebSocket stream configuration failed: {error}"
                     ))
@@ -327,7 +336,7 @@ impl RunnerTransportEndpoint {
                         )))
                     }
                 };
-                stream.set_nonblocking(true).map_err(|error| {
+                configure_prp_tcp_stream(&stream).map_err(|error| {
                     DurableRunnerError::invalid(format!(
                         "runner ingress stream configuration failed: {error}"
                     ))
@@ -382,6 +391,13 @@ impl RunnerTransportEndpoint {
             }
         }
     }
+}
+
+fn configure_prp_tcp_stream(stream: &TcpStream) -> io::Result<()> {
+    if stream.peer_addr()?.ip().is_loopback() {
+        stream.set_nodelay(true)?;
+    }
+    stream.set_nonblocking(true)
 }
 
 fn validate_listener_authority(authority: &str) -> Result<SocketAddr, DurableRunnerError> {
@@ -927,6 +943,8 @@ pub(crate) struct AuthenticatedTransport {
     socket: RunnerSocket,
     secure_channel: SecureChannel,
     max_frame_bytes: usize,
+    last_inbound: Instant,
+    controller_silence: Duration,
 }
 
 #[derive(Debug)]
@@ -1105,6 +1123,8 @@ impl AuthenticatedTransport {
                 socket,
                 secure_channel,
                 max_frame_bytes: config.max_frame_bytes,
+                last_inbound: Instant::now(),
+                controller_silence: config.controller_silence,
             };
             // Ticket validation and lease persistence happen before the server
             // emits welcome. Give that durable admission the connection setup
@@ -1131,6 +1151,7 @@ impl AuthenticatedTransport {
                 expected_lease,
                 challenge.selected_version,
             )?;
+            transport.last_inbound = Instant::now();
             // Authentication can wait longer for control-plane validation, but
             // the steady-state runner loop must return to provider polling
             // promptly when no control message is available.
@@ -1160,19 +1181,46 @@ impl AuthenticatedTransport {
     }
 
     pub(crate) fn receive_json(&mut self) -> Result<Option<Value>, DurableRunnerError> {
-        self.receive_json_until(None)
+        match self.receive_json_until(None)? {
+            None if self.listener_controller_silent() => Err(DurableRunnerError::invalid(
+                "controller sent no frame within the liveness window; listening for a new connection",
+            )),
+            message => Ok(message),
+        }
+    }
+
+    pub(crate) fn receive_queued_json(&mut self) -> Result<Option<Value>, DurableRunnerError> {
+        self.set_runtime_read_timeout(QUEUED_CONTROL_READ_TIMEOUT)?;
+        let message = self.receive_json();
+        self.set_runtime_read_timeout(RUNTIME_READ_TIMEOUT)?;
+        message
+    }
+
+    fn set_runtime_read_timeout(&mut self, timeout: Duration) -> Result<(), DurableRunnerError> {
+        self.socket
+            .set_read_timeout(Some(timeout))
+            .map_err(|error| DurableRunnerError::invalid(error.to_string()))
     }
 
     fn receive_json_until(
         &mut self,
         deadline: Option<Instant>,
     ) -> Result<Option<Value>, DurableRunnerError> {
-        let frame =
-            match receive_plain_optional_until(&mut self.socket, self.max_frame_bytes, deadline)? {
-                Some(frame) => frame,
-                None => return Ok(None),
-            };
+        let frame = match receive_plain_optional_until_observed(
+            &mut self.socket,
+            self.max_frame_bytes,
+            deadline,
+            Some(&mut self.last_inbound),
+        )? {
+            Some(frame) => frame,
+            None => return Ok(None),
+        };
         self.secure_channel.decrypt(&frame, false).map(Some)
+    }
+
+    fn listener_controller_silent(&self) -> bool {
+        matches!(self.socket, RunnerSocket::Listen(_))
+            && self.last_inbound.elapsed() >= self.controller_silence
     }
 }
 
@@ -1601,6 +1649,15 @@ fn receive_plain_optional_until(
     max_frame_bytes: usize,
     deadline: Option<Instant>,
 ) -> Result<Option<Value>, DurableRunnerError> {
+    receive_plain_optional_until_observed(socket, max_frame_bytes, deadline, None)
+}
+
+fn receive_plain_optional_until_observed(
+    socket: &mut (impl WebSocketMessages + ?Sized),
+    max_frame_bytes: usize,
+    deadline: Option<Instant>,
+    mut last_inbound: Option<&mut Instant>,
+) -> Result<Option<Value>, DurableRunnerError> {
     loop {
         if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             return Err(DurableRunnerError::invalid(
@@ -1612,6 +1669,9 @@ fn receive_plain_optional_until(
             return Err(DurableRunnerError::invalid(
                 "WebSocket authentication message deadline elapsed",
             ));
+        }
+        if let (Ok(_), Some(last_inbound)) = (&message, last_inbound.as_deref_mut()) {
+            *last_inbound = Instant::now();
         }
         match message {
             Ok(Message::Text(text)) => {
@@ -1749,6 +1809,12 @@ fn hex_nibble(byte: u8) -> Result<u8, DurableRunnerError> {
 mod tests {
     #[cfg(unix)]
     include!("tests/hosted_retention.rs");
+    #[cfg(unix)]
+    include!("tests/acpx_park_relaunch.rs");
+    include!("tests/ack_release_poll.rs");
+    include!("tests/indeterminate_terminal_ack.rs");
+    include!("tests/listener_silent_controller.rs");
+    include!("tests/loopback_nodelay.rs");
 
     use std::net::{IpAddr, Ipv4Addr, TcpListener};
     use std::path::PathBuf;
@@ -1783,6 +1849,8 @@ mod tests {
             reconnect_delay: Duration::from_millis(1),
             reconnect_grace: None,
             max_runtime: Duration::from_secs(1),
+            turn_scoped: false,
+            controller_silence: crate::durable::DEFAULT_CONTROLLER_SILENCE,
         }
     }
 
@@ -1809,6 +1877,13 @@ mod tests {
         let credential = CredentialMaterial::from_token(server_credential.token);
         assert_eq!(payload["credentialId"], credential.credential_id);
         assert_eq!(payload["credentialKind"], server_credential.kind);
+        let warm_transition_id = state
+            .warm_transition
+            .as_ref()
+            .map(|transition| transition.receipt.transition_id.clone());
+        if let Some(id) = &warm_transition_id {
+            assert_eq!(payload["warmTransitionId"], *id);
+        }
         let mut challenge = AuthChallenge {
             credential_id: credential.credential_id.clone(),
             credential_kind: server_credential.kind.to_owned(),
@@ -1828,8 +1903,8 @@ mod tests {
             credential_lease_id: server_credential.lease_id.map(str::to_owned),
             revocation_epoch: server_credential.revocation_epoch,
             server_proof: String::new(),
-            warm_transition_version: None,
-            warm_transition_id: None,
+            warm_transition_version: warm_transition_id.as_ref().map(|_| 1),
+            warm_transition_id,
             recovery_cursor_version: Some(1),
             recovery_acked_source_seq: payload["resume"]["ackedSourceSeq"].as_u64(),
         };
@@ -1864,6 +1939,8 @@ mod tests {
                     "credentialLeaseId": &challenge.credential_lease_id,
                     "revocationEpoch": challenge.revocation_epoch,
                     "serverProof": &challenge.server_proof,
+                    "warmTransitionVersion": challenge.warm_transition_version,
+                    "warmTransitionId": &challenge.warm_transition_id,
                     "recoveryCursorVersion": challenge.recovery_cursor_version,
                     "recoveryAckedSourceSeq": challenge.recovery_acked_source_seq,
                 },
@@ -2153,6 +2230,27 @@ mod tests {
                 "{authority}"
             );
         }
+    }
+
+    #[test]
+    fn listener_checks_its_backlog_sooner_than_a_dial_reconnects() {
+        let configured = Duration::from_millis(250);
+        let listener = RunnerTransportEndpoint::Listen {
+            listener: TcpListener::bind("0.0.0.0:0").unwrap(),
+            path: "/api/runner/v1/connect/run_1".to_owned(),
+        };
+        assert_eq!(listener.retry_delay(configured), LISTENER_ACCEPT_INTERVAL);
+        assert!(LISTENER_ACCEPT_INTERVAL <= Duration::from_millis(25));
+        assert_eq!(
+            listener.retry_delay(Duration::from_millis(1)),
+            Duration::from_millis(1)
+        );
+        let dial = RunnerTransportEndpoint::new(
+            "ws://127.0.0.1:43127/api/runner/v1/connect/run_1",
+            "run_1",
+        )
+        .unwrap();
+        assert_eq!(dial.retry_delay(configured), configured);
     }
 
     #[test]

@@ -28,6 +28,8 @@ import {
   protocolActivityPresentation,
   providerNoticeSeverity,
 } from "./task-chat-activity-presentation";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { safeNavigableUrl } from "@/lib/safe-url";
 
 const COMPACT_RESEARCH_RESULT_LIMIT = 5;
 const COMPACT_WORKSPACE_FILE_LIMIT = 8;
@@ -176,7 +178,7 @@ function ProviderDetails({ item, neutral = false }: { item: TaskChatProviderActi
         <DetailList details={item.details} />
       ) : null}
       {item.output ? (
-        <pre className="max-h-(--sz-64) overflow-auto whitespace-pre-wrap rounded-sm bg-muted/50 p-2 font-mono text-(length:--text-micro) text-foreground">{item.output}</pre>
+        <pre className={cn("max-h-(--sz-64) overflow-auto whitespace-pre-wrap rounded-sm bg-muted/50 p-2 font-mono text-(length:--text-micro) text-foreground", ANALYTICS_MASK_CLASS)}>{item.output}</pre>
       ) : null}
       {item.outputTruncated ? <p className="text-muted-foreground">Output truncated to 8 KiB.</p> : null}
     </div>
@@ -224,7 +226,7 @@ function WorkspaceFileDetails({ item }: { item: TaskChatWorkspaceFileItem }) {
         item.presentation === "document" ? (
           <div className="max-h-(--sz-64) overflow-auto rounded-sm bg-muted/30 p-2 text-foreground"><MarkdownBody>{item.preview}</MarkdownBody></div>
         ) : (
-          <pre className="max-h-(--sz-64) overflow-auto whitespace-pre-wrap rounded-sm bg-muted/50 p-2 font-mono text-(length:--text-micro) text-foreground">{item.preview}</pre>
+          <pre className={cn("max-h-(--sz-64) overflow-auto whitespace-pre-wrap rounded-sm bg-muted/50 p-2 font-mono text-(length:--text-micro) text-foreground", ANALYTICS_MASK_CLASS)}>{item.preview}</pre>
         )
       ) : <p className="text-muted-foreground">Preview unavailable.</p>}
       {item.previewTruncated ? <p className="text-muted-foreground">Preview truncated by the runner.</p> : null}
@@ -268,30 +270,18 @@ function detailContent(item: TaskChatProtocolItem, neutral = false): ReactNode |
   }
 }
 
-function safeActivityHref(value: string | null | undefined): string | undefined {
-  if (!value) return undefined;
-  try {
-    // A fixed HTTPS base accepts relative app paths and fragments as well as
-    // external HTTP(S) resources, but never executable or local-file schemes.
-    const url = new URL(value, "https://paperclip.invalid");
-    return url.protocol === "https:" || url.protocol === "http:" ? value : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 export function hasTaskChatProtocolActivityDetails(item: TaskChatProtocolItem): boolean {
   if (item.surface === "provider_activity" && item.autoReview) return true;
   // A check expands only when it has an outcome that may not fit on one line.
   if (item.surface === "provider_activity" && item.family === "verification") return detailContent(item) !== null;
-  if (item.surface === "resource") return Boolean(safeActivityHref(item.href));
+  if (item.surface === "resource") return Boolean(safeNavigableUrl(item.href));
   return detailContent(item) !== null || (item.surface === "provider_activity" && Boolean(item.summary?.trim()));
 }
 
 export function TaskChatProtocolActivityDetails({ item, neutral = false }: { item: TaskChatProtocolItem; neutral?: boolean }) {
   const detail = detailContent(item, neutral);
   if (item.surface === "resource") {
-    const href = safeActivityHref(item.href);
+    const href = safeNavigableUrl(item.href);
     return href ? <a href={href} className="text-foreground underline">{item.title}</a> : <p>{item.title}</p>;
   }
   return <>{item.surface === "provider_activity" && item.family !== "verification" && item.summary ? <p className="whitespace-pre-wrap break-words">{item.summary}</p> : null}{detail}{item.surface === "provider_activity" && item.autoReview ? <AutoReviewDetail review={item.autoReview} /> : null}</>;
@@ -418,7 +408,7 @@ export function TaskChatProtocolActivityRow({ item }: { item: TaskChatProtocolIt
     </>
   );
 
-  const resourceHref = item.surface === "resource" ? safeActivityHref(item.href) : undefined;
+  const resourceHref = item.surface === "resource" ? (safeNavigableUrl(item.href) ?? undefined) : undefined;
   if (resourceHref) {
     return (
       <a className="group/activity -mx-1.5 flex min-h-6 w-full min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-sm px-1.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground" href={resourceHref} data-testid="task-chat-protocol-activity-row">

@@ -4,7 +4,7 @@ import { dotPrincipalControlBodyParser, dotPrincipalControlRoutes, isDotPrincipa
 export { museExternalAgents } from "./muse.js";
 export { withExternalAdmissionGuard, withExternalExecutionAdmission, assertNoExternalOverlap, type ExternalAdmissionTransaction } from "./admission.js";
 
-export { dotRunnerBroker, createDotRunnerMcpTools } from "./dot.js";
+export { dotRunnerBroker, createDotRunnerMcpTools, isDotBindingUnavailableReason, type DotBindingUnavailableReason } from "./dot.js";
 
 export { notifyExternalAgentSettlement, pendingMuseTerminalBindings, type ExternalAgentSettlementScope } from "./muse-terminal-settlement.js";
 
@@ -19,3 +19,6 @@ export function createDotPrincipalHttp(oauth: Parameters<typeof dotPrincipalCont
 } {
   return { bodyParser: dotPrincipalControlBodyParser(), matchesPost: isDotPrincipalControlPost, router: dotPrincipalControlRoutes(oauth) };
 }
+
+export { notifyMuseContactVerification, pendingMuseContactVerifications, parseMuseVerificationHint, type MuseVerificationScope } from "./muse-verification-work.js";
+export { resolveExternalRunAuthorizingUser, type ExternalRunAuthorizingUser } from "./run-authorizer.js";

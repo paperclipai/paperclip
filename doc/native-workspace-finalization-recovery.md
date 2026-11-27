@@ -15,6 +15,18 @@ exact source proof under publication row locks. A changed source or checkpoint
 keeps local authority. Provider stop verification and any later file export
 remain the recovery owner's separate obligations.
 
+The same local file handoff can preserve a blocked prepared source after a
+native session is interrupted with ambiguous state, or after its file export
+recovery is exhausted. The interruption may precede a provider session. Its
+recorded session flag must be a boolean; it does not prove remote recovery.
+The interrupted source must retain its exact task failure block and declared
+recovery allocations. The exhausted source must retain its accepted
+result, bound original allocation, exhausted system recovery and blocked file
+recovery. An empty list of additional recovery allocations does not remove the
+original prepared allocation binding. The migration checks these records again
+under the same physical and task locks before publication. It keeps the failed
+run, accepted result, recovery action and remote file obligation unchanged.
+
 Periodic heartbeat recovery runs one pass at a time in each server process.
 A tick that arrives during a slow pass reports its age and starts no duplicate.
 A later tick can start a fresh pass after the current work settles. Shutdown
@@ -181,6 +193,28 @@ runs. Another agent's run and a recovery-action wake still prevent takeover.
 Publication checks repeat this validation, so a wake that starts during copyback
 stops publication. Row locks are never held across physical copyback I/O.
 
+**Replaced deployment on a volume-backed service (automatic, no harness call).**
+Railway mounts a service volume into one deployment at a time: it stops the
+previous deployment before the new one starts, and a service with a volume has
+no replicas. When this server runs on a Railway service with an attached volume
+(`RAILWAY_VOLUME_ID` and `RAILWAY_VOLUME_MOUNT_PATH`), and the receipt names the
+same project, environment and service with a different deployment ID, the
+shared owner-liveness primitive (`proveOwnerGone`) returns `gone` with reason
+`deployment_replaced`. That deployment's controller and every copyback child
+in it have exited, on whichever host they ran. The finalizer then claims the
+exact receipt as it does for a harness receipt, logs
+`issue.workspace_owner_stop_verified` with `deploymentProof`, marks the
+recovery `resuming`, and resumes the save with no provider turn. The same
+deployment ID, another service or environment, or a server without a volume
+gives no proof; the harness request below still applies. New receipts also
+record the mounted volume ID, and the proof then requires this server to mount
+that same volume. Receipts saved by earlier releases already record the
+deployment, so they take this path after an upgrade. The finalizer reaches this
+check only after it holds the run's copyback advisory lock, so the previous
+owner's lock session has also ended. A wait that this rule and the harness
+cannot settle names the Resume saved result action; its text never asks a
+person to inspect a server.
+
 The harness endpoint is `POST /v1/tenant/workspace-worker-stop`. The fleet-wide
 server token authorizes a read request, never stop evidence: responses must be
 signed by the harness. This endpoint requires the companion cloud harness change.
@@ -319,6 +353,24 @@ finalization from the accepted result. Confirm the run's native phase and
 `resultJson.finalizationPhase` are `committed`, there is no `nextAttemptAt`, and
 no workspace operation is still running. The accepted provider result is reused.
 
+## Symlinks in remote workspace saves
+
+The remote workspace save (`remote-workspace-snapshot-archive.ts`) records
+symlinks and never follows them. A link whose target resolves inside the
+workspace, such as `node_modules/.bin/tool -> ../tool/cli.js`, is saved as a
+link and restored as the same link. A link that is absolute or leaves the
+workspace through `..`, such as a headless Chromium profile's
+`SingletonSocket -> /tmp/...` or a link into a sandbox-only cache, has no
+portable meaning: the save records its path in the archive manifest's
+`excluded` list, omits it, and continues. Such a link no longer fails the save
+with `remote_workspace_archive_unsafe_symlink`. Restore materializes only the
+manifest entries, so an omitted link is absent after restore, and restore still
+refuses any archive whose manifest names an absolute or escaping link. Omitting
+a tracked link shows as a deletion in `git status` after restore.
+
+Saves that recovery exhausted before this policy (capture policy version 1) are
+retried once automatically.
+
 ## Automatic unsafe archive recovery
 
 An unsafe link in a native workspace must not fail a completed task or require
@@ -402,6 +454,10 @@ delay that sweep until the claim expires. Neither an unconfirmed stop nor a
 stale receipt grants admission, and a changed lease or competing sandbox owner
 prevents cleanup from taking ownership. Retry export after the lease has a new
 confirmed stopped receipt. No provider turn is created by this recovery.
+Once recovery has saved the files and queued destruction of the stopped sandbox,
+the cleanup worker admits its first attempt without the five-minute retry delay.
+The shared worker spacing and any in-flight claim deadline still apply. A failed
+first attempt keeps the existing retry delay, attempt limit and ownership checks.
 Cleanup and its readiness probe use the plugin ID recorded on that lease. Another
 plugin with the same provider name cannot take over; an unavailable original
 plugin defers cleanup without consuming an attempt. Stop-only cleanup requires the exact plugin worker to advertise `environmentStopLease`. Older plugins without that hook receive neither release nor destroy; resume admission also defers until safe compensation is available.
@@ -520,11 +576,15 @@ receipts fail closed. Older sessions without a receipt retain the strict current
 release gate; a sandbox's own manifest cannot supply missing launch authority.
 
 Remote provider-pack verification retries an interrupted read at most once.
+The retry waits one second so a fast gateway failure has time to recover.
 Each command retains its 30-second transport timeout. A timeout, signal, absent
 exit status, or transport exception does not prove artifact incompatibility.
-Two inconclusive attempts hold the original run with
-`runner_remote_provider_verification_unavailable`. Reattachment does not spend
-a new provider attempt, so it cannot renew this exhausted read budget. A
+Two inconclusive attempts on a fresh launch prove that no provider session
+started, so the same run retries its startup with backoff within its provider
+attempt budget. On any other attempt, two inconclusive attempts hold the
+original run with `runner_remote_provider_verification_unavailable`.
+Reattachment does not spend a new provider attempt, so it cannot renew this
+exhausted read budget. A
 completed nonzero verification, digest mismatch, or
 wrong OpenCode version remains incompatible and cannot authorize a new provider
 turn. Recovery retains the exact source workspace and existing ownership gates;
