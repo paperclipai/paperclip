@@ -573,8 +573,8 @@ export function resolveRunLogS3(): DurableRunLogStoreOptions["s3"] {
       : true, // Cubbit (and most S3-compatible endpoints) need path-style
   });
   // Opt-in in-flight tail mirroring: at most one partial upload per interval
-  // per active run, so a crash loses at most one interval's tail. Unset/0
-  // keeps the historical finalize-only mirroring.
+  // per active run. A crash can still lose the unmirrored tail after the last
+  // successful upload. Unset/0 keeps the historical finalize-only mirroring.
   const inflightSeconds = Number.parseFloat(process.env.RUN_LOG_S3_INFLIGHT_MIRROR_SECONDS ?? "");
   return {
     provider,
