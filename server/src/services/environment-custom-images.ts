@@ -1,5 +1,8 @@
+import { notifyEnvironmentCleanup } from "./environment-cleanup-notifications.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, lte } from "drizzle-orm";
+import { withoutCleanupVerification } from "./cleanup-verification-proof.js";
+import { and, desc, eq, inArray, lte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   environmentCustomImageSetupSessions,
@@ -17,11 +20,13 @@ import {
   type SandboxEnvironmentConfig,
   redactEnvironmentCustomImageValue,
 } from "@paperclipai/shared";
+import { readEnvironmentCreationCleanupError } from "@paperclipai/plugin-sdk";
 import type {
   PluginEnvironmentCancelInteractiveSetupResult,
   PluginEnvironmentCaptureTemplateResult,
   PluginEnvironmentInteractiveSetupConnectionPayload,
   PluginEnvironmentInteractiveSetupSession,
+  PluginEnvironmentLeaseObservation,
   PluginEnvironmentTemplateRefKind,
 } from "@paperclipai/plugin-sdk";
 import { conflict, notFound, unprocessable } from "../errors.js";
@@ -167,7 +172,7 @@ function normalizeConnectionSummary(
 
 function normalizeProviderMetadata(metadata: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
   if (!metadata) return null;
-  return redactEnvironmentCustomImageValue(metadata);
+  return redactEnvironmentCustomImageValue(withoutCleanupVerification(metadata) ?? {});
 }
 
 function metadataRecord(metadata: Record<string, unknown> | null | undefined): Record<string, unknown> {
@@ -286,6 +291,14 @@ export function environmentCustomImageService(
 ) {
   const environments = environmentService(db);
   const secrets = secretService(db);
+
+  function writeSetup<T>(write: (tx: Db) => PromiseLike<T>): Promise<T> {
+    return db.transaction(async tx => {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.customImageExpiry);
+      await notifyEnvironmentCleanup(tx);
+      return write(tx as unknown as Db);
+    });
+  }
 
   async function getTemplateById(id: string): Promise<EnvironmentCustomImageTemplate | null> {
     const row = await db
@@ -430,6 +443,7 @@ export function environmentCustomImageService(
       provider,
       rpcCompanyId: storedRpcCompanyId ?? secretContextCompanyId ?? "instance",
       pluginId: resolved.plugin.id,
+      pluginKey: resolved.plugin.pluginKey,
       driver: resolved.driver,
       runtimeConfig: parsed.config,
       driverConfig: stripSandboxProviderEnvelope(parsed.config),
@@ -592,7 +606,7 @@ export function environmentCustomImageService(
   ): Promise<EnvironmentCustomImageSetupSession> {
     const status = normalizePersistedStatus(providerSession.status, fallbackStatus);
     const now = new Date();
-    const row = await db
+    const row = await writeSetup(tx => tx
       .update(environmentCustomImageSetupSessions)
       .set({
         providerLeaseId: providerSession.providerLeaseId ?? null,
@@ -605,7 +619,7 @@ export function environmentCustomImageService(
       })
       .where(eq(environmentCustomImageSetupSessions.id, session.id))
       .returning()
-      .then((rows) => rows[0] ?? null);
+      .then((rows) => rows[0] ?? null));
     if (!row) throw notFound("Environment customImage setup session not found");
     return toSession(row);
   }
@@ -617,7 +631,7 @@ export function environmentCustomImageService(
     metadata?: Record<string, unknown> | null;
   }): Promise<EnvironmentCustomImageSetupSession> {
     const now = new Date();
-    const row = await db
+    const row = await writeSetup(tx => tx
       .update(environmentCustomImageSetupSessions)
       .set({
         status: input.status,
@@ -628,9 +642,48 @@ export function environmentCustomImageService(
       })
       .where(eq(environmentCustomImageSetupSessions.id, input.sessionId))
       .returning()
-      .then((rows) => rows[0] ?? null);
+      .then((rows) => rows[0] ?? null));
     if (!row) throw notFound("Environment customImage setup session not found");
     return toSession(row);
+  }
+
+  // A setup sandbox whose failed creation could not be cleaned up has no
+  // session lease to cancel. Hand it to the pending-cleanup sweep, the same
+  // owner as a failed run acquisition, so the provider allocation is not lost.
+  async function recordUnconfirmedSetupCreation(input: {
+    error: unknown;
+    environment: Environment;
+    provider: Awaited<ReturnType<typeof resolveSetupProvider>>;
+    sessionId: string;
+  }): Promise<void> {
+    const cleanup = readEnvironmentCreationCleanupError(input.error);
+    if (!cleanup) return;
+    const stored = parseEnvironmentDriverConfig(input.environment);
+    // Accept only an allocation in this setup's own scope. An instance-scoped
+    // setup has no company to own the cleanup record, so it is reported instead.
+    if (input.provider.rpcCompanyId === "instance" || cleanup.companyId !== input.provider.rpcCompanyId ||
+        cleanup.environmentId !== input.environment.id || cleanup.runId !== undefined ||
+        stored.driver !== "sandbox" || stored.config.provider !== input.provider.provider) {
+      throw new Error("Interactive setup sandbox cleanup could not be recorded", { cause: input.error });
+    }
+    // The stored config keeps secret references, never resolved values.
+    await environments.insertPendingCleanupLease({
+      companyId: cleanup.companyId,
+      environmentId: input.environment.id,
+      provider: input.provider.provider,
+      providerLeaseId: cleanup.providerLeaseId,
+      metadata: {
+        ...stored.config,
+        driver: "sandbox",
+        pluginId: input.provider.pluginId,
+        pluginKey: input.provider.pluginKey,
+        sandboxProviderPlugin: true,
+        purpose: "interactive_setup",
+        setupSessionId: input.sessionId,
+        failedCreateCleanup: cleanup,
+      },
+      failureReason: "interrupted_setup_creation",
+    });
   }
 
   async function cancelSession(
@@ -647,7 +700,7 @@ export function environmentCustomImageService(
       return await markSessionStatus({
         sessionId: session.id,
         status,
-        metadata: cancelled.metadata,
+        metadata: mergeSetupSessionMetadata(session.metadata, cancelled.metadata),
         failureReason: status === "failed" ? "Provider failed to cancel setup session." : null,
       });
     } catch (error) {
@@ -760,6 +813,22 @@ export function environmentCustomImageService(
 
     getSessionById,
 
+    async inspectSetupResource(session: typeof environmentCustomImageSetupSessions.$inferSelect): Promise<PluginEnvironmentLeaseObservation | undefined> {
+      if (!session.providerLeaseId || !session.finishedAt || session.connectionSecretRef !== null ||
+          !["promoted", "cancelled", "timed_out", "failed"].includes(session.status)) return undefined;
+      const environment = await requireEnvironment(session.environmentId);
+      const provider = await resolveSetupProvider({ environment, storedProvider: session.provider,
+        storedRpcCompanyId: readSetupRpcCompanyId(session.metadata) });
+      const recordedFingerprint = readString(session.metadata?.[SOURCE_ENVIRONMENT_CONFIG_FINGERPRINT_METADATA_KEY]);
+      if (!recordedFingerprint || fingerprintEnvironmentSandboxProviderConfig(provider.runtimeConfig) !== recordedFingerprint) return undefined;
+      if (!options.pluginWorkerManager?.getWorker(provider.pluginId)?.supportedMethods?.includes("environmentInspectLease")) return undefined;
+      return await options.pluginWorkerManager.call(provider.pluginId, "environmentInspectLease", {
+        driverKey: provider.provider, companyId: provider.rpcCompanyId, environmentId: environment.id,
+        issueId: null, config: provider.driverConfig, providerLeaseId: session.providerLeaseId,
+        leaseMetadata: session.metadata ?? {},
+      }, 15_000);
+    },
+
     startSetupSession: async (input: {
       environmentId: string;
       templateId?: string | null;
@@ -815,7 +884,7 @@ export function environmentCustomImageService(
         [SOURCE_ENVIRONMENT_CONFIG_FINGERPRINT_METADATA_KEY]: fingerprint,
         [SETUP_RPC_COMPANY_ID_METADATA_KEY]: provider.rpcCompanyId,
       };
-      await db.insert(environmentCustomImageSetupSessions).values({
+      await writeSetup(tx => tx.insert(environmentCustomImageSetupSessions).values({
         id: sessionId,
         environmentId: input.environmentId,
         templateId: selectedTemplate?.id ?? null,
@@ -828,7 +897,7 @@ export function environmentCustomImageService(
         metadata: setupMetadata,
         createdAt: now,
         updatedAt: now,
-      });
+      }));
 
       try {
         const providerSession = await callProviderStart({
@@ -845,11 +914,15 @@ export function environmentCustomImageService(
           connectionPayload: providerSession.connectionPayload ?? null,
         };
       } catch (error) {
-        await markSessionStatus({
-          sessionId,
-          status: "failed",
-          failureReason: error instanceof Error ? error.message : String(error),
-        });
+        try {
+          await recordUnconfirmedSetupCreation({ error, environment, provider, sessionId });
+        } finally {
+          await markSessionStatus({
+            sessionId,
+            status: "failed",
+            failureReason: error instanceof Error ? error.message : String(error),
+          });
+        }
         throw error;
       }
     },
@@ -1000,6 +1073,8 @@ export function environmentCustomImageService(
                 supersededRows.map((row) => row.id),
               ));
           }
+          await notifyEnvironmentCleanup(tx);
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.customImageExpiry);
           await tx
             .update(environmentCustomImageSetupSessions)
             .set({
@@ -1333,6 +1408,17 @@ export function environmentCustomImageService(
         await callProviderDeleteTemplate({ template, provider: deleteProvider, reason: "disabled" });
       }
       return template;
+    },
+
+    nextSetupCleanupAt: async (): Promise<number | null> => {
+      const [row] = await db.select({ nextAt: sql<Date | string | null>`min(${environmentCustomImageSetupSessions.expiresAt})` })
+        .from(environmentCustomImageSetupSessions)
+        .where(inArray(environmentCustomImageSetupSessions.status, [...ACTIVE_SETUP_STATUSES]));
+      if (!row || row.nextAt === undefined) throw new Error("Setup expiry query returned no result");
+      if (row.nextAt === null) return null;
+      const deadline = new Date(row.nextAt).getTime();
+      if (!Number.isFinite(deadline)) throw new Error("Setup expiry query returned an invalid deadline");
+      return deadline;
     },
 
     cleanupExpiredSetupSessions: async (input: {

@@ -11,16 +11,21 @@ import type {
   QueuedCommentQueueSnapshot,
   QueuedCommentQueueTransaction,
   QueuedCommentRunRow,
+  QueuedCommentSteeringPort,
+  SteerQueuedCommentInput,
 } from "./queued-comment-ports.js";
 
 export type QueuedCommentMutationErrorCode =
   | "queued_comment_not_pending"
   | "queued_comment_already_dispatching"
   | "queued_comment_stale_queue"
+  | "queued_comment_stale_target"
+  | "queued_comment_issue_not_found"
+  | "queued_response_requires_fresh_session"
+  | "steering_unsupported"
   | "queued_comment_revision_conflict"
   | "queued_comment_order_mismatch";
 
-/** The route maps this 1:1 onto the `conflict(...)` HTTP error it threw before this move, using `code` and `message` unchanged. */
 export class QueuedCommentMutationError extends Error {
   constructor(
     readonly code: QueuedCommentMutationErrorCode,
@@ -39,13 +44,61 @@ export class QueuedCommentMutationForbiddenError extends Error {
   }
 }
 
-function requireMutationTarget(queue: QueuedCommentQueueSnapshot, queueId: string, revision: string): void {
+export function requireQueuedCommentMutationTarget(queue: QueuedCommentQueueSnapshot, queueId: string, revision: string): void {
   if (queue.queueId !== queueId) {
     throw new QueuedCommentMutationError("queued_comment_stale_queue", "The queued message targets a stale queue");
   }
   if (queue.revision !== revision) {
     throw new QueuedCommentMutationError("queued_comment_revision_conflict", "The queued messages changed in another session");
   }
+}
+
+export type SteerQueuedCommentResult = {
+  queue: QueuedCommentQueueSnapshot;
+  turnId: string | null;
+  duplicate: boolean;
+};
+
+export function createSteerQueuedComment<Identity>(steering: QueuedCommentSteeringPort<Identity>) {
+  return async function steerQueuedComment(input: SteerQueuedCommentInput): Promise<SteerQueuedCommentResult> {
+    const identity = await steering.reserveIdentity(input);
+    let attempted = false;
+    try {
+      return await steering.withLockedTarget(input, async (tx) => {
+        const prior = tx.previousAcknowledgement;
+        if (prior.status === "acknowledged" && prior.queueId === input.queueId) {
+          return { queue: await tx.readReplayQueue(), duplicate: true,
+            turnId: typeof prior.turnId === "string" ? prior.turnId : null };
+        }
+
+        const queue = await tx.readPendingQueue();
+        requireQueuedCommentMutationTarget(queue, input.queueId, input.revision);
+        if (queue.protocol !== "paperclip_runner_v1") {
+          throw new QueuedCommentMutationError("steering_unsupported", "This runner does not support same-turn steering");
+        }
+        const entry = queue.entries.find((candidate) => candidate.comment.id === input.commentId);
+        if (!entry) {
+          throw new QueuedCommentMutationError("queued_comment_not_pending", "The queued message is no longer pending");
+        }
+        if (entry.source?.requiresFreshSession) {
+          throw new QueuedCommentMutationError("queued_response_requires_fresh_session",
+            "This approval needs a fresh turn. Interrupt or wait for the current turn to finish.");
+        }
+        await tx.assertDeliveryAllowed();
+        attempted = true;
+        const { turnId } = await tx.deliver(entry.comment.body, identity);
+        const remainingIds = queue.entries.map(({ comment }) => comment.id).filter((id) => id !== input.commentId);
+        const updatedQueue = await tx.acceptAcknowledgement({ identity, turnId, remainingIds });
+        if (!updatedQueue) {
+          throw new QueuedCommentMutationError("queued_comment_stale_target", "The queued message targets a stopped run. Your message is still queued.");
+        }
+        return { queue: updatedQueue, turnId, duplicate: false };
+      });
+    } catch (error) {
+      if (identity && !steering.isDeliveryUncertain(error, attempted)) await steering.rejectIdentity(identity);
+      throw error;
+    }
+  };
 }
 
 async function updateQueueRunCommentIdsGuarded(
@@ -85,7 +138,7 @@ export function createEditQueuedComment(deps: { issueLock: QueuedCommentIssueLoc
     return deps.issueLock.withLockedQueue(
       { issue: input.issue, actor: input.actor, queueId: input.queueId },
       async (locked, tx) => {
-        requireMutationTarget(locked.queue, input.queueId, input.revision);
+        requireQueuedCommentMutationTarget(locked.queue, input.queueId, input.revision);
         const entry = locked.queue.entries.find((candidate) => candidate.comment.id === input.commentId);
         if (!entry) {
           throw new QueuedCommentMutationError("queued_comment_not_pending", "The queued message is no longer pending");
@@ -163,7 +216,7 @@ export function createReorderQueuedComments(deps: { issueLock: QueuedCommentIssu
     return deps.issueLock.withLockedQueue(
       { issue: input.issue, actor: input.actor, queueId: input.queueId },
       async (locked, tx) => {
-        requireMutationTarget(locked.queue, input.queueId, input.revision);
+        requireQueuedCommentMutationTarget(locked.queue, input.queueId, input.revision);
 
         const currentIds = locked.queue.entries.map((entry) => entry.comment.id);
         const reorderDecision = decideQueuedCommentReorder({ currentIds, orderedIds: input.orderedCommentIds });
@@ -249,7 +302,7 @@ export function createDiscardQueuedComment(deps: { issueLock: QueuedCommentIssue
       { issue: input.issue, actor: input.actor, queueId: input.queueId },
       async (locked, tx) => {
         if (input.revision !== undefined) {
-          requireMutationTarget(locked.queue, input.queueId, input.revision);
+          requireQueuedCommentMutationTarget(locked.queue, input.queueId, input.revision);
         }
 
         const entry = locked.queue.entries.find((candidate) => candidate.comment.id === input.commentId);
@@ -263,7 +316,7 @@ export function createDiscardQueuedComment(deps: { issueLock: QueuedCommentIssue
           authorAgentId: entry.comment.authorAgentId,
           authorUserId: entry.comment.authorUserId,
         });
-        if (!owns) {
+        if (!owns && !(input.actor.actorType === "user" && entry.canDiscard)) {
           throw new QueuedCommentMutationForbiddenError("Only the queued message author can discard it");
         }
 

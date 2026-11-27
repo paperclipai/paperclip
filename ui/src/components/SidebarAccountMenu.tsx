@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type CSSProperties } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   BookOpen,
@@ -13,19 +13,22 @@ import { Link } from "@/lib/router";
 import { authApi } from "@/api/auth";
 import { queryKeys } from "@/lib/queryKeys";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
-import { useCloudInviteUrl } from "@/hooks/useCloudInviteUrl";
+import { useCloudSidebarLinks } from "@/hooks/useCloudSidebarLinks";
+import { SidebarSlackFeedback } from "./SidebarSlackFeedback";
 import { useCanInviteCompanyMembers } from "@/hooks/useCompanyInviteAccess";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { useSignOut } from "@/hooks/useSignOut";
 import { useStagingCommit } from "@/hooks/useStagingCommit";
 import { userProfilePath } from "@/lib/userProfileLinks";
 import { useSidebar } from "../context/SidebarContext";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Popover, PopoverTrigger } from "@/components/ui/popover";
+import { FlyoutContent, FlyoutHeader, FlyoutOptions } from "@/components/ui/flyout";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
+import { cn } from "../lib/utils";
 import { ThemeToggle } from "./ThemeToggle";
 import { SidebarServerInfo } from "./SidebarServerInfo";
+import { TruncatedText } from "./TruncatedText";
 
 const INVITES_PATH = "/company/settings/members?tab=invites";
 const DOCS_URL = "https://docs.paperclip.ing/";
@@ -35,8 +38,7 @@ interface SidebarAccountMenuProps {
   deploymentMode?: DeploymentMode;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
-  /** Contextual navigation occupies a full sidebar even if the saved global nav mode is collapsed. */
-  forceExpanded?: boolean;
+  shadow?: CSSProperties["boxShadow"];
 }
 
 interface MenuActionProps {
@@ -78,7 +80,7 @@ function MenuAction({
       <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground">
         <Icon className="size-4" />
       </span>
-      <span className="min-w-0 flex-1 truncate">{label}</span>
+      <TruncatedText className="min-w-0 flex-1 truncate">{label}</TruncatedText>
     </>
   );
 
@@ -117,7 +119,7 @@ export function SidebarAccountMenu({
   deploymentMode,
   open: controlledOpen,
   onOpenChange,
-  forceExpanded = false,
+  shadow,
 }: SidebarAccountMenuProps) {
   const cloud = useCloudInstance();
   const isCloud = Boolean(cloud);
@@ -128,10 +130,10 @@ export function SidebarAccountMenu({
   // On Cloud the shortcut exists only for the current stack's owner/admin and
   // only once the stack metadata is known; the in-app Invites tab is never a
   // fallback there because it drives a different invitation flow.
-  const cloudInviteUrl = useCloudInviteUrl();
+  const { inviteUrl: cloudInviteUrl, slackFeedback } = useCloudSidebarLinks(cloud);
   // Self-hosted invites need the `users:invite` grant. Offer the shortcut only
-  // to boards that hold it (company owner/admin, instance admins, local
-  // boards) so a plain member is never sent to a permission error.
+  // to boards with role-default access (company owner/admin/operator,
+  // instance admins, local boards). The server checks the actual grants.
   const canInviteMembers = useCanInviteCompanyMembers(!isCloud);
   const inviteHref = isCloud ? cloudInviteUrl : canInviteMembers ? INVITES_PATH : null;
   const showInvite =
@@ -140,15 +142,13 @@ export function SidebarAccountMenu({
     !hidesCompanyPage(hiddenSettings, "company.members") &&
     !hidesCompanyPage(hiddenSettings, "company.invites");
   const [internalOpen, setInternalOpen] = useState(false);
-  const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
-  const rail = collapsed && !peeking && !forceExpanded;
+  const { isMobile, setSidebarOpen } = useSidebar();
   const open = controlledOpen ?? internalOpen;
   const stagingCommit = useStagingCommit(open);
   const setOpen = onOpenChange ?? setInternalOpen;
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
-    retry: false,
   });
 
   const signOutMutation = useSignOut({ onSignedOut: closeNavigationChrome });
@@ -169,15 +169,15 @@ export function SidebarAccountMenu({
   }
 
   return (
-    <div className="bg-border/50 px-3 py-2 dark:bg-muted">
-      <div className={cn("flex items-center gap-0.5", !rail && "px-2")}>
+    <div data-sidebar-account="" className="bg-border/50 px-3 py-2 dark:bg-muted">
+      <div className="flex items-center gap-0.5 px-2">
         <Popover open={open} onOpenChange={setOpen}>
           <PopoverTrigger asChild>
             <button
               type="button"
               className={cn(
                 "flex min-w-0 items-center gap-2.5 rounded-lg text-left text-(length:--text-compact) font-medium text-foreground/80 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-                rail ? "w-full px-3 py-2" : "flex-1 px-2 py-1.5",
+                "flex-1 px-2 py-1.5",
               )}
               aria-label="Open account menu"
             >
@@ -185,17 +185,19 @@ export function SidebarAccountMenu({
                 {session?.user.image ? <AvatarImage src={session.user.image} alt={displayName} /> : null}
                 <AvatarFallback>{initials}</AvatarFallback>
               </Avatar>
-              <span className={cn("min-w-0 flex-1 truncate", rail && SIDEBAR_RAIL_HIDDEN_LABEL)}>{displayName}</span>
+              <TruncatedText className="min-w-0 flex-1 truncate">{displayName}</TruncatedText>
             </button>
           </PopoverTrigger>
-          <PopoverContent
+          <FlyoutContent
+            shadow={shadow}
+            aria-label="Account"
             side="top"
             align="start"
             sideOffset={10}
-            className="min-h-(--profile-popover-min-height) w-(--profile-popover-width) max-w-(--sz-calc-24) overflow-hidden rounded-xl border-border bg-popover p-0 shadow-(--shadow-profile-popover)"
+            className="w-(--profile-popover-width) max-w-(--sz-calc-24) overflow-hidden rounded-xl border-border bg-popover p-0 shadow-(--shadow-profile-popover)"
           >
             {/* The profile link is a stretched overlay so the staging SHA anchor can sit beside the email without nesting anchors. */}
-            <div className="relative flex h-(--profile-popover-header-height) shrink-0 items-center gap-2.5 px-3.5">
+            <FlyoutHeader data-flyout-profile data-marquee-surface className="relative flex h-(--profile-popover-header-height) shrink-0 items-center gap-2.5 px-3.5">
               <Link
                 to={profileHref}
                 aria-label="View profile"
@@ -207,12 +209,12 @@ export function SidebarAccountMenu({
                 <AvatarFallback className="text-xs text-foreground">{initials}</AvatarFallback>
               </Avatar>
               <div className="pointer-events-none relative min-w-0 flex-1">
-                <h2 className="truncate text-sm font-semibold leading-(--profile-popover-label-line-height) text-foreground">
+                <TruncatedText as="h2" className="truncate text-sm font-semibold leading-(--profile-popover-label-line-height) text-foreground">
                   {displayName}
-                </h2>
-                <p className="truncate text-(length:--text-micro) leading-(--profile-popover-meta-line-height) text-muted-foreground">
+                </TruncatedText>
+                <TruncatedText as="p" className="truncate text-(length:--text-micro) leading-(--profile-popover-meta-line-height) text-muted-foreground">
                   {secondaryLabel}
-                </p>
+                </TruncatedText>
                 {stagingCommit ? (
                   <a
                     className="pointer-events-auto block truncate font-mono text-(length:--text-micro) leading-(--profile-popover-meta-line-height) text-muted-foreground hover:underline focus-visible:underline"
@@ -226,9 +228,9 @@ export function SidebarAccountMenu({
                   </a>
                 ) : null}
               </div>
-            </div>
+            </FlyoutHeader>
 
-            <div className="flex flex-1 flex-col gap-0.5 border-t border-border px-2.5 pb-2.5 pt-2">
+            <FlyoutOptions className="flex flex-col gap-0.5 border-t border-border p-2.5">
               <MenuAction
                 label="Settings"
                 icon={Settings}
@@ -265,16 +267,17 @@ export function SidebarAccountMenu({
                   <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground">
                     <LogOut className="size-4" />
                   </span>
-                  <span className="min-w-0 flex-1 truncate">
+                  <TruncatedText className="min-w-0 flex-1 truncate">
                     {signOutMutation.isPending ? "Signing out..." : "Sign out"}
-                  </span>
+                  </TruncatedText>
                 </button>
               ) : null}
               <SidebarServerInfo />
-            </div>
-          </PopoverContent>
+            </FlyoutOptions>
+          </FlyoutContent>
         </Popover>
-        {!rail && !isCloud ? (
+        {slackFeedback && <SidebarSlackFeedback feedback={slackFeedback} className="hover:bg-sidebar-accent" />}
+        {!isCloud ? (
           <Tooltip>
             <TooltipTrigger asChild>
               <a

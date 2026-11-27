@@ -21,6 +21,7 @@ const mockAnnotationService = vi.hoisted(() => ({
   createThread: vi.fn(),
   addComment: vi.fn(),
   updateThread: vi.fn(),
+  setCommentReaction: vi.fn(),
   remapOpenThreadsForDocument: vi.fn(),
 }));
 const mockIssueReferenceService = vi.hoisted(() => ({
@@ -37,12 +38,12 @@ const mockIssueReferenceService = vi.hoisted(() => ({
   syncIssue: vi.fn(async () => undefined),
 }));
 const mockHeartbeatService = vi.hoisted(() => ({
-  wakeup: vi.fn(async () => undefined),
+  wakeup: vi.fn(async (): Promise<{ id: string } | undefined> => undefined),
   reportRunActivity: vi.fn(async () => undefined),
 }));
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
-  expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
+  expireStaleRequestConfirmationsForIssueDocument: vi.fn(async (): Promise<Array<{ id: string; kind: string; status: string }>> => []),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
@@ -187,7 +188,7 @@ async function createApp(actor: "board" | "agent" = "board", actorCompanyId = co
 }
 
 describe("document annotation routes", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("../routes/issues.js");
     vi.doUnmock("../middleware/index.js");
@@ -226,6 +227,24 @@ describe("document annotation routes", () => {
     mockAnnotationService.addComment.mockResolvedValue(annotationComment);
     mockAnnotationService.updateThread.mockResolvedValue({ ...annotationThread, status: "resolved" });
     mockAnnotationService.remapOpenThreadsForDocument.mockResolvedValue([]);
+    mockAnnotationService.setCommentReaction.mockImplementation(async (input: { reaction: string; present: boolean }) => ({
+      thread: annotationThread,
+      comment: {
+        ...annotationComment,
+        reactions: input.present
+          ? [{ reaction: input.reaction, count: 1, reactedByMe: true, actors: [{ actorType: "user", agentId: null, userId: "board-user" }] }]
+          : [],
+      },
+      changed: true,
+      firstAdd: input.present,
+      questionWakeRequestId: input.present && input.reaction === "question" ? "wake-req-1" : null,
+      questionWakeAgentId: input.present && input.reaction === "question" ? "99999999-9999-4999-8999-999999999999" : null,
+    }));
+    // Cold route transforms belong to fixture setup, not the request timeout.
+    await Promise.all([
+      vi.importActual("../routes/issues.js"),
+      vi.importActual("../middleware/index.js"),
+    ]);
   });
 
   it("includes compact open annotations without comment bodies by default for agent document reads", async () => {
@@ -238,6 +257,7 @@ describe("document annotation routes", () => {
     expect(mockAnnotationService.listThreadsForIssueDocument).toHaveBeenCalledWith(issueId, "plan", {
       status: "open",
       includeComments: false,
+      viewer: { actorType: "agent", actorId: "77777777-7777-4777-8777-777777777777" },
     });
   });
 
@@ -250,6 +270,7 @@ describe("document annotation routes", () => {
     expect(mockAnnotationService.listThreadsForIssueDocument).toHaveBeenCalledWith(issueId, "plan", {
       status: "open",
       includeComments: true,
+      viewer: { actorType: "agent", actorId: "77777777-7777-4777-8777-777777777777" },
     });
   });
 
@@ -402,5 +423,161 @@ describe("document annotation routes", () => {
       }),
     }));
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  describe("comment reactions", () => {
+    const assigneeAgentId = "99999999-9999-4999-8999-999999999999";
+    const reactionPath = (reaction: string) =>
+      `/api/issues/${issueId}/documents/plan/annotations/${annotationThread.id}/comments/${annotationComment.id}/reactions/${reaction}`;
+
+    beforeEach(() => {
+      mockIssueService.getById.mockResolvedValue({
+        id: issueId,
+        companyId,
+        title: "Annotation API",
+        status: "in_progress",
+        assigneeAgentId,
+      });
+    });
+
+    it("adds a reaction, returns counts and reacted-by-me, and logs activity", async () => {
+      const res = await request(await createApp()).put(reactionPath("thumbs_up")).expect(200);
+
+      expect(res.body.reactions).toEqual([
+        { reaction: "thumbs_up", count: 1, reactedByMe: true, actors: [{ actorType: "user", agentId: null, userId: "board-user" }] },
+      ]);
+      expect(mockAnnotationService.setCommentReaction).toHaveBeenCalledWith({
+        target: { kind: "issue", issueId, key: "plan" },
+        threadId: annotationThread.id,
+        commentId: annotationComment.id,
+        reaction: "thumbs_up",
+        present: true,
+        actor: expect.objectContaining({ actorType: "user", actorId: "board-user", userId: "board-user" }),
+      });
+      expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: "issue.document_annotation_comment_reaction_added",
+        details: expect.objectContaining({ commentId: annotationComment.id, reaction: "thumbs_up" }),
+      }));
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    });
+
+    it("removes a reaction and logs the removal", async () => {
+      const res = await request(await createApp()).delete(reactionPath("done")).expect(200);
+
+      expect(res.body.reactions).toEqual([]);
+      expect(mockAnnotationService.setCommentReaction).toHaveBeenCalledWith(expect.objectContaining({
+        reaction: "done",
+        present: false,
+      }));
+      expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: "issue.document_annotation_comment_reaction_removed",
+      }));
+    });
+
+    it("treats a repeated reaction as a quiet no-op", async () => {
+      mockAnnotationService.setCommentReaction.mockResolvedValueOnce({
+        thread: annotationThread,
+        comment: { ...annotationComment, reactions: [] },
+        changed: false,
+      });
+
+      await request(await createApp()).put(reactionPath("question")).expect(200);
+
+      expect(mockLogActivity).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    });
+
+    it("wakes the assignee once when a person adds a question", async () => {
+      await request(await createApp()).put(reactionPath("question")).expect(200);
+
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(assigneeAgentId, expect.objectContaining({
+        reason: "issue_commented",
+        allowRunCoalescing: false,
+        executionWaitRequestId: "wake-req-1",
+        requestedByActorType: "user",
+        requestedByActorId: "board-user",
+        contextSnapshot: expect.objectContaining({
+          issueId,
+          annotationCommentId: annotationComment.id,
+          annotationThreadId: annotationThread.id,
+          annotationReaction: "question",
+          annotationReactionUserId: "board-user",
+          source: "issue.document_annotation_reaction",
+        }),
+      }));
+    });
+
+    it("does not wake the assignee again when a person re-adds a removed question", async () => {
+      mockAnnotationService.setCommentReaction.mockResolvedValueOnce({
+        thread: annotationThread,
+        comment: { ...annotationComment, reactions: [] },
+        changed: true,
+        firstAdd: false,
+      });
+
+      await request(await createApp()).put(reactionPath("question")).expect(200);
+
+      expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: "issue.document_annotation_comment_reaction_added",
+      }));
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    });
+
+    it.each(["done", "check", "thumbs_up"])("does not wake the assignee for %s", async (reaction) => {
+      await request(await createApp()).put(reactionPath(reaction)).expect(200);
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    });
+
+    it("does not wake the assignee for a question on a closed task", async () => {
+      mockIssueService.getById.mockResolvedValue({
+        id: issueId,
+        companyId,
+        title: "Annotation API",
+        status: "done",
+        assigneeAgentId,
+      });
+      await request(await createApp()).put(reactionPath("question")).expect(200);
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    });
+
+    it("does not wake another user's agent chat from a non-owner question", async () => {
+      mockIssueService.getById.mockResolvedValue({
+        id: issueId,
+        companyId,
+        title: "Annotation API",
+        status: "in_review",
+        assigneeAgentId,
+        conversationAgentId: assigneeAgentId,
+        conversationUserId: "chat-owner",
+      });
+      await request(await createApp()).put(reactionPath("question")).expect(200);
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    });
+
+    it("does not wake the assignee when the service suppresses a capped question wake", async () => {
+      mockAnnotationService.setCommentReaction.mockResolvedValueOnce({
+        thread: annotationThread,
+        comment: { ...annotationComment, reactions: [] },
+        changed: true,
+        firstAdd: true,
+        questionWakeRequestId: null,
+        questionWakeAgentId: null,
+        questionWakeSuppressed: true,
+      });
+      await request(await createApp()).put(reactionPath("question")).expect(200);
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    });
+
+    it("rejects an unknown reaction name", async () => {
+      await request(await createApp()).put(reactionPath("party")).expect(400);
+      expect(mockAnnotationService.setCommentReaction).not.toHaveBeenCalled();
+    });
+
+    it("returns 404 for another company's task", async () => {
+      await request(await createApp("agent", otherCompanyId)).put(reactionPath("done")).expect(404);
+      await request(await createApp("agent", otherCompanyId)).delete(reactionPath("done")).expect(404);
+      expect(mockAnnotationService.setCommentReaction).not.toHaveBeenCalled();
+    });
   });
 });

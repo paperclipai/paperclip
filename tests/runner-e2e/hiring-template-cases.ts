@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { RunnerProfileFixture, RunnerTaskFixture } from "./types.js";
 
-export const HIRING_TEMPLATE_GRADER_VERSION = "paperclip.hiring-templates.v1";
+export const HIRING_TEMPLATE_GRADER_VERSION = "paperclip.hiring-templates.v3";
 export const HIRING_TEMPLATE_SKILL_KEY = "paperclipai/paperclip/paperclip-create-agent";
 export const HIRING_TEMPLATE_READ_FILES = [
   "SKILL.md",
@@ -17,7 +17,8 @@ export const HIRING_TEMPLATE_SOURCE_FILES = [
   "skills/paperclip-create-agent/references/baseline-role-guide.md",
 ] as const;
 export const hiringTemplateDefinitionDigest = createHash("sha256").update(
-  ["cases", "scoring", "flow"].map(part => readFileSync(new URL(`./hiring-template-${part}.ts`, import.meta.url), "utf8")).join("\n"),
+  ["hiring-template-cases.ts", "hiring-template-scoring.ts", "hiring-template-flow.ts", "hiring-template-turn-accounting.ts", "chat-flow.ts"]
+    .map(file => readFileSync(new URL(`./${file}`, import.meta.url), "utf8")).join("\n"),
 ).digest("hex");
 
 export function hiringTemplateProfile(profile: RunnerProfileFixture): RunnerProfileFixture {
@@ -49,7 +50,7 @@ export function hiringTemplateScenario(nonce: string, projectName: string) {
 
 export const hiringTemplateTasks: readonly RunnerTaskFixture[] = [{
   id: "hire-coder-template-reuse", label: "Hire with production templates and reuse the coder",
-  groups: ["chat"], flow: "agent_chat", workMode: "standard", expectedRunCount: 5,
+  groups: ["chat"], flow: "agent_chat", workMode: "standard", expectedRunCount: 7, minimumExpectedRunCount: 5,
   attemptTimeoutMs: { local: 15 * 60_000, daytona: 15 * 60_000 },
   expectedTerminalState: { issue: "in_review", run: "succeeded" },
   buildTitle: nonce => `Production hiring templates ${nonce}`,

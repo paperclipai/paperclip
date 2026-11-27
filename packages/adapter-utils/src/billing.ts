@@ -14,7 +14,28 @@ export function inferOpenAiCompatibleBiller(
     readEnv(env, "OPENAI_BASE_URL") ??
     readEnv(env, "OPENAI_API_BASE") ??
     readEnv(env, "OPENAI_API_BASE_URL");
-  if (baseUrl && /openrouter\.ai/i.test(baseUrl)) return "openrouter";
+  if (baseUrl) {
+    try {
+      const url = new URL(baseUrl);
+      if (url.protocol === "https:" && url.hostname === "openrouter.ai") return "openrouter";
+      // An OpenAI-compatible endpoint does not imply OpenAI prices. Do not
+      // assign direct-provider estimates to a proxy or an unknown endpoint.
+      if (url.protocol !== "https:" || url.hostname !== "api.openai.com") return "unknown";
+    } catch {
+      return "unknown";
+    }
+  }
 
   return fallback;
+}
+
+/** Managed Responses routes use their own credentials and prices, including
+ * no-auth endpoints. Absence of OPENAI_API_KEY never makes them ChatGPT plans. */
+export function resolveManagedOpenAiBilling(routing: unknown) {
+  if (!routing || typeof routing !== "object") return undefined;
+  return {
+    provider: "openai",
+    biller: (routing as { kind?: unknown }).kind === "openrouter" ? "openrouter" : "unknown",
+    billingType: "api" as const,
+  };
 }
