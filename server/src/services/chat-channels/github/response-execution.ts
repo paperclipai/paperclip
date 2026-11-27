@@ -34,6 +34,16 @@ export function settlesFromRequestRun(state: GitHubResponseRunState, issueStatus
     issueStatus !== "blocked" && !!state.finishedRequestRun;
 }
 
+export const GITHUB_CONTINUATION_WAIT_MS = 30 * 60_000;
+
+export function awaitsAutomaticContinuation(
+  run: { id: string; continuesAutomatically: boolean; updatedAt: Date },
+  latestRun: { id: string } | undefined,
+  now = Date.now(),
+) {
+  return run.continuesAutomatically && run.id === latestRun?.id && now - run.updatedAt.getTime() < GITHUB_CONTINUATION_WAIT_MS;
+}
+
 /** `read` is this request's state from a batched page read, if the caller has it. */
 export async function githubResponseExecution(db: Db, input: GitHubResponseExecutionInput, read?: GitHubResponseRunRead) {
   const state = read ?? await readGitHubResponseRun(db, input);
@@ -61,19 +71,20 @@ export async function githubResponseExecution(db: Db, input: GitHubResponseExecu
   const taskFinished = ["done", "cancelled"].includes(input.issueStatus);
   // Precedence: a later published response is more useful to the reader than
   // any notice about this request's own run, including a refused reply.
+  const awaitingContinuation = !!run && awaitsAutomaticContinuation(run, latestRun) && !taskFinished;
   const outcome: keyof typeof STATUS_TEXT | "link" | "waiting" | null =
     presentationPending ? null
     : !run ? paused ? "paused" : null
     : reply === "confirmed" ? "handled"
     : paused ? "paused"
     : latestResponse ? "link"
-    : run.passiveResponseWait && !isMainPullThread(input.threadId) && !taskFinished ? "waiting"
+    : awaitingContinuation || (run.passiveResponseWait && !isMainPullThread(input.threadId) && !taskFinished) ? "waiting"
     : run.responsePublicationFailed ? "publish_failed"
     : run.status === "succeeded" ? "ended" : "stopped";
   const body = outcome === null || outcome === "waiting" ? undefined
     : outcome === "link" ? `See the [latest response](${latestResponse}).` : STATUS_TEXT[outcome];
   return {
-    body, outcome, paused, reply, running: requestRunning, presentationPending, passiveResponseWait,
+    body, outcome, paused, reply, running: requestRunning, presentationPending, passiveResponseWait, awaitingContinuation,
     versionAt: run ? new Date(Math.max(run.updatedAt.getTime(), input.deliveryCreatedAt.getTime()))
       : paused ? input.deliveryCreatedAt : undefined,
     version: JSON.stringify([latestRun?.id ?? null, latestRun?.status ?? null,

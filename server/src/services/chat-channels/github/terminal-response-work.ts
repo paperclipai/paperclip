@@ -100,7 +100,7 @@ export function registerGitHubTerminalResponseWork(
       const execution = await githubResponseExecution(db, { ...row, agentId: row.agentId!, deliveryId: row.deliveryId! }, read);
       if (execution.body === undefined || execution.reply === "unsettled" ||
           (execution.paused && row.result?.pausedVersion === execution.version))
-        return { parkable: !execution.presentationPending && execution.reply === "none" };
+        return { parkable: !execution.presentationPending && execution.reply === "none" && !execution.awaitingContinuation };
     } catch (error) {
       if (!(error instanceof HttpError) || error.status !== 403) throw error;
       // Keep this request eligible for the acknowledgement owner's authority

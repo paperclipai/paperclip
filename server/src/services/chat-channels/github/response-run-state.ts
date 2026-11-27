@@ -2,6 +2,7 @@ import { and, eq, inArray, sql, type SQL } from "drizzle-orm";
 import { chatMessageLinks, heartbeatRuns, runIdentityContexts, type Db } from "@paperclipai/db";
 import type { HttpError } from "../../../errors.js";
 import { chatRunSourceMessageId, chatRunSourceMessageIds } from "../run-origin.js";
+import { continuesAutomaticallySql } from "../../continuation-cause.js";
 
 /** Run statuses after which a run publishes nothing more for its request. */
 export const FINISHED_RUN_STATUSES = ["succeeded", "failed", "interrupted", "timed_out", "cancelled"] as const;
@@ -32,6 +33,7 @@ export const responseRunColumns = {
   )`,
   // Project only the server-committed no-publication decision, never the
   // potentially large native result or model-authored summary.
+  continuesAutomatically: sql<boolean>`coalesce(${continuesAutomaticallySql("heartbeat_runs")}, false)`,
   responsePublicationFailed: sql<boolean>`coalesce(${heartbeatRuns.resultJson} #>> '{responsePublication,state}' = 'failed', false)`,
   passiveResponseWait: sql<boolean>`coalesce(
     ${heartbeatRuns.status} = 'succeeded'

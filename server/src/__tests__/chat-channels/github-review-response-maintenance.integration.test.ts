@@ -129,6 +129,38 @@ describeEmbeddedPostgres("chat channels: github review response maintenance", ()
       await responses.processPending();
       expect(f.responseWrites).toHaveLength(writes);
     });
+    it.each([["recent", 0, "See the [latest response]"], ["too old", 31 * 60_000, "stopped before completing"]] as const)(
+      "waits for the automatic continuation of a failed GitHub request run: %s", async (_label, failedAgoMs, settled) => {
+      const f = await toolReplyFixture("github:paperclipai/paperclip:418:rc:4100");
+      const [firstId] = [...f.responseComments.keys()];
+      await db.update(heartbeatRuns).set({ status: "failed", runtimeMode: "native",
+        errorCode: "native_continuation_requires_reconciliation", updatedAt: new Date(Date.now() - failedAgoMs) })
+        .where(eq(heartbeatRuns.id, f.run.id));
+      const responses = githubResponseCommentService(db, f.providerFetch);
+      const stopped = { companyId: f.companyId, endpointId: f.endpoint.id, issueId: f.conversation.issueId!, runId: f.run.id,
+        body: "This turn stopped before completing. See the Paperclip task for details." };
+      if (failedAgoMs === 0) {
+        await expect(responses.failRun(stopped)).rejects.toMatchObject({ status: 409 });
+        await responses.processPending();
+        expect(f.responseComments.get(firstId)?.body).toContain("Working on this");
+        await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.assignedAgentId, status: "succeeded",
+          runtimeMode: "native", nativePhase: "committed", retryOfRunId: f.run.id,
+          contextSnapshot: { issueId: f.conversation.issueId }, resultJson: { presentationDecision: {
+            schema: "paperclip.run_presentation_decision.v1", chosenSource: "none", commentAction: "none" } } });
+        const [main] = await db.insert(chatConversations).values({ companyId: f.companyId, endpointId: f.endpoint.id,
+          issueId: f.conversation.issueId, externalConversationId: "github:paperclipai/paperclip",
+          externalLabel: "paperclipai/paperclip", externalThreadId: "github:paperclipai/paperclip:418" }).returning();
+        await db.insert(chatActions).values({ companyId: f.companyId, endpointId: f.endpoint.id, conversationId: main.id,
+          kind: "github_review_publication", providerActionId: `github_publication:${randomUUID()}`, status: "processed",
+          payload: { operation: "assessment", session: { companyId: f.companyId, issueId: f.conversation.issueId,
+            runId: randomUUID(), agentId: f.assignedAgentId } },
+          result: { summaryUrl: "https://github.com/paperclipai/paperclip/pull/418#issuecomment-5" } });
+        await responses.processPending();
+      } else {
+        await responses.failRun(stopped);
+      }
+      expect(f.responseComments.get(firstId)?.body).toContain(settled);
+    });
     it("links a GitHub thread whose run waited to the response a later run published", async () => {
       const f = await toolReplyFixture("github:paperclipai/paperclip:418:rc:4100");
       const [firstId] = [...f.responseComments.keys()];
