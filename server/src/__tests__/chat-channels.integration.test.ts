@@ -7654,7 +7654,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         details: { reasonCode: "github_review_superseded", retryable: false, requestedCommit: "b".repeat(40),
           currentCommit: "c".repeat(40), newerReviewQueued: true },
       });
-      await expect(superseded).rejects.toThrow(/older pull request head.*newer automatic review for that commit is already queued.*Stop this review/s);
+      await expect(superseded).rejects.toThrow(/older pull request head.*newer automatic review for that commit is already queued.*Stop this run/s);
       await f.service.handleWebhook(f.endpoint.publicId, "github", signedGitHubWebhookRequest({
         event: "pull_request", delivery: randomUUID(), webhookSecret: f.webhookSecret,
         payload: { ...payload, action: "synchronize", before: "c".repeat(40),
