@@ -103,7 +103,7 @@ export function stripAiAuthBindings(env: unknown): Record<string, unknown> {
   return result;
 }
 const AGENT_MODEL_ENV_KEYS = ["CLAUDE_CODE_SUBAGENT_MODEL"] as const;
-function agentModelDefaults(env: unknown): Record<string, unknown> {
+export function agentModelDefaults(env: unknown): Record<string, unknown> {
   if (!env || typeof env !== "object") return {};
   const source = env as Record<string, unknown>;
   return Object.fromEntries(
