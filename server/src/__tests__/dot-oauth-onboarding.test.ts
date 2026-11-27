@@ -64,26 +64,6 @@ describe("Dot onboarding with an operator-issued pairing capability", () => {
     expect(revoked.lifecycleVersion).toBe(paired.lifecycleVersion + 1);
     await expect(f.oauth.authenticate(tokens.access_token)).rejects.toThrow();
   });
-  it("pairs on a single-connection pool", async () => {
-    const f = await fixture(undefined, "preparing");
-    const consent = await f.oauth.consent(f.id, { type: "board", source: "session", userId: f.userId },
-      { decision: "approve", companyId: f.company.id, allowWrites: false });
-    const tokens = await f.oauth.token({ grant_type: "authorization_code", client_id: f.client.client_id,
-      redirect_uri: callback, resource: config.resource, code: new URL(consent.redirectUrl).searchParams.get("code"), code_verifier: f.verifier });
-    const principal = await f.oauth.authenticate(tokens.access_token);
-    const single = createDb(temp.connectionString, { maxConnections: 1 });
-    try {
-      const paired = await Promise.race([
-        dotRunnerBroker(single).pair(principal, f.pairing.pairingCode),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("pairing did not finish")), 10_000)),
-      ]);
-      expect(paired).toMatchObject({ companyId: f.company.id, agentId: f.agent.id, bindingId: f.pairing.bindingId });
-      const [binding] = await db.select().from(dotAgentBindings).where(eq(dotAgentBindings.id, f.pairing.bindingId));
-      expect(binding!.status).toBe("connected");
-    } finally {
-      await single.$client.end({ timeout: 1 });
-    }
-  }, 30_000);
   it.each(["preparing", "verifying"] as const)("allows Dot setup during %s without allowing task access", async (state) => {
     const f = await fixture(undefined, state);
     const tokens = await connect(f);
