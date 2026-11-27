@@ -1,14 +1,15 @@
 {
-  "$comment": "Per-file Vitest durations (ms) for server/src/__tests__/chat-channels/*.integration.test.ts used by scripts/run-vitest-stable.mjs (--group general-chat) to balance file-level shards via LPT. Refreshed from 8-core PR run 45592683902 with the 4-way split of github-review-workflow.integration.test.ts. Missing files take the partitioner's median weight. Timing changes only partition work; they never skip a test.",
+  "$comment": "Per-file Vitest durations (ms) for server/src/__tests__/chat-channels/*.integration.test.ts used by scripts/run-vitest-stable.mjs (--group general-chat) to balance file-level shards via LPT. Refreshed from 8-core PR run 45592683902 with the 4-way split of github-review-workflow.integration.test.ts. Missing files take the partitioner's median weight. Timing changes only partition work; they never skip a test. Retained monolithic chat regression uses its historical measured file duration from PR run45238253588, source commit8d513d5b1ab8fbfa2905d41be44c165b03a8a320, preserved in pre-reconciliation ac5581a5 scripts/general-server-shard-durations.json; this is a scheduling weight, not a fresh behavioral or timing pass.",
   "unit": "ms",
   "sources": [
     "github-actions:45592683902@57638686dc"
   ],
   "coverage": {
-    "measured": 23,
-    "inventory": 23
+    "measured": 24,
+    "inventory": 24
   },
   "durations": {
+    "server/src/__tests__/chat-channels.integration.test.ts": 428744,
     "server/src/__tests__/chat-channels/board-and-shared-core.integration.test.ts": 62795,
     "server/src/__tests__/chat-channels/discord-command-registration.integration.test.ts": 12500,
     "server/src/__tests__/chat-channels/discord-gateway-lease.integration.test.ts": 7200,
@@ -32,5 +33,13 @@
     "server/src/__tests__/chat-channels/telegram-first-seen-controls.integration.test.ts": 27400,
     "server/src/__tests__/chat-channels/telegram-ingress-and-callbacks.integration.test.ts": 43737,
     "server/src/__tests__/chat-channels/telegram-media-and-recovery.integration.test.ts": 52158
+  },
+  "retainedMeasurements": {
+    "server/src/__tests__/chat-channels.integration.test.ts": {
+      "sourceCommit": "ac5581a5d619c5d6796b555a3e735c7a644de81d",
+      "sourceManifest": "scripts/general-server-shard-durations.json",
+      "measurementRun": 45238253588,
+      "milliseconds": 428744
+    }
   }
 }

@@ -9258,7 +9258,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         await db.delete(chatEndpointLeases).where(eq(chatEndpointLeases.endpointId, f.endpoint.id));
         await vi.waitFor(() => expect(old.shutdown).toHaveBeenCalledOnce());
         await db.transaction(tx => notifyChatEndpointConfiguration(tx, f.endpoint));
-        await new Promise(resolve => setTimeout(resolve, 1500));
+        await new Promise(resolve => setTimeout(resolve, 1500)); // test-budget:allow-sleep: Observe the retained receiver shutdown exclusion across a real listener notification interval.
         expect(f.runtime.get(f.endpoint.id)).toBeNull();
         release();
         await vi.waitFor(async () => {
@@ -37685,7 +37685,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }, { timeout: 10_000 });
       const scans = vi.spyOn(db, "select");
       try {
-        await new Promise(resolve => setTimeout(resolve, 1200));
+        await new Promise(resolve => setTimeout(resolve, 1200)); // test-budget:allow-sleep: Observe the retained settled Slack queue no-scan assertion across the real coordinator idle interval.
         expect(scans).not.toHaveBeenCalled();
       } finally { scans.mockRestore(); }
       expect(onError).not.toHaveBeenCalled();
@@ -37814,7 +37814,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect((await readChatActionsById(stale!.id))[0]?.status).toBe("failed");
       const scans = vi.spyOn(db, "select");
       try {
-        await new Promise(resolve => setTimeout(resolve, 1200));
+        await new Promise(resolve => setTimeout(resolve, 1200)); // test-budget:allow-sleep: Observe the retained recovered action queue no-scan assertion across the real coordinator idle interval.
         expect(scans).not.toHaveBeenCalled();
       } finally { scans.mockRestore(); }
       let release!: () => void, inserted!: () => void;
@@ -45380,7 +45380,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         const originalSignature = request.headers.get("x-slack-signature");
         const originalBody = await request.clone().text();
         if (mode === "command-delayed" && lane === "command" || mode === "action-delayed" && lane === "action" || mode === "submission-delayed" && lane === "invalid_submission")
-          await new Promise(resolve => setTimeout(resolve, 3_500));
+          await new Promise(resolve => setTimeout(resolve, 3_500)); // test-budget:allow-sleep: Retain the delayed Slack webhook exceeding its three-second acknowledgement deadline.
         const response = await routedService!.handleWebhook(endpoint.publicId, "slack", request);
         const elapsedMs = Date.now() - startedAt;
         custody.push({ lane, elapsedMs, acknowledgedWithin3s: elapsedMs < 3_000, originalTimestamp });
@@ -56597,7 +56597,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             ]);
             await vi.waitFor(() => { expect(coordinator.nextWakeAt()).toBeNull(); expect(idleWorkSnapshot().active).toBe(0); });
             const select = vi.spyOn(db, "select");
-            try { await new Promise(resolve => setTimeout(resolve, 1200)); expect(select).not.toHaveBeenCalled(); }
+            try { await new Promise(resolve => setTimeout(resolve, 1200)); expect(select).not.toHaveBeenCalled(); } // test-budget:allow-sleep: Observe the retained visibility-denied working notice no-scan assertion across the real idle interval.
             finally { select.mockRestore(); }
             expect(onError).not.toHaveBeenCalled();
           } finally { await coordinator.stop(); await f.close(); }
@@ -69382,7 +69382,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         }, { timeout: 10_000 });
         const scans = vi.spyOn(db, "select");
         try {
-          await new Promise(resolve => setTimeout(resolve, 1200));
+          await new Promise(resolve => setTimeout(resolve, 1200)); // test-budget:allow-sleep: Observe the retained settled publication queue no-scan assertion across the real idle interval.
           expect(scans).not.toHaveBeenCalled();
         } finally { scans.mockRestore(); }
         expect(onError).not.toHaveBeenCalled();
@@ -71589,7 +71589,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         await settled();
         const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction"), statement = vi.spyOn(db.$client, "unsafe");
         try {
-          await new Promise(resolve => setTimeout(resolve, 1200));
+          await new Promise(resolve => setTimeout(resolve, 1200)); // test-budget:allow-sleep: Observe retained replay/operator-retry quiescence across the real coordinator idle interval.
           expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled(); expect(statement).not.toHaveBeenCalled();
         } finally { select.mockRestore(); transaction.mockRestore(); statement.mockRestore(); }
         expect(onError).not.toHaveBeenCalled();
@@ -82592,7 +82592,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             eq(chatActions.kind, "telegram_stop_subscription"), eq(chatActions.status, "processed")))).toHaveLength(1);
           const scans = vi.spyOn(db, "select");
           try {
-            await new Promise(resolve => setTimeout(resolve, 1200));
+            await new Promise(resolve => setTimeout(resolve, 1200)); // test-budget:allow-sleep: Observe the retained settled Telegram subscription queue no-scan assertion across the real idle interval.
             expect(scans).not.toHaveBeenCalled();
           } finally { scans.mockRestore(); }
           expect(onError).not.toHaveBeenCalled();
@@ -82684,7 +82684,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         expect(await actions()).toEqual([expect.objectContaining({ status: "received" })]);
         const scans = vi.spyOn(db, "select");
         try {
-          await new Promise(resolve => setTimeout(resolve, 1200));
+          await new Promise(resolve => setTimeout(resolve, 1200)); // test-budget:allow-sleep: Observe retained inactive Telegram subscription repair parking across the real idle interval.
           expect(scans).not.toHaveBeenCalled();
         } finally { scans.mockRestore(); }
         if (inactive === "endpoint") {

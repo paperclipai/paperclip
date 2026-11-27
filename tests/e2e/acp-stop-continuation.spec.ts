@@ -1,5 +1,6 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { test, expect, type APIResponse } from "@playwright/test";
 
@@ -18,6 +19,8 @@ for (const { unfinishedWrite, stopResponse, sendSavedQueue = false } of [
   test(`embedded ACP Stop: ${unfinishedWrite ? "Interrupt continues without replaying the write" : sendSavedQueue ? "Send resumes saved input after Stop" : stopResponse ? "composer Stop preserves queued input and accepts a new direction" : "Interrupt delivers queued input in the same session"}`, async ({ page, request }) => {
     test.setTimeout(120_000);
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-stop-browser-"));
+    // The assigned isolated fixture must prove its own Git source.
+    execFileSync("git", ["init", "--quiet", root]);
     const company = await json(await request.post("/api/companies", { data: { name: `ACP Stop ${Date.now()}` } }));
     const originalSettings = await json(await request.get("/api/instance/settings/experimental"));
     await page.route("**/api/instance/settings/experimental", route => route.fulfill({ json: {
@@ -44,6 +47,7 @@ for (const { unfinishedWrite, stopResponse, sendSavedQueue = false } of [
       await page.goto(`/${company.issuePrefix}/issues/${issue.identifier}`);
       const editor = page.getByRole("textbox", { name: "editable markdown" });
       await editor.fill("List my recent Drive files.");
+      await page.getByRole("checkbox", { name: "Request action", exact: true }).check();
       await page.getByRole("button", { name: "Send", exact: true }).click();
       await expect.poll(async () => JSON.stringify(await json(await request.get(`/api/issues/${issue.id}/queued-comments`))))
         .toContain("List my recent Drive files.");
@@ -75,6 +79,7 @@ for (const { unfinishedWrite, stopResponse, sendSavedQueue = false } of [
           await page.getByRole("button", { name: "Send queued messages", exact: true }).click();
         } else {
           await editor.fill("Please continue with the saved request.");
+          await page.getByRole("checkbox", { name: "Request action", exact: true }).check();
           await page.getByRole("button", { name: "Send", exact: true }).click();
         }
       }

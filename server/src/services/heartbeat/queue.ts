@@ -1027,6 +1027,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
   async function ordinaryCommentWakeAllowed(tx: Db, input: {
     companyId: string; issueId: string; agentId: string; assigneeAgentId: string | null;
     status: string; context: Record<string, unknown>; reason: string | null | undefined;
+    expectedActorId?: string | null; nativeRunId?: string | null;
   }) {
     if (!isOrdinaryIssueCommentWake(input.reason, input.context)) return true;
     if (input.reason === "issue_comment_mentioned") return false; // Native upstream mentions remain annotations.
@@ -1034,11 +1035,39 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     // Explicitly authorized resume is a separate route operation. Reblocking
     // still wins at the issue lock, and all normal execution guards still run.
     if (input.context.resumeIntent === true || input.reason === "issue_reopened_via_comment") return true;
+    // Annotation questions are a separate persisted native input, not task comments.
+    // Recheck the service-created receipt and its author at admission and claim;
+    // caller-supplied context alone cannot establish this cause.
+    if ((input.expectedActorId === input.context.annotationReactionUserId || input.nativeRunId) &&
+        input.context.source === "issue.document_annotation_reaction" &&
+        input.context.annotationReaction === "question" &&
+        typeof input.context.annotationCommentId === "string" &&
+        typeof input.context.annotationReactionUserId === "string") {
+      const [receipt] = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.agentId, input.agentId),
+        input.nativeRunId ? eq(agentWakeupRequests.runId, input.nativeRunId) : undefined,
+        eq(agentWakeupRequests.reason, "issue_commented"), eq(agentWakeupRequests.requestedByActorType, "user"),
+        eq(agentWakeupRequests.requestedByActorId, input.context.annotationReactionUserId),
+        inArray(agentWakeupRequests.status, ["deferred_issue_execution", "queued", "coalesced"]),
+        sql`${agentWakeupRequests.payload}->>'issueId' = ${input.issueId}`,
+        sql`${agentWakeupRequests.payload}->>'mutation' = 'annotation_reaction'`,
+        sql`${agentWakeupRequests.payload}->>'annotationCommentId' = ${input.context.annotationCommentId}`,
+        sql`exists (select 1 from document_annotation_comment_reactions reaction
+          join document_annotation_comments annotation on annotation.id = reaction.comment_id
+          where reaction.company_id = ${input.companyId} and annotation.company_id = ${input.companyId}
+            and annotation.issue_id = ${input.issueId}::uuid
+            and annotation.id::text = ${input.context.annotationCommentId}
+            and reaction.actor_type = 'user' and reaction.actor_id = ${input.context.annotationReactionUserId}
+            and reaction.reaction = 'question'
+            and ${agentWakeupRequests.idempotencyKey} = 'annotation-question-reaction:' || reaction.id::text)`,
+      )).limit(1);
+      if (receipt) return true;
+    }
     const ids = [...new Set([...queuedCommentIdsFromRunContext(input.context), ...extractWakeCommentIds(input.context),
       readNonEmptyString(input.context.sourceCommentId), readNonEmptyString(input.context.commentId),
       readNonEmptyString(input.context.wakeCommentId)].filter((id): id is string => typeof id === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)))];
     if (ids.length === 0) return false;
-    const comments = await tx.select({ id: issueComments.id, body: issueComments.body,metadata:issueComments.metadata,companyId:issueComments.companyId,issueId:issueComments.issueId,authorAgentId:issueComments.authorAgentId,authorUserId:issueComments.authorUserId }).from(issueComments).where(and(
+    const comments = await tx.select({ id: issueComments.id, body: issueComments.body,metadata:issueComments.metadata,companyId:issueComments.companyId,issueId:issueComments.issueId,authorAgentId:issueComments.authorAgentId,authorUserId:issueComments.authorUserId,onBehalfOfUserId:issueComments.onBehalfOfUserId,createdByRunId:issueComments.createdByRunId }).from(issueComments).where(and(
       eq(issueComments.companyId, input.companyId), eq(issueComments.issueId, input.issueId),
       inArray(issueComments.id, ids), isNull(issueComments.deletedAt),
     ));
@@ -1046,6 +1075,18 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     // and author binding. It is not an ordinary task-composer comment.
     const [conversation] = await tx.select({ agentId: issues.conversationAgentId, userId: issues.conversationUserId })
       .from(issues).where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.issueId))).limit(1);
+    // Peer messages in a person's agent chat retain their native authenticated
+    // run provenance. Ordinary task comments still require explicit intent.
+    if (conversation?.agentId === input.agentId && conversation.userId) {
+      for (const comment of comments) {
+        if (!comment.authorAgentId || comment.onBehalfOfUserId !== conversation.userId || !comment.createdByRunId) continue;
+        const [source] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.id, comment.createdByRunId), eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.agentId, comment.authorAgentId), eq(heartbeatRuns.responsibleUserId, conversation.userId),
+        )).limit(1);
+        if (source) return true;
+      }
+    }
     const recordedCommands = await withAntigravitySwarmMarkers(tx, input.companyId, input.issueId, comments);
     return recordedCommands.some(comment => comment.nativeCommand === "swarm" || (
       conversation?.agentId === input.agentId && !!conversation.userId &&
@@ -1154,7 +1195,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         }
         if (ordinary && (!owner || !await ordinaryCommentWakeAllowed(tx, { companyId: run.companyId, issueId,
             agentId: run.agentId, assigneeAgentId: owner.assigneeAgentId, status: owner.status,
-            context: currentContext, reason: currentContext.wakeReason as string | undefined }))) {
+            context: currentContext, reason: currentContext.wakeReason as string | undefined, nativeRunId: current.id }))) {
           const now = new Date();
           // Retire before dispatch, never active work or the durable comment.
           const error = discardedOnly ? "Queued messages were discarded before dispatch" : "Comment retained without starting work";
@@ -4027,7 +4068,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             issueId: issue.id, agentId: agent.id, assigneeAgentId: issue.assigneeAgentId,
             status: issue.status === "done" && opts.queuedCommentInterruptId &&
               executionWaitRequestId === opts.queuedCommentInterruptId ? "todo" : issue.status,
-            context: enrichedContextSnapshot, reason })) {
+            context: enrichedContextSnapshot, reason, expectedActorId: opts.requestedByActorType === "user" ? opts.requestedByActorId : null })) {
             return { kind: "skipped" as const };
           }
 

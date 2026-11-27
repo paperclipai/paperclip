@@ -20423,7 +20423,9 @@ export function issueRoutes(
           issueAtCommentStart: issue,
           reopened,
           currentStatus: wakeIssueSnapshot.status,
-          assigneeMentioned: swarmRequested || canNotifyIssueCommentAssignee(comment.body, wakeIssueSnapshot.assigneeAgentId, wakeIssueSnapshot.status, hasActionableCommentIntent(comment,wakeIssueSnapshot.assigneeAgentId)),
+          assigneeMentioned: swarmRequested || (isConversation(currentIssue) && actor.actorType === "agent" &&
+            !!currentIssue.conversationUserId && comment.onBehalfOfUserId === currentIssue.conversationUserId) ||
+            canNotifyIssueCommentAssignee(comment.body, wakeIssueSnapshot.assigneeAgentId, wakeIssueSnapshot.status, hasActionableCommentIntent(comment,wakeIssueSnapshot.assigneeAgentId)),
         });
         if (assigneeId && !goalCommentSteered && shouldWakeAssigneeForComment) {
           if (reopened) {
