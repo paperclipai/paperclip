@@ -12,10 +12,10 @@ import { nativeProviderCatalogFor } from "../../native-provider-catalogs.js";
 import { restConnectorFor } from "../../connectors/rest-registry.js";
 import { retainMcpConnectionFailure } from "../../mcp-connection-failure.js";
 import { isBrowserUseConnection } from "../../browser-use-client.js";
-import { and, asc, eq, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { connectionGrants, toolApplications, toolConnections, toolRuntimeSlots } from "@paperclipai/db";
-import type { ToolConnectionHealthCheckResult, ToolConnectionHealthStatus } from "@paperclipai/shared";
+import { chatEndpoints, connectionGrants, toolApplications, toolConnections, toolRuntimeSlots } from "@paperclipai/db";
+import type { ToolConnectionHealthCheckResult, ToolConnectionHealthStatus, ToolConnectionTransport } from "@paperclipai/shared";
 import { HttpError, unprocessable } from "../../../errors.js";
 
 import type { ToolAccessAudit } from "../audit.js";
@@ -23,7 +23,77 @@ import type { ConnectionCredentialAccess } from "../credential-access.js";
 import type { ConnectionSetupPolicy } from "../connections/setup-policy.js";
 import { toConnection } from "../connections/projection.js";
 import { isAgentMailConnection, type ToolCatalogDiscovery } from "./discovery.js";
-import { healthFailureHttpStatus, isCallerAuthorizationFailure, sanitizeHttpFailure, unreachableServerRemediation, unsupportedToolConnectionTransport } from "./failures.js";
+import { healthFailureHttpStatus, isCallerAuthorizationFailure, sanitizeHttpFailure, unreachableServerRemediation, UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE, unsupportedToolConnectionTransport } from "./failures.js";
+
+export const HEALTH_SWEEP_TRANSPORTS: readonly ToolConnectionTransport[] = [
+  "mcp_remote",
+  "rest_api",
+  "local_stdio",
+  "plugin",
+];
+
+export function healthSweepConnectionWhere() {
+  return and(
+    eq(toolConnections.enabled, true),
+    eq(toolConnections.status, "active"),
+    inArray(toolConnections.transport, HEALTH_SWEEP_TRANSPORTS),
+    ne(toolApplications.type, "paperclip_plugin"),
+  );
+}
+
+/**
+ * Repair active Speko voice connections previously marked error by the generic
+ * tool health sweep before voice transport was excluded from sweeps.
+ */
+export async function repairUnsupportedVoiceConnectionHealth(
+  db: Db,
+  options: { companyId?: string; connectionId?: string; now?: () => Date; limit?: number } = {},
+): Promise<number> {
+  const limit = options.limit ?? 100;
+  const rows = await db
+    .select({
+      connection: toolConnections,
+      endpointHealthMessage: chatEndpoints.healthMessage,
+    })
+    .from(toolConnections)
+    .innerJoin(chatEndpoints, and(
+      eq(chatEndpoints.connectionId, toolConnections.id),
+      eq(chatEndpoints.companyId, toolConnections.companyId),
+    ))
+    .where(and(
+      eq(toolConnections.transport, "voice"),
+      eq(toolConnections.enabled, true),
+      eq(toolConnections.status, "active"),
+      eq(toolConnections.healthStatus, "error"),
+      eq(toolConnections.healthMessage, UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE),
+      eq(chatEndpoints.provider, "speko"),
+      eq(chatEndpoints.status, "active"),
+      options.companyId === undefined ? undefined : eq(toolConnections.companyId, options.companyId),
+      options.connectionId === undefined ? undefined : eq(toolConnections.id, options.connectionId),
+    ))
+    .orderBy(asc(toolConnections.id))
+    .limit(limit);
+  if (rows.length === 0) return 0;
+  const repairedAt = (options.now ?? (() => new Date()))();
+  for (const { connection, endpointHealthMessage } of rows) {
+    await db.transaction(async (tx) => {
+      await tx
+        .update(toolConnections)
+        .set({
+          healthStatus: "healthy",
+          healthMessage: endpointHealthMessage ?? "Connected",
+          lastError: null,
+          updatedAt: repairedAt,
+        })
+        .where(and(
+          eq(toolConnections.id, connection.id),
+          eq(toolConnections.healthStatus, "error"),
+          eq(toolConnections.healthMessage, UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE),
+        ));
+    });
+  }
+  return rows.length;
+}
 function asRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value))
     return value as Record<string, unknown>;
@@ -87,6 +157,15 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
   ): Promise<ToolConnectionHealthCheckResult> {
     const connection = await getConnectionRow(connectionId);
     if (connection.connectionPurpose === "ai") return { connection: toConnection(connection), runtimeSlot: null };
+    if (connection.transport === "voice") {
+      const repaired = await repairUnsupportedVoiceConnectionHealth(db, {
+        companyId: connection.companyId,
+        connectionId: connection.id,
+        now,
+      });
+      const current = repaired > 0 ? await getConnectionRow(connectionId) : connection;
+      return { connection: toConnection(current), runtimeSlot: null };
+    }
     await assertConnectorConnectionSetupEnabled(connection);
     const unavailableServices: string[] = [];
     try {
@@ -252,6 +331,7 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
   async function sweepConnectionHealth(
     input: { staleAfterMs?: number; limit?: number } = {},
   ) {
+    await repairUnsupportedVoiceConnectionHealth(db, { now });
     const generatedAt = now();
     const staleAfterMs = input.staleAfterMs ?? 15 * 60 * 1000;
     const limit = input.limit ?? 25;
@@ -269,12 +349,7 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
       ))
       .where(
         and(
-          eq(toolConnections.enabled, true),
-          eq(toolConnections.status, "active"),
-          ne(toolConnections.transport, "chat_sdk"),
-          ne(toolConnections.transport, "runtime_auth"),
-          ne(toolConnections.transport, "voice"),
-          ne(toolApplications.type, "paperclip_plugin"),
+          healthSweepConnectionWhere(),
           or(isNull(toolConnections.healthCheckedAt), lte(toolConnections.healthCheckedAt, cutoff)),
         ),
       )

@@ -51,9 +51,12 @@ function isAwsConfigurationFailureCode(code: string): boolean {
   return code.startsWith("aws_") && code !== "aws_unavailable";
 }
 
+export const UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE =
+  "This connection has no supported tool integration. Add a supported account or MCP connection from Connectors.";
+
 export function unsupportedToolConnectionTransport() {
   return unprocessable(
-    "This connection has no supported tool integration. Add a supported account or MCP connection from Connectors.",
+    UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE,
     { code: "tool_connection_transport_unsupported" },
   );
 }
