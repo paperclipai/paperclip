@@ -209,16 +209,58 @@ describeEmbeddedPostgres("a new run that meets a busy agent directory", () => {
     expect(task!.assigneeAgentId).toBe(change === "parked" ? agentId : otherAgentId);
   });
 
-  it("keeps an accepted non-assignee mention through a directory wait and runs it once files are free", async () => {
+  it("keeps a persisted non-assignee mention as annotation without a receipt, run or assignment transfer", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const assigneeId = randomUUID(), issueId = randomUUID(), commentId = randomUUID();
+    await db.insert(agents).values({ id: assigneeId, companyId, name: "AssigneeCoder", role: "engineer", status: "idle", adapterType: ADAPTER,
+      adapterConfig: { cwd: process.cwd() }, runtimeConfig: { heartbeat: { wakeOnDemand: true } }, permissions: {} });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Shared review", status: "in_progress", priority: "medium",
+      responsibleUserId: "busy-directory-user", assigneeAgentId: assigneeId, issueNumber: 5 });
+    await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorType: "user", authorUserId: "busy-directory-user",
+      body: `[@Reviewer](agent://${agentId}) Review annotation.` });
+    const run = await heartbeat.wakeup(agentId, { source: "automation", reason: "issue_comment_mentioned",
+      requestedByActorType: "user", requestedByActorId: "busy-directory-user", payload: { issueId, commentId },
+      contextSnapshot: { issueId, wakeReason: "issue_comment_mentioned", wakeCommentId: commentId } });
+    expect(run).toBeNull();
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId))).toEqual([]);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).toEqual([]);
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.assigneeAgentId).toBe(assigneeId);
+    expect((await db.select().from(issueComments).where(eq(issueComments.id, commentId)))[0]!.body).toContain("Review annotation.");
+  });
+
+  it.each(["missing", "forged-author", "revoked-intent"] as const)("rejects assigned comment source before preparation: %s", async scenario => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID(), commentId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Source controls", status: "in_progress", priority: "medium",
+      responsibleUserId: "busy-directory-user", assigneeAgentId: agentId, issueNumber: 7 });
+    if (scenario !== "missing") await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorType: "user",
+      ...deliberateInput(companyId, issueId, agentId, "busy-directory-user", "Continue the assigned review."),
+      authorUserId: scenario === "forged-author" ? "forged-user" : "busy-directory-user",
+      ...(scenario === "revoked-intent" ? { metadata: null } : {}) });
+    busyPrepares.calls = 0;
+    const run = await heartbeat.wakeup(agentId, { source: "automation", reason: "issue_commented",
+      requestedByActorType: "user", requestedByActorId: "busy-directory-user", payload: { issueId, commentId },
+      contextSnapshot: { issueId, wakeReason: "issue_commented", wakeCommentId: commentId } });
+    expect(run).toBeNull();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).toEqual([]);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId))).toEqual([]);
+    expect(busyPrepares.calls).toBe(0);
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.assigneeAgentId).toBe(agentId);
+  });
+
+  it("keeps an authorized assigned comment through a directory wait and runs it once files are free", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const assigneeId = randomUUID(), issueId = randomUUID();
     await db.insert(agents).values({ id: assigneeId, companyId, name: "AssigneeCoder", role: "engineer", status: "idle", adapterType: ADAPTER,
       adapterConfig: { cwd: process.cwd() }, runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } }, permissions: {} });
     await db.insert(issues).values({ id: issueId, companyId, title: "Shared review", status: "in_progress", priority: "medium",
-      responsibleUserId: "busy-directory-user", assigneeAgentId: assigneeId, issueNumber: 5 });
+      responsibleUserId: "busy-directory-user", assigneeAgentId: agentId, issueNumber: 5 });
+    const commentId = randomUUID();
+    await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorType: "user", authorUserId: "busy-directory-user",
+      ...deliberateInput(companyId, issueId, agentId, "busy-directory-user", "Continue the assigned review.") });
     const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, invocationSource: "on_demand", status: "queued",
       responsibleUserId: "busy-directory-user",
-      contextSnapshot: { issueId, wakeReason: "issue_comment_mentioned", commentId: randomUUID() } }).returning();
+      contextSnapshot: { issueId, wakeReason: "issue_commented", wakeCommentId: commentId } }).returning();
     busyPrepares.remaining = 1;
     busyPrepares.calls = 0;
 
@@ -228,8 +270,8 @@ describeEmbeddedPostgres("a new run that meets a busy agent directory", () => {
     expect(await heartbeat.getRun(run!.id)).toMatchObject({ status: "cancelled", errorCode: AGENT_DIRECTORY_BUSY_ERROR_CODE });
     const [retry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run!.id));
     expect(retry).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: AGENT_DIRECTORY_BUSY_RETRY_REASON,
-      contextSnapshot: { wakeReason: "issue_comment_mentioned", preparationWait: { kind: AGENT_DIRECTORY_BUSY_RETRY_REASON, attempt: 1 } } });
-    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.assigneeAgentId).toBe(assigneeId);
+      contextSnapshot: { wakeReason: "issue_commented", preparationWait: { kind: AGENT_DIRECTORY_BUSY_RETRY_REASON, attempt: 1 } } });
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.assigneeAgentId).toBe(agentId);
 
     const afterDue = new Date(new Date(retry!.scheduledRetryAt!).getTime() + 1_000);
     expect((await heartbeat.promoteDueScheduledRetries(afterDue)).runIds).toContain(retry!.id);

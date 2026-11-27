@@ -1018,7 +1018,8 @@ describeEmbeddedPostgres(
       expect(receipts.filter(w => w.payload?.issueId === created.body.id)).toEqual([expect.objectContaining({
         reason: "issue_human_assignment", status: "completed", runId: null, requestedByActorId: "board-user",
       })]);
-      await issueService(db).update(created.body.id, { status: "todo" });
+      const transition = await request(board).patch(`/api/issues/${created.body.id}`).send({ status: "todo" });
+      expect(transition.status, JSON.stringify(transition.body)).toBe(200);
       const systemRun = await heartbeatService(db).wakeup(fixture.agents.lowTrust.id, {
         source: "automation", reason: "issue_ready", requestedByActorType: "system",
         payload: { issueId: created.body.id }, contextSnapshot: { issueId: created.body.id, source: "automatic_promotion" },
@@ -1032,23 +1033,27 @@ describeEmbeddedPostgres(
       await issueService(db).update(created.body.id, { assigneeAgentId: fixture.agents.collaborator.id });
       await issueService(db).update(created.body.id, { assigneeAgentId: fixture.agents.lowTrust.id });
       expect([403, 404]).toContain((await request(worker).get(`/api/issues/${created.body.id}`)).status);
+      const beforeForgedRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, fixture.company.id));
+      const beforeForgedReceipts = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, fixture.company.id));
       const pluginRun = await heartbeatService(db).wakeup(fixture.agents.lowTrust.id, {
         source: "automation", reason: "issue_commented", requestedByActorType: "user", requestedByActorId: "board-user",
         payload: { issueId: created.body.id, _paperclipWakeContext: { source: "issue.comment" } },
         contextSnapshot: { issueId: created.body.id, source: "plugin:example" },
       });
-      expect(pluginRun).toBeTruthy();
-      const pluginWake = (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.runId, pluginRun!.id)))
-        .find(w => w.requestedByActorType === "user")!;
-      expect(pluginWake.payload?._paperclipWakeContext).toMatchObject({ source: "plugin:example" });
-      await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, pluginRun!.id));
-      const pluginWorker = createApp(db, { ...agentActor(fixture), runId: pluginRun!.id });
-      expect([403, 404]).toContain((await request(pluginWorker).get(`/api/issues/${created.body.id}`)).status);
+      expect(pluginRun).toBeNull();
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, fixture.company.id))).toEqual(beforeForgedRuns);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, fixture.company.id))).toEqual(beforeForgedReceipts);
+      expect([403, 404]).toContain((await request(worker).get(`/api/issues/${created.body.id}`)).status);
+      const protectedWorker = createApp(db, agentActor(fixture));
+      const protectedRead = await request(protectedWorker).get(`/api/issues/${fixture.issues.siblingOutOfScope.id}`);
+      expect([403, 404]).toContain(protectedRead.status);
+      expectNoCanary(protectedRead.body, fixture.canaries.issueSibling);
+      expect((await request(board).get(`/api/issues/${created.body.id}`)).body.assigneeAgentId).toBe(fixture.agents.lowTrust.id);
       // Authenticated reassignment while still in backlog also retains direction.
       const assigned = await request(board).patch(`/api/issues/${created.body.id}`)
         .send({ status: "backlog", assigneeAgentId: fixture.agents.lowTrust.id });
       expect(assigned.status, JSON.stringify(assigned.body)).toBe(200);
-      expect((await request(pluginWorker).get(`/api/issues/${created.body.id}`)).status).toBe(200);
+      expect((await request(worker).get(`/api/issues/${created.body.id}`)).status).toBe(200);
     });
 
     it("allows bounded same-issue reads and writes while quarantining low-trust output", async () => {
@@ -2070,7 +2075,9 @@ describeEmbeddedPostgres(
 
         const higherTrustContext = await request(standardApp).get(
           `/api/issues/${fixture.issues.reviewRoot.id}/heartbeat-context`,
-        );
+        ).query({ wakeCommentId: scopedComment.id });
+        expect(higherTrustContext.body.wakeComment).toMatchObject({ id: scopedComment.id, body: LOW_TRUST_QUARANTINED_BODY,
+          sourceTrust: { preset: LOW_TRUST_REVIEW_PRESET, disposition: "quarantined" } });
         expect(
           higherTrustContext.status,
           JSON.stringify(higherTrustContext.body),
@@ -2141,35 +2148,19 @@ describeEmbeddedPostgres(
           })
           .where(eq(heartbeatRuns.id, fixture.runs.standard.id));
 
-        const run = await heartbeat.wakeup(fixture.agents.standard.id, {
-          source: "automation",
-          triggerDetail: "system",
-          reason: "issue_commented",
-          payload: {
-            issueId: fixture.issues.reviewRoot.id,
-            commentId: scopedComment.id,
-          },
-          contextSnapshot: {
-            issueId: fixture.issues.reviewRoot.id,
-            taskId: fixture.issues.reviewRoot.id,
-            wakeCommentId: scopedComment.id,
-            wakeCommentIds: [scopedComment.id],
-            wakeReason: "issue_commented",
-            livenessContinuationAttempt: 1,
-            livenessContinuationMaxAttempts: 2,
-            livenessContinuationSourceRunId: fixture.runs.lowTrust.id,
-            livenessContinuationState: "quarantined_low_trust_handoff",
-            livenessContinuationReason:
-              "Low-trust review output requires sanitized follow-up.",
-            livenessContinuationInstruction:
-              "Continue from the sanitized quarantine stub only.",
-          },
-          requestedByActorType: "system",
-          requestedByActorId: null,
+        await db.update(issues).set({ assigneeAgentId: fixture.agents.standard.id }).where(eq(issues.id, fixture.issues.reviewRoot.id));
+        await db.update(agents).set({ adapterConfig: { url: gateway.url, cwd: process.cwd(), headers: { "x-openclaw-token": "gateway-token" },
+          payloadTemplate: { message: "wake now" }, waitTimeoutMs: 2000 } }).where(eq(agents.id, fixture.agents.standard.id));
+        const authorized = await request(createApp(db, boardActor(fixture))).post(`/api/issues/${fixture.issues.reviewRoot.id}/comments`).send({
+          body: `[@Standard](agent://${fixture.agents.standard.id}) Continue from the sanitized quarantine stub only.`,
+          commentIntent: { kind: "actionable", recipientAgentId: fixture.agents.standard.id, request: "Continue from the sanitized quarantine stub only." }
         });
-
-        expect(run).not.toBeNull();
+        expect(authorized.status, JSON.stringify(authorized.body)).toBe(201);
         await waitFor(() => gateway.getAgentPayloads().length === 1, 30_000);
+        const run = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, fixture.company.id))
+          .then(rows => rows.find(row => row.agentId === fixture.agents.standard.id &&
+            (row.contextSnapshot as Record<string, unknown> | null)?.wakeCommentId === authorized.body.id));
+        expect(run).toBeDefined();
         const payload = gateway.getAgentPayloads()[0] ?? {};
         // The gateway rejects unknown root params, so the wake context rides in the
         // generated message rather than a top-level `paperclip` field.
@@ -2182,31 +2173,16 @@ describeEmbeddedPostgres(
         // recording is covered by the route-response assertions earlier in this suite.
         expect(wake).toMatchObject({
           reason: "issue_commented",
-          issue: {
-            id: fixture.issues.reviewRoot.id,
-            title: fixture.issues.reviewRoot.title,
-          },
-          latestCommentId: scopedComment.id,
-          commentIds: [scopedComment.id],
-          comments: [
-            {
-              id: scopedComment.id,
-              issueId: fixture.issues.reviewRoot.id,
-              body: LOW_TRUST_QUARANTINED_BODY,
-            },
-          ],
-          continuationSummary: {
-            body: LOW_TRUST_QUARANTINED_BODY,
-          },
-          livenessContinuation: {
-            attempt: 1,
-            maxAttempts: 2,
-            sourceRunId: fixture.runs.lowTrust.id,
-            state: "quarantined_low_trust_handoff",
-            reason: "Low-trust review output requires sanitized follow-up.",
-            instruction: "Continue from the sanitized quarantine stub only.",
-          },
+          issue: { id: fixture.issues.reviewRoot.id, title: fixture.issues.reviewRoot.title },
+          latestCommentId: authorized.body.id,
+          commentIds: [authorized.body.id],
+          comments: [{ id: authorized.body.id, issueId: fixture.issues.reviewRoot.id, body: authorized.body.body }],
+          continuationSummary: { body: LOW_TRUST_QUARANTINED_BODY },
         });
+        expect(wake.commentIds).not.toContain(scopedComment.id);
+        // This proves real Board delivery and sanitized summary hydration. Synthetic
+        // livenessContinuation fields and referenced-comment gateway delivery remain
+        // separate coverage gaps; explicit HTTP hydration above is not that proof.
         expect(String(payload.message ?? "")).toContain(
           "## Paperclip Wake Payload",
         );
