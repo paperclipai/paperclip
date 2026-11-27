@@ -301,6 +301,8 @@ paperclipai uninstall
 ```
 
 `paperclipai uninstall` removes the managed shim, manifest, and CLI payloads.
+It validates the install store and takes the store lock before it stops or
+removes the background service.
 It deliberately preserves `~/.paperclip/instances/`, including configuration,
 databases, uploads, logs, secrets, backups, and workspaces. Back up and remove
 that data separately only when you intend to delete the Paperclip instance.
