@@ -273,6 +273,7 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
           eq(toolConnections.status, "active"),
           ne(toolConnections.transport, "chat_sdk"),
           ne(toolConnections.transport, "runtime_auth"),
+          ne(toolConnections.transport, "voice"),
           ne(toolApplications.type, "paperclip_plugin"),
           or(isNull(toolConnections.healthCheckedAt), lte(toolConnections.healthCheckedAt, cutoff)),
         ),

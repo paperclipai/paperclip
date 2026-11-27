@@ -27,7 +27,10 @@ Discover the assigned connection's call_my_phone tool through Paperclip's govern
 tool catalog. It calls only the responsible person's saved, opted-in number for
 the current task. Always pass the message parameter with the concise update, announcement, or
 question you want spoken immediately when they pick up; their spoken response will
-be transcribed and recorded on this issue. Tool availability and Allowed / Ask first
+be transcribed and recorded on this issue. If call_my_phone is not present in your
+tools for this task, the responsible person has not saved and enabled phone
+callbacks on this Speko connection yet; ask them to enable Phone callback in the
+Speko connection's Settings tab and try again. Tool availability and Allowed / Ask first
 / Off controls still apply. Never choose another recipient or bypass an approval.
 If creation has an uncertain outcome, inspect the existing attempt; never blindly redial.
 Report provider failures accurately without promising a callback.

@@ -27,7 +27,7 @@ export function connectionHealthSchedule(db: Db, checkHealth: ConnectionHealth["
         eq(toolApplications.companyId, toolConnections.companyId),
       )).where(and(
         eq(toolConnections.enabled, true), eq(toolConnections.status, "active"),
-        ne(toolConnections.transport, "chat_sdk"), ne(toolConnections.transport, "runtime_auth"),
+        ne(toolConnections.transport, "chat_sdk"), ne(toolConnections.transport, "runtime_auth"), ne(toolConnections.transport, "voice"),
         ne(toolApplications.type, "paperclip_plugin"),
         companyId === undefined ? undefined : eq(toolConnections.companyId, companyId),
         connectionId === undefined ? undefined : eq(toolConnections.id, connectionId),

@@ -20962,6 +20962,40 @@ describeEmbeddedPostgres("tool access service", () => {
         lastHealthAt: new Date(0),
       })
       .returning();
+    const [voiceApplication] = await db
+      .insert(toolApplications)
+      .values({
+        companyId: company.id,
+        applicationKey: `chat:speko:${randomUUID()}`,
+        name: "Speko voice",
+        type: "chat",
+        status: "active",
+        metadata: { sourceTemplateKey: "speko", purpose: "channel" },
+      })
+      .returning();
+    const [voiceConnection] = await db
+      .insert(toolConnections)
+      .values({
+        companyId: company.id,
+        applicationId: voiceApplication!.id,
+        name: "Speko agent",
+        uid: `chat-speko-${randomUUID()}`,
+        connectionKind: "managed",
+        connectionPurpose: "channel",
+        ownership: "customer",
+        transport: "voice",
+        authKind: "api_key",
+        credentialPolicy: "shared",
+        status: "active",
+        enabled: true,
+        config: { provider: "speko" },
+        transportConfig: {},
+        healthStatus: "healthy",
+        healthMessage: "Connected; conversation test optional",
+        healthCheckedAt: new Date(0),
+        lastHealthAt: new Date(0),
+      })
+      .returning();
     const [pluginApplication] = await db.insert(toolApplications).values({
       companyId: company.id,
       applicationKey: `paperclip_plugin:fixture-${randomUUID()}`,
@@ -20992,7 +21026,10 @@ describeEmbeddedPostgres("tool access service", () => {
       status: "active",
     }));
 
-    const sweep = await service.sweepConnectionHealth({ staleAfterMs: 0, limit: 1 });
+    const scheduledDeadlines = await service.scheduledHealth.load(company.id);
+    expect(scheduledDeadlines.map((deadline) => deadline.id)).toEqual([connection.id]);
+
+    const sweep = await service.sweepConnectionHealth({ staleAfterMs: 0, limit: 5 });
     const [updatedConnection] = await db
       .select()
       .from(toolConnections)
@@ -21001,6 +21038,10 @@ describeEmbeddedPostgres("tool access service", () => {
       .select()
       .from(toolConnections)
       .where(eq(toolConnections.id, chatConnection!.id));
+    const [untouchedVoiceConnection] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, voiceConnection!.id));
 
     const [untouchedPlugin] = await db.select().from(toolConnections)
       .where(eq(toolConnections.id, pluginConnection!.id));
@@ -21020,6 +21061,13 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(untouchedChatConnection).toMatchObject({
       healthStatus: "ok",
       healthMessage: "Slack webhook healthy.",
+      lastError: null,
+      healthCheckedAt: new Date(0),
+      lastHealthAt: new Date(0),
+    });
+    expect(untouchedVoiceConnection).toMatchObject({
+      healthStatus: "healthy",
+      healthMessage: "Connected; conversation test optional",
       lastError: null,
       healthCheckedAt: new Date(0),
       lastHealthAt: new Date(0),
