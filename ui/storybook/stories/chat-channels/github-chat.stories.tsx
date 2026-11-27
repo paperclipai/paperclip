@@ -14,6 +14,17 @@ const meta = {
           "Historical design prototype. Production onboarding now has Choose agent and Connect GitHub, with personal or organization App ownership and automatic completion. This historical prototype predates the wizard and is not its acceptance test. Use the running app to review the current setup flow. Provider handoffs, tool checks, identity events, tasks, and reviews here are simulated.",
       },
     },
+    paperclip: {
+      "capabilities": [
+        "chat-channels/providers",
+        "chat-channels/conversation"
+      ],
+      "status": "historical",
+      "implementation": "prototype",
+      "boundary": "fixtures",
+      "notes": "Historical wizard retained for original setup/access/review design; current GitHub setup is ui/src/pages/apps/chat/GitHubChatSetup.tsx.",
+      "replacement": "ui/storybook/stories/chat-channels/github-connections.stories.tsx"
+    },
   },
   tags: ["autodocs"],
 } satisfies Meta<typeof GitHubChatPreview>;

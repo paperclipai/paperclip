@@ -9,8 +9,14 @@ test("a ready agent with a missing personal key offers Claude setup in chat and 
   const root = await mkdtemp(path.join(os.tmpdir(), "personal-ai-recovery-"));
   const original = await json(await request.get("/api/instance/settings/experimental"));
   const company = await json(await request.post("/api/companies", { data: { name: `Personal AI recovery ${Date.now()}` } }));
+  const needsSettingsPatch = original.enableAgentChat !== true || original.enableClassicTaskInterface !== false;
   try {
-    await json(await request.patch("/api/instance/settings/experimental", { data: { enableAgentChat: true, enableClassicTaskInterface: false } }));
+    if (needsSettingsPatch) {
+      await json(await request.patch("/api/instance/settings/experimental", { data: { enableAgentChat: true, enableClassicTaskInterface: false } }));
+    }
+    await page.route("**/api/instance/settings/experimental", route => route.fulfill({ json: {
+      ...original, enableAgentChat: true, enableClassicTaskInterface: false,
+    } }));
     const definition = await json(await request.post(`/api/companies/${company.id}/user-secret-definitions`, {
       data: { key: "ANTHROPIC_API_KEY", name: "ANTHROPIC_API_KEY for onboarding" },
     }));
@@ -74,7 +80,7 @@ test("a ready agent with a missing personal key offers Claude setup in chat and 
   } finally {
     await Promise.allSettled([
       request.patch(`/api/companies/${company.id}`, { data: { status: "archived" } }),
-      request.patch("/api/instance/settings/experimental", { data: original }),
+      ...(needsSettingsPatch ? [request.patch("/api/instance/settings/experimental", { data: original })] : []),
     ]);
     await rm(root, { recursive: true, force: true });
   }

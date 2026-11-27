@@ -2,6 +2,7 @@ import { MAX_ACPX_RUNTIME_EXECUTABLE_BYTES, ACPX_PRIVATE_SNAPSHOT_ENV, createAcp
 import { createNativeAcpxDistributionSnapshot, NATIVE_ACPX_BOOTSTRAP_NAME, readNativeAcpxDistributionEntries, type NativeAcpxDistributionInput } from "./native-distribution-integrity.js";
 export type { NativeAcpxDistributionInput } from "./native-distribution-integrity.js";
 import { createHash } from "node:crypto";
+import { executableDigestCache, type ExecutableFileIdentity } from "../../executable-digest-cache.js";
 import {
   spawn as spawnChildProcess,
   type ChildProcess,
@@ -29,7 +30,8 @@ import {
 } from "node:path";
 import type { Readable, Writable } from "node:stream";
 
-import { resolveQualifiedAcpxProfile, type QualifiedAcpxProfile } from "./qualified-profiles.js";
+import { assertAcpxProfileReleased, resolveQualifiedAcpxProfile, type QualifiedAcpxProfile } from "./qualified-profiles.js";
+import { resolveInstalledProviderAuthority } from "./installed-provider-authority.js";
 import {
   VERIFIED_RUNTIME_EXECUTABLE_ENV,
   verifiedRuntimeExecutableHandoff,
@@ -51,38 +53,44 @@ const VERIFIED_PROVIDER_RUNTIME_TARGET_ENV =
 
 const QUALIFIED_CLAUDE_LINUX_X64_RUNTIME = Object.freeze({
   runtimePackageName: "@anthropic-ai/claude-agent-sdk",
-  runtimePackageVersion: "0.3.286",
+  runtimePackageVersion: "0.3.328",
   packageName: "@anthropic-ai/claude-agent-sdk-linux-x64",
-  packageVersion: "0.3.286",
-  dependencyDeclaration: "0.3.286",
+  packageVersion: "0.3.328",
+  dependencyDeclaration: "0.3.328",
   relativeExecutable: "claude",
   executableDigest:
-    "sha256:fe503f65c6289d59c23e5b21ae44f03583f997dd33a2cbfc75ab4f96fb8fc73f",
+    "sha256:a982d38030b97e750848add2cbb2df6d9a70d5544a22ca9b216a349ba25865e8",
   environmentVariable: "CLAUDE_CODE_EXECUTABLE",
+});
+
+const QUALIFIED_CLAUDE_LINUX_ARM64_RUNTIME = Object.freeze({
+  ...QUALIFIED_CLAUDE_LINUX_X64_RUNTIME,
+  packageName: "@anthropic-ai/claude-agent-sdk-linux-arm64",
+  executableDigest: "sha256:307f8bada27b37db7553fac75e86004e3dbff5a931ffc611b54fe710ce1eb521",
 });
 
 const QUALIFIED_CLAUDE_DARWIN_RUNTIMES = {
   arm64: Object.freeze({
     ...QUALIFIED_CLAUDE_LINUX_X64_RUNTIME,
     packageName: "@anthropic-ai/claude-agent-sdk-darwin-arm64",
-    executableDigest: "sha256:75e3016e9d2570767b08e43a7467d4817a4f149232c169ca295f2c95fef21433",
+    executableDigest: "sha256:e85547190ef8cd983033ba61b17194045a6fea00035da349efeabed86badacc9",
   }),
   x64: Object.freeze({
     ...QUALIFIED_CLAUDE_LINUX_X64_RUNTIME,
     packageName: "@anthropic-ai/claude-agent-sdk-darwin-x64",
-    executableDigest: "sha256:53e6a936e89519d695230f9cc97943991286b72766674fba11bee845f0a7c047",
+    executableDigest: "sha256:bf40a5555c01e6afe6c028fbe0782f93580f4f0835fd5d13022e039ec76507e1",
   }),
 };
 
 const QUALIFIED_CODEX_LINUX_X64_RUNTIME = Object.freeze({
   runtimePackageName: "@openai/codex",
-  runtimePackageVersion: "0.160.0",
+  runtimePackageVersion: "0.170.0",
   packageName: "@openai/codex-linux-x64",
-  packageVersion: "0.160.0-linux-x64",
-  dependencyDeclaration: "npm:@openai/codex@0.160.0-linux-x64",
+  packageVersion: "0.170.0-linux-x64",
+  dependencyDeclaration: "npm:@openai/codex@0.170.0-linux-x64",
   relativeExecutable: "vendor/x86_64-unknown-linux-musl/bin/codex",
   executableDigest:
-    "sha256:12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad",
+    "sha256:880819aab735adcf16f36cd628940b9f1e652a36c01d10a5d32f83cc84902971",
   environmentVariable: "CODEX_PATH",
 });
 
@@ -98,8 +106,8 @@ const QUALIFIED_CLAUDE_PROVIDER_DEPENDENCIES = Object.freeze([
   }),
   Object.freeze({
     packageName: "@anthropic-ai/claude-agent-sdk",
-    packageVersion: "0.3.286",
-    // The package's own package.json still declares 0.3.257 — 0.3.286 is
+    packageVersion: "0.3.328",
+    // The package's own package.json still declares 0.3.257 — 0.3.328 is
     // only what pnpm resolves, forced by the
     // "claude-agent-acp@0.73.0>@anthropic-ai/claude-agent-sdk" override in
     // the workspace root. This field binds the declared string, not the
@@ -389,6 +397,7 @@ function isDeclaredHoistedProviderPlatform(root: string, manifest: string, issue
   const platformQualification = [
     { qualified: QUALIFIED_CODEX_LINUX_X64_RUNTIME, os: "linux", cpu: "x64", alias: true },
     { qualified: QUALIFIED_CLAUDE_LINUX_X64_RUNTIME, os: "linux", cpu: "x64", alias: false },
+    { qualified: QUALIFIED_CLAUDE_LINUX_ARM64_RUNTIME, os: "linux", cpu: "arm64", alias: false },
     { qualified: QUALIFIED_CLAUDE_DARWIN_RUNTIMES.arm64, os: "darwin", cpu: "arm64", alias: false },
     { qualified: QUALIFIED_CLAUDE_DARWIN_RUNTIMES.x64, os: "darwin", cpu: "x64", alias: false },
   ].find(value => value.qualified.packageName === packageName);
@@ -598,13 +607,7 @@ export async function awaitVerifiedAcpxProviderExit(
   await exitProof;
 }
 
-interface VerifiedAcpxCommandIdentity {
-  device: string;
-  inode: string;
-  size: string;
-  modifiedNanoseconds: string;
-  changedNanoseconds: string;
-}
+type VerifiedAcpxCommandIdentity = ExecutableFileIdentity;
 
 interface VerifiedAcpxRuntimeExecutable {
   path: string;
@@ -643,13 +646,16 @@ export async function verifyQualifiedAcpxInstallation(
   profile: QualifiedAcpxProfile,
   resolvePackageJson: AcpxPackageJsonResolver = defaultPackageJsonResolver,
 ): Promise<VerifiedAcpxInstallation> {
+  assertAcpxProfileReleased(profile.agent);
   // Keep the selected package authority available when its bundled provider
   // wrapper delegates platform installation to the published server manifest.
-  if ((profile.agent === "codex" || profile.agent === "claude") && resolvePackageJson === defaultPackageJsonResolver && process.env.PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT !== undefined) {
-    resolvePackageJson = createAcpxPackageJsonResolver(
-      process.env.PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT,
-      process.env.PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST,
-    );
+  if ((profile.agent === "codex" || profile.agent === "claude") && resolvePackageJson === defaultPackageJsonResolver) {
+    const boundRoot = process.env.PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT;
+    const authority = boundRoot === undefined ? resolveInstalledProviderAuthority(import.meta.url) : {
+      root: boundRoot,
+      manifest: process.env.PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST,
+    };
+    if (authority) resolvePackageJson = createAcpxPackageJsonResolver(authority.root, authority.manifest);
   }
   const builtin = profile.agent === "grok";
   if (builtin && (profile.agentServerPackage !== "builtin:grok-acp" || profile.agentServerVersion !== "1" || profile.agentRuntimePackage !== "native:grok" || profile.agentRuntimeVersion !== "1.0.13")) {
@@ -1020,7 +1026,9 @@ async function verifyQualifiedRuntimeExecutable(input: {
     input.profile.agent === "claude"
       ? process.platform === "darwin" && (process.arch === "arm64" || process.arch === "x64")
         ? QUALIFIED_CLAUDE_DARWIN_RUNTIMES[process.arch]
-        : QUALIFIED_CLAUDE_LINUX_X64_RUNTIME
+        : process.platform === "linux" && process.arch === "arm64"
+          ? QUALIFIED_CLAUDE_LINUX_ARM64_RUNTIME
+          : QUALIFIED_CLAUDE_LINUX_X64_RUNTIME
       : input.profile.agent === "codex"
         ? QUALIFIED_CODEX_LINUX_X64_RUNTIME
         : null;
@@ -1034,7 +1042,7 @@ async function verifyQualifiedRuntimeExecutable(input: {
     );
   }
   if (!((process.platform === "linux" && process.arch === "x64")
-    || (input.profile.agent === "claude" && process.platform === "darwin" && (process.arch === "arm64" || process.arch === "x64")))) {
+    || (input.profile.agent === "claude" && ["linux", "darwin"].includes(process.platform) && (process.arch === "arm64" || process.arch === "x64")))) {
     throw new Error(
       `ACPX ${input.profile.agent} verified runtime executable is unavailable for ${process.platform} ${process.arch}`,
     );
@@ -1191,7 +1199,7 @@ async function inspectCommand(
   }
 }
 
-async function openVerifiedRuntimeExecutable(
+export async function openVerifiedRuntimeExecutable(
   executablePath: string,
   expectedDigest: string,
   agent: string,
@@ -1233,23 +1241,31 @@ async function openVerifiedRuntimeExecutable(
         `ACPX ${agent} runtime executable must be a bounded executable file`,
       );
     }
-    const hash = createHash("sha256");
-    const buffer = Buffer.alloc(1024 * 1024);
+    const cachedDigest = await executableDigestCache.read(fileIdentity(before));
+    let digest = cachedDigest;
     let position = 0;
-    try {
-      while (position < Number(before.size)) {
-        const { bytesRead } = await handle.read(
-          buffer,
-          0,
-          Math.min(buffer.length, Number(before.size) - position),
-          position,
-        );
-        if (bytesRead === 0) break;
-        hash.update(buffer.subarray(0, bytesRead));
-        position += bytesRead;
+    if (digest === null) {
+      const hash = createHash("sha256");
+      const buffer = Buffer.alloc(1024 * 1024);
+      try {
+        while (position < Number(before.size)) {
+          const { bytesRead } = await handle.read(
+            buffer,
+            0,
+            Math.min(buffer.length, Number(before.size) - position),
+            position,
+          );
+          if (bytesRead === 0) break;
+          hash.update(buffer.subarray(0, bytesRead));
+          position += bytesRead;
+        }
+      } finally {
+        buffer.fill(0);
       }
-    } finally {
-      buffer.fill(0);
+      digest = `sha256:${hash.digest("hex")}`;
+    }
+    if (cachedDigest === null && position === Number(before.size) && digest === expectedDigest) {
+      await executableDigestCache.write(fileIdentity(before), digest);
     }
     const after = await handle.stat({ bigint: true });
     const lexicalAfter = await lstat(executablePath, { bigint: true }).catch(
@@ -1258,7 +1274,7 @@ async function openVerifiedRuntimeExecutable(
     const beforeIdentity = fileIdentity(before);
     const afterIdentity = fileIdentity(after);
     if (
-      position !== Number(before.size) ||
+      (cachedDigest === null && position !== Number(before.size)) ||
       lexicalAfter === null ||
       lexicalAfter.isSymbolicLink() ||
       !lexicalAfter.isFile() ||
@@ -1270,7 +1286,6 @@ async function openVerifiedRuntimeExecutable(
         `ACPX ${agent} runtime executable changed while it was verified`,
       );
     }
-    const digest = `sha256:${hash.digest("hex")}`;
     if (digest !== expectedDigest) {
       throw new Error(`ACPX ${agent} runtime executable digest mismatch`);
     }
@@ -1469,7 +1484,7 @@ function commandLease(
   privateSnapshot: AcpxPrivateSnapshot | null,
 ): VerifiedAcpxCommandLease {
   let consumed = false;
-  let directoriesReleased = false;
+  let directoriesRelease: Promise<void> | undefined;
   let spawnedChild: ChildProcess | null = null;
   let childExit: Promise<void> | null = null;
   let snapshotCleanup: Promise<void> | null = null;
@@ -1481,24 +1496,23 @@ function commandLease(
     }
     return snapshotCleanup;
   };
-  const releaseDirectories = async (): Promise<void> => {
-    if (directoriesReleased) return;
-    directoriesReleased = true;
-    await Promise.all([
+  const releaseDirectories = (): Promise<void> => {
+    return (directoriesRelease ??= Promise.all([
       commandDirectory.close(),
       ...dependencyAncestors.map((handle) => handle.close()),
       ...(providerRuntimeExecutable === null
         ? []
         : [providerRuntimeExecutable.close()]),
-    ]);
+    ]).then(() => undefined));
   };
   const releaseDirectoriesBestEffort = (): void => {
     void releaseDirectories().catch(() => undefined);
   };
   const close = async (): Promise<void> => {
-    if (consumed && privateSnapshot === null) return;
+    const wasConsumed = consumed;
     consumed = true;
-    verifiedBytes.fill(0);
+    // A spawned command owns its source buffer until its pipe write completes.
+    if (!wasConsumed) verifiedBytes.fill(0);
     await releaseDirectories();
     // A spawned provider may still read the snapshot. Runtime shutdown runs in
     // parallel and retires that child; do not remove its bytes or report command
@@ -1593,7 +1607,7 @@ function commandLease(
           environment[VERIFIED_PROVIDER_RUNTIME_TARGET_ENV] =
             providerRuntimeEnvironmentVariable;
         }
-        child = spawnChildProcess(
+        child = spawnedChild = spawnChildProcess(
           runtimeHandoff.executable,
           guarded
             ? [
@@ -2247,11 +2261,4 @@ export async function probeAcpxClaudeInstallation(model: string): Promise<void> 
 
 export async function probeAcpxGrokInstallation(model: string): Promise<void> {
   await verifyQualifiedAcpxInstallation(resolveQualifiedAcpxProfile("grok", model));
-}
-
-/** Verify the pinned Pi closure and snapshot lease without launching a provider. */
-export async function probeAcpxPiInstallation(model: string): Promise<void> {
-  const installation = await verifyQualifiedAcpxInstallation(resolveQualifiedAcpxProfile("pi", model));
-  const lease = await installation.openCommand();
-  await lease.close();
 }

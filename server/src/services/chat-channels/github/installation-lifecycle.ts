@@ -1,3 +1,4 @@
+import { notifyGitHubWebhookRecovery } from "./webhook-recovery-notifications.js";
 import type { VerifiedProviderIdentity } from "../runtime-types.js";
 
 import type { EndpointRow, DbTransaction, LifecycleRuntimeFence, InternalSetupState } from "../runtime-types.js";
@@ -148,6 +149,7 @@ export function createGitHubInstallationLifecycle(db: Db, options: GitHubInstall
             currentInstallationRemovalReason ??
               "GitHub App installation was removed",
           ).slice(0, MAX_ERROR_TEXT);
+          await notifyGitHubWebhookRecovery(tx, { kind: "endpoint", id: currentEndpoint.id });
           await tx
             .update(chatEndpoints)
             .set({
@@ -247,6 +249,7 @@ export function createGitHubInstallationLifecycle(db: Db, options: GitHubInstall
       if (upgradingLegacyIdentity) {
         await db.transaction(async (tx) => {
           await credentialLease.assertOwned(tx);
+          await notifyGitHubWebhookRecovery(tx, { kind: "endpoint", id: currentEndpoint.id });
           await tx
             .update(chatEndpoints)
             .set({
@@ -290,13 +293,16 @@ export function createGitHubInstallationLifecycle(db: Db, options: GitHubInstall
       const intentionallyUnavailable =
         canonical.endpoint.status === "paused" ||
         canonical.endpoint.status === "archived" ||
+        (canonical.endpoint.status === "attention" && canonical.endpoint.setup.step === "provider_setup") ||
         !canonical.endpoint.setup.webhookVerifiedAt;
       const advanceRuntimeGeneration =
         refreshRuntimeAfterLifecycle ||
+        (canonical.endpoint.status === "attention" && canonical.endpoint.setup.step === "provider_setup") ||
         !canonical.endpoint.setup.webhookVerifiedAt;
       await db.transaction(async (tx) => {
         await credentialLease.assertOwned(tx);
         if (intentionallyUnavailable) {
+          await notifyGitHubWebhookRecovery(tx, { kind: "endpoint", id: currentEndpoint.id });
           await tx
             .update(chatEndpoints)
             .set({
@@ -318,6 +324,7 @@ export function createGitHubInstallationLifecycle(db: Db, options: GitHubInstall
             canonical.endpoint.setup.step === "complete"
               ? "active"
               : "verifying";
+          await notifyGitHubWebhookRecovery(tx, { kind: "endpoint", id: currentEndpoint.id });
           await tx
             .update(chatEndpoints)
             .set({
@@ -374,7 +381,7 @@ export function createGitHubInstallationLifecycle(db: Db, options: GitHubInstall
           );
         await credentialLease.assertOwned(tx);
       });
-      if (!canonical.endpoint.setup.webhookVerifiedAt) {
+      if (intentionallyUnavailable) {
         stopRuntimeAfterLifecycle = true;
       }
     } catch (error) {
@@ -383,6 +390,7 @@ export function createGitHubInstallationLifecycle(db: Db, options: GitHubInstall
         !latest ||
         latest.endpoint.status === "paused" ||
         latest.endpoint.status === "archived" ||
+        (latest.endpoint.status === "attention" && latest.endpoint.setup.step === "provider_setup") ||
         !latest.endpoint.setup.webhookVerifiedAt;
       if (!preserveIntentionalState) {
         const failedAt = new Date();
@@ -398,6 +406,7 @@ export function createGitHubInstallationLifecycle(db: Db, options: GitHubInstall
         const terminal = candidate.attempts + 1 >= 5;
         await db.transaction(async (tx) => {
           await credentialLease.assertOwned(tx);
+          await notifyGitHubWebhookRecovery(tx, { kind: "endpoint", id: currentEndpoint.id });
           await tx
             .update(chatEndpoints)
             .set({

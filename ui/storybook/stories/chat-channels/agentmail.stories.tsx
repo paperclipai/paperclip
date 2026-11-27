@@ -548,7 +548,16 @@ const meta = {
   id: "connections-agentmail-tasks",
   title: "Apps, channels, and extensions/External chat and email/Connections/AgentMail tasks",
   component: EmailTaskExperience,
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "chat-channels/conversation"
+      ],
+      "implementation": "prototype",
+      "boundary": "fixtures",
+      "notes": "Local EmailTaskExperience combines production composer/bubbles with simulated email lifecycle; compare against IssueDetail before claiming page parity."
+    },
+  },
 } satisfies Meta<typeof EmailTaskExperience>;
 export default meta;
 type Story = StoryObj<typeof meta>;

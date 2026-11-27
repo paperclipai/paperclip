@@ -112,7 +112,15 @@ const meta = {
   id: "apps-connections-provider-choice",
   title: "Apps, channels, and extensions/Connection setup/Apps/Connections/Provider choice",
   component: ProviderChoice,
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "connection-setup/identity-and-access"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 } satisfies Meta<typeof ProviderChoice>;
 export default meta;
 type Story = StoryObj<typeof meta>;

@@ -60,6 +60,13 @@ function QuietExecution({ execution }: { execution: ExecutionProjection }) {
   );
 }
 const meta = {
+  parameters: { paperclip: {
+      "capabilities": [
+        "recovery/diagnosis"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    } },
   id: "tasks-execution-recovery",
   title: "Projects and execution/Recovery/Tasks/Execution recovery",
   component: QuietExecution,

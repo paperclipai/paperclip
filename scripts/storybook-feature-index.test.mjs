@@ -1,73 +1,98 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
-import os from "node:os";
+import fs, { existsSync, readFileSync, rmSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import path from "node:path";
 import { test } from "node:test";
-import { featureArtifacts, featureIndex, featureOrder, reconcileFeatureArtifacts } from "./storybook-feature-index.mjs";
+import { featureArtifacts, featureIndex, featureOrder, generateFeatureArtifacts } from "./storybook-feature-index.mjs";
+import { mapFixture } from "./map-test-fixture.mjs";
 
-function fixture(t) {
-  const root = mkdtempSync(path.join(os.tmpdir(), "storybook-feature-index-"));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  const write = (file, text) => {
-    mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
-    writeFileSync(path.join(root, file), text);
-  };
-  write("maps/feature-map/README.md", "# Map\n### Work\n| [Tasks](./tasks.md) | Create and follow work. |\n| [Goals](./goals.md) | Align work. |\n### Connections\n| [Apps](./apps.md) | Connect tools. |\n");
-  write("maps/feature-map/tasks.md", "# Tasks\n## Sub-features\n- `create`: Create work;\n  retain the initial description.\n- `review`: Review it.\n## How to get to it\nNot a capability.\n");
-  write("maps/feature-map/goals.md", "# Goals\n## Sub-features\n- `hierarchy`: Link goals.\n## Gotchas\n");
-  write("maps/feature-map/apps.md", "# Apps\n## Sub-features\n- `connect`: Connect an app.\n## Gotchas\n");
-  write("ui/storybook/.storybook/preview.tsx", "export default { parameters: { options: { storySort: { order: [],\n}, unrelated: true } } };\n");
-  return { root, write };
-}
-
-test("feature index preserves recipe names, map order, and multiline capability descriptions", t => {
-  const { root } = fixture(t);
-  const index = featureIndex(root);
+test("recipes own discovery, names, section order and multiline capability descriptions", t => {
+  const f = mapFixture(t);
+  f.feature("goals", "Goals", ["hierarchy"], { order: 20 });
+  f.feature("apps", "Apps", ["connect"], { section: "Connections", sectionOrder: 20 });
+  const recipe = path.join(f.root, "maps/feature-map/tasks.md");
+  f.write("maps/feature-map/tasks.md", readFileSync(recipe, "utf8").replace("create work.", "Create work;\n  retain its description."));
+  const index = featureIndex(f.root);
   assert.deepEqual(index.sections.map(section => section.title), ["Work", "Connections"]);
   assert.deepEqual(index.sections.flatMap(section => section.features.map(feature => feature.id)), ["tasks", "goals", "apps"]);
-  assert.deepEqual(index.sections[0].features[0].capabilities, [
-    { id: "tasks/create", label: "Create", description: "Create work; retain the initial description." },
-    { id: "tasks/review", label: "Review", description: "Review it." },
-  ]);
-  assert.deepEqual(featureOrder(index), ["Overview", "Work", ["Tasks", ["Overview", "*"], "Goals", ["Overview", "*"]], "Connections", ["Apps", ["Overview", "*"]], "Foundations"]);
+  assert.equal(index.sections[0].features[0].capabilities[0].description, "Create work; retain its description.");
+  assert.deepEqual(featureOrder(index), ["Overview", "Design proposals", ["Foundations", "Components", "Layouts", "Pages", "AI Generated Test Pages", "Patterns", "Guidelines"], "Work", ["Tasks", ["Overview", "*"], "Goals", ["Overview", "*"]], "Connections", ["Apps", ["Overview", "*"]], "Foundations"]);
 });
 
-test("every feature gets a stable overview, including features with no authored stories", t => {
-  const { root } = fixture(t);
-  const index = featureIndex(root);
-  const outputs = featureArtifacts(index);
-  const file = "ui/storybook/generated/features/goals.stories.tsx";
-  assert.match(outputs.get(file), /id: "feature-map-goals"/);
-  assert.match(outputs.get(file), /title: "Work\/Goals\/Overview"/);
-  index.sections[0].features[1].title = "Work alignment";
-  assert.match(featureArtifacts(index).get(file), /id: "feature-map-goals"/);
-  assert.match(featureArtifacts(index).get(file), /title: "Work\/Work alignment\/Overview"/);
-  index.sections[0].features[1].title = "CLI/API and local worktrees";
-  assert.match(featureArtifacts(index).get(file), /title: "Work\/CLI, API and local worktrees\/Overview"/);
-  assert.ok(featureOrder(index)[2].includes("CLI, API and local worktrees"));
+test("equal local orders preserve independently added features using their stable filename", t => {
+  const f = mapFixture(t);
+  f.feature("goals", "Goals");
+  f.feature("apps", "Apps");
+  assert.deepEqual(featureIndex(f.root).sections[0].features.map(feature => feature.id), ["apps", "goals", "tasks"]);
 });
 
-test("generated guides detect upstream drift, local edits, missing files, and unknown files", t => {
-  const { root, write } = fixture(t);
-  const index = featureIndex(root);
-  assert.equal(reconcileFeatureArtifacts(root, index).length, 5);
-  assert.deepEqual(reconcileFeatureArtifacts(root, index, true), []);
-  assert.deepEqual(reconcileFeatureArtifacts(root, index), []);
-  write("ui/storybook/generated/features/goals.stories.tsx", "export default {};");
-  assert.match(reconcileFeatureArtifacts(root, index).join("\n"), /goals.stories.tsx: generated feature index is stale/);
-  reconcileFeatureArtifacts(root, index, true);
-  index.sections.reverse();
-  assert.match(reconcileFeatureArtifacts(root, index).join("\n"), /preview.tsx: generated sidebar order is stale/);
-  assert.match(readFileSync(path.join(root, "ui/storybook/.storybook/preview.tsx"), "utf8"), /unrelated: true/);
-  write("ui/storybook/generated/features/orphan.stories.tsx", "keep this visible");
-  assert.match(reconcileFeatureArtifacts(root, index, true).join("\n"), /Unexpected generated feature file/);
-  assert.equal(readFileSync(path.join(root, "ui/storybook/generated/features/orphan.stories.tsx"), "utf8"), "keep this visible");
+test("every discovered feature gets a stable overview, including areas without stories", t => {
+  const f = mapFixture(t);
+  f.feature("goals", "CLI/API and goals", ["hierarchy"]);
+  const index = featureIndex(f.root);
+  const output = featureArtifacts(index).get("ui/storybook/generated/features/goals.stories.tsx");
+  assert.match(output, /id: "feature-map-goals"/);
+  assert.match(output, /title: "Work\/CLI, API and goals\/Overview"/);
 });
 
-test("malformed or omitted map entries fail instead of silently hiding a feature", t => {
-  const { root, write } = fixture(t);
-  write("maps/feature-map/README.md", "### Work\n| [Tasks](./tasks.md) | Tasks |\n");
-  assert.throws(() => featureIndex(root), /missing from index/);
-  write("maps/feature-map/README.md", "### Work\n| [Tasks](tasks.md) | Tasks |\n");
-  assert.throws(() => featureIndex(root), /Unrecognized feature-map row/);
+test("fresh generation rebuilds missing outputs, removes retired overviews and never edits authored preview", t => {
+  const f = mapFixture(t);
+  const authored = readFileSync(path.join(f.root, "ui/storybook/.storybook/preview-base.tsx"), "utf8");
+  f.feature("goals", "Goals", ["hierarchy"]);
+  generateFeatureArtifacts(f.root);
+  const overview = path.join(f.root, "ui/storybook/generated/features/goals.stories.tsx");
+  assert.ok(existsSync(overview));
+  assert.match(readFileSync(path.join(f.root, "ui/storybook/.storybook/preview.tsx"), "utf8"), /storySort: \{ order: \[/);
+  rmSync(path.join(f.root, "maps/feature-map/goals.md"));
+  rmSync(path.join(f.root, "maps/agent-access-map/goals.md"));
+  generateFeatureArtifacts(f.root);
+  assert.equal(existsSync(overview), false);
+  assert.equal(readFileSync(path.join(f.root, "ui/storybook/.storybook/preview-base.tsx"), "utf8"), authored);
+  assert.match(readFileSync(path.join(f.root, "maps/generated/feature-map.md"), "utf8"), /Tasks/);
+});
+
+test("missing metadata, duplicate capabilities and inconsistent group order fail visibly", t => {
+  const f = mapFixture(t);
+  f.write("maps/feature-map/new.md", "# New\n");
+  assert.throws(() => featureIndex(f.root), /missing navigation/);
+  f.feature("new", "New", ["create", "create"]);
+  assert.throws(() => featureIndex(f.root), /duplicate capability/);
+  f.feature("new", "New", ["create"], { sectionOrder: 99 });
+  assert.throws(() => featureIndex(f.root), /inconsistent section order/);
+});
+
+test("overlapping generators can both retire the same overview", t => {
+  const f = mapFixture(t);
+  const retired = "ui/storybook/generated/features/retired.stories.tsx";
+  f.write(retired, "export const Overview = {};\n");
+  const directory = path.join(f.root, "ui/storybook/generated/features");
+  const readDirectory = fs.readdirSync;
+  let competed = false;
+  // Reproduce the interleaving deterministically: the other generator removes
+  // the file after this generator lists it, before this generator removes it.
+  const mock = t.mock.method(fs, "readdirSync", (...args) => {
+    const listing = readDirectory(...args);
+    if (args[0] === directory && !competed) {
+      competed = true;
+      rmSync(path.join(f.root, retired));
+    }
+    return listing;
+  });
+  syncBuiltinESMExports();
+  try {
+    generateFeatureArtifacts(f.root);
+    assert.equal(competed, true);
+    assert.equal(existsSync(path.join(f.root, retired)), false);
+    assert.ok(existsSync(path.join(directory, "tasks.stories.tsx")));
+  } finally {
+    mock.mock.restore();
+    syncBuiltinESMExports();
+  }
+});
+
+test("verification guidance rejects orphan capability references", t => {
+  const f = mapFixture(t);
+  const file = "maps/feature-map/tasks.md";
+  f.write(file, readFileSync(path.join(f.root, file), "utf8") + "\n### Storybook verification\n\n#### `missing`\n\nScope: cli\nStorybook: Use CLI.\nProduction: Execute.\nSources: Inspect.\n");
+  assert.throws(() => featureIndex(f.root), /unknown or duplicate verification capability/);
 });

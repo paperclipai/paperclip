@@ -35,7 +35,15 @@ function Journey() {
 const meta = {
   id: "workspace-branch-recovery-02-task-journey",
   title: "Projects and execution/Recovery/Workspace branch recovery/02 Task journey", component: Journey,
-  parameters: { layout: "fullscreen", initialEntries: ["/PAP/issues/PAP-24"], docs: { description: { component: "Interactive proposal in the production app shell, using the shared task bubbles, composer and repair component. Save/retry and branch lookup are simulated. Use master or choose release/next; a missing branch shows an inline error. No live task is modified." }, story: { inline: false } } },
+  parameters: { layout: "fullscreen", initialEntries: ["/PAP/issues/PAP-24"], docs: { description: { component: "Interactive proposal in the production app shell, using the shared task bubbles, composer and repair component. Save/retry and branch lookup are simulated. Use master or choose release/next; a missing branch shows an inline error. No live task is modified." }, story: { inline: false } },
+    paperclip: {
+      "capabilities": [
+        "recovery/workspace"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 } satisfies Meta<typeof Journey>;
 export default meta;
 type Story = StoryObj<typeof meta>;

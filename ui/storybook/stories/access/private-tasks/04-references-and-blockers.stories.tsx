@@ -113,7 +113,17 @@ const meta = {
   id: "private-tasks-04-references-and-blockers",
   title: "Getting started and access/Login, invitations, and access/Private tasks/04 References and blockers",
   decorators: [privacyDecorator],
-  parameters: { ...privacyParameters, docs: { description: { component: "Task references, parent navigation and blockers redact unreadable task content. Inspect all existing reference variants and mobile." } } },
+  parameters: { ...privacyParameters, docs: { description: { component: "Task references, parent navigation and blockers redact unreadable task content. Inspect all existing reference variants and mobile." } },
+    paperclip: {
+      "capabilities": [
+        "access/resources",
+        "tasks/properties"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+    },
+  },
   render: () => <References />,
 } satisfies Meta;
 export default meta;

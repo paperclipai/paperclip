@@ -46,6 +46,14 @@ const meta = {
   parameters: {
     layout: "fullscreen",
     viewport: { defaultViewport: "mobile1" },
+    paperclip: {
+      "capabilities": [
+        "tasks/create"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+    },
   },
 } satisfies Meta;
 

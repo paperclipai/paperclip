@@ -39,6 +39,15 @@ const meta = {
   parameters: {
     layout: "fullscreen",
     docs: { description: { component: "Production Sources page with local fixture data. Try importing a repository, searching and selecting skills, saving the selection, and refreshing. GitHub OAuth and external destinations require the running app." } },
+    paperclip: {
+      "capabilities": [
+        "skills/versions",
+        "skills/discovery"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "Production Sources page with fixture APIs. Disconnect and legacy removal stories show a required keep-or-delete choice; the real copy, delete, and reimport flows were also tested locally. Other routes remain unreviewed."
+    },
   },
 } satisfies Meta<typeof SourcesStory>;
 export default meta;

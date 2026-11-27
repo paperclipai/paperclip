@@ -8,7 +8,16 @@ const meta = {
   component: SkillImportProgress,
   args: { repository: 'acme/team-skills' },
   decorators: [Story => <div className="mx-auto max-w-2xl p-6"><Story /></div>],
-  parameters: { docs: { description: { component: 'Fixed scan checkpoints for visual review. Counters here are fixture data; the production dialog receives real GitHub scan events. The full-app journey includes timed streaming and cancellation.' } } },
+  parameters: { docs: { description: { component: 'Fixed scan checkpoints for visual review. Counters here are fixture data; the production dialog receives real GitHub scan events. The full-app journey includes timed streaming and cancellation.' } },
+    paperclip: {
+      "capabilities": [
+        "skills/versions",
+        "skills/discovery"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 } satisfies Meta<typeof SkillImportProgress>;
 export default meta;
 type Story = StoryObj<typeof meta>;

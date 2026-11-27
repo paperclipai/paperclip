@@ -63,6 +63,7 @@ function resolveFixtureCodexCommand(home: string): string {
 describe.skipIf(process.platform === "win32")("local browser subscription login", () => {
   it.each(["native", "arm32", "musl", "glibc-2.38", "glibc-3.0", "unknown"])("uses the selected Codex command with its credential home and ambient HOME/cwd (%s)", async platform => {
     const legacy = platform === "arm32";
+    if (platform === "native") targetPlatform("linux", "x64");
     if (platform === "arm32") targetPlatform("linux", "arm");
     if (platform === "musl") targetPlatform("linux", "arm64", false);
     if (platform === "glibc-2.38") targetPlatform("linux", "arm64", true, "2.38");
@@ -163,6 +164,7 @@ describe.skipIf(process.platform === "win32")("local browser subscription login"
   });
 
   it("reports a missing terminal prerequisite without exposing spawn details", async () => {
+    targetPlatform("linux", "x64");
     const home = await fakeCli("codex", "exit 0");
     process.env.PATH = path.join(root!, "no-python");
     const login = startLocalBrowserLogin("openai", home);
@@ -208,6 +210,27 @@ describe.skipIf(process.platform === "win32")("local browser subscription login"
     const credential = JSON.parse(await readFile(path.join(home, ".credentials.json"), "utf8"));
     expect(credential.claudeAiOauth.accessToken).toMatch(/^sk-ant-oat01-/);
     expect((await stat(path.join(home, ".credentials.json"))).mode & 0o777).toBe(0o600);
+  });
+
+  it("reports a rejected Claude code while the CLI waits for a terminal retry", async () => {
+    const url = "https://claude.com/cai/oauth/authorize?client_id=cid&code=abcdefgh&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&response_type=code&scope=user&state=0123456789abcdef";
+    const home = await fakeCli("claude", [
+      'printf "Welcome to Claude Code\\nOpening browser to sign in…\\nBrowser didn\x27t open? Use the url below to sign in (c to copy)\\n"',
+      `printf '%s\\n' '${url}'`,
+      'printf "Paste code here if prompted >\\n"',
+      'read -r entered',
+      'printf "OAuth error: Invalid code. Press Enter to retry.\\n"',
+      'exec sleep 60',
+    ].join("\n"));
+    const login = startLocalBrowserLogin("anthropic", home);
+    try {
+      await vi.waitFor(() => expect(login.authorizationUrl).toBe(url), { timeout: 5000 });
+      login.submitCode?.("fixture-code");
+      await vi.waitFor(() => expect(login.outcome).toBe("failure"), { timeout: 5000 });
+      expect(login.error).toContain("Claude rejected the authorization code");
+      expect(login.error).not.toContain("fixture-code");
+      await expect(readFile(path.join(home, ".credentials.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { login.abort(); }
   });
 
   it("terminates the local provider process when sign-in is cancelled", async () => {

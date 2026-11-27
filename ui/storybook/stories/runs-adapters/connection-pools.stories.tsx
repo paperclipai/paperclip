@@ -18,19 +18,19 @@ const pool: AiConnectionPool = {
   id: poolId, companyId, pluginKey: "paperclip-cloud.plugin-connection-pool", revision: 3,
   name: "Research accounts", enabled: true, mode: "round_robin", thresholdPercent: 90,
   members: [
-    { id: "20000000-0000-4000-8000-000000000001", binding: { mode: "delegated", provider: "openai", method: "subscription", connectionId: "30000000-0000-4000-8000-000000000001", grantId: "40000000-0000-4000-8000-000000000001" }, profile: { provider: "codex", model: "gpt-5.6-sol", effort: "high" } },
+    { id: "20000000-0000-4000-8000-000000000001", binding: { mode: "delegated", provider: "openai", method: "subscription", connectionId: "30000000-0000-4000-8000-000000000001", grantId: "40000000-0000-4000-8000-000000000001" }, profile: { provider: "codex", model: "gpt-6.1-sol", effort: "high" } },
     { id: "20000000-0000-4000-8000-000000000002", binding: { mode: "delegated", provider: "anthropic", method: "subscription", connectionId: "30000000-0000-4000-8000-000000000002", grantId: "40000000-0000-4000-8000-000000000002" }, profile: { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5" } },
   ],
 };
 const accounts: AiConnectionList = { currentUserId: "user-board", canManageConnections: true, pools: [pool], connections: pool.members.map((m, index) => ({
   id: m.binding.connectionId!, grantId: m.binding.grantId!, companyId, provider: m.binding.provider, method: m.binding.method!, name: index === 0 ? "My OpenAI subscription" : "My Claude subscription", ownership: "personal", ownerUserId: "user-board", isDefault: true, status: "connected",
 })) };
-const models = [{ id: "gpt-5.6-sol", label: "GPT-5.6 Sol · Codex" }, { id: "claude-sonnet-5", label: "Claude Sonnet 5 · Claude ACP" }];
-const agent: Agent = { ...storybookAgents.find(a => a.id === agentId)!, adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-5.6-sol" }, runtimeConfig: { aiConnection: { mode: "router", connectionId: poolId } } };
+const models = [{ id: "gpt-6.1-sol", label: "GPT-6.1 Sol · Codex" }, { id: "claude-sonnet-5", label: "Claude Sonnet 5 · Claude ACP" }];
+const agent: Agent = { ...storybookAgents.find(a => a.id === agentId)!, adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-6.1-sol" }, runtimeConfig: { aiConnection: { mode: "router", connectionId: poolId } } };
 type Scenario = "overview" | "selector" | "legacy" | "adoption" | "unavailable" | "read-only" | "models" | "effort" | "mobile" | "claude-model" | "quota" | "checking" | "run-codex" | "run-claude" | "fallback" | "retry";
 
 function PoolComposer({ scenario }: { scenario: Scenario }) {
-  const [settings, setSettings] = useState<ComposerRunSettings>({ model: scenario === "claude-model" ? "claude-sonnet-5" : "gpt-5.6-sol", effort: null, fast: false });
+  const [settings, setSettings] = useState<ComposerRunSettings>({ model: scenario === "claude-model" ? "claude-sonnet-5" : "gpt-6.1-sol", effort: null, fast: false });
   return <div className="space-y-3 rounded-xl border bg-card p-4">
     <p className="text-sm">Choose settings for the next turn. The task keeps its account and harness.</p>
     <ComposerRunSettingsPicker companyId={companyId} assigneeValue={`agent:${agentId}`} currentAssigneeValue={`agent:${agentId}`}
@@ -75,7 +75,15 @@ function PoolSurfaces({ scenario = "overview" }: { scenario?: Scenario }) {
   </main></QueryClientProvider>;
 }
 const meta = { id: "ai-connections-connection-pools",
-  title: "Agents and reusable capabilities/Runs, harnesses, and model accounts/AI Connections/Connection pools", component: PoolSurfaces, parameters: { layout: "fullscreen", docs: { description: { component: "All user-facing Core additions for the private connection-pool plugin. These stories mount the production selector, composer, quota banners, and run details/retry metadata. Routing requires manual operator configuration; there is no settings toggle. Accounts are fixtures; no live provider calls or instance mutations occur." } } }, render: args => <PoolSurfaces key={args.scenario} {...args} /> } satisfies Meta<typeof PoolSurfaces>;
+  title: "Agents and reusable capabilities/Runs, harnesses, and model accounts/AI Connections/Connection pools", component: PoolSurfaces, parameters: { layout: "fullscreen", docs: { description: { component: "All user-facing Core additions for the private connection-pool plugin. These stories mount the production selector, composer, quota banners, and run details/retry metadata. Routing requires manual operator configuration; there is no settings toggle. Accounts are fixtures; no live provider calls or instance mutations occur." } },
+    paperclip: {
+      "capabilities": [
+        "runs-adapters/validation"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  }, render: args => <PoolSurfaces key={args.scenario} {...args} /> } satisfies Meta<typeof PoolSurfaces>;
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const AllCoreSurfaces: Story = { args: { scenario: "overview" } };

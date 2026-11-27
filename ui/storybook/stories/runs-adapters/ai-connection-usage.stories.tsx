@@ -7,7 +7,15 @@ const meta = {
   id: "ai-connections-usage-limits",
   title: "Agents and reusable capabilities/Runs, harnesses, and model accounts/AI Connections/Usage limits",
   component: AiConnectionUsageReview,
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "runs-adapters/validation"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 } satisfies Meta<typeof AiConnectionUsageReview>;
 export default meta;
 type Story = StoryObj<typeof meta>;

@@ -39,7 +39,15 @@ type Scenario = { email?: boolean; access?: boolean; ai?: boolean; missingAiAcco
 const meta: Meta = {
   id: "connections-in-task-connections",
   title: "Apps, channels, and extensions/Connection setup/Connections/In-task connections",
-  parameters: { layout: "padded" },
+  parameters: { layout: "padded",
+    paperclip: {
+      "capabilities": [
+        "connection-setup/task-request"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
   afterEach: ({ id }) => { document.body.dataset.inFeedStoryReady = id; },
   beforeEach: ({ parameters }) => {
     delete document.body.dataset.inFeedStoryReady;
@@ -321,6 +329,14 @@ const aiRepair: Story = {
     await userEvent.click(await canvas.findByRole("button", { name: "Fix connection" }));
     await expect(await canvas.findByLabelText("Connection name")).toBeDisabled();
     await expect(within(document.body).queryByRole("dialog")).not.toBeInTheDocument();
+  },
+};
+export const AiWithdrawn: Story = {
+  ...card({ ...aiPending, status: "cancelled", resolvedAt: new Date("2026-10-13T14:09:07Z") }, { ai: true }),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("Connection request withdrawn")).toBeVisible();
+    await expect(canvas.queryByRole("button", { name: "Fix connection" })).not.toBeInTheDocument();
   },
 };
 export const AiInlineRepair = aiRepair;

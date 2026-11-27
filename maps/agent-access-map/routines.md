@@ -2,6 +2,8 @@
 
 Product map: [Routines, schedules, and triggers](../feature-map/routines.md).
 
+Feature ID: `routines`.
+
 Review date: 2026-10-12. Source commit: `58e16dbddfc9c8d0cf60867f9d9847f0feda055b`.
 Native REST transport reconciled in this change; see the
 [shared transport contract](README.md#native-rest-transport).
@@ -12,6 +14,8 @@ qualified. No live agent execution is claimed. Follow the [map contract](../READ
 for format, permission checks, evidence and maintenance.
 
 ## `definition`
+
+Capability ID: `routines/definition`.
 
 Review: `baseline`.
 
@@ -35,10 +39,12 @@ Assert the relevant denied actor, owner, company or mode from Policy. Review the
 remaining operations before qualifying the whole capability.
 
 Gaps: No dedicated production manage_routine binding; generic `call_api` provides
-the permitted REST path. Creation needs a responsible user resolved from the parent
-issue or company default.
+the permitted REST path. Creation resolves responsibility from the authenticated
+agent's on-behalf-of user, then the parent issue or company default.
 
 ## `triggers`
+
+Capability ID: `routines/triggers`.
 
 Review: `baseline`.
 
@@ -65,7 +71,24 @@ Gaps: No dedicated production trigger-management binding; generic `call_api`
 provides the permitted REST path. Credential replies use inline delivery and encrypted
 mutation receipts rather than shared response assets.
 
+Sentry alerts use the ordinary `POST /api/routine-triggers/public/{publicId}/fire`
+endpoint and its trigger authentication. Configure filtering and loop prevention
+in Sentry; see the [Sentry repair tutorial](../../docs/guides/board-operator/sentry-run-failure-repairs.md).
+
+The host-only `GET /api/instance/task-drain?idleSleepSafety=1&scheduledWake=1`
+extension reports the earliest supported future routine deadline under an owned
+idle hold. It requires signed Cloud control authority; company agents and tenant
+admin tokens cannot use it. It does not grant routine management or execution
+authority. See the [hosting protocol](../../doc/idle-sleep-safety.md#scheduled-routine-wake-protocol)
+and [route authorization tests](../../server/src/__tests__/instance-settings-routes.test.ts).
+The signed `scheduledWake=domain-deadlines-v1` catalog can combine this routine
+obligation with other supported domain deadlines. Its generation receipt is
+mandatory even when no future alarm remains. See [domain scope](../../doc/idle-domain-deadlines.md).
+These are local contract checks, not a live provider sleep/wake qualification.
+
 ## `run-now`
+
+Capability ID: `routines/run-now`.
 
 Review: `baseline`.
 
@@ -92,6 +115,8 @@ native authority requires a running bound run. A separate control binding remain
 
 ## `history`
 
+Capability ID: `routines/history`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -117,6 +142,8 @@ ownership for agents.
 
 ## `management`
 
+Capability ID: `routines/management`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -138,3 +165,9 @@ remaining operations before qualifying the whole capability.
 
 Gaps: Pause/archive mutations have a generic native REST path under routine
 ownership rules. Plugin-managed routine rules remain separate.
+
+Execution resolves referenced project skills against agent/responsible-user access,
+then saves immutable version selections in the heartbeat execution context. New runs
+resolve latest installed content; resumed runs retain selections and recheck access.
+An unavailable explicit reference produces an actionable configuration error.
+Live agent execution across an upstream update remains required acceptance evidence.

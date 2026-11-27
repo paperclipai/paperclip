@@ -36,6 +36,16 @@ export const result: FastResponseTestResult = {
   },
 };
 const meta = {
+  parameters: { paperclip: {
+      "capabilities": [
+        "companies/identity",
+        "budgets-costs/cost-reporting",
+        "companies/fast-responses"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "Production settings view with simulated callbacks. Excluded exported fixture helpers and added the onConnectionChange spy required during rendering; full save/API state parity remains unreviewed. Related fast-response examples show configuration/test receipts or invocation history with shipped subjects and simulated data. A receipt is an acknowledgement, not task completion; no paid provider or authorization proof."
+    } },
   id: "fast-responses-01-settings",
   title: "Getting started and access/Companies and portability/Fast responses/01 Settings",
   excludeStories: ["empty", "configured", "result"],

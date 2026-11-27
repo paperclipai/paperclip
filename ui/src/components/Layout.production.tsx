@@ -1,3 +1,7 @@
+import { useDesignSandbox } from "@/context/DesignSandboxContext";
+import { DesignSandboxSidebar } from "./DesignSandboxSidebar";
+import { BoardDialogs } from "./BoardDialogs";
+import { CloudTrialGate } from "./CloudTrialGate";
 import { ChatSetupSidebarProvider } from "@/context/ChatSetupSidebarContext";
 import { PluginAppShellOverlays } from "./PluginAppShellOverlays";
 import {
@@ -21,14 +25,11 @@ import { Sidebar } from "./Sidebar.production";
 import { CompanySettingsSidebar } from "./CompanySettingsSidebar.production";
 import { CompanySettingsNav } from "./access/CompanySettingsNav";
 import { AppsSidebar } from "./AppsSidebar.production";
+import { appsRouteHasRail } from "../pages/apps/apps-rail";
 import { AppDetailSidebar } from "./AppConnectionSidebar.production";
 import { BreadcrumbBar } from "./BreadcrumbBar.production";
 import { PropertiesPanel } from "./PropertiesPanel";
 import { CommandPalette } from "./CommandPalette";
-import { NewIssueDialog } from "./NewIssueDialog";
-import { NewProjectDialog } from "./NewProjectDialog";
-import { NewGoalDialog } from "./NewGoalDialog";
-import { NewAgentDialog } from "./NewAgentDialog";
 import { KeyboardShortcutsCheatsheet } from "./KeyboardShortcutsCheatsheet";
 import { ToastViewport } from "./ToastViewport";
 import { MobileBottomNav } from "./MobileBottomNav";
@@ -46,6 +47,7 @@ import { useSidebar } from "../context/SidebarContext";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
 import { useMobileNavVisibility } from "../hooks/useMobileNavVisibility";
+import { useMobileVisualViewport } from "../hooks/useMobileVisualViewport";
 import { healthApi } from "../api/health";
 import {
   resolveArchivedCompanyBounce,
@@ -91,6 +93,8 @@ function getCompanyPathSegments(
 }
 
 const RESERVED_APP_SUBPATHS = new Set([
+  "plugin",
+  "category",
   "browse",
   "connections",
   "connect",
@@ -102,29 +106,13 @@ const RESERVED_APP_SUBPATHS = new Set([
   "app",
 ]);
 
-function isSkillsStoreRoute(
-  pathname: string,
-  companyPrefix: string | undefined,
-) {
-  const segments = pathname.split("/").filter(Boolean);
-  if (segments[0]?.toLowerCase() === "skills") return true;
-  if (!companyPrefix) return false;
-  return (
-    segments[0]?.toUpperCase() === companyPrefix.toUpperCase() &&
-    segments[1]?.toLowerCase() === "skills"
-  );
-}
-
 export function Layout() {
+  const designSandbox = useDesignSandbox();
   const {
     sidebarOpen,
     setSidebarOpen,
     toggleSidebar,
-    collapsed,
-    peeking,
-    setPeeking,
     isMobile,
-    setForceCollapsed,
   } = useSidebar();
   const { openNewIssue, openOnboarding } = useDialogActions();
   const { togglePanelVisible } = usePanel();
@@ -157,27 +145,19 @@ export function Layout() {
   );
   const isToolsRoute = companyPathSegments[0]?.toLowerCase() === "tools";
   const isAppsRoute = companyPathSegments[0]?.toLowerCase() === "apps";
-  const appDetailConnectionId =
-    isAppsRoute &&
-    companyPathSegments[1] &&
-    !RESERVED_APP_SUBPATHS.has(companyPathSegments[1].toLowerCase())
-      ? companyPathSegments[1]
-      : null;
   const appDetailApplicationId =
     isAppsRoute &&
     companyPathSegments[1]?.toLowerCase() === "app" &&
     companyPathSegments[2]
       ? companyPathSegments[2]
       : null;
-  // The Skills Store renders its own secondary (category) sidebar, so the main
-  // app nav collapses to its rail throughout the Skills Store section (PAP-10879).
-  const isSkillsRoute = isSkillsStoreRoute(location.pathname, companyPrefix);
   const onboardingTriggered = useRef(false);
   const previousPathname = useRef<string | null>(null);
   const mainContentRef = useRef<HTMLElement | null>(null);
   const scrollMemory = useRef(new NavigationScrollMemory());
   const activeScrollKey = useRef<string>(location.key);
   const mobileNavVisible = useMobileNavVisibility(isMobile, location.pathname);
+  const mobileViewportRef = useMobileVisualViewport(true);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const matchedCompany = useMemo(() => {
     if (!companyPrefix) return null;
@@ -217,20 +197,14 @@ export function Layout() {
     }),
     [routeSidebarCompanyId, routeSidebarCompanyPrefix],
   );
-  // Takeover routes (company settings, plugin `routeSidebar`) no longer replace
-  // the app `<Sidebar/>`. Instead the host collapses it to its rail and renders
-  // the contextual sidebar in a second pane (PAP-10695). One resolver drives
-  // both desktop (SecondarySidebar) and mobile (off-canvas drawer).
   const secondarySidebar = isCompanySettingsRoute ? (
     <CompanySettingsSidebar />
-  ) : appDetailConnectionId ? (
-    <AppDetailSidebar kind="connection" connectionId={appDetailConnectionId} />
   ) : appDetailApplicationId ? (
     <AppDetailSidebar
       kind="application"
       applicationId={appDetailApplicationId}
     />
-  ) : isAppsRoute || isToolsRoute ? (
+  ) : appsRouteHasRail(companyPathSegments, true) ? (
     <AppsSidebar />
   ) : routeSidebarSlot ? (
     <PluginSlotMount
@@ -244,7 +218,6 @@ export function Layout() {
   const { data: health } = useQuery({
     queryKey: queryKeys.health,
     queryFn: () => healthApi.get(),
-    retry: false,
     refetchInterval: (query) => {
       const data = query.state.data as
         { devServer?: { enabled?: boolean } } | undefined;
@@ -252,17 +225,6 @@ export function Layout() {
     },
     refetchIntervalInBackground: false,
   });
-
-  // A secondary sidebar always collapses the app sidebar to its rail (still
-  // peek-able) — a hard invariant that overrides the user pin while the route
-  // is active, but does NOT mutate the persisted preference. Clearing the force
-  // on cleanup restores the user's expanded/collapsed choice when navigating
-  // off the takeover route (PAP-10694).
-  const forceRailCollapsed = hasSecondarySidebar || isSkillsRoute;
-  useLayoutEffect(() => {
-    setForceCollapsed(forceRailCollapsed);
-    return () => setForceCollapsed(false);
-  }, [forceRailCollapsed, setForceCollapsed]);
 
   useEffect(() => {
     if (companiesLoading || onboardingTriggered.current) return;
@@ -361,102 +323,6 @@ export function Layout() {
       }),
     );
   }, []);
-
-  // Peek (hover flyout) triggers for the collapsed rail. Opening has a tiny
-  // delay so a pointer merely sweeping across the rail doesn't flash it open;
-  // closing is debounced to avoid flicker on the rail→overlay seam. Keyboard
-  // focus opens immediately so tabbing reaches the full nav. Context gates the
-  // effective `peeking` to desktop + collapsed + hover-capable pointers, so
-  // these handlers are inert otherwise.
-  const peekTimer = useRef<number | null>(null);
-  // Whether the pointer is currently over the peek panel. Used to keep the peek
-  // open across focus changes (e.g. navigation steals focus to <main>) as long as
-  // the user is still hovering — it should only close when they actually mouse off
-  // (PAP-10676).
-  const pointerInsidePanel = useRef(false);
-  // When the user explicitly collapses while the pointer is still over the panel,
-  // suppress re-peeking until the pointer actually leaves — otherwise the lingering
-  // hover immediately re-expands the rail and the collapse "doesn't take" until the
-  // mouse moves away (PAP-10676). Re-armed on the next genuine pointer-leave.
-  const suppressPeekRef = useRef(false);
-  const clearPeekTimer = useCallback(() => {
-    if (peekTimer.current !== null) {
-      window.clearTimeout(peekTimer.current);
-      peekTimer.current = null;
-    }
-  }, []);
-  const openPeek = useCallback(() => {
-    clearPeekTimer();
-    peekTimer.current = window.setTimeout(() => setPeeking(true), 50);
-  }, [clearPeekTimer, setPeeking]);
-  const openPeekImmediate = useCallback(() => {
-    clearPeekTimer();
-    setPeeking(true);
-  }, [clearPeekTimer, setPeeking]);
-  const closePeek = useCallback(() => {
-    clearPeekTimer();
-    peekTimer.current = window.setTimeout(() => setPeeking(false), 120);
-  }, [clearPeekTimer, setPeeking]);
-  // Tracked even while expanded so that, at the moment of collapse, we know
-  // whether the pointer is over the panel and should suppress the re-peek.
-  const handlePanelPointerEnter = useCallback(() => {
-    pointerInsidePanel.current = true;
-    if (collapsed && !suppressPeekRef.current) openPeek();
-  }, [collapsed, openPeek]);
-  const handlePanelPointerLeave = useCallback(() => {
-    pointerInsidePanel.current = false;
-    suppressPeekRef.current = false; // pointer left — re-arm peek for the next hover
-    closePeek();
-  }, [closePeek]);
-  const handlePanelFocus = useCallback(() => {
-    if (suppressPeekRef.current) return;
-    openPeekImmediate();
-  }, [openPeekImmediate]);
-  // Close on focus leaving the panel only when the pointer isn't hovering it.
-  // Clicking a rail/peek nav item moves focus to <main> on navigation; if the
-  // mouse is still over the flyout we keep it open until the pointer leaves.
-  const handlePanelBlur = useCallback(() => {
-    if (pointerInsidePanel.current) return;
-    closePeek();
-  }, [closePeek]);
-
-  // Tidy up any pending peek timer on unmount.
-  useEffect(() => clearPeekTimer, [clearPeekTimer]);
-
-  // An explicit collapse must be atomic: cancel any in-flight/active peek, and if
-  // the pointer is still over the panel suppress re-peeking until it leaves, so the
-  // rail doesn't immediately re-expand under the lingering hover (PAP-10676).
-  const wasCollapsed = useRef(collapsed);
-  useEffect(() => {
-    if (collapsed !== wasCollapsed.current) {
-      if (collapsed) {
-        clearPeekTimer();
-        setPeeking(false);
-        suppressPeekRef.current = pointerInsidePanel.current;
-      } else {
-        suppressPeekRef.current = false;
-      }
-      wasCollapsed.current = collapsed;
-    }
-  }, [collapsed, clearPeekTimer, setPeeking]);
-
-  // Intentionally do NOT close the peek on navigation: clicking a nav item means
-  // the pointer is still over the flyout, so it should stay open until the user
-  // actually mouses off (handled by onPanelMouseLeave) or blurs out / hits Escape
-  // (PAP-10676). Auto-closing here made the sidebar collapse on every page change.
-
-  // Escape closes an open peek without trapping the pointer.
-  useEffect(() => {
-    if (!peeking) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        clearPeekTimer();
-        setPeeking(false);
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [peeking, clearPeekTimer, setPeeking]);
 
   useCompanyPageMemory();
 
@@ -588,8 +454,10 @@ export function Layout() {
   return (
     <ChatSetupSidebarProvider>
       <div
+        ref={mobileViewportRef}
+        data-mobile={isMobile ? "true" : undefined}
         className={cn(
-          "bg-background text-foreground pt-(--sz-safe-top)",
+          "paperclip-app-shell bg-background text-foreground pt-(--sz-safe-top)",
           // overflow-x-clip on mobile keeps a stray wide descendant from making the
           // whole viewport scroll horizontally. clip (not hidden) leaves overflow-y
           // computed as visible, so native body scroll + the sticky breadcrumb keep
@@ -609,7 +477,7 @@ export function Layout() {
         <DevRestartBanner devServer={health?.devServer} />
         <div
           className={cn(
-            "min-h-0 flex-1",
+            "app-main-row min-h-0 flex-1",
             isMobile ? "w-full" : "flex overflow-clip",
           )}
         >
@@ -639,18 +507,15 @@ export function Layout() {
           ) : (
             <SidebarShell
               open={sidebarOpen}
-              collapsed={collapsed}
-              peeking={peeking}
               resizable
-              onPanelMouseEnter={handlePanelPointerEnter}
-              onPanelMouseLeave={handlePanelPointerLeave}
-              onPanelFocusCapture={collapsed ? handlePanelFocus : undefined}
-              onPanelBlurCapture={collapsed ? handlePanelBlur : undefined}
+              storageKey={designSandbox ? "paperclip.design-proposals.sandbox.sidebar-width" : undefined}
             >
-              <div className="flex flex-1 min-h-0">
-                <Sidebar />
-              </div>
-              <SidebarAccountMenu deploymentMode={health?.deploymentMode} />
+              {designSandbox ? <DesignSandboxSidebar /> : <>
+                <div className="flex flex-1 min-h-0">
+                  <Sidebar />
+                </div>
+                <SidebarAccountMenu deploymentMode={health?.deploymentMode} />
+              </>}
             </SidebarShell>
           )}
 
@@ -660,12 +525,13 @@ export function Layout() {
 
           <div
             className={cn(
-              "flex min-w-0 flex-col",
+              "app-content-column flex min-w-0 flex-col",
               isMobile ? "w-full" : "h-full flex-1",
             )}
           >
             <div
               className={cn(
+                "app-breadcrumb",
                 isMobile &&
                   "sticky top-0 z-20 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85",
               )}
@@ -678,7 +544,7 @@ export function Layout() {
                 </div>
               ) : null}
             </div>
-            <div className={cn(isMobile ? "block" : "flex flex-1 min-h-0")}>
+            <div className={cn("app-content-row", isMobile ? "block" : "flex flex-1 min-h-0")}>
               <main
                 id="main-content"
                 ref={mainContentRef}
@@ -734,10 +600,8 @@ export function Layout() {
         </div>
         {isMobile && <MobileBottomNav visible={mobileNavVisible} />}
         <CommandPalette />
-        <NewIssueDialog />
-        <NewProjectDialog />
-        <NewGoalDialog />
-        <NewAgentDialog />
+        <BoardDialogs />
+        <CloudTrialGate />
         <KeyboardShortcutsCheatsheet
           open={shortcutsOpen}
           onOpenChange={setShortcutsOpen}

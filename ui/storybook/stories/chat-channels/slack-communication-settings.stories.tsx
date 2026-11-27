@@ -6,7 +6,16 @@ const meta = {
   id: "connections-slack-communication-in-settings",
   title: "Apps, channels, and extensions/External chat and email/Connections/Slack/Communication in Settings",
   component: SlackAvatarSettingsPreview,
-  parameters: { layout: "fullscreen", docs: { description: { component: "Production communication field in a Settings fixture. Saves use local story state; instructions apply to new tasks. Reply detail and progress are built-in behavior." } } },
+  parameters: { layout: "fullscreen", docs: { description: { component: "Production communication field in a Settings fixture. Saves use local story state; instructions apply to new tasks. Reply detail and progress are built-in behavior." } },
+    paperclip: {
+      "capabilities": [
+        "chat-channels/identity"
+      ],
+      "status": "current",
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 } satisfies Meta<typeof SlackAvatarSettingsPreview>;
 export default meta;
 type Story = StoryObj<typeof meta>;

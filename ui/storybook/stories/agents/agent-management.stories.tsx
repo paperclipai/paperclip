@@ -829,6 +829,16 @@ const meta = {
           "Agent management stories cover detail, configuration, icon, action, live-run, and config primitive states using extended Paperclip fixtures.",
       },
     },
+    paperclip: {
+      "capabilities": [
+        "agents/lifecycle",
+        "agents/instructions",
+        "execution-environments/assignment"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "ForcedKubernetesExecution and ForcedKubernetesMissingEnvironment mount AgentConfigForm with a forced execution target or missing-target warning. Read-only assignment presentation; no saved target or remote execution proof."
+    },
   },
 } satisfies Meta<typeof AgentManagementStories>;
 

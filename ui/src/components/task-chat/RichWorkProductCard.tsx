@@ -279,7 +279,11 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
       <div className="min-w-0 flex-1">
         <strong className={cn("block text-sm font-medium text-foreground", expandable ? detailsOpen ? "break-words" : "line-clamp-2 break-words" : "truncate")}>{workProduct.title}</strong>
         {visibleMeta.length > 0 ? <p className="mt-1 truncate text-xs text-muted-foreground">{visibleMeta.join(" · ")}</p> : null}
-        {statsLabel ? <p className="mt-1 whitespace-nowrap text-xs text-muted-foreground">{statsLabel}</p> : null}
+        {statsLabel || workProduct.type === "pull_request" ? (
+          // Provider refresh can supply these counts after first paint. Keep
+          // the line's geometry while the saved PR card is already readable.
+          <p className="mt-1 min-h-4 whitespace-nowrap text-xs text-muted-foreground" aria-hidden={!statsLabel}>{statsLabel || "\u00a0"}</p>
+        ) : null}
         {!compact && summary && !linklessBranch ? <p className={cn("mt-1 text-xs text-muted-foreground", detailsOpen ? "whitespace-pre-wrap break-words" : "line-clamp-2")}>{summary}</p> : null}
         {expandable && detailsOpen ? (
           <div className="mt-2 flex flex-col gap-1 text-xs text-muted-foreground">

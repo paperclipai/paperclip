@@ -235,6 +235,14 @@ const meta: Meta = {
           "Design review for the Enterpret catalog connector using production components and the real generated definition. Organization auth token is primary; its account-bound QA is required before release. Browser OAuth targets the same official read-only MCP; fresh live OAuth validation remains required. No real sign-in, token, or provider call.",
       },
     },
+    paperclip: {
+      "capabilities": [
+        "connection-setup/credentials",
+        "connection-setup/failure"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
   },
 };
 export default meta;

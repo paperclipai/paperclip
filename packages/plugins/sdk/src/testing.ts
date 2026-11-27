@@ -34,6 +34,10 @@ import type {
   ScopeKey,
   ToolResult,
   ToolRunContext,
+  ToolRunConnection,
+  ConnectorToolRunContext,
+  ConnectorToolListConnection,
+  ConnectorToolDescriptor,
   PluginWorkspace,
   PluginExecutionWorkspaceMetadata,
   AgentSession,
@@ -52,6 +56,8 @@ import type {
   PluginEnvironmentProbeParams,
   PluginEnvironmentProbeResult,
   PluginEnvironmentLease,
+  PluginEnvironmentInspectLeaseParams,
+  PluginEnvironmentLeaseObservation,
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentResumeLeaseParams,
   PluginEnvironmentReleaseLeaseParams,
@@ -73,6 +79,7 @@ import type {
   PluginPerformActionActorContext,
   PluginPerformActionContext,
 } from "./protocol.js";
+import { validateProjectSnapshotRequest } from "./protocol.js";
 
 export interface TestHarnessOptions {
   /** Plugin manifest used to seed capability checks and metadata. */
@@ -110,6 +117,7 @@ export interface TestHarness {
   seed(input: {
     companies?: Company[];
     lifecycleEvents?: ResourceLifecycleEvent[];
+    projectInstanceSecrets?: Array<{ companyId: string; projectId: string; values: Record<string, string> }>;
     projects?: Project[];
     issues?: Issue[];
     issueComments?: IssueComment[];
@@ -138,6 +146,16 @@ export interface TestHarness {
   ): Promise<T>;
   /** Execute a registered tool handler via `ctx.tools.execute(...)`. */
   executeTool<T = ToolResult>(name: string, params: unknown, runCtx?: Partial<ToolRunContext>): Promise<T>;
+  /** Execute a `ctx.connectors.register(...)` handler on a test connection. */
+  executeConnectorTool<T = ToolResult>(
+    appSlug: string,
+    toolName: string,
+    params: unknown,
+    connection?: Partial<ToolRunConnection>,
+    runCtx?: Partial<ToolRunContext>,
+  ): Promise<T>;
+  /** Call a `ctx.connectors.listTools(...)` handler for a test connection. */
+  listConnectorTools(appSlug: string, connection?: Partial<ConnectorToolListConnection>): Promise<ConnectorToolDescriptor[]>;
   /** Read raw in-memory state for assertions. */
   getState(input: ScopeKey): unknown;
   /** Simulate a streaming event arriving for an active session. */
@@ -163,6 +181,7 @@ export interface EnvironmentEventRecord {
     | "resumeLease"
     | "releaseLease"
     | "stopLease"
+    | "inspectLease"
     | "destroyLease"
     | "realizeWorkspace"
     | "execute"
@@ -190,6 +209,7 @@ export interface EnvironmentTestHarnessOptions extends TestHarnessOptions {
     onResumeLease?: (params: PluginEnvironmentResumeLeaseParams) => Promise<PluginEnvironmentLease>;
     onReleaseLease?: (params: PluginEnvironmentReleaseLeaseParams) => Promise<PluginEnvironmentTerminationReceipt | void>;
     onStopLease?: (params: PluginEnvironmentReleaseLeaseParams) => Promise<PluginEnvironmentTerminationReceipt>;
+    onInspectLease?: (params: PluginEnvironmentInspectLeaseParams) => Promise<PluginEnvironmentLeaseObservation>;
     onDestroyLease?: (params: PluginEnvironmentDestroyLeaseParams) => Promise<PluginEnvironmentTerminationReceipt | void>;
     onRealizeWorkspace?: (params: PluginEnvironmentRealizeWorkspaceParams) => Promise<PluginEnvironmentRealizeWorkspaceResult>;
     onExecute?: (params: PluginEnvironmentExecuteParams) => Promise<PluginEnvironmentExecuteResult>;
@@ -217,6 +237,8 @@ export interface EnvironmentTestHarness extends TestHarness {
   releaseLease(params: PluginEnvironmentReleaseLeaseParams): Promise<PluginEnvironmentTerminationReceipt | void>;
   /** Stop and preserve an allocation independently of its release policy. */
   stopLease(params: PluginEnvironmentReleaseLeaseParams): Promise<PluginEnvironmentTerminationReceipt>;
+  /** Observe an allocation without starting or modifying it. */
+  inspectLease(params: PluginEnvironmentInspectLeaseParams): Promise<PluginEnvironmentLeaseObservation | undefined>;
   /** Invoke the environment driver's destroyLease hook. */
   destroyLease(params: PluginEnvironmentDestroyLeaseParams): Promise<PluginEnvironmentTerminationReceipt | void>;
   /** Invoke the environment driver's realizeWorkspace hook. */
@@ -500,6 +522,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const lifecycleEvents = new Map<string, ResourceLifecycleEvent>();
   const lifecycleAcknowledgments = new Set<string>();
   const projects = new Map<string, Project>();
+  const projectInstanceSecrets = new Map<string, Record<string, string>>();
   const routines = new Map<string, Routine>();
   const routineRuns = new Map<string, RoutineRun>();
   const issues = new Map<string, Issue>();
@@ -587,6 +610,8 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
     (params: Record<string, unknown>, context: PluginPerformActionContext) => Promise<unknown>
   >();
   const toolHandlers = new Map<string, (params: unknown, runCtx: ToolRunContext) => Promise<ToolResult>>();
+  const connectorToolHandlers = new Map<string, (params: unknown, runCtx: ConnectorToolRunContext) => Promise<ToolResult>>();
+  const connectorToolListers = new Map<string, (connection: ConnectorToolListConnection) => Promise<ConnectorToolDescriptor[]>>();
 
   function localFolderKey(companyId: string, folderKey: string): string {
     return `${companyId}:${folderKey}`;
@@ -1024,6 +1049,33 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
     },
     projects: {
+      async resolveGitCredential() {
+        requireCapability(manifest, capabilitySet, "projects.git-credentials");
+        throw new Error("Git credentials require a matching host project operation");
+      },
+      async getInstanceSecrets(projectId, companyId) {
+        requireCapability(manifest, capabilitySet, "projects.instance-secrets");
+        requireCapability(manifest, capabilitySet, "events.subscribe");
+        if (!manifest.resourceLifecycle?.includes("project")) throw new Error("Project instance secrets outside plugin scope");
+        const project = projects.get(projectId);
+        if (!isInCompany(project, companyId) || project.archivedAt) throw new Error("Project instance secrets unavailable");
+        return structuredClone(projectInstanceSecrets.get(JSON.stringify([companyId, projectId])) ?? {});
+      },
+      async readSnapshots(projectIds, companyId, entityType) {
+        requireCapability(manifest, capabilitySet, "projects.read");
+        requireCapability(manifest, capabilitySet, "project.workspaces.read");
+        requireCapability(manifest, capabilitySet, "projects.instance-secrets");
+        requireCompanyId(companyId);
+        validateProjectSnapshotRequest(projectIds, entityType);
+        return Promise.all(projectIds.map(async projectId => {
+          const project = await ctx.projects.get(projectId, companyId);
+          if (!project || project.archivedAt) throw new Error("Project snapshot unavailable");
+          const [entity] = await ctx.entities.list({ entityType, scopeKind: "company", scopeId: companyId, externalId: projectId, limit: 1 });
+          const instanceSecrets = await ctx.projects.getInstanceSecrets(projectId, companyId);
+          const workspaces = await ctx.projects.listWorkspaces(projectId, companyId);
+          return { projectId, workspaces, entity: entity ?? null, instanceSecrets };
+        }));
+      },
       async list(input) {
         requireCapability(manifest, capabilitySet, "projects.read");
         const companyId = requireCompanyId(input?.companyId);
@@ -2081,6 +2133,14 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
     },
     agents: {
+      async getRuntimeIdentity() {
+        requireCapability(manifest, capabilitySet, "agents.lifecycle.manage");
+        throw new Error("Agent runtime identity requires a host service fixture");
+      },
+      async getRuntime() {
+        requireCapability(manifest, capabilitySet, "agents.lifecycle.manage");
+        throw new Error("Agent runtime state requires a host service fixture");
+      },
       async list(input) {
         requireCapability(manifest, capabilitySet, "agents.read");
         const companyId = requireCompanyId(input?.companyId);
@@ -2541,6 +2601,16 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         toolHandlers.set(name, fn);
       },
     },
+    connectors: {
+      register(appSlug, toolName, fn) {
+        requireCapability(manifest, capabilitySet, "connectors.provide");
+        connectorToolHandlers.set(`${appSlug}\u0000${toolName}`, fn);
+      },
+      listTools(appSlug, fn) {
+        requireCapability(manifest, capabilitySet, "connectors.provide");
+        connectorToolListers.set(appSlug, fn);
+      },
+    },
     metrics: {
       async write(name, value, tags) {
         requireCapability(manifest, capabilitySet, "metrics.write");
@@ -2576,6 +2646,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       for (const row of input.lifecycleEvents ?? []) lifecycleEvents.set(row.id, row);
       for (const row of input.companies ?? []) companies.set(row.id, row);
       for (const row of input.projects ?? []) projects.set(row.id, row);
+      for (const row of input.projectInstanceSecrets ?? []) projectInstanceSecrets.set(JSON.stringify([row.companyId, row.projectId]), structuredClone(row.values));
       for (const row of input.issues ?? []) {
         issues.set(row.id, row);
         if (row.blockedBy) {
@@ -2677,6 +2748,41 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       };
       return await handler(params, ctxToPass) as T;
     },
+    async executeConnectorTool<T = ToolResult>(
+      appSlug: string,
+      toolName: string,
+      params: unknown,
+      connection: Partial<ToolRunConnection> = {},
+      runCtx: Partial<ToolRunContext> = {},
+    ) {
+      const handler = connectorToolHandlers.get(`${appSlug}\u0000${toolName}`);
+      if (!handler) throw new Error(`No connector tool handler registered for '${appSlug}/${toolName}'`);
+      return await handler(params, {
+        agentId: runCtx.agentId ?? "agent-test",
+        runId: runCtx.runId ?? randomUUID(),
+        companyId: runCtx.companyId ?? "company-test",
+        projectId: runCtx.projectId ?? "project-test",
+        connection: {
+          id: connection.id ?? "connection-test",
+          appSlug,
+          methodKey: connection.methodKey ?? "default",
+          grantId: connection.grantId ?? "grant-test",
+          settings: connection.settings ?? {},
+          ...(connection.credential ? { credential: connection.credential } : {}),
+        },
+      }) as T;
+    },
+    async listConnectorTools(appSlug: string, connection: Partial<ConnectorToolListConnection> = {}) {
+      const lister = connectorToolListers.get(appSlug);
+      if (!lister) throw new Error(`No connector tool list handler registered for '${appSlug}'`);
+      return lister({
+        id: connection.id ?? "connection-test",
+        appSlug,
+        methodKey: connection.methodKey ?? "default",
+        settings: connection.settings ?? {},
+        ...(connection.credential ? { credential: connection.credential } : {}),
+      });
+    },
     getState(input) {
       return state.get(stateMapKey(input));
     },
@@ -2771,6 +2877,9 @@ export function createEnvironmentTestHarness(options: EnvironmentTestHarnessOpti
     async stopLease(params) {
       return callHook("stopLease", driver.onStopLease, params, "onStopLease");
     },
+    async inspectLease(params) {
+      return callHook("inspectLease", driver.onInspectLease, params, "onInspectLease");
+    },
     async destroyLease(params) {
       return callHook("destroyLease", driver.onDestroyLease, params, "onDestroyLease");
     },
@@ -2823,4 +2932,13 @@ export function createEnvironmentTestHarness(options: EnvironmentTestHarnessOpti
   };
 
   return envHarness;
+}
+
+/** Run the same operation/result validation as the worker RPC boundary. */
+export function createWorkspaceProviderHarness(handler: (params: import("./workspace-provider.js").PluginWorkspaceParams) => Promise<import("./workspace-provider.js").PluginWorkspaceResult>) {
+  return { async operation(params: import("./workspace-provider.js").PluginWorkspaceParams) {
+    const { pluginWorkspaceParamsSchema, parseWorkspaceProviderResult } = await import("./workspace-provider.js");
+    pluginWorkspaceParamsSchema.parse(params);
+    return parseWorkspaceProviderResult(params, await handler(params));
+  } };
 }

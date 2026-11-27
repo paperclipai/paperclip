@@ -1,15 +1,22 @@
 import { useEffect, useMemo, useState } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import catalog from "../../../../maps/storybook-map/catalog.json";
+import catalog from "../../generated/catalog.json";
 import featureIndex from "../../generated/feature-index.json";
 
 type Entry = Omit<(typeof catalog.entries)[number], "capabilities" | "home"> & { capabilities: string[]; home?: string };
 const entries: Entry[] = catalog.entries;
 type IndexEntry = { id: string; type: string; importPath: string };
+type Capability = {
+  id: string;
+  label: string;
+  description: string;
+  verification?: { scope: string; storybook: string; production: string; sources: string };
+};
+type Feature = { id: string; title: string; description: string; capabilities: Capability[] };
 const recipeRoot = "https://github.com/paperclipai/paperclip/blob/master/maps/feature-map/";
-const allFeatures = featureIndex.sections.flatMap(section => section.features);
+const allFeatures: Feature[] = featureIndex.sections.flatMap(section => section.features);
 const examples = entries.filter(entry => entry.implementation !== "guide");
 const featureHref = (id: string) => `./?path=/story/feature-map-${id}--overview`;
 
@@ -68,7 +75,9 @@ export function FeatureMapIndex() {
       ].join(" ").toLowerCase().includes(search);
     }),
   })).filter(section => section.features.length), [search]);
-  const foundations = examples.filter(entry => (entry.home === "foundations" || !entry.capabilities.length)
+  const proposals = examples.filter(entry => entry.home === "design-proposals"
+    && ["Design proposals", entry.file, entry.purpose, entry.notes].join(" ").toLowerCase().includes(search));
+  const foundations = examples.filter(entry => entry.home !== "design-proposals" && (entry.home === "foundations" || !entry.capabilities.length)
     && ["Shared foundations", entry.file, entry.purpose, entry.status, entry.implementation, entry.boundary].join(" ").toLowerCase().includes(search));
   return (
     <main className="paperclip-story__inner space-y-6 p-6">
@@ -79,7 +88,15 @@ export function FeatureMapIndex() {
         <a className="text-sm underline underline-offset-4" href={`${recipeRoot}README.md`} target="_blank" rel="noreferrer">Read the feature-map index</a>
         <Input aria-label="Find a feature or capability" placeholder="Find a feature, capability, or example…" value={query} onChange={event => setQuery(event.target.value)} />
       </header>
-      {sections.length === 0 && foundations.length === 0 ? <p>No matching features or examples.</p> : null}
+      {sections.length === 0 && foundations.length === 0 && proposals.length === 0 ? <p>No matching features or examples.</p> : null}
+      {proposals.length ? (
+        <section className="space-y-3">
+          <h2 className="text-lg font-semibold">Design proposals</h2>
+          <p className="text-sm text-muted-foreground">Design work awaiting review and app adoption. These examples do not count as current production coverage.</p>
+          {error ? <p role="alert">Example links could not load. Reload to try again.</p> : null}
+          <ul className="divide-y divide-border">{proposals.map(entry => <SuiteLink key={entry.file} entry={entry} links={links} />)}</ul>
+        </section>
+      ) : null}
       {sections.map(section => (
         <section key={section.title} className="space-y-3">
           <h2 className="text-lg font-semibold">{section.title}</h2>
@@ -123,6 +140,7 @@ export function FeatureOverview({ area }: { area: string }) {
         <h1 className="text-2xl font-semibold">{feature.title}</h1>
         <p className="text-muted-foreground">{feature.description}</p>
         <a className="text-sm underline underline-offset-4" href={`${recipeRoot}${area}.md`} target="_blank" rel="noreferrer">Feature recipe and verification steps</a>
+        <a className="ml-3 text-sm underline underline-offset-4" href={`${recipeRoot}../agent-access-map/${area}.md`} target="_blank" rel="noreferrer">Agent access contract</a>
         <p className="text-sm text-muted-foreground">Capabilities follow the feature recipe in the same order. Related suites may live under another feature. A suite link does not establish that every behavior has an example or passed a test.</p>
         {error ? <p role="alert">Example links could not load. Reload to try again.</p> : null}
       </header>
@@ -139,6 +157,12 @@ export function FeatureOverview({ area }: { area: string }) {
             {suites.length
               ? <ul className="divide-y divide-border">{suites.map(entry => <SuiteLink key={entry.file} entry={entry} links={links} />)}</ul>
               : <p className="text-sm">No cataloged example yet. Use the feature recipe for entry points, verification steps, and known limits.</p>}
+            {capability.verification ? <details className="space-y-3 text-sm">
+              <summary className="cursor-pointer">Verification scope</summary>
+              <p>{capability.verification.storybook}</p>
+              <p><strong>Production verification: </strong>{capability.verification.production}</p>
+              <ReactMarkdown urlTransform={url => defaultUrlTransform(new URL(url, `${recipeRoot}${area}.md`).href)}>{capability.verification.sources}</ReactMarkdown>
+            </details> : null}
           </section>
         );
       })}
