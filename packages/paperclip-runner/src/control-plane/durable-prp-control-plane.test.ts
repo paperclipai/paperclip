@@ -1883,9 +1883,11 @@ it.each([
     for (let attempt = 1; attempt <= 20; attempt += 1) {
       const client: AuthenticatedClient = (await authenticate(core, lease ?? core.issueBootstrapTicket()))!;
       lease = client.leaseToken ?? lease;
+      // Observe the rejected delivery closing this connection before reconnecting.
+      const closed = new Promise<void>(resolveClose => client.socket.once("close", () => resolveClose()));
       sendSecure(client, envelope);
-      if (failCommit) await vi.waitFor(() => expect(commits).toHaveBeenCalledTimes(attempt));
-      await new Promise<void>(resolveTurn => setTimeout(resolveTurn, 20));
+      await closed;
+      if (failCommit) expect(commits).toHaveBeenCalledTimes(attempt);
       clock += stepMs;
       client.socket.destroy();
     }
