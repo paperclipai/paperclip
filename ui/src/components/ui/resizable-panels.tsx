@@ -41,7 +41,7 @@ export function ResizableHandle({ className, orientation = "horizontal", ...prop
   return (
     <Separator
       className={cn(
-        "group relative flex items-center justify-center bg-transparent outline-none",
+        "pane-resize-handle group relative flex items-center justify-center bg-transparent outline-none",
         "focus-visible:ring-1 focus-visible:ring-ring",
         vertical ? "h-2 w-full cursor-row-resize" : "w-2 h-full cursor-col-resize",
         className,

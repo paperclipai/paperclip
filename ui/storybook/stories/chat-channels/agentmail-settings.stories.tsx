@@ -9,7 +9,16 @@ const meta = {
   id: "connections-agentmail-settings",
   title: "Apps, channels, and extensions/External chat and email/Connections/AgentMail settings",
   component: EmailEndpointSettings,
-  parameters: { layout: "padded" },
+  parameters: { layout: "padded",
+    paperclip: {
+      "capabilities": [
+        "chat-channels/lifecycle"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "Task-workspace reconciliation: EmailEndpointSettings remains the mounted inbox subsection. The surrounding ChatEndpointDetail connection-default editor and its save/inheritance behavior are not represented here."
+    },
+  },
   args: { endpointId: ENDPOINT, companyId: COMPANY, assignedAgentName: "Ralph" },
   beforeEach(context) {
     let inbox: EmailEndpointSummary = {

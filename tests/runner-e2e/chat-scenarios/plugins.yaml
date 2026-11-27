@@ -1,0 +1,58 @@
+# yaml-language-server: $schema=./catalog.schema.json
+# Planning scenarios; not registered executions or evidence of a pass.
+schema_version: 1
+feature: plugins
+status: planned
+scenarios:
+  - id: plugins.install-plugin
+    capabilities:
+      - plugins/installation
+    context: >-
+      A vetted synthetic plugin package is available; installation requires
+      instance-administrator authority.
+    query: >-
+      Install this website preview plugin for us.
+    expected_outcome: >-
+      The agent identifies the exact package and supported administrator installation path. The
+      authorized human sees the resulting installed and activation state, including failures.
+      Chat does not run arbitrary package installation as a company agent or equate a package
+      download with a working plugin.
+  - id: plugins.configure-plugin
+    capabilities:
+      - plugins/configuration
+    context: >-
+      The plugin is installed but lacks a required secure configuration value; writes require
+      administrator authority.
+    query: >-
+      Finish configuring the preview plugin.
+    expected_outcome: >-
+      The agent points to the plugin's configuration surface and describes the missing nonsecret
+      setting or secure entry step. Validation failures remain actionable and the previous
+      working configuration is retained where supported. It does not paste credentials into chat
+      or call an unconfigured plugin ready.
+  - id: plugins.use-plugin-tool
+    capabilities:
+      - plugins/contributions
+    context: >-
+      The plugin is active and its preview tool is actually assigned to this run; a synthetic
+      website artifact exists.
+    query: >-
+      Use the preview plugin to show me this website.
+    expected_outcome: >-
+      The agent discovers the admitted tool and invokes it within its task and company scope,
+      then returns the actual preview or explicit failure. The contributed resource view opens
+      for an authorized person. Installed plugin status alone is not taken as proof of runtime
+      tool access.
+  - id: plugins.disable-plugin
+    capabilities:
+      - plugins/lifecycle
+    context: >-
+      The test plugin is active and contributes routes and a managed routine; lifecycle control
+      is instance-admin-only.
+    query: >-
+      Disable the preview plugin for now.
+    expected_outcome: >-
+      The agent directs the operator to the supported disable control. After the authorized
+      action, plugin contributions and scheduled work reflect the disabled state while retained
+      data remains governed by the plugin lifecycle. Chat does not merely hide a link and report
+      the plugin stopped.

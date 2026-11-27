@@ -41,7 +41,15 @@ function TextFilesStory({ initial = "list", width = 640 }: { initial?: "list" | 
   </QueryClientProvider>;
 }
 const meta = { id: "tasks-text-file-tabs",
-  title: "Tasks and conversations/Documents, attachments, and work products/Tasks/Text file tabs", component: TextFilesStory, parameters: { layout: "fullscreen" }, render: (args, context) => <TextFilesStory key={context.id} {...args} /> } satisfies Meta<typeof TextFilesStory>;
+  title: "Tasks and conversations/Documents, attachments, and work products/Tasks/Text file tabs", component: TextFilesStory, parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "documents-artifacts/attachments"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  }, render: (args, context) => <TextFilesStory key={context.id} {...args} /> } satisfies Meta<typeof TextFilesStory>;
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const OpenFromArtifacts: Story = {};

@@ -199,7 +199,15 @@ function Placement() {
 const meta: Meta = {
   id: "issue-workspace-file-browser",
   title: "Projects and execution/Workspaces, services, and files/Issue/Workspace File Browser",
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "workspaces/files-git"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 };
 export default meta;
 

@@ -284,6 +284,9 @@ export function endpointFixture(provider: ProviderCase, seed: Seed) {
       slackSetupMethod: undefined as "managed" | "automatic" | "manual" | "existing" | undefined,
       slackRegistration: undefined as SlackRegistrationState | undefined,
       slackApp: undefined as SlackAppConfiguration | undefined,
+      slackAccount: undefined as Record<string, unknown> | undefined,
+      slackAvatar: undefined as Record<string, unknown> | undefined,
+      github: undefined as Record<string, unknown> | undefined,
       slackOAuthCallbackUri: "https://paperclip.example.test/api/chat-slack/oauth/callback",
       step: "provider_setup",
       authorizationUrl:
@@ -301,7 +304,7 @@ export function endpointFixture(provider: ProviderCase, seed: Seed) {
       messagingEndpoint: `https://paperclip.example.test/api/chat-webhooks/public-${provider.provider}/microsoft-teams`,
       command: provider.provider === "slack" ? "/maya-public" : undefined,
       testStartedAt: null as string | null,
-      webhookVerifiedAt: null,
+      webhookVerifiedAt: null as string | null,
       webhookSecretConfigured: false,
     },
     healthMessage: null,
@@ -349,12 +352,11 @@ export async function installChatControlPlaneMock(
   seed: Seed,
   {
     enableChatConnectors,
-    enableGitHubReviewBots = false,
     resourceCount = 2,
     photonShared = false,
     automaticSlack = false,
     managedSlack = false,
-  }: { enableChatConnectors: boolean; enableGitHubReviewBots?: boolean; resourceCount?: number; photonShared?: boolean; automaticSlack?: boolean; managedSlack?: boolean },
+  }: { enableChatConnectors: boolean; resourceCount?: number; photonShared?: boolean; automaticSlack?: boolean; managedSlack?: boolean },
 ): Promise<ChatMock> {
   const endpoint = endpointFixture(provider, seed);
   if (automaticSlack || managedSlack) endpoint.setup.slackSetupMethod = managedSlack ? "managed" : "automatic";
@@ -559,7 +561,6 @@ export async function installChatControlPlaneMock(
     ) {
       await fulfill(route, {
         enableChatConnectors,
-        enableGitHubReviewBots,
         enableIsolatedWorkspaces: false,
       });
       return;

@@ -10,6 +10,14 @@ const meta = {
     layout: "fullscreen",
     initialEntries: ["/PAP/agents"],
     docs: { description: { component: "Live invite flow using shared UI in the production app shell. Start at Invite an external agent, choose Dot, then copy the prompt. Storybook simulates each connection check after copying; no plugin, invitation, subscription, or cloud job is created. Hermes and Other use the existing external-agent prompt verbatim. The live self-hosted setup renews expired prompts and sends the event test automatically. Refresh the story to replay." } },
+    paperclip: {
+      "capabilities": [
+        "agents/hire",
+        "access/invitations"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
   },
   render: args => <ExternalAgentInvitePreview key={JSON.stringify(args)} {...args} />,
 } satisfies Meta<typeof ExternalAgentInvitePreview>;

@@ -51,5 +51,16 @@ function ReviewGuide() {
   </main>;
 }
 export default { id: "primary-agent-00-review-guide",
-  title: "Agents and reusable capabilities/Hiring, configuration, and organization/Primary Agent/00 Review guide", parameters: { layout: "fullscreen" }, render: () => <ReviewGuide /> } satisfies Meta;
+  title: "Agents and reusable capabilities/Hiring, configuration, and organization/Primary Agent/00 Review guide", parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "agents/primary-agent",
+        "tasks/create",
+        "agent-chat/discovery"
+      ],
+      "implementation": "guide",
+      "boundary": "static",
+      "notes": "Review guide retained; explanatory content does not establish runtime or production coverage. Primary choice, replacement confirmation, unavailable states and task/chat fallback presentation use local presentation-provider callbacks. Production preference persistence and default-resolution precedence remain unverified by this suite. The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+    },
+  }, render: () => <ReviewGuide /> } satisfies Meta;
 export const StartHere: StoryObj = {};

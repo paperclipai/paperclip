@@ -1,9 +1,13 @@
+import { companyProjectsQuery } from "@/lib/company-projects-query";
+import { describeError } from "../api/errors";
+import { useWarmTaskDetailCode } from "@/hooks/useWarmTaskDetailCode";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { deriveOriginatingActor, INBOX_MINE_ISSUE_STATUS_FILTER, isHeartbeatRunVisibleInMine } from "@paperclipai/shared";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
 import { approvalsApi } from "../api/approvals";
+import { useQueryView } from "../components/QueryView";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
 import { ApiError } from "../api/client";
@@ -13,7 +17,6 @@ import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
-import { projectsApi } from "../api/projects";
 import {
   BLOCKED_GROUP_OPTIONS,
   BLOCKED_SORT_OPTIONS,
@@ -27,12 +30,13 @@ import { useSidebar } from "../context/SidebarContext";
 import { queryKeys } from "../lib/queryKeys";
 import { useDialogActions } from "../context/DialogContext";
 import { useIssueExternalObjectSummaries } from "../hooks/useIssueExternalObjects";
+import { useIssueUpdatedFilterNow } from "../hooks/useIssueUpdatedFilterNow";
 import {
   applyIssueFilters,
   countActiveIssueFilters,
   type IssueFilterState,
 } from "../lib/issue-filters";
-import { collectLiveIssueIds, collectSubtreeLiveCounts } from "../lib/liveIssueIds";
+import { collectLiveIssueIds, collectSubtreeLiveCounts, issueWaitingOf } from "../lib/liveIssueIds";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { buildCompanyUserLabelMap, buildCompanyUserProfileMap } from "../lib/company-members";
 import {
@@ -52,7 +56,7 @@ import {
 } from "../lib/keyboardShortcuts";
 import {
   resolveInboxIssueBlockerAttention,
-  resolveIssueLiveDescendantCount,
+  resolveIssueRunningDescendantCount,
 } from "../lib/inbox-live-descendants";
 import {
   beginLocalInboxArchive,
@@ -181,6 +185,7 @@ import {
   reconcileInboxOrderPin,
   type InboxOrderPin,
 } from "../lib/inboxOrderPin";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 const INBOX_HEARTBEAT_RUN_LIMIT = 200;
 const INBOX_ISSUE_LIST_LIMIT = 500;
@@ -702,7 +707,6 @@ export function Inbox() {
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
-    retry: false,
   });
   const experimentalSettingsLoaded = experimentalSettings !== undefined;
   const [searchQuery, setSearchQuery] = useState("");
@@ -751,8 +755,7 @@ export function Inbox() {
   });
 
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId!, { includeArchived: true }),
-    queryFn: () => projectsApi.list(selectedCompanyId!, { includeArchived: true }),
+    ...companyProjectsQuery(selectedCompanyId!, { includeArchived: true }),
     enabled: !!selectedCompanyId,
   });
   const { data: labels } = useQuery({
@@ -790,20 +793,18 @@ export function Inbox() {
     }
   }, [selectedCompanyId]);
 
-  const {
-    data: approvals,
-    isLoading: isApprovalsLoading,
-    error: approvalsError,
-  } = useQuery({
+  const approvalsQuery = useQuery({
     queryKey: queryKeys.approvals.list(selectedCompanyId!),
     queryFn: () => approvalsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
-
   const {
-    data: joinRequests = [],
-    isLoading: isJoinRequestsLoading,
-  } = useQuery({
+    data: approvals,
+    isLoading: isApprovalsLoading,
+  } = approvalsQuery;
+  const approvalsView = useQueryView(approvalsQuery);
+
+  const joinRequestsQuery = useQuery({
     queryKey: queryKeys.access.joinRequests(selectedCompanyId!),
     queryFn: async () => {
       try {
@@ -816,8 +817,12 @@ export function Inbox() {
       }
     },
     enabled: !!selectedCompanyId,
-    retry: false,
   });
+  const {
+    data: joinRequests = [],
+    isLoading: isJoinRequestsLoading,
+  } = joinRequestsQuery;
+  const joinRequestsView = useQueryView(joinRequestsQuery);
 
   const dashboardQueryKey = queryKeys.dashboard(selectedCompanyId!);
   const sharedDashboard = useSharedPollingQuery({
@@ -826,11 +831,13 @@ export function Inbox() {
     queryKey: dashboardQueryKey,
     enabled: !!selectedCompanyId,
   });
-  const { data: dashboard, isLoading: isDashboardLoading, dataUpdatedAt: dashboardUpdatedAt } = useQuery({
+  const dashboardQuery = useQuery({
     queryKey: dashboardQueryKey,
     queryFn: () => dashboardApi.summary(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const { data: dashboard, isLoading: isDashboardLoading, dataUpdatedAt: dashboardUpdatedAt } = dashboardQuery;
+  const dashboardView = useQueryView(dashboardQuery);
   usePublishSharedQueryData(sharedDashboard, dashboard, dashboardUpdatedAt);
 
   const inboxIssuesQueryKey = [...queryKeys.issues.list(selectedCompanyId!), "compact", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const;
@@ -840,7 +847,7 @@ export function Inbox() {
     queryKey: inboxIssuesQueryKey,
     enabled: !!selectedCompanyId,
   });
-  const { data: issues, isLoading: isIssuesLoading, dataUpdatedAt: issuesUpdatedAt } = useQuery({
+  const inboxIssuesQuery = useQuery({
     queryKey: inboxIssuesQueryKey,
     queryFn: () =>
       issuesApi.listCompact(selectedCompanyId!, {
@@ -852,12 +859,10 @@ export function Inbox() {
     refetchOnWindowFocus: false,
     staleTime: INBOX_HOT_PATH_STALE_MS,
   });
+  const { data: issues, isLoading: isIssuesLoading, dataUpdatedAt: issuesUpdatedAt } = inboxIssuesQuery;
+  const inboxIssuesView = useQueryView(inboxIssuesQuery);
   usePublishSharedQueryData(sharedInboxIssues, issues, issuesUpdatedAt);
-  const {
-    data: mineIssuesRaw = [],
-    isLoading: isMineIssuesLoading,
-    dataUpdatedAt: mineIssuesUpdatedAt,
-  } = useQuery({
+  const mineIssuesQuery = useQuery({
     queryKey: [...queryKeys.issues.listMineByMe(selectedCompanyId!), "compact", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const,
     queryFn: () =>
       issuesApi.listCompact(selectedCompanyId!, {
@@ -872,6 +877,12 @@ export function Inbox() {
     refetchOnWindowFocus: false,
     staleTime: INBOX_HOT_PATH_STALE_MS,
   });
+  const {
+    data: mineIssuesRaw = [],
+    isLoading: isMineIssuesLoading,
+    dataUpdatedAt: mineIssuesUpdatedAt,
+  } = mineIssuesQuery;
+  const mineIssuesView = useQueryView(mineIssuesQuery);
   const mineIssuesQueryKey = [...queryKeys.issues.listMineByMe(selectedCompanyId!), "compact", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const;
   const sharedMineIssues = useSharedPollingQuery<Issue[]>({
     companyId: selectedCompanyId,
@@ -880,11 +891,7 @@ export function Inbox() {
     enabled: !!selectedCompanyId,
   });
   usePublishSharedQueryData(sharedMineIssues, mineIssuesRaw, mineIssuesUpdatedAt);
-  const {
-    data: touchedIssuesRaw = [],
-    isLoading: isTouchedIssuesLoading,
-    dataUpdatedAt: touchedIssuesUpdatedAt,
-  } = useQuery({
+  const touchedIssuesQuery = useQuery({
     queryKey: [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "compact", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const,
     queryFn: () =>
       issuesApi.listCompact(selectedCompanyId!, {
@@ -898,6 +905,12 @@ export function Inbox() {
     refetchOnWindowFocus: false,
     staleTime: INBOX_HOT_PATH_STALE_MS,
   });
+  const {
+    data: touchedIssuesRaw = [],
+    isLoading: isTouchedIssuesLoading,
+    dataUpdatedAt: touchedIssuesUpdatedAt,
+  } = touchedIssuesQuery;
+  const touchedIssuesView = useQueryView(touchedIssuesQuery);
   const touchedIssuesQueryKey = [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "compact", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const;
   const sharedTouchedIssues = useSharedPollingQuery<Issue[]>({
     companyId: selectedCompanyId,
@@ -907,13 +920,15 @@ export function Inbox() {
   });
   usePublishSharedQueryData(sharedTouchedIssues, touchedIssuesRaw, touchedIssuesUpdatedAt);
 
-  const { data: heartbeatRuns, isLoading: isRunsLoading } = useQuery({
+  const heartbeatRunsQuery = useQuery({
     queryKey: [...queryKeys.heartbeats(selectedCompanyId!), "limit", INBOX_HEARTBEAT_RUN_LIMIT],
     queryFn: () => heartbeatsApi.list(selectedCompanyId!, undefined, INBOX_HEARTBEAT_RUN_LIMIT, { summary: true }),
     enabled: !!selectedCompanyId,
     refetchOnWindowFocus: false,
     staleTime: INBOX_HOT_PATH_STALE_MS,
   });
+  const { data: heartbeatRuns, isLoading: isRunsLoading } = heartbeatRunsQuery;
+  const heartbeatRunsView = useQueryView(heartbeatRunsQuery);
   const liveRunsQueryKey = queryKeys.liveRuns(selectedCompanyId!);
   const sharedLiveRuns = useSharedPollingQuery({
     companyId: selectedCompanyId,
@@ -974,17 +989,19 @@ export function Inbox() {
       ...queryKeys.issues.search(selectedCompanyId!, normalizedSearchQuery, undefined, 25),
       "compact",
       "inbox-supplement",
+      issueFilters.showAgentCreatedTasks,
       "live-descendant-summary",
     ],
     queryFn: () =>
       issuesApi.listCompact(selectedCompanyId!, {
         q: normalizedSearchQuery,
         limit: 25,
+        includeAgentCreatedTasks: issueFilters.showAgentCreatedTasks,
+        includeParticipatedTasks: true,
         includeRoutineExecutions: true,
         includeLiveDescendantSummary: true,
       }).then((rows) => rows as Issue[]),
     enabled: shouldUseIssueSearchSupplement,
-    placeholderData: (previousData) => previousData,
   });
   const liveIssueIds = useMemo(
     () => collectLiveIssueIds(liveRuns, [
@@ -1014,13 +1031,15 @@ export function Inbox() {
     externalObjectSummaryByIssueId,
     externalObjectSummariesReady: externalObjectSummariesReady && !externalObjectSummariesLoading,
   }), [externalObjectSummariesLoading, externalObjectSummariesReady, externalObjectSummaryByIssueId]);
+  const mineUpdatedNow = useIssueUpdatedFilterNow(mineIssues, issueFilters.updatedWithin);
+  const touchedUpdatedNow = useIssueUpdatedFilterNow(touchedIssues, issueFilters.updatedWithin);
   const visibleMineIssues = useMemo(
-    () => applyIssueFilters(mineIssues, issueFilters, currentUserId, true, liveIssueIds, issueFilterContext),
-    [mineIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext],
+    () => applyIssueFilters(mineIssues, issueFilters, currentUserId, false, liveIssueIds, issueFilterContext, mineUpdatedNow),
+    [mineIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext, mineUpdatedNow],
   );
   const visibleTouchedIssues = useMemo(
-    () => applyIssueFilters(touchedIssues, issueFilters, currentUserId, true, liveIssueIds, issueFilterContext),
-    [touchedIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext],
+    () => applyIssueFilters(touchedIssues, issueFilters, currentUserId, false, liveIssueIds, issueFilterContext, touchedUpdatedNow),
+    [touchedIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext, touchedUpdatedNow],
   );
   const unreadTouchedIssues = useMemo(
     () => visibleTouchedIssues.filter((issue) => issue.isUnreadForMe),
@@ -1321,7 +1340,7 @@ export function Inbox() {
         remoteIssues: remoteIssueSearchResults,
         issueFilters,
         currentUserId,
-        enableRoutineVisibilityFilter: true,
+        enableAgentCreatedVisibilityFilter: false,
         liveIssueIds,
         issueFilterContext,
       }),
@@ -1522,7 +1541,7 @@ export function Inbox() {
   flatNavItemsRef.current = flatNavItems;
   // Roll live descendant runs up to their ancestors across the loaded inbox tree
   // so a parent that is not itself live can still surface "n live below".
-  const subtreeLiveCounts = useMemo(() => {
+  const subtreeCounts = useMemo(() => {
     const nodes: { id: string; parentId: string | null }[] = [];
     const seen = new Set<string>();
     const pushIssue = (issue: Issue) => {
@@ -1538,8 +1557,12 @@ export function Inbox() {
         for (const child of children) pushIssue(child);
       }
     }
-    return collectSubtreeLiveCounts(nodes, liveIssueIds);
+    return {
+      live: collectSubtreeLiveCounts(nodes, liveIssueIds),
+      running: collectSubtreeLiveCounts(nodes, liveIssueIds, { startedOnly: true }),
+    };
   }, [groupedSections, liveIssueIds]);
+  const subtreeLiveCounts = subtreeCounts.live;
   const topFlatIndex = useMemo(() => {
     const map = new Map<string, number>();
     flatNavItems.forEach((entry, index) => {
@@ -1622,7 +1645,7 @@ export function Inbox() {
       navigate(`/approvals/${id}?resolved=approved`);
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to approve");
+      setActionError(describeError(err, { action: "approve this request" }).body);
     },
   });
 
@@ -1633,7 +1656,7 @@ export function Inbox() {
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to reject");
+      setActionError(describeError(err, { action: "reject this request" }).body);
     },
   });
 
@@ -1648,7 +1671,7 @@ export function Inbox() {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to approve join request");
+      setActionError(describeError(err, { action: "approve the join request" }).body);
     },
   });
 
@@ -1661,7 +1684,7 @@ export function Inbox() {
       queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId!) });
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to reject join request");
+      setActionError(describeError(err, { action: "reject the join request" }).body);
     },
   });
 
@@ -1689,7 +1712,7 @@ export function Inbox() {
     onError: (error) => {
       pushToast({
         title: "Run retry failed",
-        body: error instanceof Error ? error.message : "Unable to retry run",
+        body: describeError(error, { action: "retry the run" }).body,
         tone: "error",
       });
     },
@@ -1762,7 +1785,7 @@ export function Inbox() {
       return { companyId: selectedCompanyId, previousData };
     },
     onError: (err, id, context) => {
-      setActionError(err instanceof Error ? err.message : "Failed to archive task");
+      setActionError(describeError(err, { action: "archive the task" }).body);
       if (context?.companyId) clearLocalInboxArchive(context.companyId, id);
       setArchivingIssueIds((prev) => {
         const next = new Set(prev);
@@ -1803,7 +1826,7 @@ export function Inbox() {
       return { companyId: selectedCompanyId };
     },
     onError: (err, id, context) => {
-      setActionError(err instanceof Error ? err.message : "Failed to undo inbox archive");
+      setActionError(describeError(err, { action: "undo the inbox archive" }).body);
       if (context?.companyId) {
         beginLocalInboxArchive(context.companyId, id);
         boundLocalInboxArchive(context.companyId, id);
@@ -2171,7 +2194,7 @@ export function Inbox() {
             const pathId = issue.identifier ?? issue.id;
             const detailState = armIssueDetailInboxQuickArchive(withIssueDetailHeaderSeed(issueLinkState, issue));
             rememberIssueDetailLocationState(pathId, detailState);
-            void prefetchIssueDetailForNavigation(queryClient, pathId, { issue });
+            void prefetchIssueDetailForNavigation(queryClient, pathId, { issue, history: true });
             act.navigate(createIssueDetailPath(pathId), { state: detailState });
           } else if (item) {
             if (item.kind === "issue") {
@@ -2180,7 +2203,7 @@ export function Inbox() {
                 withIssueDetailHeaderSeed(issueLinkState, item.issue),
               );
               rememberIssueDetailLocationState(pathId, detailState);
-              void prefetchIssueDetailForNavigation(queryClient, pathId, { issue: item.issue });
+              void prefetchIssueDetailForNavigation(queryClient, pathId, { issue: item.issue, history: true });
               act.navigate(createIssueDetailPath(pathId), { state: detailState });
             } else if (item.kind === "approval") {
               act.navigate(`/approvals/${item.approval.id}`);
@@ -2206,8 +2229,20 @@ export function Inbox() {
     if (row) row.scrollIntoView({ block: "nearest" });
   }, [selectedIndex]);
 
+  const anySectionReconnecting = [joinRequestsView, approvalsView, dashboardView, inboxIssuesView, mineIssuesView, touchedIssuesView, heartbeatRunsView].some((view) => view.kind === "reconnecting");
+  const allLoaded =
+    !anySectionReconnecting &&
+    !isJoinRequestsLoading &&
+    !isApprovalsLoading &&
+    !isDashboardLoading &&
+    !isIssuesLoading &&
+    !isMineIssuesLoading &&
+    !isTouchedIssuesLoading &&
+    !isRunsLoading;
+  useWarmTaskDetailCode(Boolean(selectedCompanyId) && allLoaded && tab !== "blocked" && totalVisibleWorkItems > 0);
+
   if (!selectedCompanyId) {
-    return <EmptyState icon={InboxIcon} message="Select a company to view inbox." />;
+    return <EmptyState placement="upper" icon={InboxIcon} message="Select a company to view inbox." />;
   }
 
   const hasRunFailures = failedRuns.length > 0;
@@ -2239,15 +2274,6 @@ export function Inbox() {
     showAlertsSection ? "alerts" : null,
     showWorkItemsSection ? "work_items" : null,
   ].filter((key): key is SectionKey => key !== null);
-
-  const allLoaded =
-    !isJoinRequestsLoading &&
-    !isApprovalsLoading &&
-    !isDashboardLoading &&
-    !isIssuesLoading &&
-    !isMineIssuesLoading &&
-    !isTouchedIssuesLoading &&
-    !isRunsLoading;
 
   const showSeparatorBefore = (key: SectionKey) => visibleSections.indexOf(key) > 0;
   const markAllReadIssues = (tab === "mine" ? visibleMineIssues : unreadTouchedIssues)
@@ -2350,7 +2376,7 @@ export function Inbox() {
                 labels={labels?.map((label) => ({ id: label.id, name: label.name, color: label.color }))}
                 currentUserId={currentUserId}
                 enableExternalObjectFilters={externalObjectsEnabled}
-                enableRoutineVisibilityFilter
+                enableAgentCreatedVisibilityFilter
                 buttonVariant="outline"
                 iconOnly
               />
@@ -2448,7 +2474,7 @@ export function Inbox() {
                 labels={labels?.map((label) => ({ id: label.id, name: label.name, color: label.color }))}
                 currentUserId={currentUserId}
                 enableExternalObjectFilters={externalObjectsEnabled}
-                enableRoutineVisibilityFilter
+                enableAgentCreatedVisibilityFilter
                 buttonVariant="outline"
                 iconOnly
               />
@@ -2577,8 +2603,10 @@ export function Inbox() {
         </div>
       )}
 
-      {approvalsError && <p className="text-sm text-destructive">{approvalsError.message}</p>}
-      {actionError && <p className="text-sm text-destructive">{actionError}</p>}
+      {approvalsView.kind === "error" ? (
+        <p role="alert" className="text-sm text-destructive">{describeError(approvalsView.error, { action: "load approvals" }).body}</p>
+      ) : null}
+      {actionError && <p role="alert" className="text-sm text-destructive">{actionError}</p>}
 
       {tab === "blocked" ? (
         <BlockedInboxView
@@ -2606,7 +2634,7 @@ export function Inbox() {
       )}
 
       {tab !== "blocked" && allLoaded && visibleSections.length === 0 && (
-        <EmptyState
+        <EmptyState placement="upper"
           icon={searchQuery.trim() ? Search : InboxIcon}
           message={
             searchQuery.trim()
@@ -2665,7 +2693,7 @@ export function Inbox() {
                     originatingActor?.kind === "user" ? originatingActor.viaAgentId ?? null : null;
                   const isLive = liveIssueIds.has(issue.id);
                   const loadedSubtreeLiveCount = subtreeLiveCounts.get(issue.id) ?? 0;
-                  const liveDescendantCount = resolveIssueLiveDescendantCount(issue, loadedSubtreeLiveCount);
+                  const runningDescendantCount = resolveIssueRunningDescendantCount(issue, subtreeCounts.running.get(issue.id) ?? 0);
                   const blockerAttention = resolveInboxIssueBlockerAttention(issue, {
                     isLive,
                     loadedSubtreeLiveCount,
@@ -2677,7 +2705,7 @@ export function Inbox() {
                     && blockerAttention?.state === "covered"
                   );
                   const rowStatusIcon = (
-                    <StatusIcon status={issue.status} externalConversationState={issue.externalConversationState} blockerAttention={blockerAttention} size="md" />
+                    <StatusIcon {...taskStatusIconProps(issue)} blockerAttention={blockerAttention} size="md" />
                   );
                   return (
                     <IssueRow
@@ -2719,7 +2747,8 @@ export function Inbox() {
                           <InboxIssueMetaLeading
                             issue={issue}
                             isLive={isLive}
-                            subtreeLiveCount={liveDescendantCount}
+                            waiting={issueWaitingOf(liveIssueIds, issue.id)}
+                            subtreeLiveCount={runningDescendantCount}
                             showSubtreeLiveChip={showSubtreeLiveChip}
                             showStatus={showStatus}
                             showIdentifier={visibleIssueColumnSet.has("id") && availableIssueColumnSet.has("id")}
@@ -2747,10 +2776,11 @@ export function Inbox() {
                             <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
                           </button>
                         ) : (
-                          <StatusIcon status={issue.status} externalConversationState={issue.externalConversationState} blockerAttention={blockerAttention} size="md" />
+                          <StatusIcon {...taskStatusIconProps(issue)} blockerAttention={blockerAttention} size="md" />
                         )
                       }
                       unreadState={isUnread ? "visible" : isFading ? "fading" : "hidden"}
+                      showUnreadIndicator={false}
                       onMarkRead={() => markReadMutation.mutate(issue.id)}
                       onArchive={allowArchive ? () => archiveIssueMutation.mutate(issue.id) : undefined}
                       archiveDisabled={isArchiving}

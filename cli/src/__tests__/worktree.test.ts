@@ -539,8 +539,9 @@ describe("worktree helpers", () => {
     expect(minimal.excludedTables).toContain("agent_task_sessions");
     expect(minimal.nullifyColumns.issues).toEqual(["checkout_run_id", "execution_run_id"]);
 
-    expect(full.excludedTables).toEqual(["agent_identity_keys"]);
+    expect(full.excludedTables).toEqual(["agent_identity_keys", "company_workload_identity_keys"]);
     expect(minimal.excludedTables).toContain("agent_identity_keys");
+    expect(minimal.excludedTables).toContain("company_workload_identity_keys");
     expect(full.nullifyColumns).toEqual({});
   });
 
@@ -1823,7 +1824,7 @@ describe("worktree helpers", () => {
       const seededUsers = await targetDb.select().from(authUsers);
       expect(seededUsers.some((row) => row.email === "existing@paperclip.ing")).toBe(true);
       const restoredEvents = await targetDb.$client`
-        SELECT id, action FROM resource_lifecycle_events WHERE resource_id = ${legacyAgentId} ORDER BY id
+        SELECT id, action FROM resource_lifecycle_events WHERE resource_id = ${legacyAgentId} AND resource_type = 'agent' ORDER BY id
       `;
       expect(restoredEvents.map(row => row.action)).toEqual(["pause", "create"]);
       expect(Number(restoredEvents[1].id)).toBeGreaterThan(Number(restoredEvents[0].id));

@@ -507,6 +507,16 @@ const meta = {
           "Projects, goals, and workspaces stories cover project properties, workspace cards/lists, goal hierarchy panels, runtime controls, and worktree branding states.",
       },
     },
+    paperclip: {
+      "capabilities": [
+        "projects/lifecycle",
+        "goals/hierarchy",
+        "workspaces/binding"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "Task-workspace reconciliation reviewed nullable project references and guarded runtime invalidations. Existing summaries remain project-bound and retain their routes; null-project execution workspace rendering and controls remain a coverage gap."
+    },
   },
 } satisfies Meta<typeof ProjectsGoalsWorkspacesStories>;
 

@@ -65,8 +65,8 @@ export interface WorkspaceGitScanInput {
    */
   fairnessKeys?: readonly string[];
   signal?: AbortSignal;
-  /** Successful-result cache duration. Use zero for correctness-sensitive guards. */
   cacheTtlMs?: number;
+  bypassSingleFlight?: boolean;
   /** Per-operation wall-clock deadline. Defaults to the process-wide setting. */
   timeoutMs?: number;
   env?: NodeJS.ProcessEnv;
@@ -364,7 +364,10 @@ export class WorkspaceGitOperationScheduler {
       maxStdoutBytes,
       maxStderrBytes,
     });
-    const cacheTtlMs = input.onStdout ? 0 : clampInteger(input.cacheTtlMs, this.defaultCacheTtlMs, 0, 60_000);
+    const inFlightKey = input.bypassSingleFlight ? `${key}#fresh:${randomUUID()}` : key;
+    const cacheTtlMs = input.onStdout || input.bypassSingleFlight
+      ? 0
+      : clampInteger(input.cacheTtlMs, this.defaultCacheTtlMs, 0, 60_000);
     // A correctness-sensitive caller that explicitly disables caching must not
     // consume a result populated earlier by the file browser.
     const cached = cacheTtlMs > 0 ? this.readCache(key) : null;
@@ -390,7 +393,7 @@ export class WorkspaceGitOperationScheduler {
       };
     }
 
-    const existing = this.inFlight.get(key);
+    const existing = this.inFlight.get(inFlightKey);
     if (existing) {
       existing.joinCount += 1;
       this.totals.singleFlightJoins += 1;
@@ -425,7 +428,7 @@ export class WorkspaceGitOperationScheduler {
       ...(input.fairnessKeys ?? []).filter(Boolean),
     ])).sort();
     const scan: PendingScan = {
-      key,
+      key: inFlightKey,
       operation: input.operation,
       canonicalWorkspacePath,
       workspaceHash,
@@ -443,7 +446,7 @@ export class WorkspaceGitOperationScheduler {
       waiters: new Map(),
       joinCount: 0,
     };
-    this.inFlight.set(key, scan);
+    this.inFlight.set(inFlightKey, scan);
     this.queue.push(scan);
     const promise = this.addWaiter(scan, input.signal, false);
     this.drain();

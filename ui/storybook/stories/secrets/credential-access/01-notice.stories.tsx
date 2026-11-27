@@ -5,7 +5,16 @@ const meta = {
   id: "task-credential-access-01-notice",
   title: "Apps, channels, and extensions/Secrets and proposals/Task credential access/01 Notice",
   component: TaskChatMarker,
-  parameters: { layout: "centered" },
+  parameters: { layout: "centered",
+    paperclip: {
+      "capabilities": [
+        "secrets/runtime-delivery",
+        "recovery/diagnosis"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
   decorators: [Story => <div className="w-full max-w-2xl"><Story /></div>],
   args: {
     item: {

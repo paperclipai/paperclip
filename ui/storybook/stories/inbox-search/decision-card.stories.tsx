@@ -91,6 +91,14 @@ const shared = {
 };
 
 const meta: Meta<typeof DecisionCard> = {
+  parameters: { paperclip: {
+      "capabilities": [
+        "inbox-search/decisions"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+    } },
   id: "decisions-decisioncard",
   title: "Tasks and conversations/Inbox, decisions, and search/Decisions/DecisionCard",
   component: DecisionCard,

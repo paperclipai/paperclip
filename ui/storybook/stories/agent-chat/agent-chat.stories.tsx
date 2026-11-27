@@ -13,6 +13,17 @@ const meta = {
           "Production Layout, AgentChat, IssueDetail, transcript and side-panel components run against in-memory routes. The landing page is a local ChatEntryLanding composition; first-use/default-agent behavior is not production acceptance. Sends append locally. Some unhandled API paths return empty fixture data, so this suite does not verify API contracts or primary-agent preference behavior.",
       },
     },
+    paperclip: {
+      "capabilities": [
+        "agent-chat/discovery",
+        "agent-chat/history",
+        "agent-chat/handoff"
+      ],
+      "status": "mixed",
+      "implementation": "mixed",
+      "boundary": "fixtures",
+      "notes": "Production conversation/task routes with a local ChatEntryLanding. Default-agent behavior and fallback API responses remain outside current-product parity. ProjectCreated, ExistingProject, MultipleRepositories, ProjectWithoutRepository and ProjectCreationFailed show linked handoff results/navigation through shipped chat/task hosts. Tool execution and persistence are simulated."
+    },
   },
   argTypes: {
     scenario: {
@@ -94,3 +105,17 @@ export const ProjectCreationFailed: Story = { name: "15 · Failed project creati
 export const ProjectLight: Story = { name: "16 · Project created · light", globals: { theme: "light" }, args: { scenario: "project-created" } };
 
 export const ExistingProject: Story = { name: "17 · Hand off to an existing project", args: { scenario: "project-reused" } };
+
+export const Coordinator: Story = {
+  name: "18 · Coordinator agent selector",
+  args: { coordinator: true, scenario: "returning" },
+  parameters: {
+    paperclip: {
+      capabilities: ["agent-chat/discovery"],
+      status: "current",
+      implementation: "production",
+      boundary: "fixtures",
+      notes: "Production Layout, AgentChat, IssueDetail header and agent picker with the Coordinator preference enabled. Avatar, name and caret share one dialog trigger. Agent data and conversation navigation use the in-memory API. No provider execution or persistence is verified.",
+    },
+  },
+};

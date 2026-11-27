@@ -775,6 +775,16 @@ const meta = {
           "Budget and finance stories cover incident resolution states, sidebar markers, provider and biller quotas, finance ledgers, and Claude/Codex subscription panels.",
       },
     },
+    paperclip: {
+      "capabilities": [
+        "budgets-costs/cost-reporting",
+        "budgets-costs/budgets",
+        "budgets-costs/incidents"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "FullMatrix renders BudgetIncidentCard in warning, resolved, pending-approval and escalated hard-stop states. Resolution handlers are no-ops; budget relief and resumption remain unverified. The upstream budget UI distinguishes soft warnings from hard stops; hard incidents retain raise-and-resume and keep-paused controls."
+    },
   },
 } satisfies Meta<typeof BudgetFinanceMatrix>;
 

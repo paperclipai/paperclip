@@ -154,6 +154,13 @@ const meta = {
           "Surfaces the IssueScheduledRetryCard and IssueProperties Scheduled retry row in transient/continuation/due-now variants for UX review. The card mounts above IssueMonitorActivityCard and the property row sits sibling-to (and above) Monitor.",
       },
     },
+    paperclip: {
+      "capabilities": [
+        "recovery/bounded-continuation"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
   },
 } satisfies Meta<typeof ScheduledRetrySurfaceStories>;
 

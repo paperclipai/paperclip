@@ -25,6 +25,7 @@ import {
 import { cn } from "../lib/utils";
 import { brandChipBadge } from "../lib/status-colors";
 import { installPayload, installStateFrom, isAgentInstalled, INSTALLED_HINT } from "../lib/tool-installs";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 function isGitHubConnection(connection: ToolConnection): boolean {
   return (connection.config?.sourceTemplateKey ?? connection.transportConfig?.sourceTemplateKey) === "github";
@@ -236,7 +237,7 @@ function InstalledAppsSection({
                     />
                     <span className="min-w-0 flex-1">
                       <span className="flex flex-wrap items-center gap-2">
-                        <span className="truncate text-sm font-medium text-foreground">{connection.name}</span>
+                        <span className={cn("truncate text-sm font-medium text-foreground", ANALYTICS_MASK_CLASS)}>{connection.name}</span>
                         <InstallBadge installed={checked} installedForAll={installedForAll} permitted={permitted} />
                         {rowPending ? <span className="text-xs text-muted-foreground">Saving...</span> : null}
                       </span>
@@ -598,7 +599,7 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
         pendingConnectionId={syncInstall.isPending ? syncInstall.variables?.connection.id ?? null : null}
         saving={syncInstall.isPending}
         unsaved={hasInstallUnsavedChanges}
-        error={syncInstall.isError && hasInstallUnsavedChanges}
+        error={syncInstall.isError && hasInstallUnsavedChanges} // query-error-ok: syncInstall is a save mutation result, not a query read
         onChange={(connectionId, installed) => {
           failedInstallDraftRef.current = null;
           setInstallDraft((current) => ({ ...current, [connectionId]: installed }));
@@ -648,7 +649,7 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
                       <td className="px-3 py-2">
                         <RiskBadge risk={tool.riskLevel} />
                       </td>
-                      <td className="px-3 py-2 text-xs text-muted-foreground">
+                      <td className={cn("px-3 py-2 text-xs text-muted-foreground", ANALYTICS_MASK_CLASS)}>
                         {connectionNameById.get(tool.connectionId) ?? "—"}
                       </td>
                     </tr>
