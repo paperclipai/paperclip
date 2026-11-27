@@ -22,7 +22,7 @@
     "packages/plugins/sdk/src/protocol.duplex-channel.test.ts": "18255eb3d63038dc459240c111cbcb29fcba25cc",
     "packages/plugins/sdk/src/protocol.ts": "063aa418cf0fa7cf5abc89f67ccadc7b4c7e4057",
     "packages/plugins/sdk/src/testing.ts": "5a3994447fd84ce176978fa8bc3548c14c37b189",
-    "packages/plugins/sdk/src/types.ts": "bc3d7fcb61ce1e8b716b336e40283a5ffcc4ba2f",
+    "packages/plugins/sdk/src/types.ts": "c55311425eef3fb806e33bdbfb4d0517da72c31a",
     "packages/plugins/sdk/src/ui/clipboard.ts": "1f42069c97d731e636a6ad5481dad22d20c0ed63",
     "packages/plugins/sdk/src/ui/components.ts": "3f0594408a1bb5ac3a8d00e709f91877dd260359",
     "packages/plugins/sdk/src/ui/hooks.ts": "686d02cf4b35f1cddb79a83a4c4d81fd52f0100e",
