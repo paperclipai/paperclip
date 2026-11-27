@@ -95,14 +95,14 @@ export function CaseDetail() {
   const files = caseData.attachments.filter(attachment => !isImageAttachment(attachment));
   const children = childrenQuery.data ?? [];
 
-  return <div className="mx-auto max-w-5xl space-y-8" data-testid="case-pages">
-    <header className="space-y-3">
+  return <div className="mx-auto min-w-0 max-w-5xl space-y-8" data-testid="case-pages">
+    <header className="min-w-0 space-y-3">
       <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
         <CaseIdentifierKey identifier={caseData.identifier} caseKey={caseData.key} />
         <span>{caseData.caseType}</span><CaseStatus status={caseData.status} />
       </div>
-      <h1 className="text-2xl font-semibold tracking-tight">{caseData.title}</h1>
-      {caseData.summary && <p className={cn("max-w-3xl text-sm leading-relaxed text-muted-foreground", ANALYTICS_MASK_CLASS)}>{caseData.summary}</p>}
+      <h1 className="min-w-0 break-words wrap-anywhere text-2xl font-semibold tracking-tight">{caseData.title}</h1>
+      {caseData.summary && <p className={cn("min-w-0 max-w-3xl break-words text-sm leading-relaxed text-muted-foreground", ANALYTICS_MASK_CLASS)}>{caseData.summary}</p>}
       {caseData.labels.length > 0 && <div className="flex flex-wrap gap-1.5" aria-label="Case labels">{caseData.labels.map(label => <Badge key={label.id} variant="secondary" className="font-normal">{label.name}</Badge>)}</div>}
     </header>
 

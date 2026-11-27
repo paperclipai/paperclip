@@ -1,11 +1,14 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { Routes, Route } from "@/lib/router";
+import { Layout } from "@/components/Layout";
 import { CaseDetail } from "@/pages/CaseDetail";
 import { CaseFieldsPanel, CaseFieldsTable } from "@/components/CaseFieldsPanel";
 import { IssueCasesPanel } from "@/components/IssueCasesPanel";
+import { PluginLauncherProvider } from "@/plugins/launchers";
 import { instanceExperimentalSettingsSchema } from "@paperclipai/shared";
 import { expect, within } from "storybook/test";
 import {
+  caseDetail,
   caseItem,
   installCaseFixtures,
 } from "../../support/capability-gaps/cases";
@@ -128,4 +131,33 @@ export const LinkedFromTask: Story = {
       }),
     ).toHaveAttribute("href", "/PAP/cases/PAP-C42");
   },
+};
+export const CaseDetailMobile: Story = {
+  globals: { viewport: { value: "mobile", isRotated: false } },
+  parameters: {
+    layout: "fullscreen",
+    waitForViewport: true,
+    initialEntries: ["/PAP/cases/PAP-C42"],
+  },
+  beforeEach: () => {
+    const cleanup = prepareFixtureApi([
+      {
+        path: /^\/api\/cases\/(PAP-C42|case-gap)$/,
+        read: () => ({
+          ...caseDetail,
+          title: "Investigate support escalation (Plain th_01M7V3SF2W8R79ABCDEF0123456789)",
+        }),
+      },
+    ]).cleanup;
+    return cleanup;
+  },
+  render: () => (
+    <PluginLauncherProvider>
+      <Routes>
+        <Route path="/:companyPrefix" element={<Layout />}>
+          <Route path="cases/:caseIdentifier" element={<CaseDetail />} />
+        </Route>
+      </Routes>
+    </PluginLauncherProvider>
+  ),
 };
