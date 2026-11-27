@@ -286,7 +286,7 @@ describe("Better Auth OIDC login", () => {
     vi.stubEnv("BETTER_AUTH_SECRET", "oidc-test-secret-oidc-test-secret");
     const auth = create({});
     expect(auth.options.plugins).toBeUndefined();
-    expect(auth.options.account).toBeUndefined();
+    expect(auth.options.account?.accountLinking).toBeUndefined();
   });
 
   it("requires a client secret once configured", () => {
@@ -305,13 +305,19 @@ describe("Better Auth OIDC login", () => {
   it("signs in with explicit endpoints when discovery is unreachable", async () => {
     vi.stubEnv("BETTER_AUTH_SECRET", "oidc-test-secret-oidc-test-secret");
     vi.stubEnv("PAPERCLIP_AUTH_OIDC_CLIENT_SECRET", "client-secret");
-    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    const userInfoUrl = "https://idm.example.test/oauth2/openid/paperclip/userinfo";
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url !== userInfoUrl) throw new Error("offline");
+      expect(new Headers(input instanceof Request ? input.headers : init?.headers).get("authorization")).toBe("Bearer access-token");
+      return Response.json({ sub: "oidc-user", email: "board@example.test", email_verified: true, name: "Board member" });
+    }));
     const auth = create({
       authOidc: {
         ...oidc,
         authorizationUrl: "https://idm.example.test/ui/oauth2",
         tokenUrl: "https://idm.example.test/oauth2/token",
-        userInfoUrl: "https://idm.example.test/oauth2/openid/paperclip/userinfo",
+        userInfoUrl,
       },
     });
     const provider = (await auth.$context).socialProviders.find((candidate) => candidate.id === "kanidm")!;
@@ -321,6 +327,16 @@ describe("Better Auth OIDC login", () => {
       redirectURI: `${origin}/api/auth/callback/kanidm`,
     });
     expect(redirect.origin + redirect.pathname).toBe("https://idm.example.test/ui/oauth2");
+    const unverifiedToken = [
+      Buffer.from(JSON.stringify({ alg: "RS256" })).toString("base64url"),
+      Buffer.from(JSON.stringify({ sub: "different-subject", email: "wrong@example.test", email_verified: true })).toString("base64url"),
+      "signature",
+    ].join(".");
+    expect(await provider.getUserInfo({ accessToken: "access-token", idToken: unverifiedToken })).toMatchObject({
+      user: { email: "board@example.test", emailVerified: true },
+      data: { sub: "oidc-user" },
+    });
+    expect(await provider.getUserInfo({ idToken: unverifiedToken })).toBeNull();
   });
 
   it("starts a PKCE sign-in and links only verified emails", async () => {
@@ -330,15 +346,17 @@ describe("Better Auth OIDC login", () => {
       issuer: "https://idm.example.test/oauth2/openid/paperclip",
       authorization_endpoint: "https://idm.example.test/ui/oauth2",
       token_endpoint: "https://idm.example.test/oauth2/token",
+      jwks_uri: "https://idm.example.test/oauth2/openid/paperclip/jwks",
     })));
     const auth = create({ authOidc: oidc });
 
     expect(auth.options.plugins?.map((plugin) => plugin.id)).toEqual(["generic-oauth"]);
-    expect(auth.options.account?.accountLinking).toEqual({ enabled: true });
-
+    expect(auth.options.account?.accountLinking).toEqual({ enabled: true, requireLocalEmailVerified: true });
+    expect(auth.options.account?.additionalFields?.issuer).toMatchObject({ input: false, returned: false });
 
     const provider = (await auth.$context).socialProviders.find((candidate) => candidate.id === "kanidm")!;
     expect(provider.disableSignUp).toBe(true);
+    expect(provider.requiresIdTokenNonce).toBe(true);
     const redirect = await provider.createAuthorizationURL({
       state: "state",
       codeVerifier: "verifier",
@@ -348,5 +366,34 @@ describe("Better Auth OIDC login", () => {
     expect(redirect.searchParams.get("scope")).toBe("openid email profile");
     expect(redirect.searchParams.get("code_challenge_method")).toBe("S256");
     expect(redirect.searchParams.get("redirect_uri")).toBe(`${origin}/api/auth/callback/kanidm`);
+  });
+
+  it("requires the local account to be verified before creating an OIDC link", async () => {
+    vi.stubEnv("BETTER_AUTH_SECRET", "oidc-test-secret-oidc-test-secret");
+    vi.stubEnv("PAPERCLIP_AUTH_OIDC_CLIENT_SECRET", "client-secret");
+    const auth = create({ authOidc: oidc });
+    const before = auth.options.databaseHooks!.account!.create!.before!;
+    const findUserById = vi.fn();
+    const context = { context: { internalAdapter: { findUserById } } } as Parameters<typeof before>[1];
+    const account = {
+      id: "link",
+      providerId: oidc.providerId,
+      userId: "local-user",
+      accountId: "oidc-user",
+      issuer: "https://idm.example.test",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    findUserById.mockResolvedValue({ emailVerified: false });
+    expect(await before(account, context)).toBe(false);
+    expect(findUserById).toHaveBeenCalledWith(account.userId);
+    findUserById.mockResolvedValue(null);
+    expect(await before(account, context)).toBe(false);
+    findUserById.mockResolvedValue({ emailVerified: true });
+    expect(await before(account, context)).toEqual({ data: account });
+    const credential = { ...account, providerId: "credential", issuer: undefined };
+    expect(await before(credential, null))
+      .toMatchObject({ data: { issuer: "local:credential" } });
   });
 });

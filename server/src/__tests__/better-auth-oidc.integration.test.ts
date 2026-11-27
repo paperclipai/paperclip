@@ -51,6 +51,7 @@ describeEmbeddedPostgres("Better Auth OpenID Connect callback against the real s
         providerId: "idp",
         displayName: "Company sign-in",
         discoveryUrl: `${IDP}/.well-known/openid-configuration`,
+        userInfoUrl: `${IDP}/userinfo`,
         clientId: "paperclip",
       },
     } as unknown as Config;
