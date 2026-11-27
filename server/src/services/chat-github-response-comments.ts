@@ -424,7 +424,7 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
         if (latest?.id !== run.id) throw forbidden("A newer GitHub run owns the response");
         if ((await responseForRequest())?.result?.final === true) throw forbidden("GitHub request already has a final response");
         if (current.nativePresentationPending) throw conflict("GitHub native response presentation is still being resolved");
-        if (awaitsAutomaticContinuation(current, latest)) throw conflict("GitHub run continues automatically");
+        if (awaitsAutomaticContinuation(current, true)) throw conflict("GitHub run continues automatically");
         if (isMainPullResponse(source) && current.passiveResponseWait) throw forbidden("GitHub run intentionally yielded without a new response");
         if (await githubRunReplyState(db, input) !== "none") throw conflict("GitHub reply is still being resolved");
       };

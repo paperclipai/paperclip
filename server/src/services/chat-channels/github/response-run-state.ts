@@ -67,7 +67,8 @@ type RunRow = Omit<Awaited<ReturnType<typeof readRunRows>>[number], "ordinal">;
 type ResponseRun = Omit<RunRow, "wokeForRequest" | "requestRunId">;
 export type GitHubResponseRunState = { latestRun: ResponseRun | undefined; ownsLatestRequest: boolean;
   /** The latest finished run that woke for this request, which can differ from the latest run. */
-  finishedRequestRun: ResponseRun | null };
+  finishedRequestRun: ResponseRun | null;
+  latestContinuesRequestRun: boolean };
 /** The state of one request of a batch, or the 403 that its single read throws. */
 export type GitHubResponseRunRead = GitHubResponseRunState | { forbidden: HttpError };
 
@@ -142,14 +143,44 @@ async function readRunRows(db: Db, inputs: Array<GitHubResponseRunInput & { issu
       sql`${heartbeatRuns.companyId} = ${column("company_id")}`));
 }
 
+const NO_RUN: GitHubResponseRunState = { latestRun: undefined, ownsLatestRequest: false, finishedRequestRun: null,
+  latestContinuesRequestRun: false };
+
 function ownership(input: GitHubResponseRunInput, row: RunRow | undefined, originMessageId: string | null,
-  finished: Map<string, ResponseRun>): GitHubResponseRunState {
-  if (!row) return { latestRun: undefined, ownsLatestRequest: false, finishedRequestRun: null };
+  finished: Map<string, ResponseRun>, continuations: Set<string>): GitHubResponseRunState {
+  if (!row) return NO_RUN;
   const { wokeForRequest: requestRunIsLatest, requestRunId, ...latestRun } = row;
   const ownsLatestRequest = requestRunIsLatest ||
     (!!input.sourceMessageId && originMessageId === input.sourceMessageId);
   return { latestRun, ownsLatestRequest,
-    finishedRequestRun: !requestRunId ? null : requestRunId === latestRun.id ? latestRun : finished.get(requestRunId) ?? null };
+    finishedRequestRun: !requestRunId ? null : requestRunId === latestRun.id ? latestRun : finished.get(requestRunId) ?? null,
+    latestContinuesRequestRun: !!requestRunId && continuations.has(`${latestRun.id}:${requestRunId}`) };
+}
+
+const runRef = (value: SQL) => sql`case when ${value} ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (${value})::uuid end`;
+const continuedRunId = (run: SQL) => sql`coalesce(${run}.retry_of_run_id,
+  ${runRef(sql`${run}.context_snapshot->>'retryOfRunId'`)}, ${runRef(sql`${run}.context_snapshot->>'previousRunId'`)})`;
+
+async function readContinuations(db: Db, rows: RunRow[]) {
+  const pairs = [...new Map(rows.filter(row => row.continuesAutomatically && row.requestRunId && row.requestRunId !== row.id)
+    .map(row => [`${row.id}:${row.requestRunId}`, row])).values()];
+  const found = new Set<string>();
+  if (!pairs.length) return found;
+  const result = await db.execute<{ latest_id: string; request_id: string }>(sql`with recursive
+    pairs(company_id, latest_id, request_id) as (select * from unnest(
+      ${sql.param(pairs.map(row => row.companyId))}::uuid[], ${sql.param(pairs.map(row => row.id))}::uuid[],
+      ${sql.param(pairs.map(row => row.requestRunId))}::uuid[])),
+    chain(company_id, latest_id, request_id, run_id, depth) as (
+      select p.company_id, p.latest_id, p.request_id, ${continuedRunId(sql`r`)}, 1
+        from pairs p join ${heartbeatRuns} r on r.id = p.latest_id and r.company_id = p.company_id
+      union all
+      select c.company_id, c.latest_id, c.request_id, ${continuedRunId(sql`r`)}, c.depth + 1
+        from chain c join ${heartbeatRuns} r on r.id = c.run_id and r.company_id = c.company_id
+        where c.run_id <> c.request_id and c.depth < 20)
+    select distinct latest_id, request_id from chain where run_id = request_id`);
+  for (const row of result)
+    found.add(`${row.latest_id}:${row.request_id}`);
+  return found;
 }
 
 /** The response columns of the earlier finished runs of the rows, in one statement. */
@@ -164,14 +195,15 @@ async function readFinishedRuns(db: Db, rows: RunRow[]) {
 /** Shared request ownership and presentation state for delivery and recovery. */
 export async function readGitHubResponseRun(db: Db, input: GitHubResponseRunInput): Promise<GitHubResponseRunState> {
   const { issueId } = input;
-  if (!issueId) return { latestRun: undefined, ownsLatestRequest: false, finishedRequestRun: null };
+  if (!issueId) return NO_RUN;
   const of = { ...input, issueId };
   const [row] = await db.select({ ...responseRunColumns, wokeForRequest: wokeForRequest(of),
     requestRunId: finishedRequestRunId(of) }).from(heartbeatRuns)
     .where(and(eq(heartbeatRuns.companyId, input.companyId), sql`${heartbeatRuns.id} = ${latestRunId(of)}`));
   const originMessageId = row?.activeIdentityContextId ? await chatRunSourceMessageId(db, row,
     { allowLegacyWakeComment: true, provider: "github" }) : null;
-  return ownership(input, row, originMessageId, await readFinishedRuns(db, row ? [row] : []));
+  const rows = row ? [row] : [];
+  return ownership(input, row, originMessageId, await readFinishedRuns(db, rows), await readContinuations(db, rows));
 }
 
 /** `readGitHubResponseRun` for a page of requests: one latest-run read for the
@@ -187,11 +219,12 @@ export async function readGitHubResponseRuns(db: Db, inputs: GitHubResponseRunIn
   const runs = [...new Map([...found.values()].filter(row => row.activeIdentityContextId).map(row => [row.id, row])).values()];
   const checked = await chatRunSourceMessageIds(db, runs, { allowLegacyWakeComment: true, provider: "github" });
   const finished = await readFinishedRuns(db, [...found.values()]);
+  const continuations = await readContinuations(db, [...found.values()]);
   const origins = new Map(runs.map((run, index) => [run.id, checked[index]!]));
   return inputs.map((input, index) => {
     const row = found.get(index);
     const origin = row ? origins.get(row.id) : undefined;
     if (origin && "forbidden" in origin) return { forbidden: origin.forbidden };
-    return ownership(input, row, origin?.messageId ?? null, finished);
+    return ownership(input, row, origin?.messageId ?? null, finished, continuations);
   });
 }

@@ -162,6 +162,23 @@ describeEmbeddedPostgres("chat channels: github review response maintenance", ()
       }
       expect(f.responseComments.get(firstId)?.body).toContain(settled);
     });
+    it("keeps waiting while the automatic continuations of a failed GitHub request run also fail", async () => {
+      const f = await toolReplyFixture("github:paperclipai/paperclip:418:rc:4100");
+      const [firstId] = [...f.responseComments.keys()];
+      const failed = (ago: number) => ({ status: "failed", runtimeMode: "native" as const,
+        errorCode: "native_continuation_requires_reconciliation", updatedAt: new Date(Date.now() - ago) });
+      await db.update(heartbeatRuns).set(failed(50 * 60_000)).where(eq(heartbeatRuns.id, f.run.id));
+      const [first] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.assignedAgentId,
+        ...failed(40 * 60_000), retryOfRunId: f.run.id, contextSnapshot: { issueId: f.conversation.issueId } }).returning();
+      const [second] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.assignedAgentId,
+        ...failed(60_000), contextSnapshot: { issueId: f.conversation.issueId, previousRunId: first.id } }).returning();
+      const responses = githubResponseCommentService(db, f.providerFetch);
+      await responses.processPending();
+      expect(f.responseComments.get(firstId)?.body).toContain("Working on this");
+      await db.update(heartbeatRuns).set({ updatedAt: new Date(Date.now() - 31 * 60_000) }).where(eq(heartbeatRuns.id, second.id));
+      await responses.processPending();
+      expect(f.responseComments.get(firstId)?.body).toContain("stopped before completing");
+    });
     it("settles a request still waiting for a continuation once the wait expires, through the registered worker", async () => {
       const f = await toolReplyFixture("github:paperclipai/paperclip:418:rc:4100");
       const [firstId] = [...f.responseComments.keys()];

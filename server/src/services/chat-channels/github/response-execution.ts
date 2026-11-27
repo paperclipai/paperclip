@@ -37,18 +37,18 @@ export function settlesFromRequestRun(state: GitHubResponseRunState, issueStatus
 export const GITHUB_CONTINUATION_WAIT_MS = 30 * 60_000;
 
 export function awaitsAutomaticContinuation(
-  run: { id: string; continuesAutomatically: boolean; updatedAt: Date },
-  latestRun: { id: string } | undefined,
+  latestRun: { continuesAutomatically: boolean; updatedAt: Date },
+  continuesRequest: boolean,
   now = Date.now(),
 ) {
-  return run.continuesAutomatically && run.id === latestRun?.id && now - run.updatedAt.getTime() < GITHUB_CONTINUATION_WAIT_MS;
+  return continuesRequest && latestRun.continuesAutomatically && now - latestRun.updatedAt.getTime() < GITHUB_CONTINUATION_WAIT_MS;
 }
 
 /** `read` is this request's state from a batched page read, if the caller has it. */
 export async function githubResponseExecution(db: Db, input: GitHubResponseExecutionInput, read?: GitHubResponseRunRead) {
   const state = read ?? await readGitHubResponseRun(db, input);
   if ("forbidden" in state) throw state.forbidden;
-  const { latestRun, ownsLatestRequest, finishedRequestRun } = state;
+  const { latestRun, ownsLatestRequest, finishedRequestRun, latestContinuesRequestRun } = state;
   const requestRunning = ownsLatestRequest && latestRun?.status === "running";
   const terminal = latestRun && finished(latestRun.status);
   // Once the task is idle, a request whose own run finished earlier settles
@@ -71,7 +71,8 @@ export async function githubResponseExecution(db: Db, input: GitHubResponseExecu
   const taskFinished = ["done", "cancelled"].includes(input.issueStatus);
   // Precedence: a later published response is more useful to the reader than
   // any notice about this request's own run, including a refused reply.
-  const awaitingContinuation = !!run && awaitsAutomaticContinuation(run, latestRun) && !taskFinished;
+  const awaitingContinuation = !!run && !!latestRun && !taskFinished &&
+    awaitsAutomaticContinuation(latestRun, run.id === latestRun.id || (run.id === requestRun?.id && latestContinuesRequestRun));
   const outcome: keyof typeof STATUS_TEXT | "link" | "waiting" | null =
     presentationPending ? null
     : !run ? paused ? "paused" : null
@@ -85,7 +86,7 @@ export async function githubResponseExecution(db: Db, input: GitHubResponseExecu
     : outcome === "link" ? `See the [latest response](${latestResponse}).` : STATUS_TEXT[outcome];
   return {
     body, outcome, paused, reply, running: requestRunning, presentationPending, passiveResponseWait, awaitingContinuation,
-    continuationDeadline: awaitingContinuation && run ? run.updatedAt.getTime() + GITHUB_CONTINUATION_WAIT_MS : undefined,
+    continuationDeadline: awaitingContinuation && latestRun ? latestRun.updatedAt.getTime() + GITHUB_CONTINUATION_WAIT_MS : undefined,
     versionAt: run ? new Date(Math.max(run.updatedAt.getTime(), input.deliveryCreatedAt.getTime()))
       : paused ? input.deliveryCreatedAt : undefined,
     version: JSON.stringify([latestRun?.id ?? null, latestRun?.status ?? null,
