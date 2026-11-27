@@ -1,3 +1,13 @@
+import { googleWorkspaceToolTitle, isCatalogEntryOffered, type ToolCatalogEntry } from "@paperclipai/shared";
+
+export function withoutUnavailableActions(
+  ids: Iterable<string>,
+  catalog: ReadonlyArray<Pick<ToolCatalogEntry, "id" | "status" | "quarantineReason">>,
+): string[] {
+  const unavailable = new Set(catalog.filter((entry) => !isCatalogEntryOffered(entry)).map((entry) => entry.id));
+  return [...ids].filter((id) => !unavailable.has(id));
+}
+
 /**
  * Apply one permission to a set of actions in a single change.
  *
@@ -24,4 +34,8 @@ export function actionPermissionMutation(
     }
   }
   return { enabled, askFirst };
+}
+
+export function actionLabel(entry: { toolName: string; title?: string | null }): string {
+  return googleWorkspaceToolTitle(entry.toolName, entry.title) ?? entry.toolName;
 }

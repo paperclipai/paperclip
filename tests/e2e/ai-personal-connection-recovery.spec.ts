@@ -4,24 +4,35 @@ import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { json } from "./agent-chat.shared";
 
-test("missing onboarding key offers personal Claude setup in chat and resumes once", async ({ page, request }) => {
+test("a ready agent with a missing personal key offers Claude setup in chat and resumes once", async ({ page, request }) => {
   test.setTimeout(120_000);
   const root = await mkdtemp(path.join(os.tmpdir(), "personal-ai-recovery-"));
   const original = await json(await request.get("/api/instance/settings/experimental"));
   const company = await json(await request.post("/api/companies", { data: { name: `Personal AI recovery ${Date.now()}` } }));
+  const needsSettingsPatch = original.enableAgentChat !== true || original.enableClassicTaskInterface !== false;
   try {
-    await json(await request.patch("/api/instance/settings/experimental", { data: { enableAgentChat: true, enableClassicTaskInterface: false } }));
+    if (needsSettingsPatch) {
+      await json(await request.patch("/api/instance/settings/experimental", { data: { enableAgentChat: true, enableClassicTaskInterface: false } }));
+    }
+    await page.route("**/api/instance/settings/experimental", route => route.fulfill({ json: {
+      ...original, enableAgentChat: true, enableClassicTaskInterface: false,
+    } }));
     const definition = await json(await request.post(`/api/companies/${company.id}/user-secret-definitions`, {
       data: { key: "ANTHROPIC_API_KEY", name: "ANTHROPIC_API_KEY for onboarding" },
     }));
     await writeFile(path.join(root, "continued"), "ready");
     const agent = await json(await request.post(`/api/companies/${company.id}/agents`, { data: {
-      name: "Chief of Staff", role: "general", adapterType: "claude_local",
+      name: "Chief of Staff", role: "general", adapterType: "process",
+      adapterConfig: { command: process.execPath },
+      runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } },
+    } }));
+    await expect.poll(async () => (await json(await request.get(`/api/agents/${agent.id}`))).lifecycleState).toBe("ready");
+    await json(await request.patch(`/api/agents/${agent.id}`, { data: {
+      adapterType: "claude_local",
       adapterConfig: { engine: "acp", cwd: root, stateDir: path.join(root, "state"),
         agentCommand: `${JSON.stringify(process.execPath)} ${JSON.stringify(path.resolve("scripts/mcp-fixtures/servers/acp-stop-agent.mjs"))}`,
         env: { ANTHROPIC_API_KEY: { type: "user_secret_ref", key: definition.key, version: "latest", required: true },
           PAPERCLIP_STOP_FIXTURE_ROOT: root } },
-      runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } },
     } }));
     const chatPath = `/api/companies/${company.id}/chats/${agent.id}`;
     await page.goto(`/${company.issuePrefix}/chats/${agent.id}`);
@@ -69,7 +80,7 @@ test("missing onboarding key offers personal Claude setup in chat and resumes on
   } finally {
     await Promise.allSettled([
       request.patch(`/api/companies/${company.id}`, { data: { status: "archived" } }),
-      request.patch("/api/instance/settings/experimental", { data: original }),
+      ...(needsSettingsPatch ? [request.patch("/api/instance/settings/experimental", { data: original })] : []),
     ]);
     await rm(root, { recursive: true, force: true });
   }

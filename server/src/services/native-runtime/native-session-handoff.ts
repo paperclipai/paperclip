@@ -1,8 +1,11 @@
 import { and, asc, desc, eq, isNull, lte, or, sql, type SQL } from "drizzle-orm";
 import { documents, heartbeatRunEvents, heartbeatRuns, issueComments, issueDocuments, issues, issueThreadInteractions, type Db } from "@paperclipai/db";
 import { createRunSecretRedactionRegistry } from "../run-secret-redaction.js";
+import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY, withoutLegacyRunLines } from "../issue-continuation-summary.js";
 import { buildLowTrustSourceTrust, redactQuarantinedBodyForHigherTrust, sanitizeQuarantinedCommentForHigherTrust } from "../source-trust.js";
 import { resolveCoreTrustPreset } from "../trust-preset-resolver.js";
+import { fastResponseHistoryBody } from "@paperclipai/shared";
+import { modelFacingObject, type ModelFacingObject } from "@paperclipai/adapter-utils/model-facing-history";
 
 export const NATIVE_HANDOFF_MAX_BYTES = 24_000;
 const ENTRY_MAX_CHARS = 4_000;
@@ -19,7 +22,7 @@ export function createNativeSessionHandoffLoader(input: Parameters<typeof buildN
 export function renderNativeSessionHandoff(input: {
   issueId: string; generation: number | null; entries: HandoffEntry[]; omittedEntriesAtLeast: number;
 }): string {
-  const entries: HandoffEntry[] = [];
+  const entries: ModelFacingObject[] = [];
   let omitted = input.omittedEntriesAtLeast;
   let truncated = omitted > 0;
   const render = () => [
@@ -32,9 +35,11 @@ export function renderNativeSessionHandoff(input: {
     const clipped = entry.body.length > ENTRY_MAX_CHARS;
     // Preserve both the start and latest direction in exceptionally long messages.
     const body = clipped ? `${entry.body.slice(0, 2_900)}\n[content omitted]\n${entry.body.slice(-900)}` : entry.body;
-    const bounded = { ...entry, body, truncated: entry.truncated === true || clipped };
-    entries.push(bounded);
-    truncated ||= bounded.truncated;
+    const { id, ...modelEntry } = modelFacingObject(entry);
+    const retrievable = entry.kind !== "run_summary" && entry.kind !== "agent_reply";
+    const entryTruncated = entry.truncated === true || clipped;
+    entries.push({ ...(retrievable ? { id } : {}), ...modelEntry, body, truncated: entryTruncated });
+    truncated ||= entryTruncated;
     // Leave space for the final omission count, including multi-byte Unicode.
     if (Buffer.byteLength(render(), "utf8") > NATIVE_HANDOFF_MAX_BYTES - 128) {
       entries.pop();
@@ -72,7 +77,7 @@ export async function buildNativeSessionHandoff(input: {
     id: issueComments.id, body: excerpt(sql`${issueComments.body}`),
     truncated: sql<boolean>`length(${issueComments.body}) > ${ENTRY_MAX_CHARS}`,
     authorAgentId: issueComments.authorAgentId, sourceTrust: issueComments.sourceTrust,
-    createdAt: issueComments.createdAt,
+    createdAt: issueComments.createdAt, origin: issueComments.origin,
   };
   const commentScope = and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId), isNull(issueComments.deletedAt),
     lte(issueComments.createdAt, input.before),
@@ -115,8 +120,13 @@ export async function buildNativeSessionHandoff(input: {
         cutoff ? and(lte(heartbeatRuns.createdAt, cutoff.createdAt), lte(heartbeatRunEvents.createdAt, cutoff.createdAt)) : undefined,
       )).orderBy(desc(heartbeatRunEvents.createdAt), desc(heartbeatRunEvents.id)).limit(5),
     db.select({ id: documents.id, key: issueDocuments.key, revisionId: documents.latestRevisionId,
-      body: excerpt(sql`${documents.latestBody}`),
-      truncated: sql<boolean>`length(${documents.latestBody}) > ${ENTRY_MAX_CHARS}`, sourceTrust: documents.sourceTrust,
+      // Workflow instructions have one on-demand document source. Never copy
+      // their body into fresh-history packets as another prompt instruction.
+      body: sql<string>`case when ${issueDocuments.key} = 'workflow'
+        then ${'Read this task\'s workflow instructions with read_document using key "workflow" before choosing the next phase.'}
+        else ${excerpt(sql`${documents.latestBody}`)} end`,
+      truncated: sql<boolean>`case when ${issueDocuments.key} = 'workflow' then false
+        else length(${documents.latestBody}) > ${ENTRY_MAX_CHARS} end`, sourceTrust: documents.sourceTrust,
     }).from(issueDocuments).innerJoin(documents, and(eq(documents.id, issueDocuments.documentId), eq(documents.companyId, companyId)))
       .where(and(eq(issueDocuments.companyId, companyId), eq(issueDocuments.issueId, issueId), lte(documents.updatedAt, input.before), afterBoundary(issueDocuments.createdAt),
         cutoff ? lte(documents.updatedAt, cutoff.createdAt) : undefined))
@@ -140,7 +150,9 @@ export async function buildNativeSessionHandoff(input: {
   };
   const addComment = (row: typeof recent[number], kind: string) => {
     if (entries.some(entry => entry.id === row.id)) return;
-    entries.push({ ...sanitizeQuarantinedCommentForHigherTrust(row), kind, author: row.authorAgentId ? "agent" : "user" });
+    const safe = sanitizeQuarantinedCommentForHigherTrust(row);
+    entries.push({ ...safe, body: fastResponseHistoryBody(safe), kind,
+      author: row.origin === "fast_response" ? "paperclip_receipt" : row.authorAgentId === agentId ? "agent" : row.authorAgentId ? "other_agent" : "user" });
   };
   if (origin[0]) addComment(origin[0], "original_request");
   recent.slice(0, LIMIT).forEach(row => addComment(row, "message"));
@@ -150,7 +162,10 @@ export async function buildNativeSessionHandoff(input: {
     const sourceTrust = historicalTrust(row.runId, executionPolicy);
     entries.push({ ...sanitizeQuarantinedCommentForHigherTrust({ ...entry, sourceTrust }), kind: "agent_reply" });
   }
-  savedDocuments.slice(0, 3).forEach(row => entries.push({ ...redactQuarantinedBodyForHigherTrust(row), kind: "document" }));
+  savedDocuments.slice(0, 3).forEach(row => entries.push({ ...redactQuarantinedBodyForHigherTrust(
+    row.key === ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY ? { ...row, body: withoutLegacyRunLines(row.body) } : row), kind: "document",
+    ...(row.key === "workflow" ? { readPath: `/api/issues/${issueId}/documents/workflow` } : {}),
+  }));
   for (const row of runSummaries.slice(0, 2)) {
     if (!row.body) continue;
     const { executionPolicy, ...entry } = row;

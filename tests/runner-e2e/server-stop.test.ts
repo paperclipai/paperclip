@@ -6,7 +6,7 @@ import path from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { createRunnerE2EServerStopper, runnerE2EServerDetached } from "./server-stop.js";
 import { readProcessTable } from "./process-tree.js";
-import { createProcessTreeOwner, stopOwnedProcessTree } from "./process-tree-owner.js";
+import { createProcessTreeOwner, stopOwnedProcessTree, UNCERTAIN_GROUP_IDENTITY } from "./process-tree-owner.js";
 import { runnerE2ETypeScriptProcessArgs } from "./web-server-command.js";
 
 const children: ChildProcess[] = [];
@@ -45,6 +45,10 @@ function stopper(gracefulTimeoutMs = 2_000) {
     markExpectedStop: () => {}, log: line => logs.push(line),
   });
   return { stop, logs, errors };
+}
+function expectSuccessfulWrapperReceipt(wrapper: ChildProcess, messages: unknown[], diagnostics = "") {
+  expect([wrapper.exitCode, wrapper.signalCode], diagnostics).toEqual([0, null]);
+  expect(messages, diagnostics).toContainEqual({ exitCode: 0, signalCode: null });
 }
 afterEach(async () => {
   for (const child of children.splice(0)) {
@@ -85,6 +89,7 @@ it.skipIf(process.platform === "win32")("joins signal, final cleanup and repeate
   expect(stop(child)).toBe(first);
   await stop(child);
   expect(logs).toEqual([]);
+  expect(() => stop.assertGracefulExit(child)).not.toThrow();
 });
 
 it.skipIf(process.platform === "win32")("bounds an unresponsive child and reaps it with one escalation", async () => {
@@ -94,6 +99,7 @@ it.skipIf(process.platform === "win32")("bounds an unresponsive child and reaps 
   const { stop, logs } = stopper(50);
   await Promise.all([stop(child), stop(child), stop(child)]);
   expect(child.signalCode).toBe("SIGKILL");
+  expect(() => stop.assertGracefulExit(child)).toThrow("forced cleanup cannot qualify");
   expect(logs).toHaveLength(1);
   expect(() => process.kill(child.pid!, 0)).toThrow();
 });
@@ -153,20 +159,39 @@ it.skipIf(process.platform === "win32")("lets launcher cancellation join wrapper
     // during the async close even though the helper sends only one signal.
     const messages: unknown[] = [];
     wrapper.on("message", message => messages.push(message));
-    const exited = once(wrapper, "exit");
+    // Process exit is not IPC completion. Register both barriers before
+    // cancellation so the final worker receipt is drained before asserting it.
+    const closed = once(wrapper, "close");
+    const disconnected = once(wrapper, "disconnect");
     await owner.observe();
     const cancellation = stopOwnedProcessTree(wrapper, owner, 2_000, 2_000);
     await new Promise(resolve => setTimeout(resolve, 250));
     if (wrapper.connected) wrapper.send("finish");
-    await exited;
+    await Promise.all([closed, disconnected]);
     await cancellation;
-    expect(messages, wrapperErrors).toContainEqual({ message: "close-complete", pid: workerPid });
-    expect(messages).toContainEqual({ exitCode: 0, signalCode: null });
+    const diagnostics = `${wrapperErrors}\nwrapper exit=${wrapper.exitCode} signal=${wrapper.signalCode} connected=${wrapper.connected}`;
+    expect(messages, diagnostics).toContainEqual({ message: "close-complete", pid: workerPid });
+    expectSuccessfulWrapperReceipt(wrapper, messages, diagnostics);
     expect(() => process.kill(workerPid!, 0)).toThrow();
   } finally {
     owner.stopObserving();
     if (workerPid) { try { process.kill(-workerPid, "SIGKILL"); } catch { /* reaped */ } }
   }
+});
+
+it.each(["failed", "missing"] as const)("rejects a %s worker receipt even when the wrapper closes successfully", async receipt => {
+  const { entry } = await fixture(receipt === "failed"
+    ? "process.send({ exitCode: 23, signalCode: null }, () => process.exit(0));"
+    : "process.exit(0);");
+  const wrapper = start(entry);
+  const messages: unknown[] = [];
+  wrapper.on("message", message => messages.push(message));
+  const closed = once(wrapper, "close");
+  const disconnected = once(wrapper, "disconnect");
+  await Promise.all([closed, disconnected]);
+  expect([wrapper.exitCode, wrapper.signalCode]).toEqual([0, null]);
+  expect(messages).toEqual(receipt === "failed" ? [{ exitCode: 23, signalCode: null }] : []);
+  expect(() => expectSuccessfulWrapperReceipt(wrapper, messages)).toThrow();
 });
 
 
@@ -255,8 +280,8 @@ it.skipIf(process.platform === "win32")("recovers a failed cleanup without repea
   });
   try {
     const failed = expect(stop(child)).rejects.toThrow("transient inspection failure");
-    // Process-table inspection can take longer than 100ms on a loaded host.
-    // Keep the child alive until the intended inspection failure actually occurs.
+    // Hold the child until the one-shot failure is actually injected. A fixed
+    // delay can let it exit during the preceding successful inspection.
     await inspectionFailed;
     if (child.connected) child.send("finish");
     await failed;
@@ -317,4 +342,188 @@ it.skipIf(process.platform === 'win32')('does not re-signal a server after its g
     owner.stopObserving();
     try { process.kill(-pid, 'SIGKILL'); } catch { /* already stopped */ }
   }
+});
+
+it.skipIf(process.platform === "win32")("crashes the owned controller and detached descendant without graceful drain or touching a neighboring process", async () => {
+  const { root } = await fixture();
+  const marker = path.join(root, "graceful-drain.txt"), descendantEntry = path.join(root, "descendant.cjs");
+  await writeFile(descendantEntry, `
+    process.on('SIGTERM', () => require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'descendant drained'));
+    process.send('ready'); setInterval(() => {}, 1000);
+  `);
+  const { entry } = await fixture(`
+    const child = require('node:child_process').fork(${JSON.stringify(descendantEntry)}, [], { detached: true, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+    process.on('SIGTERM', () => require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'controller drained'));
+    child.once('message', () => process.send({ ready: true, descendantPid: child.pid }));
+    setInterval(() => {}, 1000);
+  `);
+  const controller = start(entry), controllerReady = once(controller, "message");
+  const { stop } = stopper();
+  await stop.watch(controller);
+  try {
+    const neighborFixture = await fixture(), neighbor = start(neighborFixture.entry);
+    await once(neighbor, "message");
+    const [ready] = await controllerReady;
+    await stop.crashForRestart(controller);
+    expect(controller.signalCode).toBe("SIGKILL");
+    await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
+    const table = await readProcessTable();
+    expect(table).not.toBeNull();
+    expect(table!.some(row => row.pid === ready.descendantPid && !row.state?.startsWith("Z"))).toBe(false);
+    expect(() => process.kill(neighbor.pid!, 0)).not.toThrow();
+    await stop.stopAll();
+    expect(() => process.kill(neighbor.pid!, 0)).not.toThrow();
+  } finally { await stop.stopAll(); }
+});
+
+it.skipIf(process.platform === "win32")("waits out a provider group that is briefly unproven during the graceful drain", async () => {
+  const { entry } = await fixture();
+  const child = start(entry);
+  await once(child, "message");
+  let uncertainInspections = 0;
+  let owner: ReturnType<typeof createProcessTreeOwner> | undefined;
+  const messages: unknown[] = [];
+  child.on("message", message => {
+    messages.push(message);
+    // The provider group turns over while the server drains: three inspections cannot prove it.
+    if (message === "stopping") uncertainInspections = 3;
+  });
+  const stop = createRunnerE2EServerStopper({
+    gracefulTimeoutMs: 5_000, forcedTimeoutMs: 2_000,
+    hasSpawnError: () => false, markExpectedStop: () => {}, log: () => {},
+    createOwner: candidate => {
+      owner = createProcessTreeOwner(candidate);
+      return { ...owner, observe: async () => {
+        if (uncertainInspections > 0) {
+          uncertainInspections -= 1;
+          if (uncertainInspections === 0 && child.connected) child.send("finish");
+          throw new Error(`${UNCERTAIN_GROUP_IDENTITY}: 16058 (unowned members: pid=16070 ppid=1 pgid=16058 kind=node started=x)`);
+        }
+        await owner!.observe();
+      } };
+    },
+  });
+  try {
+    await stop(child);
+    expect(messages).toEqual(["stopping", "close-complete"]);
+    expect([child.exitCode, child.signalCode]).toEqual([0, null]);
+  } finally { owner?.stopObserving(); }
+});
+
+it.skipIf(process.platform === "win32")("still fails safely when a group stays unproven past the drain deadline", async () => {
+  const { entry } = await fixture(`process.on('SIGTERM', () => {}); process.send('ready'); setInterval(() => {}, 1000);`);
+  const child = start(entry);
+  await once(child, "message");
+  const groupSignals: number[] = [];
+  let stopping = false;
+  const owner = createProcessTreeOwner(child, { signalGroup: pid => { groupSignals.push(pid); } });
+  const uncertain = { ...owner, observe: async () => {
+    if (stopping) throw new Error(`${UNCERTAIN_GROUP_IDENTITY}: 16058 (unowned members: pid=16070 ppid=1 pgid=16058 kind=node started=x)`);
+    await owner.observe();
+  } };
+  try {
+    await uncertain.observe();
+    stopping = true;
+    const stop = createRunnerE2EServerStopper({ gracefulTimeoutMs: 200, forcedTimeoutMs: 200,
+      hasSpawnError: () => false, markExpectedStop: () => {}, log: () => {}, createOwner: () => uncertain });
+    await expect(stop(child)).rejects.toThrow(/identity became uncertain: 16058 \(unowned members: pid=16070/);
+    expect(groupSignals).toEqual([]);
+  } finally { owner.stopObserving(); if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }
+});
+
+function eperm() {
+  return Object.assign(new Error("kill EPERM"), { code: "EPERM" });
+}
+function crashStopper(signalError: () => Error, refusedGroup: () => number | undefined = () => undefined) {
+  const logs: string[] = [];
+  let thrown = false;
+  const stop = createRunnerE2EServerStopper({
+    gracefulTimeoutMs: 2_000, forcedTimeoutMs: 1_000,
+    hasSpawnError: () => false, markExpectedStop: () => {}, log: line => logs.push(line),
+    createOwner: candidate => {
+      const owner = createProcessTreeOwner(candidate);
+      return { ...owner, signal: async (signal, selected) => {
+        if (signal === "SIGKILL" && !thrown) {
+          thrown = true;
+          await owner.observe();
+          const refused = refusedGroup();
+          if (refused !== undefined) {
+            await owner.signal("SIGKILL", new Set(owner.liveGroups().map(group => group.processGroupId).filter(pid => pid !== refused)));
+          }
+          throw signalError();
+        }
+        return await owner.signal(signal, selected);
+      } };
+    },
+  });
+  return { stop, logs };
+}
+
+it.skipIf(process.platform === "win32")("finishes a crash restart with a warning when the group kill reports EPERM but the server is dead", async () => {
+  const { entry } = await fixture();
+  const child = start(entry);
+  await once(child, "message");
+  const { stop, logs } = crashStopper(eperm);
+  await stop.watch(child);
+  try {
+    await stop.crashForRestart(child);
+    expect(child.signalCode).toBe("SIGKILL");
+    expect(logs.join("")).toMatch(new RegExp(`Warning: .*EPERM.*pid=${child.pid}`));
+  } finally { await stop.stopAll(); }
+});
+
+it.skipIf(process.platform === "win32")("fails a crash restart when the group kill reports EPERM and the server survives", async () => {
+  const { entry } = await fixture();
+  const child = start(entry);
+  await once(child, "message");
+  const { stop } = crashStopper(eperm);
+  await stop.watch(child);
+  const kill = child.kill.bind(child);
+  child.kill = () => true;
+  try {
+    await expect(stop.crashForRestart(child)).rejects.toThrow(/EPERM/);
+    expect([child.exitCode, child.signalCode]).toEqual([null, null]);
+  } finally {
+    child.kill = kill;
+    await stop.stopAll().catch(() => {});
+  }
+});
+
+it.skipIf(process.platform === "win32")("fails a crash restart on a group kill error other than EPERM", async () => {
+  const { entry } = await fixture();
+  const child = start(entry);
+  await once(child, "message");
+  const { stop } = crashStopper(() => Object.assign(new Error("kill EINVAL"), { code: "EINVAL" }));
+  await stop.watch(child);
+  try {
+    await expect(stop.crashForRestart(child)).rejects.toThrow(/EINVAL/);
+  } finally { await stop.stopAll().catch(() => {}); }
+});
+
+it.skipIf(process.platform === "win32")("still SIGKILLs a detached descendant without a graceful drain when its group refuses the bulk kill after the server's", async () => {
+  const { root } = await fixture();
+  const marker = path.join(root, "graceful-drain.txt"), descendantEntry = path.join(root, "descendant.cjs");
+  await writeFile(descendantEntry, `
+    process.on('SIGTERM', () => require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'descendant drained'));
+    process.send('ready'); setInterval(() => {}, 1000);
+  `);
+  const { entry } = await fixture(`
+    const child = require('node:child_process').fork(${JSON.stringify(descendantEntry)}, [], { detached: true, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+    child.once('message', () => process.send({ ready: true, descendantPid: child.pid }));
+    setInterval(() => {}, 1000);
+  `);
+  const controller = start(entry), controllerReady = once(controller, "message");
+  let descendantGroup: number | undefined;
+  const { stop, logs } = crashStopper(eperm, () => descendantGroup);
+  await stop.watch(controller);
+  try {
+    const [ready] = await controllerReady;
+    descendantGroup = ready.descendantPid;
+    await stop.crashForRestart(controller);
+    expect(controller.signalCode).toBe("SIGKILL");
+    await expect(readFile(marker)).rejects.toMatchObject({ code: "ENOENT" });
+    const table = await readProcessTable();
+    expect(table!.some(row => row.pid === ready.descendantPid && !row.state?.startsWith("Z"))).toBe(false);
+    expect(logs.join("")).toMatch(/groups still refusing SIGKILL: none/);
+  } finally { await stop.stopAll(); }
 });

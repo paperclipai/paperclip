@@ -36,6 +36,12 @@ export const updateCompanySchema = objectWithoutDefaults(
     .extend({
       status: z.enum(COMPANY_STATUSES).optional(),
       spentMonthlyCents: z.number().int().nonnegative().optional(),
+      // PAP-749 task 1d-lite: the default decision owner (a user). `null` clears
+      // it, sending ownerless cards back to Unassigned.
+      defaultDecisionOwnerUserId: z.string().min(1).nullable().optional(),
+      // PAP-749 task 1d: the budget owner (a user). `null` leaves budget hard
+      // stops in the Company view only.
+      budgetOwnerUserId: z.string().min(1).nullable().optional(),
       requireBoardApprovalForNewAgents: z.boolean().optional(),
       interactionResolverGovernance: interactionResolverGovernanceSchema.optional(),
       feedbackDataSharingEnabled: z.boolean().optional(),

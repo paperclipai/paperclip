@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { updateSingleReadEvidence } from "./single-read-evidence.js";
 import { createCursorToolEvidence } from "./cursor-tool-evidence.js";
+import { createCopilotToolEvidence } from "./copilot-tool-evidence.js";
 import { validateAcpxRichEvent } from "./profile-extensions.js";
 const path = `.paperclip-eval-action-${"a".repeat(36)}.txt`;
 const hash = `sha256:${createHash("sha256").update(path).digest("hex")}`;
@@ -43,7 +44,7 @@ it("completes an empty pending origin only from its full shape before execution 
     expect(updateSingleReadEvidence(unproven, { tag: "tool_call_update", rawInput: { path } }, "/workspace")).toEqual({});
   }
 });
-for (const [provider, create] of [["cursor", createCursorToolEvidence]] as const) {
+for (const [provider, create] of [["cursor", createCursorToolEvidence], ["copilot", createCopilotToolEvidence]] as const) {
   describe(`${provider} passive single-read origin`, () => {
     function setup() { const rows: any[] = []; const projector = create({ sessionId: "session", turnId: "turn", workingDirectory: "/workspace", active: () => true,
       emit: event => { validateAcpxRichEvent(event); rows.push(Object.fromEntries((event.payload.details as any[]).map(d => [d.name, d.value]))); } }); return { rows, projector }; }
@@ -64,7 +65,7 @@ for (const [provider, create] of [["cursor", createCursorToolEvidence]] as const
       s.projector.tool({ type: "tool_call", tag: "tool_call_update", toolCallId: "other", kind: "read", status: "completed", rawInput: { path } });
       expect(s.rows).toHaveLength(1); expect(s.rows[0].readTargetSha256).toBeUndefined();
     });
-    it("publishes the pending origin after its delayed complete input, retaining exact proof on every notice", () => {
+    it.runIf(provider === "cursor")("publishes the pending origin after its delayed complete input, retaining exact proof on every notice", () => {
       const s = setup();
       s.projector.tool({ ...origin, rawInput: {}, locations: undefined });
       expect(s.rows).toEqual([]);

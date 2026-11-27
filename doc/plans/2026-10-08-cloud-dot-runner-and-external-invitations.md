@@ -2,7 +2,7 @@
 
 Date: 2026-10-08
 
-Status: the live self-hosted invitation flow is implemented. The shared square picker and animated dialog now create/resume scoped invitations, preserve company approval, watch server state, and send the event test automatically. Dot driver launcher/checkpoint hooks are qualified with a real Rust process. **Cloud execution remains disabled:** the existing managed-environment and Cloud MCP guards are unchanged pending sandbox and tenant-ingress qualification.
+Status: managed Dot execution and dedicated tenant ingress are implemented. The live invitation flow remains shared across self-hosted and Cloud instances. Private Daytona qualification passed with the actual Rust Runner, signed readiness, task tools, document writes, and normal finalization. A real OpenAI Dot also completed an operator-assigned task through a managed Daytona Runner. Coordinated tenant-app and Cloud front-door deployment is still required; these local qualifications are not evidence of a deployed Cloud rollout.
 
 ## Decision: remote agents use the new Runner infrastructure
 
@@ -72,11 +72,11 @@ The shared presentation lives in `ui/src/components/new-agent/ExternalAgentInvit
 
 Run `pnpm --filter @paperclipai/ui storybook`, then open the journey group. Copying in the interactive Dot story advances simulated checks; the fixed-state stories remain still for inspection. These stories illustrate the live UX with simulated connection evidence; they do not prove a live cloud pairing.
 
-## Remaining implementation and qualification
+## Managed implementation and qualification
 
 The live invitation controller, owner-scoped pending-invitation lookup, atomic creation, pending-code replacement, automatic event test, feature gating, and watcher are implemented. Active run controllers poll durable operation rows under their current controller generation and lease, so an operation reserved by another HTTP replica reaches its owning Runner. Idle-initiated work already uses normal admission.
 
-Before shipping cloud, connect Dot's qualified launcher hooks to managed job dispatch and qualify the dedicated tenant MCP ingress. Keep the present cloud restrictions until those paths are proven. The optional external launcher uses target-owned provider checkpoints and refuses recovery when identity or state is missing; it does not invent a replacement Dot thread. Preserve company isolation, approval rules, budget stops, assignment authority, and mutation receipts. Qualify real OAuth installation, event round trip, assignment execution, unsolicited Dot work, restart/reconnect, cancellation, and expired/revoked credentials against a real sandbox provider. No cloud-ready claim follows from this Storybook pass.
+Managed dispatch now uses the existing remote launcher, artifact verification, authenticated PRP transport, sandbox lease, and normal finalization. Cloud rejects local/legacy execution before startup. The current artifact must advertise the Dot capability; the older pinned image used during qualification required an explicitly staged current Linux artifact. Dedicated tenant OAuth and pairing routes are public protocol lanes, with no minted Cloud browser identity. Shared personal consent and management routes retain their existing session gate. The optional external launcher uses target-owned provider checkpoints and refuses recovery when identity or state is missing; it does not invent a replacement Dot thread. Preserve company isolation, approval rules, budget stops, assignment authority, and mutation receipts. Qualify real OAuth installation, event round trip, assignment execution, unsolicited Dot work, restart/reconnect, cancellation, and expired/revoked credentials against a real sandbox provider. No cloud-ready claim follows from this Storybook pass.
 
 
 ## Implemented invitation semantics
@@ -88,3 +88,14 @@ Before shipping cloud, connect Dot's qualified launcher hooks to managed job dis
 - Hermes and Other share the existing external-agent invitation API and unchanged onboarding prompt. Dot is no longer a separate card in the harness picker.
 
 Verification: a disposable authenticated local instance exercised the natural New Agent entry, Dot prompt copy, Back, Hermes, refresh/resume, and pending-prompt replacement. Signed callback verification, nonce confirmation, scoped OAuth, actual Rust execution, duplicate receipts, and recovery have automated coverage. No real OpenAI Dot or managed cloud sandbox was connected during this implementation pass.
+
+
+## Release qualification (2026-10-09)
+
+- A fresh private Daytona sandbox ran the current Rust Runner through provider preview ingress. Signed event readiness, app-tool relay, a document write, duplicate mutation receipts, authority fences, completion finalization, and deletion passed.
+- The existing approved OpenAI Dot connection received an operator assignment, accepted it, saved and verified a task document, and completed through the normal Runner result path. A Dot-initiated idle request also completed through normal managed admission after the broker was wired to the app-configured heartbeat service. Both managed execution leases expired after completion. Failed admission receipts now report the terminal outcome instead of telling Dot to wait indefinitely. New admission also retires stranded offers whose runs are terminal, with a durable authority fence and no claim that OpenAI globally stopped.
+- Cloud front-door tests cover exact protocol paths, unauthenticated code-based pairing, stripped spoofed Cloud identity headers, wrong methods, unrelated consent/management routes, and unregistered tenant hosts. Public static access is limited to fingerprinted build assets and the displayed provider brand images.
+- Onboarding tests preserve personal assistant behavior and reject personal OAuth requests through dedicated Dot aliases. The invitation is available under the standalone Dot experimental flag in Cloud.
+- A real accepted Dot assignment survived an intentional controller gap longer than one minute in Daytona. The sandbox PID, process birth/fingerprint, Runner instance, durable session, and assignment stayed unchanged; controller generation advanced to 2. Dot received the ordinary issue-comment follow-up, wrote/read its exact report, and completed the original run. One mailbox reference and one coalesced wake were recorded; no second run appeared, and the lease expired. Launch now requires verifiable process identity before dispatch and allows a five-minute reconnect gap. Missing process evidence fails closed.
+- A real cancellation fenced an accepted assignment, expired the managed lease, and received Dot's control acknowledgement. The receipt correctly kept `externalStopConfirmed: false`. Clean remote shutdown is recognized by its authenticated receipt even when the process monitor has no OS exit code.
+- Deploy both components together and smoke-test a real Cloud tenant before enabling broadly. No long-running idle sandbox or Paperclip workspace access is added. These managed tests qualify the implementation and real provider, not a deployed Cloud tenant.
