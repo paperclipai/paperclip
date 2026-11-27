@@ -331,6 +331,42 @@ it("preserves a workspace's saved name when relinquishing name ownership", async
   expect(await read()).toMatchObject({ name: "Operator renamed", cwd: "/srv/app-v2" });
 });
 
+it("preserves a workspace's saved sourceType when relinquishing sourceType ownership", async () => {
+  const declaration = {
+    version: 1, owner: "workspace-source-type-relinquish",
+    companies: { example: { fields: { name: "Workspace source company" } } },
+    projects: { main: { company: "example", fields: { name: "Workspace source project" } } },
+    projectWorkspaces: {
+      remote: { project: "main", fields: { name: "Remote", sourceType: "remote_managed", repoUrl: "https://example.test/repo.git", remoteWorkspaceRef: "remote-ref", remoteProvider: "worker", isPrimary: true } },
+    },
+  };
+  const first = await reconcile(declaration);
+  const workspaceId = first.bindings["workspace/remote"];
+  const read = async () => (await db.select().from(projectWorkspaces).where(eq(projectWorkspaces.id, workspaceId)))[0];
+  expect((await read()).sourceType).toBe("remote_managed");
+  const relinquished = {
+    ...declaration,
+    projectWorkspaces: {
+      remote: { project: "main", fields: { name: "Remote", repoUrl: "https://example.test/repo.git", remoteWorkspaceRef: "remote-ref", remoteProvider: "worker", isPrimary: true } },
+    },
+  };
+  expect((await reconcile(relinquished)).bindings).toEqual(first.bindings);
+  expect((await read()).sourceType).toBe("remote_managed");
+  const [ledgerRow] = await db.select().from(deploymentResources).where(and(eq(deploymentResources.owner, "workspace-source-type-relinquish"), eq(deploymentResources.key, "remote")));
+  expect("sourceType" in ledgerRow.fields).toBe(false);
+  expect((await reconcile(relinquished, false)).differences).toEqual([]);
+  await db.update(projectWorkspaces).set({ sourceType: "git_repo" }).where(eq(projectWorkspaces.id, workspaceId));
+  expect((await read()).sourceType).toBe("git_repo");
+  const updated = {
+    ...declaration,
+    projectWorkspaces: {
+      remote: { project: "main", fields: { name: "Remote v2", repoUrl: "https://example.test/repo.git", remoteWorkspaceRef: "remote-ref", remoteProvider: "worker", isPrimary: true } },
+    },
+  };
+  await reconcile(updated);
+  expect(await read()).toMatchObject({ name: "Remote v2", sourceType: "git_repo" });
+});
+
 it("rejects implicit primary takeover and wrong-project adoption before writes", async () => {
   const declaration = {
     version: 1, owner: "workspace-adoption",

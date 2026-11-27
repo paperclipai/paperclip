@@ -137,13 +137,16 @@ export async function reconcileDeployment(db: Db, raw: unknown, options: {
       const { runtimeConfig, ...nativeFields } = w.fields;
       const fields = {
         ...nativeFields,
-        sourceType: nativeFields.sourceType ?? (nativeFields.repoUrl ? "git_repo" : "local_path"),
         ...(runtimeConfig !== undefined ? { metadata: mergeProjectWorkspaceRuntimeConfig(nativeFields.metadata ?? null, runtimeConfig) } : {}),
         companyId, projectId,
       };
       add({ kind: "workspace", key, adopt: w.adopt, companyId, enabled: true, fields: () => fields,
         create: async () => {
-          const created = await projectSvc.createWorkspace(projectId, fields);
+          const createFields = {
+            ...fields,
+            sourceType: nativeFields.sourceType ?? (nativeFields.repoUrl ? "git_repo" : "local_path"),
+          };
+          const created = await projectSvc.createWorkspace(projectId, createFields);
           if (!created) throw new Error("Declared workspace could not be created");
           return created.id;
         },
