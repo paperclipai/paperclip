@@ -96,6 +96,16 @@ const meta = {
   parameters: {
     layout: "fullscreen",
     docs: { description: { component: "Sequential checkpoints in the real Paperclip app shell: company navigation, Skills sidebar, breadcrumbs, library, source dialogs, and skill details. Each story starts at a checkpoint and remains interactive. Start at 01 and import acme/team-skills, open Installed, assign Code review to an agent, then refresh Sources to discover Security review. API responses and assignments are local fixtures; no GitHub OAuth, downloads, agent runs, or real mutations occur." } },
+    paperclip: {
+      "capabilities": [
+        "skills/versions",
+        "skills/discovery",
+        "skills/policy"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "AssignToAgent and AssignedSkill demonstrate library/detail assignment with local policy fixtures. No runtime enforcement or backend persistence proof."
+    },
   },
 } satisfies Meta<typeof GitHubSkillsJourney>;
 export default meta;

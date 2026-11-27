@@ -124,7 +124,16 @@ function connection(id: string, name: string, installs: InstallState): ToolConne
 const meta: Meta = {
   id: "tools-permitted-vs-installed",
   title: "Apps, channels, and extensions/App access and action permissions/Tools/Permitted vs Installed",
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "app-permissions/agent-access",
+        "app-permissions/action-policy"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 };
 export default meta;
 type Story = StoryObj;

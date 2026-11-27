@@ -110,7 +110,16 @@ function PersonaPage({ path, meet = false }: { path: string; meet?: boolean }) {
   </PluginLauncherProvider>;
 }
 const meta = { id: "agents-personas-full-pages",
-  title: "Agents and reusable capabilities/Hiring, configuration, and organization/Agents/Personas/Full pages", parameters: { layout: "fullscreen", a11y: { test: "off" } } } satisfies Meta;
+  title: "Agents and reusable capabilities/Hiring, configuration, and organization/Agents/Personas/Full pages", parameters: { layout: "fullscreen", a11y: { test: "off" },
+    paperclip: {
+      "capabilities": [
+        "agents/organization",
+        "navigation-preferences/profile"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  } } satisfies Meta;
 export default meta;
 type Story = StoryObj;
 export const AllAgents: Story = { render: () => <PersonaPage path="/PAP/agents/all" /> };

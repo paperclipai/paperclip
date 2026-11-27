@@ -9,7 +9,9 @@ import { bootstrapReadExecutionId, withoutProvenBootstrapReads, type BootstrapRe
 
 type Row = Record<string, any>;
 export interface ActiveStopCaller { type: "board"; userId: "local-board"; source: "local_implicit" }
-export type ActiveStopProvider = "cursor" | "copilot";
+export type ActiveStopProvider = "cursor" | "copilot" | "antigravity";
+/** Providers without a native tool-evidence notice; their proof is the canonical PRP stream alone. */
+const CANONICAL_PROVIDERS: ReadonlySet<ActiveStopProvider> = new Set(["antigravity"]);
 export interface ActiveStopScope { provider: ActiveStopProvider; companyId: string; issueId: string; runId: string; target: string; commandSha256?: string }
 export interface ActiveStopPending {
   schema: "paperclip.e2e.native-active-stop-pending.v2";
@@ -59,9 +61,57 @@ function canonicalRows(events: readonly unknown[], scope: ActiveStopScope) {
 }
 const terminals = new Set(["turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"]);
 const closures = new Set(["runtime_request.resolved", "runtime_request.cancelled", "runtime_request.expired"]);
+type CanonicalRow = ReturnType<typeof canonicalRows>[number];
+const MUTATIONS = new Set(["edit", "write", "execute"]);
+const READS = new Set(["read", "search"]);
+/**
+ * No provider notice exists, so bind the one durable permission card to its
+ * exact native tool call through the canonical execution ID. Only completed
+ * read-only operations may precede it; the mutation may not complete.
+ */
+function canonicalOrigin(rows: CanonicalRow[], scope: ActiveStopScope) {
+  const created = rows.filter(x => x.event.eventType === "runtime_request.created");
+  fail(created.length === 1, "one durable native card required");
+  const card = created[0]!, request = rec(rec(card.event.payload).request), details = rec(request.details);
+  const choices = Array.isArray(request.choices) ? request.choices.map(rec) : [];
+  fail(request.schema === "paperclip.runtime_request.v2" && request.type === "permission" && request.requestKind === "permission_approval"
+    && request.status === "pending" && id(request.requestId) && id(request.itemId) && id(details.toolCallId) && request.turnId === card.event.turnId
+    && id(card.event.turnId) && id(card.event.normalizedSessionId) && hasAcpxNativeOrigin(request.origin, scope.provider, "session/request_permission")
+    && choices.some(choice => choice.key === "decline") && choices.some(choice => choice.key === "accept"), "exact native permission identity missing");
+  const stream = (event: Row) => event.turnId === card.event.turnId && event.normalizedSessionId === card.event.normalizedSessionId && event.sourceInstanceId === card.event.sourceInstanceId;
+  fail(rows.filter(x => x.event.turnId != null).every(x => stream(x.event)), "foreign turn/session/source");
+  const executionId = bootstrapReadExecutionId(details.toolCallId);
+  const executions = rows.filter(x => x.event.eventType.startsWith("tool.execution."));
+  const own = executions.filter(x => rec(x.event.payload).executionId === executionId);
+  const started = own.filter(x => x.event.eventType === "tool.execution.started");
+  fail(started.length === 1 && own[0] === started[0] && own.filter(x => x.event.eventType === "tool.execution.completed").length <= 1
+    && own.every(x => rec(x.event.payload).schema === "paperclip.tool.execution.v1"
+      && ["tool.execution.started", "tool.execution.progressed", "tool.execution.completed"].includes(x.event.eventType)
+      && rec(x.event.payload).status === (x.event.eventType === "tool.execution.completed" ? "failed" : "running")
+      && (MUTATIONS.has(rec(x.event.payload).operation) || rec(x.event.payload).operation === "unknown")
+      && (rec(x.event.payload).target === scope.target || rec(x.event.payload).target == null))
+    && own.some(x => MUTATIONS.has(rec(x.event.payload).operation))
+    && (own.some(x => rec(x.event.payload).target === scope.target) || String(request.prompt ?? "").includes(scope.target)),
+  "exact native mutation lifecycle missing or completed");
+  const boundary = Math.min(card.row.seq, started[0]!.row.seq), others = new Map<string, CanonicalRow[]>();
+  for (const x of executions.filter(x => rec(x.event.payload).executionId !== executionId)) {
+    const key = String(rec(x.event.payload).executionId); others.set(key, [...others.get(key) ?? [], x]);
+  }
+  for (const group of others.values()) {
+    fail(group[0]!.event.eventType === "tool.execution.started" && group.at(-1)!.event.eventType === "tool.execution.completed"
+      && group.at(-1)!.row.seq < boundary && group.every(x => READS.has(rec(x.event.payload).operation) || rec(x.event.payload).operation === "unknown")
+      && group.some(x => READS.has(rec(x.event.payload).operation)) && group.every(x => rec(x.event.payload).target !== scope.target),
+    "extra native operation before or beside the pending mutation");
+  }
+  const notice = { runId: scope.runId, sessionId: card.event.normalizedSessionId as string, turnId: card.event.turnId as string,
+    toolCallId: details.toolCallId as string, requestId: request.requestId as string, seq: card.row.seq, stage: "permission_requested" as const,
+    declineOffered: true, operation: "edit" };
+  return { rows, notice, permission: card, created: card, toolOrigin: started[0]!, toolStarted: started[0]!, request, stream };
+}
 function origin(events: readonly unknown[], scope: ActiveStopScope, bootstrap?: BootstrapReadProof) {
-  fail([scope.companyId, scope.issueId, scope.runId, scope.target].every(id) && ["cursor", "copilot"].includes(scope.provider), "exact scope required");
+  fail([scope.companyId, scope.issueId, scope.runId, scope.target].every(id) && ["cursor", "copilot", "antigravity"].includes(scope.provider), "exact scope required");
   const rows = canonicalRows(events, scope);
+  if (CANONICAL_PROVIDERS.has(scope.provider)) return canonicalOrigin(rows, scope);
   const notices = scope.provider === "cursor" ? readCursorToolEvidence(events, scope.runId) : readCopilotToolEvidence(events, scope.runId);
   const requests = notices.filter(n => n.stage === "permission_requested");
   fail(requests.length === 1, "one native permission required");
@@ -120,7 +170,7 @@ export function observeActiveStopPending(input: { events: readonly unknown[]; ru
   fail(isActiveStopCaller(input.caller) && uuid(input.cancellationRequestId) && run.id === scope.runId && run.companyId === scope.companyId && run.nativeIssueId === scope.issueId
     && run.status === "running" && run.runtimeMode === "native" && issue.id === scope.issueId && issue.companyId === scope.companyId && issue.status === "in_progress"
     && run.resultJson?.startupCancellation == null && run.resultJson?.nativeCancellation == null, "run is not fresh active work");
-  fail(!(scope.provider === "cursor" ? readCursorToolEvidence(input.events, scope.runId) : readCopilotToolEvidence(input.events, scope.runId)).some(n => n.stage === "permission_delivered"), "permission already answered");
+  fail(CANONICAL_PROVIDERS.has(scope.provider) || !(scope.provider === "cursor" ? readCursorToolEvidence(input.events, scope.runId) : readCopilotToolEvidence(input.events, scope.runId)).some(n => n.stage === "permission_delivered"), "permission already answered");
   fail(!proof.rows.some(x => terminals.has(x.event.eventType) || closures.has(x.event.eventType)), "request or provider already settled");
   fail(!proof.rows.some(x => x.event.eventType === "tool.execution.completed" && rec(x.event.payload).executionId === bootstrapReadExecutionId(proof.notice.toolCallId)), "operation already ended");
   return { schema: "paperclip.e2e.native-active-stop-pending.v2", scope, caller: input.caller, requestId: proof.notice.requestId!, toolCallId: proof.notice.toolCallId,
@@ -161,6 +211,50 @@ export function readActiveStopSettlement(input: { events: readonly unknown[]; ru
   fail(proof.rows.filter(x => x.event.eventType.startsWith("tool.execution.")
     || (x.event.eventType === "provider.notice.recorded" && ["cursor_tool_evidence_v1", "copilot_tool_evidence_v1"].includes(rec(x.event.payload).category)))
     .every(x => x.event.sourceSeq < t.event.sourceSeq), "native operation after provider cancellation");
+  const stop = assertStopAcknowledged(run, issue, before);
+  return { schema: "paperclip.e2e.native-active-stop-settlement.v2", pending: before, dispatchMonotonicNs: input.dispatchMonotonicNs,
+    branch: "pending_permission_cancelled" as const, closedRequestSourceSeq: c.event.sourceSeq, terminalSourceSeq: t.event.sourceSeq,
+    closedRequestRowSha256: hash(c.row), terminalRowSha256: hash(t.row), intentId: stop.intentId as string,
+    intentAuditId: stop.intentAuditId as string, acknowledgementAuditId: stop.acknowledgementAuditId as string,
+    taskStillInProgress: true, normalCompletionAccepted: false, replayAllowed: false };
+}
+/**
+ * Playbook section 13, "Permission denial": the operator denies the one real
+ * native permission in the browser, then stops the task. The denial must reach
+ * the provider as a `decline` resolution of that exact request before the
+ * turn ends; the mutation never completes; nothing runs after the terminal;
+ * and Stop is acknowledged for this run. If the provider already ended its
+ * turn after the denial, the run must not claim the task done.
+ */
+export function readDeniedPermissionSettlement(input: { events: readonly unknown[]; run: Row; issue: Row; pending: ActiveStopPending; stopDispatched: boolean }) {
+  const before = input.pending, { run, issue } = input;
+  fail(before?.schema === "paperclip.e2e.native-active-stop-pending.v2" && isActiveStopCaller(before.caller), "pre-denial pending observation missing");
+  const proof = origin(input.events, before.scope);
+  fail(hash(proof.created.row) === before.requestRowSha256 && proof.notice.requestId === before.requestId && proof.notice.turnId === before.turnId
+    && proof.notice.toolCallId === before.toolCallId, "observed pending request changed");
+  const closed = proof.rows.filter(x => closures.has(x.event.eventType)), terminal = proof.rows.filter(x => terminals.has(x.event.eventType));
+  fail(closed.length === 1 && terminal.length === 1, "one closed request and one terminal required");
+  const c = closed[0]!, t = terminal[0]!, cp = rec(c.event.payload);
+  fail(proof.stream(c.event) && proof.stream(t.event) && c.event.eventType === "runtime_request.resolved" && cp.requestId === before.requestId
+    && cp.turnId === before.turnId && cp.action === "decline" && c.event.sourceSeq > before.requestSourceSeq && t.event.sourceSeq > c.event.sourceSeq,
+  "denial was not delivered to the exact native request before the turn ended");
+  fail(proof.rows.filter(x => x.event.eventType.startsWith("tool.execution.")).every(x => x.event.sourceSeq < t.event.sourceSeq
+    && !(x.event.eventType === "tool.execution.completed" && rec(x.event.payload).status === "completed" && MUTATIONS.has(rec(x.event.payload).operation))),
+  "native mutation completed or ran after the terminal");
+  fail(run.id === before.scope.runId && run.companyId === before.scope.companyId && run.nativeIssueId === before.scope.issueId && run.runtimeMode === "native",
+    "foreign run");
+  if (t.event.eventType === "turn.cancelled") {
+    fail(input.stopDispatched, "turn cancelled without the operator's Stop");
+    const stop = assertStopAcknowledged(run, issue, before);
+    return { schema: "paperclip.e2e.native-permission-denial.v1", branch: "denied_then_stopped" as const, requestId: before.requestId,
+      resolvedSourceSeq: c.event.sourceSeq, terminalSourceSeq: t.event.sourceSeq, intentId: stop.intentId as string, replayAllowed: false };
+  }
+  fail(["succeeded", "failed"].includes(run.status) && issue.id === before.scope.issueId && issue.status !== "done",
+    "provider finished after the denial but the task claims completion");
+  return { schema: "paperclip.e2e.native-permission-denial.v1", branch: "denied_then_finished" as const, requestId: before.requestId,
+    resolvedSourceSeq: c.event.sourceSeq, terminalSourceSeq: t.event.sourceSeq, replayAllowed: false };
+}
+function assertStopAcknowledged(run: Row, issue: Row, before: ActiveStopPending): Row {
   const stop = rec(rec(run.resultJson).nativeCancellation), startup = rec(rec(run.resultJson).startupCancellation);
   fail(run.id === before.scope.runId && run.companyId === before.scope.companyId && run.nativeIssueId === before.scope.issueId && run.runtimeMode === "native" && run.status === "cancelled"
     && issue.id === before.scope.issueId && issue.companyId === before.scope.companyId && issue.status === "in_progress"
@@ -171,11 +265,7 @@ export function readActiveStopSettlement(input: { events: readonly unknown[]; ru
     && Array.isArray(stop.effects) && stop.effects.length === 1 && stop.effects[0] === "release_run_resources"
     && id(stop.intentAuditId) && id(stop.acknowledgementAuditId) && stop.intentAuditId !== stop.acknowledgementAuditId,
   "same-scope caller Stop acknowledgement missing");
-  return { schema: "paperclip.e2e.native-active-stop-settlement.v2", pending: before, dispatchMonotonicNs: input.dispatchMonotonicNs,
-    branch: "pending_permission_cancelled" as const, closedRequestSourceSeq: c.event.sourceSeq, terminalSourceSeq: t.event.sourceSeq,
-    closedRequestRowSha256: hash(c.row), terminalRowSha256: hash(t.row), intentId: stop.intentId as string,
-    intentAuditId: stop.intentAuditId as string, acknowledgementAuditId: stop.acknowledgementAuditId as string,
-    taskStillInProgress: true, normalCompletionAccepted: false, replayAllowed: false };
+  return stop;
 }
 
 export interface ActiveStopRemoteObservation {

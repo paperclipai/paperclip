@@ -1,0 +1,112 @@
+{
+  "auditBase": "e868e6645ce0d598d756d3458f0b3d71afd6db4a",
+  "historicalWeightsMs": {
+    "selection": 1173,
+    "phase6": 19600,
+    "finalizer": 19882
+  },
+  "owners": {
+    "runtimeMode": 27,
+    "evidenceClassifier": 4,
+    "controlPlanePort": 34
+  },
+  "removedAliasExecutions": 99,
+  "restoration": {
+    "owner": "server/src/services/native-runtime/paperclip-control-plane-port.ts",
+    "originalSha256": "621beee8a451e9cab4fc09f886bfb4d95512c1433f82b7f9cbd3ea83fd2f3d0c",
+    "restoredSha256": "621beee8a451e9cab4fc09f886bfb4d95512c1433f82b7f9cbd3ea83fd2f3d0c",
+    "restored": true
+  },
+  "runs": {
+    "execution-audit-pure-baseline": {
+      "path": "/private/tmp/execution-audit-pure-baseline.json",
+      "sha256": "1b5a7f42848ccd40eabbe409e8eb6331f0f41f70c12c54c11715cc29402148fb",
+      "passed": 31,
+      "failed": 0,
+      "pending": 0,
+      "success": true
+    },
+    "execution-audit-port-baseline": {
+      "path": "/private/tmp/execution-audit-port-baseline.json",
+      "sha256": "9976aed11c8310e5c7245565413b1b4582367b8ec072006b79e05084c6c5e3c5",
+      "passed": 0,
+      "failed": 0,
+      "pending": 34,
+      "success": false
+    },
+    "execution-audit-port-baseline-repro": {
+      "path": "/private/tmp/execution-audit-port-baseline-repro.json",
+      "sha256": "ea16340d52952745b68ab8050e3c7406a6d61e1aaf142e1705a64066259b9e93",
+      "passed": 0,
+      "failed": 0,
+      "pending": 34,
+      "success": false
+    },
+    "execution-audit-port-baseline-repaired": {
+      "path": "/private/tmp/execution-audit-port-baseline-repaired.json",
+      "sha256": "cb3cd844a49d88dd762630a0914817ac389fbde89370b2917b21c3d5e4a1ad73",
+      "passed": 34,
+      "failed": 0,
+      "pending": 0,
+      "success": true
+    },
+    "execution-audit-selection-replay": {
+      "path": "/private/tmp/execution-audit-selection-replay.json",
+      "sha256": "96935cbb6530793b848728372233281d7945e0d6634ad19faa177ef518c3aefb",
+      "passed": 54,
+      "failed": 0,
+      "pending": 0,
+      "success": true
+    },
+    "execution-audit-port-mutation": {
+      "path": "/private/tmp/execution-audit-port-mutation.json",
+      "sha256": "e9fcf577361e22373a9f07be42e53e5690290c57a630029ed78e7e9978da6cd5",
+      "passed": 0,
+      "failed": 1,
+      "pending": 33,
+      "success": false
+    },
+    "execution-audit-port-control": {
+      "path": "/private/tmp/execution-audit-port-control.json",
+      "sha256": "59f030337cea965a4a135a62f0fe8315ed52f0bffd2ed5311040094d4517049e",
+      "passed": 1,
+      "failed": 0,
+      "pending": 33,
+      "success": true
+    }
+  },
+  "deliveryBase": "770cc3be7e294d606d83599c6f6a3232d47d4c70",
+  "branch": "codex/prune-native-acceptance-wrappers",
+  "candidate": {
+    "jsonSha256": "d7fe27f05c8ea33682a69f336e196020502cb42ae04f4717d9c8ffa7ef18c31c",
+    "passed": 65,
+    "failed": 0,
+    "pending": 0
+  },
+  "retainedOwnerSha256": {
+    "server/src/services/native-runtime/runtime-mode.test.ts": "c32e6b5276fc30a78f5f91ad7c9b46438d4b08917a3d933bbb1d991ef2b4d7e1",
+    "server/src/services/native-runtime/evidence-classifier.test.ts": "4567ab0fa44b311d83110c1fe7a5d6051cf099131db019f1024858cc3c6e7d0c",
+    "server/src/services/native-runtime/paperclip-control-plane-port.test.ts": "d236a5239fd4c7e15447740b04d160a51d268d555c7fb43c42e99cca4c417985"
+  },
+  "mutationFailure": {
+    "case": "revalidates every persisted native binding before open and completion",
+    "assertionLine": 1131,
+    "message": "promise resolved \"undefined\" instead of rejecting",
+    "selectedFailed": 1,
+    "filteredPending": 33
+  },
+  "defaultShardSelection": {
+    "shards": 12,
+    "selectedFiles": 886,
+    "uniqueFiles": 886,
+    "eachOwnerCount": 1,
+    "retiredAliasCount": 0,
+    "retainedInputAliasCount": 1
+  },
+  "stockShardTests": {
+    "passed": 29,
+    "failed": 0,
+    "skipped": 0,
+    "logSha256": "bd0026448f3025cc8166d9ef02e8c90252e66da45af693717ef744fdbb7e0576"
+  }
+}

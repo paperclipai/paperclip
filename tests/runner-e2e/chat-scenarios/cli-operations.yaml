@@ -1,0 +1,89 @@
+# yaml-language-server: $schema=./catalog.schema.json
+# Planning scenarios; not registered executions or evidence of a pass.
+schema_version: 1
+feature: cli-operations
+status: planned
+scenarios:
+  - id: cli-operations.choose-cli-context
+    capabilities:
+      - cli-operations/context
+    context: >-
+      The person has two configured CLI profiles and asks for guidance; the chat agent has no
+      authority over arbitrary operator credential files.
+    query: >-
+      Show me how to point my terminal at the Acorn company.
+    expected_outcome: >-
+      The agent provides the supported context/profile command shape for the intended API base
+      and company, using existing documentation or CLI help. It avoids printing credentials or
+      silently changing the operator's other profiles. A readback of selected identity and
+      company confirms context before future writes.
+  - id: cli-operations.create-from-cli
+    capabilities:
+      - cli-operations/domain-commands
+      - tasks/create
+    context: >-
+      The person explicitly wants a terminal command for a synthetic task, and their intended
+      CLI actor has task creation permission.
+    query: >-
+      Give me the CLI command to create a website task for Morgan in Launch.
+    expected_outcome: >-
+      The answer uses actual supported command flags and explicit company context, with
+      placeholders only for unresolved IDs. Running the command in the later journey creates one
+      task with the requested project and assignee. A plausible invented flag or command that
+      operates on a default wrong company fails the scenario.
+  - id: cli-operations.export-document-cli
+    capabilities:
+      - cli-operations/outputs
+      - documents-artifacts/documents
+    context: >-
+      An authorized task has a saved plan document; an owned local destination is available for
+      the later CLI journey.
+    query: >-
+      Download this task's plan from the terminal as a file.
+    expected_outcome: >-
+      The agent gives or uses the supported authorized document-output path in the declared
+      owned environment. The saved bytes match the chosen document revision and the command's
+      structured result is inspectable. Secret values and unrelated task content are excluded;
+      writing a chat summary is not the requested download.
+  - id: cli-operations.inspect-run-cli
+    capabilities:
+      - cli-operations/run-controls
+      - runs-adapters/runs
+    context: >-
+      The person requests CLI guidance for a visible run; force invocation and cancellation
+      retain board-only boundaries.
+    query: >-
+      Show me the command to inspect Morgan's last run and stop it if it is still running.
+    expected_outcome: >-
+      The response distinguishes the permitted read command from the authorized control path and
+      explains the required actor. The later journey verifies the exact run before any stop. It
+      does not equate an agent bearer with board invocation authority or claim cancellation from
+      a stale status lookup.
+  - id: cli-operations.owned-dev-instance
+    capabilities:
+      - cli-operations/worktree-instances
+      - instance-operations/diagnostics
+    context: >-
+      This is an operator companion journey in an explicitly owned disposable checkout; no
+      production instance is targeted.
+    query: >-
+      Set up a throwaway Paperclip instance for testing this chat flow.
+    expected_outcome: >-
+      The supported development-instance commands create and seed only the owned target and
+      report its URL and health. Cleanup identifies that exact instance and preserves unrelated
+      services and data. Chat does not treat a company-agent grant as permission to change
+      arbitrary host installations.
+  - id: cli-operations.feedback-bundle
+    capabilities:
+      - cli-operations/feedback-export
+      - activity/agent-commentary
+    context: >-
+      A human with company report access requests a local export into an owned directory;
+      ordinary agent access is insufficient.
+    query: >-
+      Export the feedback and traces for this test so I can review them locally.
+    expected_outcome: >-
+      The authorized operator export produces an inspectable local bundle with the requested
+      report scope and retained failure evidence. The response identifies its location and
+      contents without changing remote sharing or publishing private traces. Agent chat explains
+      the required human identity instead of bypassing report authorization.

@@ -59,6 +59,7 @@ export interface ChatIdentityLink {
   externalDetail?: string | null;
   paperclipUserId?: string | null;
   paperclipUserLabel?: string | null;
+  paperclipUserImage?: string | null;
   status: "linked" | "pending" | "revoked";
 }
 
@@ -150,6 +151,7 @@ export interface ChatEndpoint {
     slackAccount?: SlackAccountState;
     slackOAuthCallbackUri?: string | null;
     webhookVerifiedAt?: string | null;
+    credentialRotationId?: string | null;
     webhookSecretConfigured?: boolean;
     callbackSurfaces?: {
       events: ChatCallbackSurfaceState;
@@ -167,6 +169,7 @@ export interface ChatCallbackSurfaceState {
 
 export interface ChatEndpointSetupSecret {
   webhookSecret: string;
+  credentialRotationId?: string;
 }
 
 type ListResponse<T> =

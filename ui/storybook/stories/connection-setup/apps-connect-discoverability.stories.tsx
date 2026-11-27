@@ -60,7 +60,15 @@ function PasteConfigHost() {
 const meta: Meta = {
   id: "apps-connect-discoverability-pap-11091",
   title: "Apps, channels, and extensions/Connection setup/Apps/Connect discoverability (PAP-11091)",
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "connection-setup/catalog"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 };
 export default meta;
 
