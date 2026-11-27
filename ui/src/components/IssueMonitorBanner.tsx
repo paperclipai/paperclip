@@ -163,6 +163,7 @@ export function buildMonitorSurfaceCopy(
       stripMeta: [`Usage recheck ${eta} · ${absolute}`, "Tasks with a selected account keep it while waiting."],
       tone: "info",
       usageWait: true,
+      checkUnavailable: true,
     };
   }
 
@@ -206,6 +207,7 @@ export function buildMonitorSurfaceCopy(
     bannerMeta,
     stripMeta,
     tone: derived.state === "overdue" ? "warning" : "info",
+    checkUnavailable: isScheduledRetryOnly,
   };
 }
 
