@@ -1,3 +1,4 @@
+import { isProviderQuotaActionRequired } from "../provider-quota-reset.js";
 import { classifyAdapterFailureForRecovery } from "../recovery/service.js";
 import { QUEUED_MESSAGES_DELIVERED_REASON } from "../../modules/wake-queue/index.js";
 import { connectionIntentService } from "../connection-intents.js";
@@ -3433,6 +3434,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       )).orderBy(desc(heartbeatRuns.finishedAt)).limit(1);
       // Anchor relative reset times and the default backoff to the observed failure.
       if (latest?.status === "failed" && latest.finishedAt) {
+        if (isProviderQuotaActionRequired(latest, latest.finishedAt)) {
+          await writeSkippedRequest("provider_quota", { error: "Provider account action required" });
+          return null;
+        }
         const quota = latest.errorCode === "native_provider_usage_limit" ||
           readHeartbeatRunErrorFamily(latest) === "provider_quota";
         const failure = classifyAdapterFailureForRecovery(
