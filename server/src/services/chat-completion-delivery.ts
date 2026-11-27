@@ -336,6 +336,16 @@ export function chatCompletionDeliveryService(db: Db, heartbeat: { wakeup(agentI
       if (runId) {
         const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
         if (run && activeRuns.includes(run.status)) return;
+        if (run?.errorCode === "workspace_busy") {
+          const [retry] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+            .where(eq(heartbeatRuns.retryOfRunId, run.id)).orderBy(desc(heartbeatRuns.createdAt)).limit(1);
+          if (retry) {
+            await db.update(deliveries).set({ targetRunId: retry.id })
+              .where(and(eq(deliveries.id, id), eq(deliveries.targetRunId, run.id)));
+            return;
+          }
+          if (Date.now() - (run.finishedAt?.getTime() ?? 0) < LEASE_MS) return;
+        }
 
         const presentationDeadline = run?.runtimeMode === "native" && run.status === "succeeded" && run.finishedAt
           ? run.finishedAt.getTime() + MAX_ATTEMPTS * LEASE_MS : null;

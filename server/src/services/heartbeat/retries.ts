@@ -58,6 +58,7 @@ import type { Db } from "@paperclipai/db";
 import {
   agents,
   agentWakeupRequests,
+  chatCompletionDeliveries,
   executionWorkspaces,
   heartbeatRuns,
   issues,
@@ -573,7 +574,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         reason: "Repair the invalid tool definitions before starting a new attempt.",
         issueId: readNonEmptyString(run.contextSnapshot?.issueId) };
     }
-    if (Array.isArray(run.contextSnapshot?.chatCompletionDeliveryIds) &&
+    if (opts?.retryReason !== WORKSPACE_BUSY_RETRY_REASON && Array.isArray(run.contextSnapshot?.chatCompletionDeliveryIds) &&
         run.contextSnapshot.chatCompletionDeliveryIds.some(id => typeof id === "string")) {
       return { outcome: "not_scheduled" as const, reason: "The completion outbox owns this reply's retry budget and publication identity.",
         errorCode: "chat_completion_outbox_owns_retry" as const, issueId: readNonEmptyString(run.contextSnapshot.issueId) };
@@ -1304,6 +1305,10 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
             updatedAt: now,
           })
           .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+        if (retryReason === WORKSPACE_BUSY_RETRY_REASON) {
+          await tx.update(chatCompletionDeliveries).set({ targetRunId: scheduledRun.id })
+            .where(and(eq(chatCompletionDeliveries.companyId, run.companyId), eq(chatCompletionDeliveries.targetRunId, run.id)));
+        }
 
         let detachWorkspaceFromIssue = false;
         if (issueId && shouldQuarantineWorkspaceForRetry) {

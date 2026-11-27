@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agents, agentWakeupRequests, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRunEvents, heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
+import { activityLog, agents, agentWakeupRequests, chatCompletionDeliveries, chatTaskHandoffs, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRunEvents, heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
@@ -8,6 +8,7 @@ import { HttpError } from "../../errors.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { createRunDispatch, isResolvedInteractionContinuationWakeContext, type PostCommitEffect } from "../../modules/run-dispatch/index.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
+import { chatCompletionDeliveryService } from "../chat-completion-delivery.js";
 import * as legacy from "../heartbeat.js";
 import { createHeartbeatRunState } from "./run-state.js";
 import { pendingCaseHandoffForRun } from "./case-handoff-lifecycle.js";
@@ -273,6 +274,8 @@ describePostgres("heartbeat retry module database wiring", () => {
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(chatCompletionDeliveries);
+    await db.delete(chatTaskHandoffs);
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
@@ -559,6 +562,47 @@ describePostgres("heartbeat retry module database wiring", () => {
     expect(await boundRetries().retries.scheduleBoundedRetry(run.id, { now })).toMatchObject({ outcome: "scheduled", run: { id: successor.id }, reusedExisting: true });
     expect(first.deps.appendRunEvent).toHaveBeenCalledTimes(1);
     expect(second.deps.appendRunEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("hands a deferred chat completion's outbox row to the waiting successor without spending an attempt", async () => {
+    const { run, agent, issue, companyId } = await fixture();
+    await db.insert(chatTaskHandoffs).values({ taskId: issue.id, companyId, conversationId: issue.id, agentId: agent.id, sessionGeneration: 0 }).onConflictDoNothing();
+    const [delivery] = await db.insert(chatCompletionDeliveries).values({ companyId, taskId: issue.id, statusVersion: 1, status: "queued", targetRunId: run.id }).returning();
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: issue.id, chatCompletionDeliveryIds: [delivery.id] } }).where(eq(heartbeatRuns.id, run.id));
+    const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    const { retries } = boundRetries();
+    expect(await retries.scheduleBoundedRetryForRun(source, agent, { now, retryReason: "workspace_busy", wakeReason: "workspace_busy_retry", maxAttempts: 1, delayMs: 1000 }))
+      .toMatchObject({ outcome: "scheduled" });
+    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id));
+    const [after] = await db.select().from(chatCompletionDeliveries).where(eq(chatCompletionDeliveries.id, delivery.id));
+    expect(after).toMatchObject({ targetRunId: successor.id, attempts: 0, status: "queued" });
+    expect(await retries.scheduleBoundedRetryForRun(source, agent, { now })).toMatchObject({ errorCode: "chat_completion_outbox_owns_retry" });
+  });
+
+  it("keeps the delivery attempt and moves the target when a workspace-busy run is cancelled before its retry is linked", async () => {
+    const { run, agent, issue, companyId } = await fixture();
+    const [conversation] = await db.insert(issues).values({
+      companyId, title: "Chat source", status: "in_progress",
+      assigneeAgentId: agent.id, conversationAgentId: agent.id, conversationUserId: "user-1",
+      conversationState: "active", conversationSessionGeneration: 0,
+    }).returning();
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, issue.id));
+    await db.insert(chatTaskHandoffs).values({ taskId: issue.id, companyId, conversationId: conversation.id, agentId: agent.id, sessionGeneration: 0 }).onConflictDoNothing();
+    const [delivery] = await db.insert(chatCompletionDeliveries).values({
+      companyId, taskId: issue.id, statusVersion: 1, status: "queued", targetRunId: run.id, nextAttemptAt: new Date(0),
+    }).returning();
+    await db.update(heartbeatRuns).set({ status: "cancelled", errorCode: "workspace_busy", finishedAt: new Date() }).where(eq(heartbeatRuns.id, run.id));
+    const service = chatCompletionDeliveryService(db, { wakeup: vi.fn(async () => null) });
+    await service.deliver(delivery.id);
+    expect(await db.select().from(chatCompletionDeliveries).where(eq(chatCompletionDeliveries.id, delivery.id)))
+      .toMatchObject([{ attempts: 0, targetRunId: run.id }]);
+    const [retry] = await db.insert(heartbeatRuns).values({
+      companyId, agentId: agent.id, status: "scheduled_retry", retryOfRunId: run.id,
+    }).returning();
+    await db.update(chatCompletionDeliveries).set({ nextAttemptAt: new Date(0) }).where(eq(chatCompletionDeliveries.id, delivery.id));
+    await service.deliver(delivery.id);
+    expect(await db.select().from(chatCompletionDeliveries).where(eq(chatCompletionDeliveries.id, delivery.id)))
+      .toMatchObject([{ attempts: 0, targetRunId: retry.id }]);
   });
 
   it("promotes only due retries and publishes after commit", async () => {
