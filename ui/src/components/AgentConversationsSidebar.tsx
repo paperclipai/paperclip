@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import type { Agent } from "@paperclipai/shared";
 import { AgentConversationSidebar } from "./AgentConversationSidebar";
 import { queryViewKind } from "./QueryView";
 import { useAgentChatNavigation, useOpenAgentChat } from "@/hooks/useAgentChatNavigation";
@@ -11,6 +12,8 @@ import { queryKeys } from "@/lib/queryKeys";
 import { resourceMembershipState, useResourceMemberships } from "@/hooks/useResourceMemberships";
 import { useDialogActions } from "@/context/DialogContext";
 import { AgentChatPin, agentChatPinKey, useAgentChatPins } from "./AgentChatPin";
+
+const EMPTY_AGENTS: Agent[] = [];
 
 /** Account- and company-scoped data for the secondary chat navigation. */
 export function AgentConversationsSidebar({ compact = false, mobileSwitcher = false }: { compact?: boolean; mobileSwitcher?: boolean } = {}) {
@@ -26,16 +29,38 @@ export function AgentConversationsSidebar({ compact = false, mobileSwitcher = fa
   const { isMobile, setSidebarOpen } = useSidebar();
   const { pathname } = useLocation();
   const activeRef = pathname.split("/chats/")[1]?.split("/")[0];
-  const roster = agents.data ?? [];
-  const byId = new Map(roster.map(agent => [agent.id, agent]));
-  // The active roster excludes terminated agents, but their history remains readable.
-  const missingIds = agents.isSuccess ? [...new Set((chats.data ?? [])
-    .flatMap(chat => chat.conversationAgentId && !byId.has(chat.conversationAgentId) ? [chat.conversationAgentId] : []))] : [];
+  const roster = agents.data ?? EMPTY_AGENTS;
+  const missingIds = useMemo(() => {
+    if (!agents.isSuccess) return [];
+    const rosterIds = new Set(roster.map(agent => agent.id));
+    return [...new Set((chats.data ?? [])
+      .flatMap(chat => chat.conversationAgentId && !rosterIds.has(chat.conversationAgentId) ? [chat.conversationAgentId] : []))];
+  }, [agents.isSuccess, chats.data, roster]);
   const historyAgents = useQueries({ queries: missingIds.map(id => ({
     queryKey: queryKeys.agents.detail(id), queryFn: () => agentsApi.get(id, companyId!),
   })) });
-  for (const result of historyAgents) if (result.data) byId.set(result.data.id, result.data);
-  const active = [...byId.values()].find(agent => agent.id === activeRef || (agent.status !== "terminated" && encodeURIComponent(agentRouteRef(agent)) === activeRef));
+  const historyAgentsSignature = historyAgents
+    .map(result => `${result.data?.id ?? ""}:${String(result.data?.updatedAt ?? "")}`)
+    .join("|");
+  const { active, orderedAgents } = useMemo(() => {
+    const byId = new Map(roster.map(agent => [agent.id, agent]));
+    for (const result of historyAgents) if (result.data) byId.set(result.data.id, result.data);
+    const resolvedActive = [...byId.values()].find(agent => agent.id === activeRef || (agent.status !== "terminated" && encodeURIComponent(agentRouteRef(agent)) === activeRef));
+    const conversations = (chats.data ?? []).flatMap(chat => {
+      const agent = chat.conversationAgentId ? byId.get(chat.conversationAgentId) : undefined;
+      return agent ? [agent] : [];
+    });
+    if (resolvedActive && !conversations.some(agent => agent.id === resolvedActive.id)) conversations.unshift(resolvedActive);
+    const listedIds = new Set(conversations.map(agent => agent.id));
+    const teammates = roster
+      .filter(agent => !listedIds.has(agent.id) && agent.status !== "terminated"
+        && (!memberships.isSuccess || resourceMembershipState(memberships.data, "agent", agent.id) !== "left"))
+      .sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
+    return {
+      active: resolvedActive,
+      orderedAgents: [...conversations, ...teammates],
+    };
+  }, [roster, chats.data, activeRef, historyAgentsSignature, memberships.isSuccess, memberships.data]);
   const activeId = active?.id;
   const existingChatAgentIds = useMemo(() => {
     const ids = (chats.data ?? []).flatMap(chat => chat.conversationAgentId ? [chat.conversationAgentId] : []);
@@ -44,31 +69,19 @@ export function AgentConversationsSidebar({ compact = false, mobileSwitcher = fa
   }, [chats.data, activeId]);
   const unreadAgentIds = useMemo(() => (chats.data ?? [])
     .flatMap(chat => chat.isUnreadForMe && chat.conversationAgentId ? [chat.conversationAgentId] : []), [chats.data]);
-  const conversations = (chats.data ?? []).flatMap(chat => {
-    const agent = chat.conversationAgentId ? byId.get(chat.conversationAgentId) : undefined;
-    return agent ? [agent] : [];
-  });
-  if (active && !conversations.some(agent => agent.id === active.id)) conversations.unshift(active);
-  // Everyone you can chat with is listed, not only agents you've already
-  // talked to: conversations first by recent activity, then the rest of the
-  // roster alphabetically. Same eligibility rule as the Agents nav section —
-  // terminated agents and agents you've left are omitted.
-  const listedIds = new Set(conversations.map(agent => agent.id));
-  const teammates = roster
-    .filter(agent => !listedIds.has(agent.id) && agent.status !== "terminated"
-      && (!memberships.isSuccess || resourceMembershipState(memberships.data, "agent", agent.id) !== "left"))
-    .sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
-  const previews = Object.fromEntries((chats.data ?? []).filter(chat => chat.conversationState === "active")
-    .map(chat => [chat.conversationAgentId!, "Working…"]));
+  const previews = useMemo(() => Object.fromEntries((chats.data ?? []).filter(chat => chat.conversationState === "active")
+    .map(chat => [chat.conversationAgentId!, "Working…"])), [chats.data]);
   const pinnedAgentIds = useMemo(() => {
     const prefix = `agent-chat:${companyId}:`;
     return agentChatPins.orderedKeys.filter(key => key.startsWith(prefix)).map(key => key.slice(prefix.length));
   }, [companyId, agentChatPins.orderedKeys]);
-  return <AgentConversationSidebar key={`${companyId}:${userId}`} agents={[...conversations, ...teammates]} availableAgents={roster}
+  return <AgentConversationSidebar key={`${companyId}:${userId}`} agents={orderedAgents} availableAgents={roster}
     compact={compact}
     mobileSwitcher={mobileSwitcher}
     existingChatAgentIds={existingChatAgentIds}
-    activeId={active?.id} previews={previews}
+    activeId={active?.id}
+    activeAgent={active}
+    previews={previews}
     unreadAgentIds={unreadAgentIds}
     unreadMessageCounts={unreadMessageCounts}
     pinnedAgentIds={pinnedAgentIds}

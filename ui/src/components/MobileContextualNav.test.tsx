@@ -329,4 +329,92 @@ describe("Mobile contextual section switchers", () => {
     });
     expect(scrollIntoView).toHaveBeenCalledWith({ inline: "nearest", block: "nearest" });
   });
+
+  it("keeps mobileSwitcher activeAgent and unread count work bounded across unchanged rerenders at realistic roster size", () => {
+    const rosterSize = 250;
+    let nonActiveIdLookups = 0;
+    const maxNonActiveLookups = rosterSize;
+    const agents = Array.from({ length: rosterSize }, (_, index) => {
+      const id = `agent-${index}`;
+      return Object.defineProperty(
+        { name: `Agent ${index}`, role: "engineer", status: "active", companyId: "company-1" },
+        "id",
+        {
+          enumerable: true,
+          get() {
+            if (index < rosterSize - 1) {
+              nonActiveIdLookups += 1;
+              if (nonActiveIdLookups > maxNonActiveLookups) {
+                throw new Error(`Exceeded lookup bound: ${nonActiveIdLookups}`);
+              }
+            }
+            return id;
+          },
+        },
+      );
+    }) as Parameters<typeof AgentConversationSidebar>[0]["agents"];
+
+    let unreadIterations = 0;
+    const unreadMap = new Map<string, number>(
+      Array.from({ length: rosterSize }, (_, index) => [`agent-${index}`, index % 3 === 0 ? 1 : 0]),
+    );
+    const originalIterator = unreadMap[Symbol.iterator].bind(unreadMap);
+    unreadMap[Symbol.iterator] = function countedIterator() {
+      unreadIterations += 1;
+      if (unreadIterations > 2) {
+        throw new Error(`Exceeded unread iteration bound: ${unreadIterations}`);
+      }
+      return originalIterator();
+    };
+
+    const existingChatAgentIds: string[] = [];
+    const targetId = `agent-${rosterSize - 1}`;
+    root = createRoot(container);
+    for (let pass = 0; pass < 5; pass += 1) {
+      flushSync(() => {
+        root!.render(
+          <MemoryRouter initialEntries={[`/PAP/chats/${targetId}`]}>
+            <AgentConversationSidebar
+              agents={agents}
+              existingChatAgentIds={existingChatAgentIds}
+              activeId={targetId}
+              unreadMessageCounts={unreadMap}
+              mobileSwitcher
+            />
+          </MemoryRouter>,
+        );
+      });
+    }
+
+    expect(nonActiveIdLookups).toBe(rosterSize - 1);
+    expect(unreadIterations).toBe(1);
+    const trigger = container.querySelector('[data-mobile-contextual-nav="agent-chat"]');
+    expect(trigger?.textContent).toContain(`Agent ${rosterSize - 1}`);
+
+    const providedAgent = {
+      id: targetId,
+      name: `Agent ${rosterSize - 1}`,
+      role: "engineer",
+      status: "active",
+      companyId: "company-1",
+    } as Parameters<typeof AgentConversationSidebar>[0]["agents"][number];
+    for (let pass = 0; pass < 5; pass += 1) {
+      flushSync(() => {
+        root!.render(
+          <MemoryRouter initialEntries={[`/PAP/chats/${targetId}`]}>
+            <AgentConversationSidebar
+              agents={agents}
+              existingChatAgentIds={existingChatAgentIds}
+              activeId={targetId}
+              activeAgent={providedAgent}
+              unreadMessageCounts={unreadMap}
+              mobileSwitcher
+            />
+          </MemoryRouter>,
+        );
+      });
+    }
+    expect(nonActiveIdLookups).toBe(rosterSize - 1);
+    expect(unreadIterations).toBe(1);
+  });
 });

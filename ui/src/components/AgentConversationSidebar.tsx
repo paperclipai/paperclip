@@ -18,6 +18,7 @@ export interface AgentConversationSidebarProps {
   existingChatAgentIds?: readonly string[];
   availableAgents?: Agent[];
   activeId?: string;
+  activeAgent?: Agent;
   previews?: Record<string, string>;
   unreadAgentIds?: readonly string[];
   unreadMessageCounts?: ReadonlyMap<string, number>;
@@ -41,7 +42,7 @@ const NO_PINNED_AGENTS: readonly string[] = [];
 const contactRowClassName = "agent-pin-row agent-contact-pin-row group/agent-pin relative rounded-md";
 
 /** Searchable navigation for one conversation per agent. */
-export function AgentConversationSidebar({ agents, compact = false, mobileSwitcher = false, existingChatAgentIds, availableAgents = agents, activeId, previews = {}, unreadAgentIds = [], unreadMessageCounts, loading = false, error, onRetry, initialSearch = "", onSelect, onBrowse, onAddChat, historyLoading, historyError, onRetryHistory, onCreateAgent, renderAgentAction, pinnedAgentIds = NO_PINNED_AGENTS, onReorderPins }: AgentConversationSidebarProps) {
+export function AgentConversationSidebar({ agents, compact = false, mobileSwitcher = false, existingChatAgentIds, availableAgents = agents, activeId, activeAgent: providedActiveAgent, previews = {}, unreadAgentIds = [], unreadMessageCounts, loading = false, error, onRetry, initialSearch = "", onSelect, onBrowse, onAddChat, historyLoading, historyError, onRetryHistory, onCreateAgent, renderAgentAction, pinnedAgentIds = NO_PINNED_AGENTS, onReorderPins }: AgentConversationSidebarProps) {
   const navigate = useNavigate();
   const [pickerOpen, setPickerOpen] = useState(false);
   const [search, setSearch] = useState(initialSearch);
@@ -49,19 +50,19 @@ export function AgentConversationSidebar({ agents, compact = false, mobileSwitch
   const headingId = useId();
   const unreadIds = useMemo(() => new Set(unreadAgentIds), [unreadAgentIds]);
   const pinnedIds = useMemo(() => new Set(pinnedAgentIds), [pinnedAgentIds]);
-  const activeAgent = useMemo(
-    () => (activeId ? agents.find((agent) => agent.id === activeId) : undefined),
-    [activeId, agents],
-  );
+  const activeAgent = useMemo(() => {
+    if (!mobileSwitcher) return undefined;
+    if (providedActiveAgent !== undefined) return providedActiveAgent;
+    return activeId ? agents.find((agent) => agent.id === activeId) : undefined;
+  }, [activeId, agents, mobileSwitcher, providedActiveAgent]);
   const otherUnreadCount = useMemo(() => {
+    if (!mobileSwitcher || !unreadMessageCounts) return 0;
     let total = 0;
-    if (unreadMessageCounts) {
-      for (const [id, count] of unreadMessageCounts) {
-        if (id !== activeId && count > 0) total += count;
-      }
+    for (const [id, count] of unreadMessageCounts) {
+      if (id !== activeId && count > 0) total += count;
     }
     return total;
-  }, [activeId, unreadMessageCounts]);
+  }, [activeId, mobileSwitcher, unreadMessageCounts]);
   const pickerTrigger = compact ? (
     <Button variant="ghost" size="icon-sm" className="text-muted-foreground" aria-label="Browse chats" title="Browse chats">
       <PanelLeftOpen className="size-4" aria-hidden />
