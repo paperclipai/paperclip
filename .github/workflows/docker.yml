@@ -371,6 +371,10 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           BEFORE: ${{ github.event.before }}
           ARCH: ${{ matrix.arch }}
+          # When master runs on the fast AWS release fleet, promote an already-
+          # completed merge-queue build immediately instead of stalling 3 minutes
+          # behind a slower GitHub-hosted merge-queue runner.
+          MERGE_GROUP_FIND_WAIT_MS: ${{ vars.CORE_RELEASE_AWS_ENABLED == 'true' && '0' || '180000' }}
         # Master's copy from before this push selects the run; see the promote
         # step below.
         run: |

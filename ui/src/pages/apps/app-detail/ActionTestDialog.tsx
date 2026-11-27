@@ -957,9 +957,9 @@ function PrettyPreview({ value }: { value: unknown }) {
     return (
       <dl className="max-h-64 overflow-auto divide-y divide-border rounded-md border border-border bg-background text-xs">
         {Object.entries(value as Record<string, unknown>).map(([key, field]) => (
-          <div key={key} className="grid grid-cols-3 gap-3 px-3 py-2">
+          <div key={key} className="grid grid-cols-1 gap-1 px-3 py-2 sm:grid-cols-3 sm:gap-3">
             <dt className="min-w-0 break-words text-muted-foreground">{key}</dt>
-            <dd className="col-span-2 min-w-0 break-words whitespace-pre-wrap text-foreground">{typeof field === "object" && field !== null ? safeStringify(collapseDeep(field, 2)) : cellText(field)}</dd>
+            <dd className="min-w-0 break-words whitespace-pre-wrap text-foreground sm:col-span-2">{typeof field === "object" && field !== null ? safeStringify(collapseDeep(field, 2)) : cellText(field)}</dd>
           </div>
         ))}
       </dl>
@@ -996,9 +996,9 @@ function PreviewRowCard({ row, index }: { row: Record<string, unknown>; index: n
       {details.length > 0 && (
         <dl className="mt-2 space-y-1">
           {details.slice(0, 3).map(([key, field]) => (
-            <div key={key} className="grid grid-cols-3 gap-2">
+            <div key={key} className="grid grid-cols-1 gap-0.5 sm:grid-cols-3 sm:gap-2">
               <dt className="min-w-0 break-words text-muted-foreground">{key}</dt>
-              <dd className="col-span-2 min-w-0 break-all text-foreground">{cellText(field)}</dd>
+              <dd className="min-w-0 break-all text-foreground sm:col-span-2">{cellText(field)}</dd>
             </div>
           ))}
         </dl>

@@ -3872,6 +3872,20 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               eq(heartbeatRuns.companyId, issue.companyId), eq(heartbeatRuns.nativeIssueId, issue.id),
               eq(heartbeatRuns.runtimeMode, "native"), inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
             )).limit(1).then(rows => rows[0] ?? null);
+          // Under the issue lock, so overlapping sweeps cannot both continue
+          // the same run. A skipped, failed or cancelled wake is no successor.
+          const successorRunId = issueStateGuard?.withoutSuccessorOfRunId;
+          if (successorRunId && (
+            await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+              eq(heartbeatRuns.companyId, issue.companyId), eq(heartbeatRuns.retryOfRunId, successorRunId),
+            )).limit(1).then(rows => rows.length > 0) ||
+            await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+              eq(agentWakeupRequests.companyId, issue.companyId),
+              sql`${agentWakeupRequests.payload}->>'issueId' = ${issue.id}`,
+              sql`${agentWakeupRequests.payload}->>'retryOfRunId' = ${successorRunId}`,
+              notInArray(agentWakeupRequests.status, ["skipped", "failed", "cancelled"]),
+            )).limit(1).then(rows => rows.length > 0)
+          )) return { kind: "skipped" as const };
           if (
             issueStateGuard &&
             (!issueStateGuard.statuses.includes(issue.status) ||

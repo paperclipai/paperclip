@@ -2968,7 +2968,7 @@ describe("remote provider pack manifest", () => {
     return JSON.stringify(value);
   };
 
-  it.each(["opencode", "opencode-new-durable", "opencode-new-durable-reset", "opencode-new-durable-inspect-reset", "opencode-new-durable-provider-reset", "opencode-new-durable-store-failed", "opencode-new-durable-publish-failed", "opencode-new-durable-slow-capture", "opencode-new-durable-ready", "opencode-continuation", "opencode-continuation-missing", "opencode-continuation-no-receipt", "opencode-continuation-replacement", "opencode-continuation-cold", "opencode-continuation-legacy-durable", "opencode-continuation-prior-receipt", "opencode-dirty", "opencode-diagnostics", "opencode-diagnostics-stale", "cursor", "claude-x64", "claude-arm64"] as const)("uses the bundled Linux image authority for remote %s without controller overrides", async provider => {
+  it.each(["opencode", "opencode-new-durable", "opencode-new-durable-reset", "opencode-new-durable-inspect-reset", "opencode-new-durable-provider-reset", "opencode-new-durable-store-failed", "opencode-new-durable-publish-failed", "opencode-new-durable-slow-capture", "opencode-new-durable-ready", "opencode-continuation", "opencode-continuation-missing", "opencode-continuation-no-receipt", "opencode-continuation-replacement", "opencode-continuation-cold", "opencode-continuation-legacy-durable", "opencode-continuation-prior-receipt", "opencode-continuation-prior-receipt-replacement", "opencode-dirty", "opencode-diagnostics", "opencode-diagnostics-stale", "cursor", "claude-x64", "claude-arm64"] as const)("uses the bundled Linux image authority for remote %s without controller overrides", async provider => {
     const firstDurable = provider.startsWith("opencode-new-durable");
     // A sandbox connection drops once while the settled state is read out.
     let checkpointReadResets = provider === "opencode-new-durable-reset" ? 1 : 0;
@@ -3242,7 +3242,8 @@ describe("remote provider pack manifest", () => {
         if (provider === "opencode-continuation-no-receipt") await rm(receiptPath);
         const cold = provider === "opencode-continuation-cold";
         const legacyDurable = provider === "opencode-continuation-legacy-durable";
-        const priorReceipt = provider === "opencode-continuation-prior-receipt";
+        const priorReceiptReplacement = provider === "opencode-continuation-prior-receipt-replacement";
+        const priorReceipt = provider === "opencode-continuation-prior-receipt" || priorReceiptReplacement;
         const launchRoot = `/home/runtime-account/.paperclip-runtime/paperclip-runner/provider-artifacts/${installed.digest.slice(7)}`;
         const artifactReceipt = { schema: "paperclip.native-provider-artifacts.v1" as const, artifactId: randomUUID(),
           closureDigest: "sha256:" + "9".repeat(64), providerPackDigest: installed.digest, manifest: installed, launchRoot, accountUid: 1000 };
@@ -3276,7 +3277,7 @@ describe("remote provider pack manifest", () => {
           ...(cold ? { controllerPersistence: { bootId: randomUUID() }, providerPackAdmissionSource: {
             runId: remoteExecution.binding.runId, receipt: coldAdmission, state: { schema: "paperclip.native-provider-pack-admission-state.v1",
               state: "verified", admissionEpoch: randomUUID() }, artifacts: artifactReceipt } } : {}),
-          runnerEnvironment: configuredEnvironmentProjection(provider === "opencode-continuation-replacement" ? {} : { PAPERCLIP_OPENCODE_PERFORMANCE_DIAGNOSTICS: "1" }),
+          runnerEnvironment: configuredEnvironmentProjection(provider === "opencode-continuation-replacement" || priorReceiptReplacement ? {} : { PAPERCLIP_OPENCODE_PERFORMANCE_DIAGNOSTICS: "1" }),
           runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: cold ? "/workspace-new-allocation-lease" : "/workspace",
             environmentId: "environment", leaseId: "lease", providerKey: "daytona",
             effectiveCapabilities: { runnerWebSocketIngress: true }, runner: { execute: selectedExecute, syncIn,
@@ -3327,6 +3328,35 @@ describe("remote provider pack manifest", () => {
           });
           state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
           expect(state.createTransport.mock.calls.at(-1)![0]).toMatchObject({ providerPackAuthorityDigest: installed.digest });
+        }
+        if (priorReceiptReplacement) {
+          // A provider session restored from saved artifacts launches from the
+          // artifact root and never selects a pack root. When exact resume fails
+          // and the session is replaced, the replacement transport is built
+          // before its Runner is staged, so it must already carry the OpenCode
+          // launch inputs (staging, 2026-11-25: "OpenCode executable is missing
+          // from the provider pack").
+          const backend = state.createBackend.mock.results.at(-1)!.value;
+          const factory = state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!;
+          let replacementOptions: Record<string, unknown> | undefined;
+          const preparationsBefore = prepareRemote.mock.calls.length;
+          Object.assign(backend, { openSession: async () => {
+            // The replacement stages its launch inputs itself, before its transport is built.
+            expect(prepareRemote.mock.calls.length).toBe(preparationsBefore + 1);
+            factory();
+            replacementOptions = state.createTransport.mock.calls.at(-1)![0] as Record<string, unknown>;
+            return { identity: () => ({ ...remoteExecution.binding, sessionId: remoteExecution.session.normalizedSessionId! }) };
+          } });
+          const priorIdentity = { ...remoteExecution.binding, sessionId: remoteExecution.session.normalizedSessionId! };
+          await continued.openReplacementSession!({ identity: priorIdentity }, {
+            backendKind: "runner", identity: priorIdentity, sessionId: priorIdentity.sessionId,
+            providerSessionId: "prior-provider-session", activeTurnId: null, terminal: null,
+          });
+          expect(replacementOptions).toMatchObject({
+            providerNodeCommand: `${launchRoot}/${installed.payload.artifacts.nodeCommand.path}`,
+            opencodeCommand: `${launchRoot}/${installed.payload.artifacts.opencodeExecutable.path}`,
+            opencodeProxyPath: `${launchRoot}/${installed.payload.artifacts.opencodeProxy.path}`,
+          });
         }
       }
       if (provider === "claude-x64" || provider === "opencode") {
@@ -17204,6 +17234,19 @@ describe("native session bounded recovery", () => {
     expect(nativeSessionRecoveryProjection({
       phase: "terminal_failure", failureCode: code, agentId: "agent-1",
     })).toMatchObject({ issueStatus: "blocked", recoveryOwner: { kind: "board" } });
+  });
+
+  it("retries a launch that the controller left without its OpenCode inputs instead of blocking the task", () => {
+    const now = new Date("2026-11-25T20:42:23.000Z");
+    const code = nativeSessionFailureSourceCode(new Error(
+      "runner_remote_provider_launch_unprepared: OpenCode executable is missing from the provider pack launch inputs"));
+    expect(code).toBe("runner_remote_provider_launch_unprepared");
+    expect(nativeSessionFailureDisposition(1, now, code)).toEqual({
+      phase: "retryable_failure", failureCode: "native_session_interrupted",
+      nextAttemptAt: new Date("2026-11-25T20:42:53.000Z"),
+    });
+    expect(nativeSessionFailureDisposition(3, now, code)).toMatchObject({
+      phase: "terminal_failure", failureCode: "native_session_retry_exhausted" });
   });
 
   it("retries the same run twice and stops at the third failed attempt", () => {

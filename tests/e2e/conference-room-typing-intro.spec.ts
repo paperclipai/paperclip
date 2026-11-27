@@ -144,7 +144,8 @@ test.describe("Chat launch after onboarding wizard", () => {
     await runOnboardingWizard(page, companyName, { source: /Claude/, complete: async () => {
       const code = page.getByRole("textbox", { name: "Authorization code", exact: true });
       await expect(code).toBeVisible({ timeout: 20_000 });
-      await expect(page.getByRole("button", { name: "Connect", exact: true })).toBeDisabled();
+      await expect(page.getByRole("button", { name: "Sign in to Claude", exact: true })).toBeEnabled();
+      await expect(page.getByRole("button", { name: "Connect", exact: true })).toHaveCount(0);
       await code.evaluate(input => {
         const clipboardData = new DataTransfer();
         clipboardData.setData("text/plain", "fixture-authorization-code");

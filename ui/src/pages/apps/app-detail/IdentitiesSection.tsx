@@ -32,7 +32,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Link } from "@/lib/router";
-import { brandBanner, brandChipBadge } from "@/lib/status-colors";
+import { brandChipBadge } from "@/lib/status-colors";
 import { agentUrl, cn } from "@/lib/utils";
 import {
   audienceUserIds,
@@ -45,6 +45,9 @@ import {
   type GrantStatusTone,
 } from "../connection-identity";
 import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+
+/** Section labels on the connection page match the plugin page: a quiet line over one grouped surface. */
+const GROUP_LABEL = "px-4 text-sm text-muted-foreground";
 
 const STATUS_CHIP: Record<GrantStatusTone, string> = {
   connected: brandChipBadge.green,
@@ -155,16 +158,16 @@ export function IdentitiesSection({
 
   if (loading) {
     return (
-      <section className="space-y-5" aria-busy="true">
+      <section className="flex flex-col gap-3" aria-busy="true">
         <IdentitiesHeading />
-        <Skeleton className="h-14 w-full" />
+        <Skeleton className="h-14 w-full rounded-2xl" />
       </section>
     );
   }
 
   if (error) {
     return (
-      <section className="space-y-5">
+      <section className="flex flex-col gap-3">
         <IdentitiesHeading />
         <InlineBanner tone="warning" compact>
           We couldn't load who this connection acts as. Reload the page to try again.
@@ -176,9 +179,9 @@ export function IdentitiesSection({
   if (credentialPolicy === "per_agent") {
     const github = agentGrant?.providerTenant?.github;
     return (
-      <section className="space-y-5">
-        <h2 className="text-sm font-semibold text-foreground">GitHub identity</h2>
-        <p className="text-sm text-muted-foreground">This agent uses this GitHub account for everyone’s work, instead of the person giving instructions.</p>
+      <section className="flex flex-col gap-3">
+        <h2 className={GROUP_LABEL}>GitHub identity</h2>
+        <p className="px-4 text-sm text-muted-foreground">This agent uses this GitHub account for everyone’s work, instead of the person giving instructions.</p>
         <IdentityRow
           title={github ? <span className={ANALYTICS_MASK_CLASS}>@{github.login}</span> : "Dedicated GitHub account"}
           status={agentGrant?.status ?? null}
@@ -203,7 +206,7 @@ export function IdentitiesSection({
   }
 
   return (
-    <section className="space-y-5">
+    <section className="flex flex-col gap-3">
       <IdentitiesHeading />
 
       <HumanAccessCards
@@ -248,7 +251,7 @@ export function IdentitiesSection({
         ) : (
           orgGrant ? (
             orgGrant.capabilities?.canEditAudience ? (
-              <div className="flex justify-end">
+              <div className="flex justify-end px-4">
                   <Button size="sm" variant="outline" onClick={() => onOpenAudience(orgGrant.id)}>
                     Manage access
                   </Button>
@@ -310,24 +313,21 @@ function GitHubConnectionSummary({
     ? "No repositories selected"
     : `${github.repositoryCount} selected ${github.repositoryCount === 1 ? "repository" : "repositories"}`;
   return (
-    <div className="divide-y divide-border border-y border-border">
-      <div className="py-3">
-        <div className="text-sm font-medium text-foreground">GitHub account</div>
-        <a className={cn("text-sm text-muted-foreground hover:underline", ANALYTICS_MASK_CLASS)} href={`https://github.com/${encodeURIComponent(github.login)}`} target="_blank" rel="noreferrer">
+    <div className="divide-y divide-border overflow-hidden rounded-2xl bg-muted/50">
+      <div className="flex min-h-11 items-center justify-between gap-4 px-4 py-2">
+        <div className="text-sm text-muted-foreground">GitHub account</div>
+        <a className={cn("truncate text-sm text-foreground hover:underline", ANALYTICS_MASK_CLASS)} href={`https://github.com/${encodeURIComponent(github.login)}`} target="_blank" rel="noreferrer">
           @{github.login}
         </a>
       </div>
-      <div className="space-y-3 py-3">
+      <div className="space-y-3 px-4 py-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="min-w-0">
             <div className="text-sm font-medium text-foreground">Repositories</div>
             {repositoryWarning ? (
               <div
                 role="note"
-                className={cn(
-                  "mt-1 inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs",
-                  brandBanner.warning,
-                )}
+                className="mt-1 inline-flex h-6 items-center gap-1.5 rounded-md bg-(--status-task-todo)/15 px-2 text-xs text-(--status-task-icon-todo)"
               >
                 <TriangleAlert className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                 {repositoryWarning}
@@ -338,7 +338,7 @@ function GitHubConnectionSummary({
           </div>
           <div className="flex items-center gap-2">
             {onRefreshAccess && configurationUrl ? (
-              <Button size="icon-sm" variant="outline" aria-label="Refresh access" title="Refresh access" disabled={refreshPending} onClick={onRefreshAccess}>
+              <Button size="icon-sm" variant="ghost" aria-label="Refresh access" title="Refresh access" disabled={refreshPending} onClick={onRefreshAccess}>
                 {refreshPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}
               </Button>
             ) : null}
@@ -380,7 +380,7 @@ function GitHubConnectionSummary({
 }
 
 function IdentitiesHeading() {
-  return <h2 className="text-sm font-semibold text-foreground">Which humans can use this credential?</h2>;
+  return <h2 className={GROUP_LABEL}>Which humans can use this credential?</h2>;
 }
 
 function HumanAccessCards({
@@ -407,7 +407,7 @@ function HumanAccessCards({
       <RadioCardGroup
         ariaLabel="Which humans can use this credential"
         value={personal ? "personal" : restricted ? "selected" : "company"}
-        className="sm:grid-cols-2"
+        className="*:rounded-2xl sm:grid-cols-2"
         onValueChange={(next) => {
           if (!canEditAudience || personal) return;
           if (next === "company") onChooseAll();
@@ -438,7 +438,7 @@ function HumanAccessCards({
         ]}
       />
       {connectedName && status !== null ? (
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2 px-4">
           <Identity name={connectedName} avatarUrl={connectedImage} className={ANALYTICS_MASK_CLASS} />
           {status === "active" ? null : <StatusText status={status} />}
         </div>
@@ -461,7 +461,7 @@ function IdentityRow({
   actions: ReactNode;
 }) {
   return (
-    <div id={id} className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between sm:gap-8">
+    <div id={id} className="flex flex-col gap-4 rounded-2xl bg-muted/50 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-8">
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-sm font-semibold text-foreground">{title}</span>

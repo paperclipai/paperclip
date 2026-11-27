@@ -1731,7 +1731,12 @@ function ConnectionAccountRow({
                 : "Reconnect"
               : "Finish setup"}
           </Button>
-        ) : null}
+        ) : state.kind === "draft" ? null : (
+          <Button type="button" size="sm" variant="ghost" className="text-muted-foreground" aria-label={`${accountName} settings`} onClick={() => onNavigate(`/apps/${connection.id}/permissions`)}>
+            Settings
+            <ChevronRight aria-hidden />
+          </Button>
+        )}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button

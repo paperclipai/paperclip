@@ -9339,6 +9339,7 @@ function classifyNativeSessionFailure(
   | "native_session_cleanup_quarantined"
   | "native_adopted_runner_authentication_timeout"
   | "runner_remote_provider_artifact_incompatible"
+  | "runner_remote_provider_launch_unprepared"
   | "runner_remote_provider_verification_unavailable"
   | "provider_process_exited"
   | "provider_stdout_closed"
@@ -9425,6 +9426,9 @@ function classifyNativeSessionFailure(
     return "native_provider_model_rejected";
   if (/native_adopted_runner_authentication_timeout/i.test(message)) {
     return "native_adopted_runner_authentication_timeout";
+  }
+  if (/runner_remote_provider_launch_unprepared/i.test(message)) {
+    return "runner_remote_provider_launch_unprepared";
   }
   if (/runner_remote_provider_artifact_incompatible/i.test(message)) {
     return "runner_remote_provider_artifact_incompatible";
@@ -9650,6 +9654,7 @@ export async function nativeProviderRecoveryEvidence(input: {
     ReturnType<typeof nativeSessionFailureSourceCode>
   >([
     "runner_remote_provider_artifact_incompatible",
+    "runner_remote_provider_launch_unprepared",
     "provider_process_exited",
     "provider_stdout_closed",
     "provider_process_output_closed",
@@ -19556,6 +19561,23 @@ async function createRunnerdBackendWithinSessionClaim(
         }, sessionScopeId);
         replacementBackend = fresh;
         return fresh.openSession(sessionInput);
+      }
+      // The archive dropped the restored provider artifacts and their launch
+      // paths. The replacement transport reads its launch inputs when it is
+      // built, before its Runner is staged, so stage them again first. Without
+      // this a session restored from saved artifacts (which never selects a
+      // pack root) replaces itself with no OpenCode executable, and any other
+      // session launches from the pack root while its saved receipt names the
+      // artifact root, which the next continuation's Runner rejects.
+      if (requiresRemoteProviderPack) {
+        // Force a full preparation here rather than relying on the archive
+        // having cleared it: a prepared flag or cached launch inputs left over
+        // from the archived session would make this a silent no-op.
+        remotePrepared = false;
+        openCodeLaunchArtifacts = undefined;
+        await prepareNativeRemoteRunner({ target, runnerIngressAuthorized: input.runnerIngressAuthorized === true,
+          runnerPublicUrl: input.runnerPublicUrl, runnerCaBundlePath: input.runnerCaBundlePath,
+          runId: input.execution.binding.runId, prepareRemote: prepareRemoteRunner });
       }
       cursorCloudRuntime?.register();
       try {

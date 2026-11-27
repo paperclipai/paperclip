@@ -18,6 +18,7 @@ import {
   LocalProviderLoginInstructions,
   OnboardingCardField,
   OnboardingLoginCard,
+  useLocalLoginPrimaryAction,
 } from "../AdapterLoginChrome";
 import { ModelSourceTiles, type ModelConnectionMode } from "../onboarding/ModelSourceTiles";
 import { useQueryView } from "../QueryView";
@@ -263,10 +264,18 @@ export function AgentProviderConnection({
     !savedKeys.loading &&
     !storedLogin.data &&
     (Boolean(managedAccount) || auth.data?.status !== "present" || subscriptionId === "");
+  const localLoginPrimary = useLocalLoginPrimaryAction({
+    enabled: opened && !advanced && !needsLogin && method === "subscription" && canUseLocalLogin && !savedSubscription && !storedLogin.data,
+    adapterType,
+    login: localLogin,
+    onBeforeRetry: () => setError(null),
+  });
+  const localLoginAction = localLoginPrimary.action;
   const switchMode = (next: ModelConnectionMode) => {
     if (advancedConnection && next === (advanced ? "advanced" : method)) return;
     onDraftChanged?.();
     cancel();
+    localLoginPrimary.resetSubmitting();
     setAdvanced(next === "advanced");
     setOpened(advancedConnection ? true : opened);
     savedManagedAccount.current = null;
@@ -427,7 +436,12 @@ export function AgentProviderConnection({
                 }}
               />
             ) : savedSubscription ? null : canUseLocalLogin && !storedLogin.data ? (
-              <LocalProviderLoginInstructions adapterType={adapterType} hostedRedirect={googleHostedRedirect} login={{ ...localLogin, retry: () => { setError(null); localLogin.retry(); } }} />
+              <LocalProviderLoginInstructions
+                adapterType={adapterType}
+                hostedRedirect={googleHostedRedirect}
+                {...localLoginPrimary.instructionsProps}
+                login={{ ...localLogin, retry: () => { setError(null); localLogin.retry(); } }}
+              />
             ) : (
               <p className="text-sm text-muted-foreground">
                 {storedLogin.data
@@ -455,14 +469,18 @@ export function AgentProviderConnection({
       )}
       <FooterNav
         onBack={() => {
-          if (opened && !advancedConnection) cancel();
-          else onBack();
+          if (opened && !advancedConnection) {
+            localLoginPrimary.resetSubmitting();
+            cancel();
+          } else onBack();
         }}
         primaryLabel={
           opened && needsLogin
             ? loginPhase === "waiting" ? adapterType === "codex_local" ? "Waiting for auth…" : "Waiting for code"
               : loginPhase === "connecting" ? "Connecting"
               : automaticComputer && authorizationUrl ? `Continue to ${provider}` : `Sign in to ${provider}`
+            : localLoginAction
+              ? localLoginAction.label
             : busy
             ? "Connecting"
             : method === "subscription" &&
@@ -475,14 +493,17 @@ export function AgentProviderConnection({
         primaryDisabled={
           managedAccount?.disabled ||
           (Boolean(managedAccount) && method === "subscription" && !canLogin && !canUseLocalLogin) ||
-          (needsHealth && health.isPending) || localLogin.preparing || Boolean(localLogin.error) ||
-          (method === "subscription" && canUseLocalLogin && !savedSubscription && !storedLogin.data && localLogin.status !== "ready") ||
+          (needsHealth && health.isPending) ||
           (!managedAccount && adapterType !== "antigravity_runtime" && auth.isPending) ||
           savedKeys.loading ||
           (adapterType === "claude_local" && storedLogin.isPending) ||
           // The saved-subscription chooser renders outside the opened section,
           // so reusing the visible choice must not wait for a tile click.
           (!opened && !(method === "subscription" && savedSubscription)) ||
+          (localLoginAction
+            ? localLoginAction.disabled
+            : localLogin.preparing || Boolean(localLogin.error) ||
+              (method === "subscription" && canUseLocalLogin && !savedSubscription && !storedLogin.data && localLogin.status !== "ready")) ||
           (Boolean(needsLogin) && !awaitingLoginRequest && (!authorizationUrl || loginPhase !== "ready")) ||
           (method === "api" &&
             !apiKey.trim() &&
@@ -490,7 +511,13 @@ export function AgentProviderConnection({
             !selectedKey)
         }
         loading={busy}
-        primaryIcon={opened && needsLogin && !awaitingLoginRequest ? loginPhase === "ready" ? "none" : "spinner" : undefined}
+        primaryIcon={
+          opened && needsLogin && !awaitingLoginRequest
+            ? loginPhase === "ready" ? "none" : "spinner"
+            : localLoginAction
+              ? localLoginAction.icon
+              : undefined
+        }
         onPrimary={() => {
           if (needsLogin) {
             if (awaitingLoginRequest) {
@@ -500,6 +527,8 @@ export function AgentProviderConnection({
             if (!authorizationUrl || loginPhase !== "ready") return;
             window.open(authorizationUrl, "_blank", "noreferrer,noopener");
             setLoginPhase("waiting");
+          } else if (localLoginPrimary.runPrimary()) {
+            return;
           } else void connect();
         }}
       />

@@ -632,7 +632,7 @@ describe("MarkdownBody", () => {
       "| 2026-04-30T14:31:35Z | PAP-2505 | in_review_without_action_path | PAP-2779 | PAP-2910 |",
     ].join("\n"));
 
-    expect(html).toContain('class="paperclip-markdown-table-scroll"');
+    expect(html).toContain('class="paperclip-markdown-table-scroll max-w-full overflow-x-auto"');
     expect(html).toContain('aria-label="Scrollable table"');
     expect(html).toContain('tabindex="0"');
     expect(html).toContain("<table>");

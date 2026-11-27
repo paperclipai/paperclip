@@ -840,6 +840,8 @@ export interface WakeupOptions {
     statusVersion?: number;
     monitorNextCheckAt?: string;
     monitorWakeRequestedAt?: string;
+    /** Skip when a wake or run that continues this run already exists. */
+    withoutSuccessorOfRunId?: string;
     /** Internal diagnostic only; the callback cannot grant admission. */
     onExecutionDeferred?: (blockerCause: string, recoveryActionId?: string | null) => void;
   };
