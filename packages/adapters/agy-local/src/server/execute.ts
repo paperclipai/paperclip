@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import path from "node:path";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
   asBoolean,
@@ -82,9 +83,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (taskId) env.PAPERCLIP_TASK_ID = taskId;
   const wakeReason = nonEmpty(context.wakeReason);
   if (wakeReason) env.PAPERCLIP_WAKE_REASON = wakeReason;
+  // Configured variables may add or override most keys, but never the run identity
+  // Paperclip assigned: a stale binding would send task updates under the wrong run.
+  const protectedEnv: Record<string, string> = {};
+  for (const key of ["PAPERCLIP_RUN_ID", "PAPERCLIP_AGENT_ID", "PAPERCLIP_COMPANY_ID", "PAPERCLIP_TASK_ID", "PAPERCLIP_WAKE_REASON"]) {
+    const value = env[key];
+    if (typeof value === "string") protectedEnv[key] = value;
+  }
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
+  Object.assign(env, protectedEnv);
   if (authToken && !env.PAPERCLIP_API_KEY) env.PAPERCLIP_API_KEY = authToken;
   const runtimeEnv = Object.fromEntries(
     Object.entries(ensurePathInEnv({ ...process.env, ...env })).filter(
@@ -96,10 +105,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let instructions = "";
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   if (instructionsFilePath) {
-    instructions = await fs.readFile(instructionsFilePath, "utf8").catch(async (error) => {
+    const contents = await fs.readFile(instructionsFilePath, "utf8").catch(async (error) => {
       await onLog("stderr", `[paperclip] Could not read instructions file ${instructionsFilePath}: ${error instanceof Error ? error.message : String(error)}\n`);
       return "";
     });
+    if (contents) {
+      const instructionsDir = `${path.dirname(instructionsFilePath)}/`;
+      instructions = `${contents}\n\nThe above instructions are from ${instructionsFilePath}. Resolve any relative file references from ${instructionsDir}.`;
+    }
   }
 
   const runtimeSessionParams = parseObject(runtime.sessionParams);
