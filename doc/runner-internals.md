@@ -609,6 +609,12 @@ owner as quiet or launch a replacement over it. The next retirement attempt uses
 the same owner and must finish provider closure and stopped-file collection.
 The existing explicit-reset exception still requires its typed retirement proof.
 
+A close has a bounded budget: 10 seconds, or 45 seconds for native Pi. Set
+`PAPERCLIP_RUNNER_CLOSE_GRACE_MS` to raise it on a host where a settled runner
+needs longer to prove suspension. A value at or below the default, or an
+invalid value, is ignored. The budget never exceeds 120 seconds, and an
+explicit `closeGraceMs` from the caller stays authoritative.
+
 `heartbeatService(...).prepareIdleWarmNativeSessionsForSleep({ canRetire })`
 delegates to the native owner's retirement path for idle owners. Its caller owns
 the admission hold and supplies a synchronous
