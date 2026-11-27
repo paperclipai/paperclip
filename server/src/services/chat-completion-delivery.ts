@@ -393,6 +393,11 @@ export function chatCompletionDeliveryService(db: Db, heartbeat: { wakeup(agentI
           if (deferred) return;
         }
         const advanced = await db.transaction(async tx => {
+          if (run?.status === "succeeded" && run.finishedAt && Date.now() < run.finishedAt.getTime() + LEASE_MS) {
+            const [source] = await tx.select({ executionRunId: issues.executionRunId }).from(issues)
+              .where(and(eq(issues.id, row.handoff.conversationId), eq(issues.companyId, claimed.companyId))).for("update");
+            if (source?.executionRunId === run.id) return false;
+          }
 
 
           const [task] = await tx.select({ status: issues.status }).from(issues)

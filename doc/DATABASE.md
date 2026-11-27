@@ -414,13 +414,6 @@ register before writing, or they can remain unseen until the next startup or
 another notification. Tests should verify both the producer and its outer
 transaction boundary.
 
-When run finalization selects an existing provider comment as the final reply,
-it acknowledges the bound delegated-task deliveries under the conversation's
-publication lock. It revalidates the run, conversation generation, frozen
-delivery batch, and non-deleted comment before recording the response.
-Saving a progress comment alone does not settle a delivery. Later sweeps
-skip delivered rows.
-
 ## Plugin database namespaces
 
 The plugin runtime tracks plugin-owned database namespaces and migrations in `plugin_database_namespaces` and `plugin_migrations`. Hosted deployments that separate runtime and migration connections should set `DATABASE_MIGRATION_URL`; plugin namespace migration work uses the migration connection when present.

@@ -107,7 +107,9 @@ import { recoveryPostgresSupport as support, startRecoveryPostgres } from "./hel
   it.each(["company", "issue", "run", "comment", "agent", "reset", "reopen", "deleted"])("does not acknowledge a reused reply with %s", async mismatch => {
     const f = await seed(); await f.finish(); const run = await f.run();
     const reply = await issueService(db).addComment(f.sourceId, "Ready", { agentId: f.agentId, runId: run.id });
-    const input = { companyId: f.companyId, issueId: f.sourceId, runId: run.id, commentId: reply.id };
+    const input: Parameters<typeof acknowledgeReusedChatCompletionReply>[1] = {
+      companyId: f.companyId, issueId: f.sourceId, runId: run.id, commentId: reply.id,
+    };
     if (mismatch === "company") input.companyId = randomUUID();
     if (mismatch === "issue") input.issueId = f.task.id;
     if (mismatch === "run") input.runId = f.runId;
@@ -157,5 +159,22 @@ import { recoveryPostgresSupport as support, startRecoveryPostgres } from "./hel
       companyId: f.companyId, issueId: f.sourceId, runId: run.id, commentId: reply.id,
     })).rejects.toThrow("chat_completion_superseded");
     expect((await f.rows()).find(row => row.id === frozen[1].id)).toMatchObject({ status: "queued", responseCommentId: null });
+  });
+
+  it.each([false, true])("defers a retry while the succeeded run is still finalizing (expired: %s)", async expired => {
+    const f = await seed(); await f.finish(); const run = await f.run();
+    const reply = await issueService(db).addComment(f.sourceId, "Ready", { agentId: f.agentId, runId: run.id });
+    await db.update(issues).set({ executionRunId: run.id }).where(eq(issues.id, f.sourceId));
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: expired ? new Date(0) : new Date() })
+      .where(eq(heartbeatRuns.id, run.id));
+    await f.due(); await f.service.sweepPending();
+    expect(f.wakeup).toHaveBeenCalledTimes(expired ? 2 : 1);
+    if (!expired) {
+      expect(await f.rows()).toMatchObject([{ status: "queued", attempts: 0, targetRunId: run.id }]);
+      await acknowledgeReusedChatCompletionReply(db, {
+        companyId: f.companyId, issueId: f.sourceId, runId: run.id, commentId: reply.id,
+      });
+      expect(await f.rows()).toMatchObject([{ status: "delivered", attempts: 0, responseCommentId: reply.id }]);
+    }
   });
 });
