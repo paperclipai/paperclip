@@ -17,24 +17,26 @@ export function PrivacyPage({
   projects = false,
   tasks = false,
   projectSettings = false,
+  projectIssues = false,
 }: {
   child?: boolean;
   guide?: boolean;
   projects?: boolean;
   tasks?: boolean;
   projectSettings?: boolean;
+  projectIssues?: boolean;
 }) {
   const navigate = useNavigate();
   const [ready, setReady] = useState(false);
   useEffect(() => {
     navigate(
-      projectSettings ? "/PAP/projects/project-private/configuration" : tasks ? "/PAP/issues" : projects ? "/PAP/projects" : guide
+      projectIssues ? "/PAP/projects/project-private/issues" : projectSettings ? "/PAP/projects/project-private/configuration" : tasks ? "/PAP/issues" : projects ? "/PAP/projects" : guide
         ? "/PAP/design-guide"
         : `/PAP/issues/${child ? "PAP-411" : "PAP-410"}`,
       { replace: true },
     );
     setReady(true);
-  }, [navigate, child, guide, projects, tasks, projectSettings]);
+  }, [navigate, child, guide, projects, tasks, projectSettings, projectIssues]);
   if (!ready) return null;
   return (
     <PluginLauncherProvider>
@@ -55,7 +57,18 @@ const meta = {
   title: "Getting started and access/Login, invitations, and access/Private tasks/06 Full product pages",
   excludeStories: ["PrivacyPage"],
   decorators: [privacyDecorator],
-  parameters: { ...privacyParameters, waitForViewport: true },
+  parameters: { ...privacyParameters, waitForViewport: true,
+    paperclip: {
+      "capabilities": [
+        "access/resources",
+        "tasks/properties",
+        "projects/lifecycle"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "Creation visibility now defaults to hiding automated independent tasks, with a Show agent-created tasks control and inbox participation exceptions. Source alignment reviewed; these fixture stories do not establish live server pagination or authorization. The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+    },
+  },
   render: () => <PrivacyPage />,
 } satisfies Meta;
 export default meta;
@@ -215,6 +228,24 @@ export const ProjectVisibilityAutosaveCompletes: Story = {
   },
 };
 export const MobileProjectVisibilityThroughAutosave: Story = { ...ProjectVisibilityThroughAutosave, globals: mobile };
+export const ProjectDetailMobile: Story = {
+  globals: { viewport: { value: "mobile", isRotated: false } },
+  parameters: {
+    layout: "fullscreen",
+    waitForViewport: true,
+    docs: {
+      description: {
+        story: "Project detail Tasks tab at 390×844 mobile viewport verifying the wrapping collection toolbar and search input width.",
+      },
+    },
+  },
+  render: () => <PrivacyPage projectIssues />,
+  play: async () => {
+    const page = within(document.body);
+    await expect(await page.findByRole("textbox", { name: "Search tasks" }, { timeout: 15000 })).toBeVisible();
+    await waitFor(() => expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth));
+  },
+};
 
 export const OwnerMovesOutOfPrivateParent: Story = {
   render: () => <PrivacyPage child />,

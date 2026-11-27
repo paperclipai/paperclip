@@ -84,7 +84,15 @@ function KeyStepHost({ customName }: { customName?: string }) {
 const meta: Meta = {
   id: "apps-connect-name-at-create-time-pap-11283",
   title: "Apps, channels, and extensions/Connection setup/Apps/Connect name at create time (PAP-11283)",
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "connection-setup/identity-and-access"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 };
 export default meta;
 

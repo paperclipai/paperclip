@@ -265,6 +265,15 @@ const meta = {
           "Review surface for the PAP-2189 checklist-style sub-issues work. Renders the IssuesList component with the Sub-issues panel props so the progress strip, workflow sort, step gutter, current marker, done de-emphasis, and blocker chips are all visible against a PAP-1953-like topology.",
       },
     },
+    paperclip: {
+      "capabilities": [
+        "task-coordination/dependencies",
+        "task-coordination/delegation"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "Creation visibility now defaults to hiding automated independent tasks, with a Show agent-created tasks control and inbox participation exceptions. Source alignment reviewed; these fixture stories do not establish live server pagination or authorization. Creation visibility now shares the subscribed preference across modern and legacy controls; hierarchy child reads share a bounded rendering budget. Source alignment inspected; server behavior is tested separately. Hierarchy fetch and rendering budgets are separate; loaded context remains during paging. The large-tree UI regression exercises delayed reads in both list interfaces."
+    },
   },
   decorators: [
     (StoryRender) => (

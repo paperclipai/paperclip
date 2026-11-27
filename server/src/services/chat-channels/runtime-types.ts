@@ -1,3 +1,5 @@
+import type { Message, Thread } from "chat";
+import type { ChatSdkMessageCallbackEvent } from "../chat-sdk-runtime.js";
 import type { Db, chatEndpoints } from "@paperclipai/db";
 import type { ToolCredentialSecretRef, ChatEndpointSetupState, ChatEndpointCallbackSurfaces } from "@paperclipai/shared";
 import type { ChatEndpointRuntime } from "../voice/voice-runtime.js";
@@ -46,6 +48,35 @@ export type InternalSetupState = ChatEndpointSetupState & {
   runtimeGeneration?: number;
   /** Binds pre-install URL verification to the signing secret later configured. */
   slackVerificationSigningFingerprint?: string;
+
+  slackCloudSubject?: string;
+  slackCloudInstanceId?: string;
+  slackCloudRetiredGeneration?: number;
+  slackCloudIntent?: {
+    version: 1;
+    id: string;
+    subject: string;
+    instanceId: string;
+    companyId: string;
+    endpointId: string;
+    publicId: string;
+    connectionId: string;
+    runtimeGeneration: number;
+    active: boolean;
+    teamId?: string;
+    appId?: string;
+    attempts: number;
+    nextAttemptAt: string | null;
+    failureCode?: string;
+  };
+  slackCloudForms?: import("./slack/cloud-forms.js").SlackFormBinding;
+  slackCloudEvents?: {
+    version: 1;
+    bindingId: string;
+    runtimeGeneration: number;
+    teamId: string;
+    appId: string;
+  };
   slackCallbackSurfaces?: Partial<
     Record<SlackCallbackSurface, SlackCallbackObservation>
   >;
@@ -65,4 +96,27 @@ export type PreparedProviderInventory = {
   credentials: Record<string, string>;
   inventory: import("../chat-provider-inventory.js").ChatProviderInventoryResult | null;
   managementUrl?: string;
+};
+
+export type LiveInboundMessage = {
+  endpoint: EndpointRow;
+  message: Message;
+  receiptReactionSupported: boolean;
+  providerUrl: string | null;
+  runtimeContext?: InboundRuntimeContext;
+  thread: Thread;
+  trigger: ChatSdkMessageCallbackEvent["trigger"];
+};
+
+export type DiscordGatewayOwnership = {
+  companyId: string;
+  context: RuntimeContext;
+  endpointId: string;
+  expiresAt: Date;
+  leaseKey: "discord_gateway_runtime" | "photon_receiver_runtime";
+  renewTimer: ReturnType<typeof setInterval> | null;
+  renewal: Promise<void> | null;
+  stopPromise: Promise<void> | null;
+  stopping: boolean;
+  token: string;
 };

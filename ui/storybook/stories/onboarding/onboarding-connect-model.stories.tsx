@@ -20,7 +20,19 @@ import { ConnectModelPreview } from "@/components/onboarding/ConnectModelPreview
 const meta = {
   id: "onboarding-connect-a-model",
   title: "Getting started and access/Onboarding and first work/Onboarding/Connect a model",
-  parameters: { layout: "centered" },
+  parameters: { layout: "centered",
+    paperclip: {
+      "capabilities": [
+        "onboarding/adapter",
+        "onboarding/first-task"
+      ],
+      "status": "historical",
+      "implementation": "prototype",
+      "boundary": "fixtures",
+      "notes": "Older tile/mode preview; onboarding-agent-arc mounts the production wizard.",
+      "replacement": "ui/storybook/stories/onboarding/onboarding-agent-arc.stories.tsx"
+    },
+  },
 } satisfies Meta;
 
 export default meta;

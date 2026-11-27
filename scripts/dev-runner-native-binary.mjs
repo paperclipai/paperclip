@@ -74,6 +74,9 @@ export function paperclipRunnerBinaryNeedsBuild({
 
   const runnerRoot = path.join(packageRoot, "runner");
   const buildInputs = [
+    path.join(packageRoot, "antigravity-distributions.json"),
+    path.join(packageRoot, "rust-toolchain.toml"),
+    path.join(packageRoot, "protocol"),
     path.join(runnerRoot, "Cargo.toml"),
     path.join(runnerRoot, "Cargo.lock"),
     path.join(runnerRoot, ".cargo"),

@@ -475,6 +475,14 @@ const SELECTED_GROUP_ARTIFACTS: CompanyArtifact[] = [
 ];
 
 const meta: Meta = {
+  parameters: { paperclip: {
+      "capabilities": [
+        "documents-artifacts/library",
+        "documents-artifacts/work-products"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    } },
   id: "pages-artifacts",
   title: "Tasks and conversations/Documents, attachments, and work products/Pages/Artifacts",
 };

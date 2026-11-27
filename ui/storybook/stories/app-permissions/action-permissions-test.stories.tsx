@@ -179,7 +179,16 @@ function PermissionsTestStory({ result, tool = TOOL, appName = "Asana", query }:
 const meta = {
   id: "apps-action-permissions-test",
   title: "Apps, channels, and extensions/App access and action permissions/Apps/Action permissions test",
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "app-permissions/test-action",
+        "app-permissions/action-policy"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 } satisfies Meta;
 export default meta;
 type Story = StoryObj<typeof meta>;

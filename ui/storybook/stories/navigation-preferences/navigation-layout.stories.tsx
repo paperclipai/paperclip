@@ -1,4 +1,5 @@
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import {
   Bot,
@@ -13,6 +14,7 @@ import { BreadcrumbBar } from "@/components/BreadcrumbBar";
 import { CommandPalette } from "@/components/CommandPalette";
 import { CompanySwitcher } from "@/components/CompanySwitcher";
 import { KeyboardShortcutsCheatsheetContent } from "@/components/KeyboardShortcutsCheatsheet";
+import { Layout } from "@/components/Layout";
 import { MobileBottomNav } from "@/components/MobileBottomNav";
 import { PageTabBar } from "@/components/PageTabBar";
 import { Sidebar } from "@/components/Sidebar";
@@ -32,8 +34,15 @@ import {
 } from "@/components/ui/command";
 import { Tabs } from "@/components/ui/tabs";
 import { BreadcrumbProvider, useBreadcrumbs, type Breadcrumb } from "@/context/BreadcrumbContext";
-import { useNavigate } from "@/lib/router";
+import { useCompany } from "@/context/CompanyContext";
+import { useSidebar } from "@/context/SidebarContext";
+import { Route, Routes, useLocation, useNavigate } from "@/lib/router";
 import { cn } from "@/lib/utils";
+import { healthApi } from "@/api/health";
+import { queryKeys } from "@/lib/queryKeys";
+import { AgentDetail } from "@/pages/AgentDetail";
+import { CompanySettings } from "@/pages/CompanySettings";
+import { prepareFixtureApi } from "../../support/capability-gaps/api";
 import {
   storybookAgents,
   storybookIssues,
@@ -141,10 +150,10 @@ function MobileBottomNavActiveStateMatrix() {
                     active ? "text-foreground" : "text-muted-foreground",
                   )}
                 >
-                  <span className="relative">
-                    <Icon className={cn("h-[18px] w-[18px]", active && "stroke-[2.3]")} />
+                  <span className="relative inline-flex items-center justify-center">
+                    <Icon className={cn("h-(--sz-18px) w-(--sz-18px)", active && "stroke-(length:--sw-2_3)")} />
                     {item.badge ? (
-                      <span className="absolute -right-2 -top-2 rounded-full bg-primary px-1.5 py-0.5 text-[10px] leading-none text-primary-foreground">
+                      <span className="pointer-events-none absolute -top-1.5 left-3 min-w-4 rounded-full bg-primary px-1 py-0.5 text-center text-(length:--text-nano) leading-none tabular-nums text-primary-foreground">
                         {item.badge}
                       </span>
                     ) : null}
@@ -353,6 +362,13 @@ const meta = {
           "Navigation and layout stories cover the board shell components that orient operators across companies, work surfaces, command search, breadcrumbs, tabs, and mobile navigation.",
       },
     },
+    paperclip: {
+      "capabilities": [
+        "navigation-preferences/navigation"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
   },
 } satisfies Meta<typeof NavigationLayoutStories>;
 
@@ -361,6 +377,43 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const BoardChromeMatrix: Story = {};
+
+function CloudSidebar() {
+  useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get });
+  return (
+    <div className="flex h-dvh w-60 flex-col border-r border-border bg-background">
+      <div className="min-h-0 flex-1 overflow-hidden"><Sidebar /></div>
+      <SidebarAccountMenu deploymentMode="authenticated" />
+    </div>
+  );
+}
+
+export const CloudSlackFeedback: Story = {
+  render: () => <CloudSidebar />,
+  beforeEach: ({ parameters }) => prepareFixtureApi([
+    { path: "/api/health", read: () => ({ status: "ok", deploymentMode: "authenticated", cloud: {
+      managed: true, managedBy: "paperclip-cloud", stackSlug: "example", cloudBaseUrl: "https://cloud.example.test",
+    } }) },
+    { path: "/api/cloud/stacks", read: () => ({
+      stacks: [{ displayName: "Example", stackSlug: "example", primaryHost: "example.test", lifecycleState: "active", sleepState: "awake", role: "owner", isCurrent: true }],
+      slackFeedback: parameters.invitePending
+        ? { message: "We emailed a Slack invitation to your organization’s owner. Check that inbox and accept the invitation to join your private channel with the Paperclip team." }
+        : { href: "https://slack.com/app_redirect?channel=CEXAMPLE" },
+    }) },
+  ]).cleanup,
+  parameters: {
+    layout: "fullscreen",
+    paperclip: {
+      capabilities: ["navigation-preferences/navigation"], implementation: "production", boundary: "fixtures",
+      notes: "Mounts the workspace sidebar and account footer with a simulated Cloud portfolio. The Slack channel ID is a fixture.",
+    },
+  },
+};
+
+export const CloudSlackInvitationPending: Story = {
+  ...CloudSlackFeedback,
+  parameters: { ...CloudSlackFeedback.parameters, invitePending: true },
+};
 
 // PAP-10676 verification harness: renders the real Sidebar at a fixed width so a
 // screenshot of the expanded state and a screenshot of the pinned-collapsed rail
@@ -387,4 +440,73 @@ function SidebarIconAlignmentHarness() {
 
 export const SidebarIconAlignment: Story = {
   render: () => <SidebarIconAlignmentHarness />,
+};
+
+const MOBILE_STORY_COMPANY_ID = "company-storybook";
+
+function MobileShellStoryHarness({
+  path,
+  openDrawer = false,
+  inboxCount = 96,
+}: {
+  path: string;
+  openDrawer?: boolean;
+  inboxCount?: number;
+}) {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const queryClient = useQueryClient();
+  const { selectedCompanyId, setSelectedCompanyId } = useCompany();
+  const { isMobile, setSidebarOpen } = useSidebar();
+  const [ready, setReady] = useState(false);
+  const initializedPath = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (initializedPath.current === path) return;
+    initializedPath.current = path;
+    queryClient.setQueryData(queryKeys.agents.list(MOBILE_STORY_COMPANY_ID), storybookAgents);
+    for (const agent of storybookAgents) {
+      for (const ref of [agent.id, agent.urlKey]) {
+        if (ref) queryClient.setQueryData([...queryKeys.agents.detail(ref), MOBILE_STORY_COMPANY_ID], agent);
+      }
+    }
+    queryClient.setQueryData(queryKeys.sidebarBadges(MOBILE_STORY_COMPANY_ID), {
+      ...storybookSidebarBadges,
+      inbox: inboxCount,
+    });
+    setSelectedCompanyId(MOBILE_STORY_COMPANY_ID);
+    navigate(path, { replace: true });
+    setReady(true);
+  }, [inboxCount, navigate, path, queryClient, setSelectedCompanyId]);
+
+  useEffect(() => {
+    if (!ready || !isMobile) return;
+    setSidebarOpen(openDrawer);
+    return () => setSidebarOpen(false);
+  }, [isMobile, openDrawer, ready, setSidebarOpen]);
+
+  if (!ready || selectedCompanyId !== MOBILE_STORY_COMPANY_ID || location.pathname === "/PAP/storybook") {
+    return null;
+  }
+
+  return (
+    <Routes>
+      <Route path="/:companyPrefix" element={<Layout />}>
+        <Route path="company/settings" element={<CompanySettings />} />
+        <Route path="agents/:agentId/:tab?" element={<AgentDetail />} />
+      </Route>
+    </Routes>
+  );
+}
+
+export const MobileSettingsAndBottomNav: Story = {
+  render: () => <MobileShellStoryHarness path="/PAP/company/settings" inboxCount={96} />,
+  globals: { viewport: { value: "mobile", isRotated: false } },
+  parameters: { layout: "fullscreen", waitForViewport: true },
+};
+
+export const MobileAgentDrawerOpen: Story = {
+  render: () => <MobileShellStoryHarness path="/PAP/agents/codexcoder/overview" openDrawer inboxCount={96} />,
+  globals: { viewport: { value: "mobile", isRotated: false } },
+  parameters: { layout: "fullscreen", waitForViewport: true },
 };

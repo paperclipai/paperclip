@@ -1,3 +1,4 @@
+import { isOpenRouterUrl, openRouterAttributionHeaders } from "../openrouter-attribution.js";
 import { createHash } from "node:crypto";
 
 // Credential discovery follows the pinned Pi SDK. This is not a model catalog:
@@ -70,8 +71,7 @@ const RESERVED_PI_CREDENTIAL_NAMES = new Set<string>([
 export function piProviderConfiguration(environment?: NodeJS.ProcessEnv): {
   json: string; digest: string; credentialNames: readonly string[];
 } | undefined {
-  const raw = environment?.PAPERCLIP_PI_PROVIDERS;
-  if (raw === undefined) return undefined;
+  const raw = environment?.PAPERCLIP_PI_PROVIDERS?.trim() || "{}";
   const invalid = () => new Error("Pi custom providers require a bounded JSON object with explicit credentials; command-based credentials are unsupported");
   if (Buffer.byteLength(raw) > 64 * 1024) throw invalid();
   let providers: unknown;
@@ -102,6 +102,24 @@ export function piProviderConfiguration(environment?: NodeJS.ProcessEnv): {
     inspect(provider);
   }
   if (names.size > 64) throw invalid();
+  const configured = providers as Record<string, Record<string, unknown>>;
+  configured.openrouter ??= {};
+  for (const [name, provider] of Object.entries(configured)) {
+    if (isOpenRouterUrl(provider.baseUrl) || (name === "openrouter" && provider.baseUrl === undefined)) {
+      provider.headers = openRouterAttributionHeaders(provider.headers as Record<string, string> | undefined);
+      // Per-model headers take precedence over provider defaults in Pi.
+      const modelOverrides = provider.modelOverrides;
+      const models = [
+        ...(Array.isArray(provider.models) ? provider.models : []),
+        ...(modelOverrides && typeof modelOverrides === "object" && !Array.isArray(modelOverrides) ? Object.values(modelOverrides) : []),
+      ];
+      for (const model of models) {
+        if (model && typeof model === "object" && !Array.isArray(model)) {
+          model.headers = openRouterAttributionHeaders(model.headers);
+        }
+      }
+    }
+  }
   const canonical = (value: unknown): string => value && typeof value === "object"
     ? Array.isArray(value) ? `[${value.map(canonical).join(",")}]`
       : `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(",")}}`

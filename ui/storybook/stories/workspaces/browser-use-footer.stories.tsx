@@ -26,6 +26,15 @@ const meta = {
           "The quiet footer: contextual Stop browsing and an options menu with automatic fitting and fixed viewport presets. Costs are recorded on the task and hidden here. Countdown appears only at five minutes or less. Keep browsing resets idle time; it cannot extend the provider’s lifetime limit.",
       },
     },
+    paperclip: {
+      "capabilities": [
+        "workspaces/services",
+        "tasks/discussion"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+    },
   },
   args: {
     browser: idle(600),

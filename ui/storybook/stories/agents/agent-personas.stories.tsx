@@ -15,7 +15,16 @@ const meta = {
   title: "Agents and reusable capabilities/Hiring, configuration, and organization/Agents/Personas",
   component: AgentCharacter,
   args: { appearance, size: 256, state: "listening", label: "Chief of Staff" },
-  parameters: { docs: { description: { component: "Persistent cap-v1 identities. The hero alone loads ClipLab. Development Storybook renders capsule PNGs locally on demand; published Storybook packages the same PNGs during its build, including every preset and both densities. Neither needs a running API." } } },
+  parameters: { docs: { description: { component: "Persistent cap-v1 identities. The hero alone loads ClipLab. Development Storybook renders capsule PNGs locally on demand; published Storybook packages the same PNGs during its build, including every preset and both densities. Neither needs a running API." } },
+    paperclip: {
+      "capabilities": [
+        "agents/organization",
+        "navigation-preferences/profile"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
   argTypes: {
     state: { control: "select", options: CHARACTER_STATES },
     size: { control: "select", options: AGENT_AVATAR_SIZES },

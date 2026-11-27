@@ -15,7 +15,16 @@ const meta = {
   title: "Tasks and conversations/Documents, attachments, and work products/HTML artifacts/01 Preview",
   component: Preview,
   args: { html: reportHtml, title: "repository-usage.html", width: 800 },
-  parameters: { layout: "fullscreen", docs: { description: { component: "Production attachment viewer. Inline CSS and JavaScript run in an opaque-origin sandbox. Remote dependencies and API requests are blocked. The original file is available through Download or Raw." }, story: { inline: false } } },
+  parameters: { layout: "fullscreen", docs: { description: { component: "Production attachment viewer. Inline CSS and JavaScript run in an opaque-origin sandbox. Remote dependencies and API requests are blocked. The original file is available through Download or Raw." }, story: { inline: false } },
+    paperclip: {
+      "capabilities": [
+        "documents-artifacts/attachments",
+        "workspaces/files-git"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 } satisfies Meta<typeof Preview>;
 export default meta;
 type Story = StoryObj<typeof meta>;

@@ -9,11 +9,19 @@ import type {
   AttentionSourceKind,
 } from "@paperclipai/shared";
 import { Routes, Route } from "@/lib/router";
+import { Layout } from "@/components/Layout";
+import { CoordinatorNeedsYou } from "@/components/coordinator/CoordinatorNeedsYou";
 import { WhatNeedsMe } from "@/pages/WhatNeedsMe";
 import { DecisionQueuePage } from "@/pages/DecisionQueuePage";
 import { AttentionQueueRow } from "@/components/AttentionQueueRow";
+import { PluginLauncherProvider } from "@/plugins/launchers";
 import type { DecisionQueueDto } from "@/api/decisionQueues";
 import { queryKeys } from "@/lib/queryKeys";
+import { coordinatorAttentionQueryKey } from "@/lib/coordinator-attention";
+import { storybookAuthSession } from "../../fixtures/paperclipData";
+import { installFixtureApi } from "../../support/capability-gaps/api";
+
+const STORYBOOK_USER_ID = storybookAuthSession.user!.id;
 
 // The company id the Storybook providers select (see .storybook/preview.tsx).
 const companyId = "company-storybook";
@@ -94,6 +102,10 @@ function item(
       href: "/PAP/issues/PAP-1000",
       metadata: {},
     },
+    audience: { kind: "user", userId: STORYBOOK_USER_ID, reason: "addressee" },
+    stale: null,
+    required: false,
+    changeFingerprint: "fixture.other", closeModes: ["archive", "snooze"], obligationKey: null, obligationLeadId: null,
     project: null,
     workspace: null,
     expiresAt: null,
@@ -137,22 +149,15 @@ function approval(id: string, title: string, whyNow: string, overrides: Partial<
 }
 
 function feed(items: AttentionItem[]): AttentionFeed {
-  // New-today (surfaced today) or overdue decide-by — the sidebar badge load.
-  const startOfToday = Date.UTC(
-    new Date(NOW).getUTCFullYear(),
-    new Date(NOW).getUTCMonth(),
-    new Date(NOW).getUTCDate(),
-  );
-  const deskBadgeCount = items.filter(
-    (it) =>
-      !it.shelf &&
-      (it.decideBy === "today" || new Date(it.createdAt).getTime() >= startOfToday),
-  ).length;
+  // The shared badge is the "For you" count (PAP-749 Rule 5); every fixture
+  // card here belongs to the Storybook user, with a few ownerless cards waiting.
+  const deskBadgeCount = items.filter((it) => !it.dismissal?.isActive).length;
   return {
     companyId,
     generatedAt: iso(NOW),
     totalCount: items.length,
     deskBadgeCount,
+    viewCounts: { mine: deskBadgeCount, unassigned: 3, company: 2, archived: items.length - deskBadgeCount, all: deskBadgeCount + 5 },
     nextCursor: null,
     countsBySourceKind: {} as AttentionFeed["countsBySourceKind"],
     items,
@@ -367,11 +372,14 @@ function PrimeDeskFixtures({
   useMemo(() => {
     queryClient.setQueryData(queryKeys.decisionQueues.list(companyId), QUEUES);
     queryClient.setQueryData(queryKeys.agents.list(companyId), AGENTS);
+    queryClient.setQueryData(queryKeys.auth.session, storybookAuthSession);
     if (items) {
+      // Keyed by person and view, like the current page query.
       queryClient.setQueryData(
-        [...queryKeys.attention(companyId), "with-dismissed", null, null],
+        [...queryKeys.attention(companyId), STORYBOOK_USER_ID, "mine", "with-dismissed", null, null],
         feed(items),
       );
+      queryClient.setQueryData(coordinatorAttentionQueryKey(companyId, STORYBOOK_USER_ID, "mine"), feed(items));
     }
     if (queueItems) {
       // The queue feed key carries the resolved activity bounds (null/null for
@@ -446,7 +454,16 @@ const INTERACTION_AUDIENCE_ITEMS: AttentionItem[] = [
 const meta: Meta = {
   id: "pages-decisions-desk",
   title: "Tasks and conversations/Inbox, decisions, and search/Pages/Decisions Desk",
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "inbox-search/decisions"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+    },
+  },
 };
 export default meta;
 
@@ -587,6 +604,61 @@ export const CardTriageStrip: Story = {
           onSnooze={() => {}}
         />
       </div>
+    </PrimeDeskFixtures>
+  ),
+};
+
+export const CoordinatorInboxMobile: Story = {
+  globals: { viewport: { value: "mobile", isRotated: false } },
+  parameters: {
+    layout: "fullscreen",
+    waitForViewport: true,
+    initialEntries: ["/PAP/decisions"],
+  },
+  beforeEach: () =>
+    installFixtureApi([
+      {
+        path: "/api/workspace-preferences/me",
+        read: () => ({
+          userId: STORYBOOK_USER_ID,
+          coordinatorWorkspaceEnabled: true,
+          updatedAt: null,
+        }),
+      },
+      {
+        path: `/api/companies/${companyId}/access/user-directory`,
+        read: () => ({
+          users: [
+            {
+              principalId: STORYBOOK_USER_ID,
+              status: "active",
+              user: { name: "Riley Board" },
+            },
+          ],
+        }),
+      },
+      {
+        path: `/api/companies/${companyId}/attention/history`,
+        read: () => ({ items: [], nextCursor: null }),
+      },
+      {
+        path: `/api/companies/${companyId}/attention/run-history`,
+        read: () => ({ items: [], nextCursor: null }),
+      },
+      {
+        path: `/api/companies/${companyId}/attention`,
+        read: () => feed(DESK_ITEMS),
+      },
+    ]).cleanup,
+  render: () => (
+    <PrimeDeskFixtures items={DESK_ITEMS}>
+      <PluginLauncherProvider>
+        <Routes>
+          <Route path="/:companyPrefix" element={<Layout />}>
+            <Route path="decisions" element={<CoordinatorNeedsYou />} />
+          </Route>
+        </Routes>
+      </PluginLauncherProvider>
     </PrimeDeskFixtures>
   ),
 };

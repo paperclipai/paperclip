@@ -10,7 +10,7 @@ import { GitHubSetupPrompt } from "@/pages/apps/chat/GitHubSetupPrompt";
 import { McpConfigHelpDialog } from "@/pages/tools/McpConfigHelpDialog";
 import { AgentInstructions } from "@/components/routine-triggers/WebhookFields";
 import { IssueContinuationHandoff } from "@/components/IssueContinuationHandoff";
-import { webhookAgentInstructions } from "../../fixtures/routineTriggerWizard";
+import { webhookAgentInstructions } from "@/components/routine-triggers/webhook-instructions";
 import { storybookContinuationHandoff } from "../../fixtures/paperclipData";
 
 const slackPrompt = buildSlackSetupPrompt(import.meta.env.VITE_PAPERCLIP_INSTANCE_URL ?? "");
@@ -29,6 +29,14 @@ const meta = {
   parameters: {
     layout: "fullscreen",
     docs: { description: { component: "A reusable handoff to an agent. Hover or focus to fan out the logos, click once to copy the prompt and open its preview. Logos travel into the preview; clipboard success stays in place. Supports reduced motion, keyboard dismissal, and manual copying when clipboard access fails. The default story copies the complete production Slack setup prompt." } },
+    paperclip: {
+      "capabilities": [
+        "connection-setup/channel-setup",
+        "gateways-profiles/client-connect"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
   },
   args: {
     prompt: slackPrompt,
@@ -155,7 +163,7 @@ export const AppPlacements: Story = {
           <McpConfigHelpDialog />
         </div>
       </section>
-      <AgentInstructions value={webhookAgentInstructions("github")} />
+      <AgentInstructions value={webhookAgentInstructions("github", "Verify a deployment", "https://acme.paperclip.example/api/routine-triggers/public/0123456789abcdef01234567/fire", "demo_webhook_key_for_storybook_only")} />
       <IssueContinuationHandoff document={storybookContinuationHandoff} />
     </div>
   ),

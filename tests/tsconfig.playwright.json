@@ -1,0 +1,28 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "noEmit": true,
+    "paths": {
+      "@/*": ["../ui/src/*"],
+      "@paperclipai/shared": ["../packages/shared/src/index.ts"]
+    },
+    "rootDir": "..",
+    "types": ["node"],
+    "typeRoots": ["../server/node_modules/@types"]
+  },
+  "include": [
+    "ai-connections-app/**/*.ts",
+    "ai-connections-review/**/*.ts",
+    "canary-onboarding/**/*.ts",
+    "hiring-ai-connections/**/*.ts",
+    "html-preview/**/*.ts",
+    "perf/**/*.ts",
+    "release-smoke/**/*.ts",
+    "storybook-visual/**/*.ts",
+    "../ui/src/vite-env.d.ts"
+  ]
+}
