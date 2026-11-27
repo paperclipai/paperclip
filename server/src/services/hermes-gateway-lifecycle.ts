@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import { agents, projects, type Db } from "@paperclipai/db";
 import { z } from "zod";
 import { type LifecycleAgent } from "../modules/agent-lifecycle/index.js";
@@ -120,8 +120,9 @@ async function reserveConnection(
     const [project] = await tx.select({ id: projects.id }).from(projects)
       .where(and(eq(projects.id, policy.projectId), eq(projects.companyId, agent.companyId)));
     if (!project) throw new Error("Managed Hermes reporting project is unavailable");
+    // Termination has settled. Historical adapter settings no longer reserve that port.
     const rows = await tx.select({ config: agents.adapterConfig }).from(agents)
-      .where(eq(agents.adapterType, "hermes_gateway"));
+      .where(and(eq(agents.adapterType, "hermes_gateway"), ne(agents.lifecycleState, "terminated")));
     const occupied = new Set(rows.map(row => row.config.apiBaseUrl).filter(value => typeof value === "string")
       .map(value => URL.canParse(value) ? new URL(value) : null)
       .filter(url => url?.hostname === origin(policy.gatewayHost).hostname)
