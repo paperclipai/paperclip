@@ -1,6 +1,6 @@
 import { PERMISSION_KEYS } from "@paperclipai/shared";
 import type { HumanCompanyMembershipRole } from "@paperclipai/shared";
-import { NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS, newStandardAgentGrantScope } from "./agent-permissions.js";
+import { NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS, newStandardAgentGrantScope } from "../lib/agent-permissions.js";
 import { grantsForHumanRole } from "./company-member-roles.js";
 
 export function grantsFromDefaults(
@@ -64,5 +64,9 @@ export function humanJoinGrantsFromDefaults(
   scope: Record<string, unknown> | null;
 }> {
   const grants = grantsFromDefaults(defaultsPayload, "human");
-  return grants.length > 0 ? grants : grantsForHumanRole(membershipRole);
+  if (grants.length === 0) return grantsForHumanRole(membershipRole);
+  if (!grants.some((grant) => grant.permissionKey === "commentary:view")) {
+    grants.push({ permissionKey: "commentary:view", scope: null });
+  }
+  return grants;
 }

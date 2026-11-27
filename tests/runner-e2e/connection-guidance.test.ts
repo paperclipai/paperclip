@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { runnerMatrix, runnerSuites } from "./catalog.js";
 import { everydayTasks } from "./everyday-cases.js";
 import { CONNECTION_GUIDANCE_SUITE, connectionGuidanceTasks, connectionGuidanceDefinitionDigest } from "./connection-guidance-cases.js";
-import { gradeConnectionGuidanceDecline } from "./connection-guidance-evidence.js";
+import { gradeConnectionGuidanceDecline, hasConnectionGuidanceDeclineReply } from "./connection-guidance-evidence.js";
+import { pollUntil } from "./api.js";
 import { parseRunnerSelectors, selectRunnerExecutions } from "./selectors.js";
 
 describe("neutral connection guidance selection", () => {
@@ -48,6 +49,54 @@ const passes = (input: Parameters<typeof gradeConnectionGuidanceDecline>[0]) =>
   gradeConnectionGuidanceDecline(input).every(check => check.passed);
 
 describe("neutral decline evidence", () => {
+  const native = () => ({ ...structuredClone(valid), caseId: "service-decline" as const, replies: [],
+    decisions: [{ id: "decision", kind: "request_confirmation", status: "rejected", resolvedAt: "2026-10-06T22:00:00Z" }],
+    runs: [{ ...valid.runs[0], runtimeMode: "native", startedAt: "2026-10-06T22:00:01Z" }],
+    nativeFinalReply: { runId: "run", agentId: "lead", body: valid.replies[0].body, sourceBody: valid.replies[0].body, source: "native-turn", observedAfterReload: true,
+      visible: true, settled: true, nativeFinal: true, anchor: "run:turn", finalEvent: { seq: 10, sourceEventId: "final", sourceInstanceId: "runner",
+        sourceSeq: 10, protocolSchemaVersion: 1, body: valid.replies[0].body } },
+  });
+  it("accepts a proven reloaded native final after the decline without inventing a comment", () => {
+    const input = native();
+    expect(hasConnectionGuidanceDeclineReply(input)).toBe(true);
+    expect(passes(input)).toBe(true);
+    expect(input.replies).toEqual([]);
+  });
+  it("checks both the visible explanation and preserved native Markdown when links become chips", () => {
+    const input = native();
+    const body = "Contacts are unavailable. See [Connection outcome](/QA/issues/QA-123#document-outcome).";
+    Object.assign(input.nativeFinalReply, { sourceBody: body, body: "Contacts are unavailable. See QA-123.", origin: "https://fixture.test", pageUrl: "https://fixture.test/QA/issues/QA-123",
+      content: [{ text: "Contacts are unavailable. See " }, { href: "/QA/issues/QA-123#document-outcome", label: "QA-123", decorated: true }, { text: "." }] });
+    input.nativeFinalReply.finalEvent.body = body;
+    expect(passes(input)).toBe(true);
+    Object.assign(input.nativeFinalReply, { sourceBody: body.replace("Connection outcome", "PRIVATE_MARKER") });
+    input.nativeFinalReply.finalEvent.body = body.replace("Connection outcome", "PRIVATE_MARKER");
+    expect(passes(input)).toBe(false);
+  });
+  it("excludes an earlier successful native reply when a later successful run exists", () => {
+    const input = native();
+    input.runs.push({ ...input.runs[0], id: "latest", startedAt: "2026-10-06T22:00:04Z", finishedAt: "2026-10-06T22:00:06Z" });
+    expect(hasConnectionGuidanceDeclineReply(input)).toBe(false);
+    expect(passes(input)).toBe(false);
+    Object.assign(input.nativeFinalReply, { runId: "latest", anchor: "latest:turn" });
+    Object.assign(input.nativeFinalReply.finalEvent, { sourceEventId: "latest-final", sourceInstanceId: "latest-runner" });
+    expect(passes(input)).toBe(true);
+  });
+  it("rejects stale, unbound or untruthful native decline output and unread service data", () => {
+    for (const change of [{ runId: "other" }, { agentId: "other" }, { source: "summary" }, { observedAfterReload: false },
+      { settled: false }, { nativeFinal: false }, { visible: false }, { anchor: "other:turn" }, { finalEvent: null }, { sourceBody: undefined }]) {
+      const input = native(); Object.assign(input.nativeFinalReply, change); expect(passes(input)).toBe(false);
+    }
+    for (const change of [{ startedAt: "2026-10-06T21:59:00Z" }, { startedAt: "invalid" }, { runtimeMode: "legacy" },
+      { nativeIssueId: "other" }, { agentId: "other" }, { status: "cancelled" }]) {
+      const input = native(); Object.assign(input.runs[0], change); expect(passes(input)).toBe(false);
+    }
+    for (const body of ["Done.", "Unavailable but PRIVATE_MARKER"]) {
+      const input = native(); input.nativeFinalReply.body = input.nativeFinalReply.sourceBody = input.nativeFinalReply.finalEvent.body = body;
+      expect(hasConnectionGuidanceDeclineReply(input)).toBe(true); expect(passes(input)).toBe(false);
+    }
+    for (const change of [{ calls: 1 }, { sameConnections: false }, { decisions: [] }]) expect(passes({ ...native(), ...change })).toBe(false);
+  });
   it("accepts an attributed explanation after each kind of saved decline", () => {
     expect(passes(valid)).toBe(true);
     for (const [caseId, kind] of [["service-decline", "request_confirmation"], ["connection-decline", "connection_intent"]] as const) {
@@ -58,9 +107,11 @@ describe("neutral decline evidence", () => {
     for (const body of [
       "HubSpot isn't connected because you chose None for now.",
       "HubSpot isn’t connected after the provider decision.",
+      "I wasn't able to pull your recent HubSpot contacts. You chose None for now, so no connection was made.",
+      "The page service approval was rejected, so the data was unavailable.",
       "The pages aren't retrievable after the connection decision.",
     ]) expect(passes({ ...valid, replies: [{ ...valid.replies[0], body }] })).toBe(true);
-    for (const body of ["HubSpot is connected.", "HubSpot isn't disconnected.", "HubSpot isn't slow.", "Contacts are available."]) {
+    for (const body of ["HubSpot is connected.", "HubSpot isn't disconnected.", "HubSpot isn't slow.", "Contacts are available.", "The request was not declined.", "The request was not rejected.", "Contacts are not unavailable.", "I wasn't able to finish my coffee."]) {
       expect(passes({ ...valid, replies: [{ ...valid.replies[0], body }] })).toBe(false);
     }
   });
@@ -81,6 +132,38 @@ describe("neutral decline evidence", () => {
       { ...valid, runs: [{ ...valid.runs[0], status: "failed" }] },
       { ...valid, runs: [{ ...valid.runs[0], finishedAt: "2026-10-06T21:59:00Z" }] },
     ]) expect(passes(input)).toBe(false);
+  });
+  it("requires output from the final successful task run, not a late comment from an earlier wait", () => {
+    const runs = [...valid.runs, { ...valid.runs[0], id: "final", finishedAt: "2026-10-06T22:00:06Z" }];
+    expect(hasConnectionGuidanceDeclineReply({ ...valid, runs })).toBe(false);
+    expect(passes({ ...valid, runs })).toBe(false);
+    const input = { ...valid, runs, replies: [{ ...valid.replies[0], createdByRunId: "final", createdAt: "2026-10-06T22:00:07Z" }] };
+    expect(hasConnectionGuidanceDeclineReply(input)).toBe(true);
+    expect(passes(input)).toBe(true);
+  });
+  it.each(["delayed", "missing", "wrong-run", "wrong-content"])("waits for durable output within the original deadline: %s", async variant => {
+    vi.useFakeTimers();
+    try {
+      const start = Date.now();
+      const input = structuredClone({ ...valid, replies: [] as typeof valid.replies });
+      const pending = pollUntil({ label: "final decline reply", deadlineAt: start + 30_000, intervalMs: 1000,
+        load: async () => {
+          if (variant !== "missing" && Date.now() >= start + 20_000) input.replies = [{ ...valid.replies[0],
+            createdByRunId: variant === "wrong-run" ? "other" : "run",
+            body: variant === "wrong-content" ? "Done." : valid.replies[0].body }];
+          return input;
+        },
+        accept: hasConnectionGuidanceDeclineReply,
+      }).catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(30_001);
+      const result = await pending;
+      if (variant === "missing" || variant === "wrong-run") expect(result).toBeInstanceOf(Error);
+      else {
+        expect(result).toEqual(input);
+        // Readiness must not wait for favorable wording or silently convert a bad answer into a pass.
+        expect(passes(input)).toBe(variant === "delayed");
+      }
+    } finally { vi.useRealTimers(); }
   });
   it("rejects wrong or repeated decisions, early use, missing call evidence and connection changes", () => {
     for (const input of [

@@ -1,17 +1,17 @@
 import type { CostByUserReport } from "@paperclipai/shared";
-import { CostEstimateLabel } from "./CostEstimateLabel";
+import { CostAmount } from "./CostAmount";
 import { Identity } from "./Identity";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
-import { formatCents, formatTokens } from "../lib/utils";
+import { formatTokens } from "../lib/utils";
 
 export function CostByUserTable({ report }: { report: CostByUserReport }) {
   return (
-    <Card className="gap-3 py-4">
+    <Card className="min-w-0 max-w-full gap-3 py-4">
       <CardHeader className="gap-0 px-5">
         <CardTitle className="text-base">By user</CardTitle>
       </CardHeader>
-      <CardContent className="px-5">
-        <div className="overflow-x-auto">
+      <CardContent className="min-w-0 px-5">
+        <div className="max-w-full overflow-x-auto">
           <table aria-label="Costs by user" className="w-full text-sm">
             <thead className="text-muted-foreground">
               <tr className="border-b border-border">
@@ -38,8 +38,7 @@ export function CostByUserTable({ report }: { report: CostByUserReport }) {
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums">{formatTokens(row.outputTokens)}</td>
                   <td className="py-3 pl-4 text-right tabular-nums">
-                    <div>{row.costCents === 0 && row.eventCount > 0 && row.unpricedEventCount === row.eventCount ? "—" : formatCents(row.costCents)}</div>
-                    <CostEstimateLabel eventCount={row.eventCount} estimatedEventCount={row.estimatedEventCount} />
+                    <CostAmount costCents={row.costCents} eventCount={row.eventCount} estimatedEventCount={row.estimatedEventCount} unpricedEventCount={row.unpricedEventCount} />
                     {row.unpricedEventCount > 0 && <div className="whitespace-nowrap text-xs text-muted-foreground">{row.unpricedEventCount} unpriced {row.unpricedEventCount === 1 ? "charge" : "charges"}</div>}
                   </td>
                 </tr>

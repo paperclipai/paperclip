@@ -37,9 +37,8 @@ const AGENT_NAME = "Release Smoke Lead";
 // The arc asks for a name, not a role, so every onboarding hire is filed under
 // the neutral role (DEFAULT_AGENT_ROLE in ui/src/lib/onboarding-agent-role.ts).
 const AGENT_ROLE = "general";
-// Seeded by the wizard's launch step (DEFAULT_TASK_TITLE in
-// ui/src/components/OnboardingWizard.tsx).
-const FIRST_TASK_TITLE = "Paperclip onboarding";
+// ONBOARDING_CHAT_ORIGIN_KIND in packages/shared/src/constants.ts.
+const ONBOARDING_CHAT_ORIGIN_KIND = "onboarding_chat";
 
 async function signIn(page: Page) {
   await page.goto("/");
@@ -163,6 +162,37 @@ test.describe("Docker authenticated onboarding smoke", () => {
       page.getByRole("heading", { name: "Connect a model" })
     ).toBeVisible({ timeout: 20_000 });
 
+    const companies = await getJson<Array<{ id: string; name: string }>>(
+      page,
+      `${baseUrl}/api/companies`
+    );
+    const company = companies.find((entry) => entry.name === COMPANY_NAME);
+    expect(company).toBeTruthy();
+    const agentsUrl = `${baseUrl}/api/companies/${company!.id}/agents`;
+    await expect.poll(
+      () => getJson<Array<{ id: string }>>(page, agentsUrl),
+      { message: "Connect a model must retain one paused setup record" },
+    ).toEqual([
+      expect.objectContaining({
+        name: AGENT_NAME,
+        status: "paused",
+        pauseReason: "setup",
+        metadata: expect.objectContaining({ setupAdapterPending: true }),
+        runtimeConfig: expect.objectContaining({
+          heartbeat: expect.objectContaining({ enabled: false }),
+        }),
+      }),
+    ]);
+    const [setupAgent] = await getJson<Array<{ id: string }>>(page, agentsUrl);
+    for (const resource of ["issues", "heartbeat-runs"]) {
+      expect(
+        await getJson<Array<{ id: string }>>(
+          page,
+          `${baseUrl}/api/companies/${company!.id}/${resource}`,
+        ),
+      ).toEqual([]);
+    }
+
     await page
       .getByRole("button", { name: "Use API key instead", exact: true })
       .click();
@@ -188,9 +218,9 @@ test.describe("Docker authenticated onboarding smoke", () => {
     await expect(connectButton).toBeEnabled({ timeout: 30_000 });
     await connectButton.click();
 
-    // Step 5: review, then launch. "Get started" provisions the onboarding
-    // project and first task and, only on success, drops the user into the
-    // seeded first task's thread (not the dashboard).
+    // Step 5: review, then launch. Since #22077, "Get started" opens the lead's
+    // standing chat and, only on success, drops the user into it (not the
+    // dashboard). It creates no execution task or project.
     const getStartedButton = page.getByRole("button", {
       name: "Get started",
       exact: true,
@@ -198,20 +228,16 @@ test.describe("Docker authenticated onboarding smoke", () => {
     await expect(getStartedButton).toBeVisible({ timeout: 60_000 });
     await expect(getStartedButton).toBeEnabled({ timeout: 10_000 });
     await getStartedButton.click();
-    await expect(page).toHaveURL(/\/issues\//, { timeout: 30_000 });
-
-    const companies = await getJson<Array<{ id: string; name: string }>>(
-      page,
-      `${baseUrl}/api/companies`
-    );
-    const company = companies.find((entry) => entry.name === COMPANY_NAME);
-    expect(company).toBeTruthy();
+    await expect(page).toHaveURL(/\/chats\/[^/]+$/, { timeout: 30_000 });
 
     const agents = await getJson<
-      Array<{ id: string; name: string; role: string; adapterType: string }>
+      Array<{ id: string; name: string; role: string; adapterType: string; pauseReason: string | null }>
     >(page, `${baseUrl}/api/companies/${company!.id}/agents`);
+    expect(agents).toHaveLength(1);
     const leadAgent = agents.find((entry) => entry.name === AGENT_NAME);
     expect(leadAgent).toBeTruthy();
+    expect(leadAgent!.id).toBe(setupAgent!.id);
+    expect(leadAgent!.pauseReason).not.toBe("setup");
     expect(leadAgent!.role).toBe(AGENT_ROLE);
     expect(leadAgent!.adapterType).not.toBe("process");
 
@@ -224,53 +250,58 @@ test.describe("Docker authenticated onboarding smoke", () => {
     );
     expect(goals).toEqual([]);
 
-    const issues = await getJson<
-      Array<{
-        id: string;
-        identifier: string | null;
-        title: string;
-        assigneeAgentId: string | null;
-      }>
-    >(page, `${baseUrl}/api/companies/${company!.id}/issues`);
-    const seededIssue = issues.find((entry) => entry.title === FIRST_TASK_TITLE);
-    expect(seededIssue).toBeTruthy();
-    expect(seededIssue!.assigneeAgentId).toBe(leadAgent!.id);
-
-    // The launch must have landed on the seeded task itself, not merely on
-    // some issue route.
-    const seededRef = seededIssue!.identifier ?? seededIssue!.id;
-    expect(new URL(page.url()).pathname.endsWith(`/issues/${seededRef}`)).toBe(
+    // The launch must have landed on the lead's chat itself, not merely on
+    // some chat route.
+    expect(new URL(page.url()).pathname.endsWith(`/chats/${leadAgent!.id}`)).toBe(
       true
     );
 
-    // #13068 rebuilt the seeded first task as a chat with the lead: launch
-    // posts a deterministic, server-owned greeting plus an opening question
-    // card, and deliberately does not wake the assignee — "no run until the
-    // user answers". Assert the chat actually opened (the greeting and the
-    // card are seeded without an LLM, so their absence means the launch
-    // half-finished) …
-    await expect(
-      page.getByText("Welcome to Paperclip!").first()
-    ).toBeVisible({ timeout: 20_000 });
-    // The timeline also summarizes the unanswered question. Check the open
-    // question card so a summary alone cannot satisfy this assertion.
-    await expect(
-      page
-        .getByTestId("task-chat-interaction")
-        .getByText("What would you like to do?", { exact: true })
-    ).toBeVisible();
-
-    // … and that the no-run contract holds. This spec used to poll for an
-    // assignment-triggered heartbeat run here; a run appearing before the
-    // user's first answer is now the regression, not the success. Wake
-    // dispatch is asynchronous, so watch the endpoint over a bounded window
-    // rather than sampling it once — a launch-time wake that slips through
-    // lands well within this window.
-    const runsUrl = `${baseUrl}/api/companies/${company!.id}/heartbeat-runs?agentId=${leadAgent!.id}`;
-    const noRunDeadline = Date.now() + 15_000;
-    while (Date.now() < noRunDeadline) {
-      expect(await getJson<Array<{ id: string }>>(page, runsUrl)).toEqual([]);
-      await page.waitForTimeout(1_000);
+    // Execution work waits until the user accepts a proposal, so the wizard
+    // leaves the task and project lists empty. The chat record is excluded
+    // from task collections and is listed only under chats.
+    for (const resource of ["issues", "projects"]) {
+      expect(
+        await getJson<Array<{ id: string }>>(
+          page,
+          `${baseUrl}/api/companies/${company!.id}/${resource}`,
+        ),
+      ).toEqual([]);
     }
+    const chats = await getJson<
+      Array<{
+        originKind: string;
+        projectId: string | null;
+        conversationAgentId: string | null;
+      }>
+    >(page, `${baseUrl}/api/companies/${company!.id}/chats`);
+    expect(chats).toEqual([
+      expect.objectContaining({
+        originKind: ONBOARDING_CHAT_ORIGIN_KIND,
+        projectId: null,
+        conversationAgentId: leadAgent!.id,
+      }),
+    ]);
+
+    // Assert the chat actually opened: its composer renders only once the
+    // conversation loaded.
+    await expect(page.getByTestId("task-chat-composer-add")).toBeVisible({
+      timeout: 20_000,
+    });
+
+    // Once the chat paints in a visible tab, the UI requests a live welcome
+    // through the normal agent queue. The provider mock serves no completions,
+    // so assert only that the published artifact queued the welcome run, not
+    // what it says.
+    const runsUrl = `${baseUrl}/api/companies/${company!.id}/heartbeat-runs?agentId=${leadAgent!.id}`;
+    await expect
+      .poll(
+        async () =>
+          (await getJson<Array<{ id: string }>>(page, runsUrl)).length,
+        {
+          message: "The onboarding chat must queue the lead's live welcome",
+          timeout: 30_000,
+        },
+      )
+      .toBeGreaterThan(0);
   });
 });

@@ -1,3 +1,4 @@
+import type { AgentLifecycleState } from "./agent-lifecycle.js";
 import type { AgentAppearance } from "../agent-appearance.js";
 import type { AiConnectionLoginIntent } from "../ai-connections.js";
 import type {
@@ -16,12 +17,19 @@ import type {
 } from "../trust-policy.js";
 import type { AgentOrgChainHealth } from "../agent-eligibility.js";
 import type { AgentApiKeyScope } from "../validators/agent.js";
+import type { AgentInteractionPermissions } from "../agent-interaction-permissions.js";
 
 export interface AgentPermissions extends Record<string, unknown> {
   canCreateAgents: boolean;
   canCreateSkills?: boolean;
   trustPreset?: TrustPreset;
   authorizationPolicy?: TrustAuthorizationPolicy;
+  interactions?: AgentInteractionPermissions;
+}
+
+export interface AgentProjectAccess {
+  projectIds: string[];
+  canManage: boolean;
 }
 
 export type AgentRuntimeConfig = Record<string, unknown> & {
@@ -32,6 +40,9 @@ export type AgentInstructionsBundleMode = "managed" | "external";
 
 export interface AgentInstructionsFileSummary {
   path: string;
+  /** Creation is exposed only when recorded; historical files may only have a modification date. */
+  createdAt?: string;
+  updatedAt?: string;
   contentHash?: string;
   binary?: boolean;
   size: number;
@@ -90,10 +101,15 @@ export interface Agent {
   appearance?: AgentAppearance | null;
   avatarUrl?: string;
   status: AgentStatus;
+  lifecycleState?: AgentLifecycleState;
+  lifecycleVersion?: number;
+  lifecycleError?: string | null;
   reportsTo: string | null;
   capabilities: string | null;
   adapterType: AgentAdapterType;
   adapterConfig: Record<string, unknown>;
+  /** Non-fatal options ignored by this configuration write; not persisted. */
+  configurationWarnings?: import("../runner-configuration-warnings.js").AgentConfigurationWarning[];
   runtimeConfig: AgentRuntimeConfig;
   defaultEnvironmentId?: string | null;
   budgetMonthlyCents: number;
@@ -105,6 +121,7 @@ export interface Agent {
   lastHeartbeatAt: Date | null;
   metadata: Record<string, unknown> | null;
   orgChainHealth?: AgentOrgChainHealth;
+  createdByUserId?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -208,6 +225,8 @@ export interface CodexAccountBindingClaim {
 // The owner read of a login session. It adds the one-time prompt to the public
 // response. Only the owner principal that started the session reads this shape.
 export interface AdapterAuthSessionOwnerResponse extends AdapterAuthSessionResponse {
+  /** The saved computer executing this login; independent of account grants. */
+  agentId?: string;
   aiConnection?: AiConnectionLoginIntent;
   prompt: AdapterAuthSessionPrompt | null;
   codexAccountBinding?: CodexAccountBindingClaim | null;
@@ -216,6 +235,7 @@ export interface AdapterAuthSessionOwnerResponse extends AdapterAuthSessionRespo
 // The request that starts a login session for one adapter in one environment.
 // The owner principal comes from the authenticated caller, not from this body.
 export interface StartAdapterAuthSessionRequest {
+  agentId?: string;
   aiConnection?: AiConnectionLoginIntent;
   environmentId: string;
   adapterType: AgentAdapterType;
@@ -291,6 +311,7 @@ export interface ClaudeSetupTokenSessionResponse {
 // the session reads this shape.
 export interface ClaudeSetupTokenSessionOwnerResponse
   extends ClaudeSetupTokenSessionResponse {
+  agentId?: string;
   aiConnection?: AiConnectionLoginIntent;
   panelMode: AdapterAuthPanelMode;
   prompt: ClaudeSetupTokenSessionPrompt | null;
@@ -321,6 +342,8 @@ export interface AdapterEnvironmentCheck {
   message: string;
   detail?: string | null;
   hint?: string | null;
+  /** The check could not complete because its execution target was unavailable. */
+  retryable?: boolean;
 }
 
 export interface AdapterEnvironmentTestResult {

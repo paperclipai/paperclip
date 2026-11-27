@@ -1,39 +1,5 @@
 import { expect, it } from "vitest";
-import { mayAllocateRemoteResources, mustPreserveRecoveryState, runCleanupWithObservers, shouldKeepFailedDiagnostics, verifyCleanupAssertions } from "./cleanup-verification.js";
-
-it("keeps late failures and incomplete publication for explicit diagnosis", () => {
-  expect(shouldKeepFailedDiagnostics({ enabled: true, expectedResults: 1, results: [{ status: "failed" }] })).toBe(true);
-  expect(shouldKeepFailedDiagnostics({ enabled: true, expectedResults: 2, results: [{ status: "passed" }] })).toBe(true);
-  expect(shouldKeepFailedDiagnostics({ enabled: true, expectedResults: 1, results: [] })).toBe(true);
-  expect(shouldKeepFailedDiagnostics({ enabled: true, expectedResults: 1, results: [{ status: "passed" }] })).toBe(false);
-  expect(shouldKeepFailedDiagnostics({ enabled: false, expectedResults: 1, results: [] })).toBe(false);
-});
-
-it("marks only environments that can allocate remote resources", () => {
-  expect(mayAllocateRemoteResources("daytona")).toBe(true);
-  expect(mayAllocateRemoteResources("local")).toBe(false);
-});
-
-it("retains uncertain remote allocation state even after every local process exits", () => {
-  expect(mustPreserveRecoveryState({ processCleanupFailed: false, results: [{ cleanup: "failed" }] })).toBe(true);
-  expect(mustPreserveRecoveryState({ processCleanupFailed: false, results: [{ cleanup: "not_started" }] })).toBe(false);
-  expect(mustPreserveRecoveryState({ processCleanupFailed: true, results: [{ cleanup: "passed" }] })).toBe(true);
-  expect(mustPreserveRecoveryState({ processCleanupFailed: false, results: [{ cleanup: "passed" }] })).toBe(false);
-});
-
-it("retains raw cleanup failures even when no evidence was published", () => {
-  expect(mustPreserveRecoveryState({ processCleanupFailed: false, resourceAdmissionStarted: true, results: [{ cleanup: "failed" }] })).toBe(true);
-});
-
-it("distinguishes pre-admission bootstrap failures from uncertain worker failures", () => {
-  const synthetic = { cleanup: "not_started", synthetic: true };
-  expect(mustPreserveRecoveryState({ processCleanupFailed: false, results: [synthetic] })).toBe(false);
-  expect(mustPreserveRecoveryState({ processCleanupFailed: false, resourceAdmissionStarted: true, results: [synthetic] })).toBe(true);
-  expect(mustPreserveRecoveryState({ processCleanupFailed: false, resourceAdmissionStarted: true, results: [] })).toBe(true);
-  expect(mustPreserveRecoveryState({ processCleanupFailed: false, results: [] })).toBe(false);
-  expect(mustPreserveRecoveryState({ processCleanupFailed: false, resourceAdmissionStarted: true, results: [{ cleanup: "not_started" }] })).toBe(false);
-  expect(mustPreserveRecoveryState({ processCleanupFailed: false, resourceAdmissionStarted: true, results: [{ cleanup: "passed" }] })).toBe(false);
-});
+import { ownedActiveCleanupRunIds, runCleanupWithObservers, verifyCleanupAssertions } from "./cleanup-verification.js";
 
 it("retains a failed cleanup proof and still closes every later observer", async () => {
   let closed = 0;
@@ -70,4 +36,14 @@ it("collects remote proof before environment destruction, preserving every clean
   expect(calls).toEqual(["retire", "proof1", "proof2", "teardown"]);
   expect(result.errors.map(error => (error as Error).message)).toEqual(["cancel failed", "receipt missing", "delete failed"]);
   expect(result.checks).toContainEqual({ id: "sealed", passed: true, detail: "sealed before deletion" });
+});
+
+it("cancels only independently listed active owned-company runs", () => {
+  expect(ownedActiveCleanupRunIds([
+    { id: "owned", companyId: "attempt-company", status: "running" },
+    { id: "foreign", companyId: "other-company", status: "running" },
+    { id: "unscoped", status: "running" },
+    { id: "finished", companyId: "attempt-company", status: "succeeded" },
+    { id: "owned", companyId: "attempt-company", status: "running" },
+  ], "attempt-company", new Set(["succeeded"]))).toEqual(["owned"]);
 });

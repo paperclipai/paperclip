@@ -1,0 +1,38 @@
+{
+  "packages/adapter-utils/src/workspace-snapshot-thread.ts": {
+    "sourceSha256": "79e837c059cdd1dfb2c7a9c8624c5e124082b3a5462ff40e24e8dcd204f3b559",
+    "resolution": "known-worker-and-pinned-tsx",
+    "dependencies": [
+      "packages/adapter-utils/src/workspace-snapshot-thread-worker.ts"
+    ]
+  },
+  "tests/runner-e2e/public-mcp-client.ts": {
+    "sourceSha256": "58c20cb6f770c749684c0d94fcf6f1d89c55f9c71a84172286aa6e43618ebd8e",
+    "resolution": "pinned-external-mcp-sdk",
+    "dependencies": [
+      "server/package.json"
+    ]
+  },
+  "tests/runner-e2e/remote-native-bootstrap.ts": {
+    "sourceSha256": "7e9b9032b604ed00731b0fc7faf5af41236b88cce4848b92b6f444793ab0e2d2",
+    "resolution": "pinned-external-daytona-sdk",
+    "dependencies": [
+      "packages/plugins/sandbox-providers/daytona/package.json"
+    ]
+  },
+  "tests/runner-e2e/installed-cli.ts": {
+    "sourceSha256": "6b421b69db24985d7310ac3a48bbc93e207ace22f1fbe7f42732633ed93e6761",
+    "resolution": "inactive-installed-startup-only-probe",
+    "dependencies": []
+  },
+  "tests/runner-e2e/product-journeys/launch.ts": {
+    "sourceSha256": "b0e550358e9475fac6031b36e0fc3a84612d445368616393c140f577fc40420e",
+    "resolution": "inactive-product-journey-dispatch",
+    "dependencies": []
+  },
+  "tests/runner-e2e/github-review-launch.ts": {
+    "sourceSha256": "c68dc905d31fcc49e7edaeaef4ac7201e7d81c23433da4d48cac5fde2425d42b",
+    "resolution": "inactive-github-review-dispatch",
+    "dependencies": []
+  }
+}

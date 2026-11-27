@@ -22,7 +22,8 @@ import { assertCompanyAccess, getActorInfo } from "./authz.js";
  * acknowledged revision only afterwards, retrying from the next portfolio
  * fetch otherwise. So this route answers 200 only once every part of the seed
  * has been applied, and a replay of an already-applied revision is a
- * successful no-op rather than a second agent and a second task.
+ * successful no-op rather than a second agent. Initial task ideas are retained
+ * as chat context; applying a seed creates no execution task or project.
  *
  * "Every part" includes the audit entry, which `apply` writes inside the same
  * transaction as the seed. Because Cloud stops retrying on a 2xx, anything this

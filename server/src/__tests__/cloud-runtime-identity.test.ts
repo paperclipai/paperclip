@@ -18,6 +18,8 @@ import {
 import { routineWebhookUrl } from "../services/routines.js";
 import { paperclipCloudConnectorEnrollmentStatus } from "../services/paperclip-cloud-connector-enrollment.js";
 import { cloudRuntimeIdentityMiddleware } from "../middleware/cloud-runtime-identity.js";
+import { idleAdmissionMiddleware, trackIdleRequestHandlers } from "../middleware/idle-admission.js";
+import { idleWorkSnapshot } from "../services/task-admission.js";
 import { healthRoutes } from "../routes/health.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -184,6 +186,37 @@ describeEmbeddedPostgres("Cloud runtime identity", () => {
       canonicalOrigin: CANONICAL_ORIGIN,
       stackSlug: "gonzo",
     });
+  });
+
+  it.each([false, true])("counts exempt bootstrap writes until they settle (failure=%s)", async (fail) => {
+    let enterWrite!: () => void, finishWrite!: () => void;
+    const entered = new Promise<void>(resolve => { enterWrite = resolve; });
+    const pending = new Promise<void>(resolve => { finishWrite = resolve; });
+    const transaction = db.transaction.bind(db);
+    vi.spyOn(db, "transaction").mockImplementationOnce(async (...args) => {
+      enterWrite();
+      await pending;
+      if (fail) throw new Error("fixture bootstrap write failed");
+      return transaction(...args);
+    });
+    const app = express();
+    app.use(idleAdmissionMiddleware);
+    app.use(cloudRuntimeIdentityMiddleware(db));
+    app.get("/api/health", (_req, res) => res.sendStatus(204));
+    trackIdleRequestHandlers(app);
+    const requestTime = Math.floor(Date.now() / 1000);
+    const accepted = request(app).get("/api/health")
+      .set("x-paperclip-cloud-runtime-identity", assertion({ claims: { iat: requestTime, exp: requestTime + 300 } }))
+      .then(response => response);
+    try {
+      await entered;
+      expect(idleWorkSnapshot().active).toBe(1);
+    } finally {
+      finishWrite();
+      const response = await accepted;
+      expect(response.status).toBe(fail ? 401 : 204);
+    }
+    expect(idleWorkSnapshot().active).toBe(0);
   });
 
   it("keeps probes idle until a verified durable claim and stays active across restart", async () => {

@@ -21,7 +21,7 @@ import { inspectNativeCompletionSourceMetadata } from "../../../../tests/runner-
 // It measures complete Paperclip-supplied instruction/tool/message projections,
 // not provider-owned stock prompts, tokenization, billing or model behavior.
 const tools = PAPERCLIP_SEMANTIC_ACTION_CATALOG
-  .filter(tool => tool.placement === "core")
+  .filter(tool => tool.placement === "always")
   .map(tool => ({ name: tool.operationId, description: tool.description, inputSchema: tool.inputSchema }));
 const identity = { companyId: "company", agentId: "agent", issueId: "issue", runId: "run", sessionId: "session" };
 const { qualificationModel: _qualificationModel, reportedModelId: _reportedModelId, permissionPolicy: _permissionPolicy, ...profile } = resolveQualifiedAcpxProfile("claude", "claude-sonnet-5");
@@ -139,6 +139,8 @@ describe("native instruction payload measurement", () => {
             expect(JSON.stringify(turn.input)).toContain("Document saved");
           }
           expect(JSON.stringify(turn.input)).toContain("objective");
+          expect(JSON.stringify(turn.input)).toContain("Before ending this turn, obtain one accepted paperclip_finish or paperclip_block result.");
+          expect(JSON.stringify(turn.input)).toContain("Earlier reports belong to earlier turns");
         } else {
           expect(JSON.stringify(turn.input)).toContain("Obtain one accepted result");
           expect(JSON.stringify(turn.input)).toContain("Document saved");
@@ -180,7 +182,7 @@ describe("direct OpenCode HTTP instruction boundary", () => {
     try {
       const checkpoint = await session.snapshot();
       const send = async (current: typeof session, phase: string, value: NativeExecutionInput) => {
-        const envelope = buildNativeModelEnvelope(value, { resumedSession: phase === "continuation" });
+        const envelope = phase === "continuation" ? buildNativeModelEnvelope(value, { resumedSession: true }) : buildNativeModelEnvelope(value);
         if ("requestedSkills" in envelope && backend.preparedTaskConstraints) envelope.constraints = [...backend.preparedTaskConstraints];
         await current.startTurn({ message: { role: "user", text: JSON.stringify(envelope) } });
         for await (const event of current.events()) { if (event.eventType === "turn.completed") break; if (["turn.failed", "turn.cancelled"].includes(event.eventType)) throw new Error(`Fixture turn failed: ${event.eventType}`); }
@@ -188,11 +190,10 @@ describe("direct OpenCode HTTP instruction boundary", () => {
         const request = requests.at(-1)!;
         expect(request.providerID).toBe("openrouter"); expect(request.modelID).toBe("deepseek/deepseek-v4-flash-0731");
         const text = request.parts[0].text as string;
+        expect(request.system).toBe(nativeSystemInstructions(value));
         if (schema === "v4" && phase === "start") {
-          expect(request.system).toBe(nativeSystemInstructions(input));
           expect(JSON.parse(text).task.constraints).toEqual(nativeTaskConstraints(input));
         } else {
-          expect(request.system).toBeUndefined();
           expect(JSON.parse(text)).toEqual(envelope);
         }
         directOpenCodeReceipts.push({ provider: "opencode", schema, phase, request: measure(request),

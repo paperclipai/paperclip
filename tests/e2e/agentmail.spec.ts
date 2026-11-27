@@ -13,10 +13,6 @@ test("AgentMail setup and email work through the normal task conversation", asyn
   request,
 }) => {
   await page.setViewportSize({ width: 1440, height: 1080 });
-  const settings = await request.patch("/api/instance/settings/experimental", {
-    data: { enableChatConnectors: false },
-  });
-  expect(settings.ok()).toBeTruthy();
   const created = await request.post("/api/companies", {
     data: { name: `AgentMail browser ${Date.now()}` },
   });
@@ -264,7 +260,11 @@ test("AgentMail setup and email work through the normal task conversation", asyn
   await expect(page.getByText("Internal server error", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Your agent’s email is ready" })).toHaveCount(0);
   await page.screenshot({ path: test.info().outputPath("agentmail-permission-denied.png"), fullPage: true });
-  await page.getByRole("link", { name: "Connectors", exact: true }).click();
+  await page.getByRole("button", { name: "More workspace pages", exact: true }).click();
+  await page.getByRole("link", { name: "Plugins", exact: true }).click();
+  // Installed lists plugins as tiles; account rows, including one waiting on setup, are on the plugin page.
+  await page.getByRole("radio", { name: "Installed", exact: true }).click();
+  await page.locator('[data-app-slug="agentmail"] h3 button').click();
   await page.getByRole("button", { name: "Finish setup", exact: true }).click();
   await expect(page.getByText("mail-agent-free@verified.example.test", { exact: true })).toBeVisible();
   await expect(addressField).toHaveCount(0);
@@ -282,7 +282,7 @@ test("AgentMail setup and email work through the normal task conversation", asyn
   await expect(page.getByRole("button", { name: "Reconnect inbox", exact: true })).toHaveCount(0);
   await navigation.getByRole("link", { name: "Conversations", exact: true }).click();
   await expect(page.getByRole("list", { name: "Conversations" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Open task", exact: true })).toHaveAttribute("href", `/${company.issuePrefix}/issues/${task.id}`);
+  await expect(page.getByRole("list", { name: "Conversations" }).locator(`a[href="/${company.issuePrefix}/issues/${task.id}"]`)).toHaveAttribute("href", `/${company.issuePrefix}/issues/${task.id}`);
   await page.reload();
   await expect(page.getByRole("list", { name: "Conversations" })).toBeVisible();
   await navigation.getByRole("link", { name: "Activity", exact: true }).click();

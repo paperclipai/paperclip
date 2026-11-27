@@ -3,6 +3,7 @@ import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 import {
   createRequest, definePlugin, isJsonRpcResponse, JsonRpcCallError, parseMessage,
+  readEnvironmentSyncErrorDiagnostic, withEnvironmentSyncTransferStep, recordEnvironmentSyncError,
   PLUGIN_RPC_ERROR_CODES, serializeMessage, startWorkerRpcHost, type JsonRpcResponse,
 } from "@paperclipai/plugin-sdk";
 import {
@@ -53,8 +54,9 @@ describe("environment sync-out restore diagnostics", () => {
     await expect(withWorkspaceRestoreDiagnostics("workspace", () => withWorkspaceRestoreStep("workspace_transfer", async () => {
       throw preserveEnvironmentSyncOutErrorDiagnostic(error);
     }), async (line) => { logs.push(line); })).rejects.toBe(error);
-    expect(getWorkspaceRestoreDiagnostic(error)).toEqual({ phase: "workspace", step: "workspace_transfer", errorCode: "ETIMEDOUT", httpStatus: 504 });
-    expect(logs).toEqual(['[paperclip] Workspace restore diagnostic: {"phase":"workspace","step":"workspace_transfer","errorCode":"ETIMEDOUT","httpStatus":504}\n']);
+    expect(getWorkspaceRestoreDiagnostic(error)).toEqual({ phase: "workspace", step: "workspace_transfer", errorCode: "ETIMEDOUT", httpStatus: 504, rpcCode: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR });
+    expect(logs).toHaveLength(1);
+    expect(JSON.parse(logs[0].slice(logs[0].indexOf("{")))).toEqual(getWorkspaceRestoreDiagnostic(error));
     expect({ message: error.message, code: error.code, data: error.data }).toEqual(before);
     expect(error).not.toHaveProperty("cause");
   });
@@ -75,4 +77,70 @@ describe("environment sync-out restore diagnostics", () => {
     expect(preserveEnvironmentSyncOutErrorDiagnostic(original)).toBe(original);
     expect(preserveEnvironmentSyncOutErrorDiagnostic(null)).toBeNull();
   });
+});
+
+
+it("isolates overlapping and sequential worker calls that throw the same object", async () => {
+  const original = Object.freeze(new Error("Transfer failed"));
+  const before = Object.getOwnPropertyDescriptors(original);
+  const stdin = new PassThrough();
+  const stdout = new PassThrough();
+  const lines = createInterface({ input: stdout });
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let started!: () => void;
+  const ready = new Promise<void>(resolve => { started = resolve; });
+  const worker = startWorkerRpcHost({ stdin, stdout, plugin: definePlugin({
+    async setup() {},
+    async onEnvironmentSyncOut(params) {
+      if (params.operations?.[0]?.operationId === "first") {
+        return withEnvironmentSyncTransferStep("archive_create", async () => {
+          recordEnvironmentSyncError(original, { exitCode: 2, transferFailureKind: "command_failed" });
+          started(); await gate; throw original;
+        });
+      }
+      if (params.operations?.[0]?.operationId === "second") {
+        return withEnvironmentSyncTransferStep("file_download", async () => { throw original; });
+      }
+      throw original;
+    },
+    async onEnvironmentSyncIn() { throw original; },
+  }) });
+  const call = (id: string, method = "environmentSyncOut") => new Promise<JsonRpcCallError>((resolve) => {
+    const listener = (wire: string) => {
+      const message = parseMessage(wire);
+      if (isJsonRpcResponse(message) && message.id === id && message.error) {
+        lines.off("line", listener); resolve(new JsonRpcCallError(message.error));
+      }
+    };
+    lines.on("line", listener);
+    stdin.write(serializeMessage(createRequest(method, { operations: [{ operationId: id, files: [] }] }, id)));
+  });
+  try {
+    const first = call("first");
+    await ready;
+    const second = await call("second");
+    expect(readEnvironmentSyncErrorDiagnostic(second)).toEqual({ errorCode: "unknown", transferStep: "file_download" });
+    release();
+    expect(readEnvironmentSyncErrorDiagnostic(await first)).toEqual({
+      errorCode: "unknown", transferStep: "archive_create", transferFailureKind: "command_failed", exitCode: 2,
+    });
+    expect((await call("third")).data).toBeUndefined();
+    expect((await call("unrelated", "environmentSyncIn")).data).toBeUndefined();
+    expect(Object.getOwnPropertyDescriptors(original)).toEqual(before);
+  } finally { release(); worker.stop(); lines.close(); stdin.destroy(); stdout.destroy(); }
+});
+
+it.each([
+  [new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.TIMEOUT, message: "private-rpc-message" }), PLUGIN_RPC_ERROR_CODES.TIMEOUT],
+  [new JsonRpcCallError({ code: 123, message: "private-rpc-message" }), undefined],
+  [Object.assign(new Error("private-rpc-message"), { code: PLUGIN_RPC_ERROR_CODES.TIMEOUT }), undefined],
+])("records known typed RPC codes without interpreting arbitrary errors", async (error, rpcCode) => {
+  const logs: string[] = [];
+  await expect(withWorkspaceRestoreDiagnostics("workspace", () => withWorkspaceRestoreStep("workspace_transfer", async () => {
+    throw preserveEnvironmentSyncOutErrorDiagnostic(error);
+  }), async line => { logs.push(line); })).rejects.toBe(error);
+  expect(getWorkspaceRestoreDiagnostic(error)?.rpcCode).toBe(rpcCode);
+  expect(getWorkspaceRestoreDiagnostic(error)?.transferStep).toBeUndefined();
+  expect(JSON.stringify(logs)).not.toContain("private-");
 });

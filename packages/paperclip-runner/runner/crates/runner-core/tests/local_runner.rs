@@ -79,6 +79,13 @@ fn runnerd_startup_reports_build_metadata_without_panicking() {
     let metadata: Value =
         serde_json::from_slice(&output.stdout).expect("build metadata should be valid JSON");
     assert_eq!(metadata["binaryName"], "paperclip-runnerd");
+    if cfg!(unix) {
+        assert_eq!(metadata["privateHostControlVersion"], 1);
+    } else {
+        assert!(metadata.get("privateHostControlVersion").is_none());
+    }
+    assert!(metadata.get("hostedParkingVersion").is_none());
+    assert!(metadata.get("releaseResumeVersion").is_none());
 }
 
 #[test]

@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { createHash } from "node:crypto";
 import { afterAll, afterEach, beforeEach, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
@@ -18,7 +19,8 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "../middleware/auth.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_CLOUD_PROVISIONING_TEST_DATABASE_URL");
+const embeddedPostgresSupport = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -59,8 +61,8 @@ describeEmbeddedPostgres("cloud tenant company provisioning", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-tenant-provisioning-");
-    db = createDb(tempDb.connectionString);
+    if (!external) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-tenant-provisioning-");
+    db = createDb(external ?? tempDb!.connectionString);
   }, 20_000);
 
   beforeEach(() => {
@@ -80,6 +82,7 @@ describeEmbeddedPostgres("cloud tenant company provisioning", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 

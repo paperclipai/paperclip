@@ -1308,10 +1308,11 @@ export async function quarantineSeededWorktreeExecutionState(
             .update(agents)
             .set({
               runtimeConfig: normalized.runtimeConfig,
-              status: nextStatus,
               updatedAt: new Date(),
             })
             .where(eq(agents.id, agent.id));
+          if (nextStatus !== agent.status) await tx.update(agents).set({ status: "idle", updatedAt: new Date() })
+            .where(and(eq(agents.id, agent.id), eq(agents.lifecycleState, "ready")));
         }
       }
 
