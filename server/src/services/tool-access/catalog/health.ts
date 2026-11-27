@@ -64,6 +64,7 @@ export async function repairUnsupportedVoiceConnectionHealth(
     const candidates = await db
       .selectDistinctOn([toolConnections.id], {
         id: toolConnections.id,
+        companyId: toolConnections.companyId,
       })
       .from(toolConnections)
       .innerJoin(chatEndpoints, and(
@@ -78,6 +79,7 @@ export async function repairUnsupportedVoiceConnectionHealth(
         eq(toolConnections.healthMessage, UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE),
         eq(chatEndpoints.provider, "speko"),
         eq(chatEndpoints.status, "active"),
+        isNull(chatEndpoints.lastError),
         options.companyId === undefined ? undefined : eq(toolConnections.companyId, options.companyId),
         options.connectionId === undefined ? undefined : eq(toolConnections.id, options.connectionId),
         cursor === undefined ? undefined : sql`${toolConnections.id} > ${cursor}`,
@@ -89,7 +91,12 @@ export async function repairUnsupportedVoiceConnectionHealth(
     cursor = candidateIds[candidateIds.length - 1];
     const repairedAt = nowFn().toISOString();
     const repairedRows = await db.transaction(async (tx) => {
-      const updated = await tx.execute<{ id: string; company_id: string }>(sql`
+      // Register delivery work before the write so drain/sleep checks observe it.
+      for (const candidate of candidates) {
+        await notifyToolConnectionHealth(tx, { id: candidate.id, companyId: candidate.companyId });
+        await notifyChatConnectionObservation(tx, candidate.id, "voice");
+      }
+      return tx.execute<{ id: string; company_id: string }>(sql`
         update ${toolConnections} as tc
         set
           health_status = 'healthy',
@@ -102,7 +109,7 @@ export async function repairUnsupportedVoiceConnectionHealth(
             company_id,
             health_message
           from ${chatEndpoints}
-          where provider = 'speko' and status = 'active'
+          where provider = 'speko' and status = 'active' and last_error is null
           order by connection_id, id
         ) as ce
         where tc.id in (${sql.join(candidateIds.map((id) => sql`${id}`), sql`, `)})
@@ -115,11 +122,6 @@ export async function repairUnsupportedVoiceConnectionHealth(
           and tc.health_message = ${UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE}
         returning tc.id, tc.company_id
       `);
-      for (const row of updated) {
-        await notifyToolConnectionHealth(tx, { id: row.id, companyId: row.company_id });
-        await notifyChatConnectionObservation(tx, row.id, "voice");
-      }
-      return updated;
     });
     totalRepaired += repairedRows.length;
     if (candidates.length < batchSize) break;

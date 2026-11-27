@@ -21155,6 +21155,38 @@ describeEmbeddedPostgres("tool access service", () => {
       status: "active",
       assignedAgentId: agent!.id,
       healthMessage: "Speko API key rejected",
+      lastError: "Speko API key rejected",
+    });
+    const [endpointErrorVoice] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: voiceApplication!.id,
+      name: "Speko endpoint error",
+      uid: `chat-speko-${randomUUID()}`,
+      connectionKind: "managed",
+      connectionPurpose: "channel",
+      ownership: "customer",
+      transport: "voice",
+      authKind: "api_key",
+      credentialPolicy: "shared",
+      status: "active",
+      enabled: true,
+      config: { provider: "speko" },
+      transportConfig: {},
+      healthStatus: "error",
+      healthMessage: UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE,
+      lastError: UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE,
+      healthCheckedAt: new Date(0),
+      lastHealthAt: new Date(0),
+    }).returning();
+    await db.insert(chatEndpoints).values({
+      companyId: company.id,
+      connectionId: endpointErrorVoice!.id,
+      provider: "speko",
+      publicId: `speko-${randomUUID()}`,
+      status: "active",
+      assignedAgentId: agent!.id,
+      healthMessage: "Speko webhook failed",
+      lastError: "Speko webhook failed",
     });
 
     // Scheduled load repairs only the false unsupported-transport error and returns no voice deadlines.
@@ -21170,6 +21202,25 @@ describeEmbeddedPostgres("tool access service", () => {
       healthStatus: "error",
       healthMessage: "Speko API key rejected",
       lastError: "Speko API key rejected",
+    });
+    const [preservedEndpointError] = await db.select().from(toolConnections).where(eq(toolConnections.id, endpointErrorVoice!.id));
+    expect(preservedEndpointError).toMatchObject({
+      healthStatus: "error",
+      healthMessage: UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE,
+    });
+
+    // sweepConnectionHealth also repairs corrupted active Speko voice connections without probing them.
+    await db.update(toolConnections).set({
+      healthStatus: "error",
+      healthMessage: UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE,
+      lastError: UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE,
+    }).where(eq(toolConnections.id, corruptedVoice!.id));
+    expect(await service.sweepConnectionHealth({ staleAfterMs: 0, limit: 5 })).toMatchObject({ checked: 0, healthy: 0, failed: 0 });
+    const [repairedBySweep] = await db.select().from(toolConnections).where(eq(toolConnections.id, corruptedVoice!.id));
+    expect(repairedBySweep).toMatchObject({
+      healthStatus: "healthy",
+      healthMessage: "Connected; conversation test optional",
+      lastError: null,
     });
 
     // Manual health check on a voice connection also self-heals instead of throwing 422.

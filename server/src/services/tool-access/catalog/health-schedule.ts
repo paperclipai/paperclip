@@ -10,10 +10,12 @@ export type ConnectionHealthDeadline = { id: string; companyId: string; applicat
 const HEALTH_FRESHNESS_MS = 15 * 60_000;
 
 export function connectionHealthSchedule(db: Db, checkHealth: ConnectionHealth["checkConnectionHealth"]) {
+  let voiceHealthRepaired = false;
   async function load(companyId?: string, connectionId?: string, applicationId?: string, signal?: AbortSignal): Promise<ConnectionHealthDeadline[]> {
-    if (connectionId === undefined && applicationId === undefined) {
+    if (!voiceHealthRepaired && connectionId === undefined && applicationId === undefined) {
       signal?.throwIfAborted();
       await repairUnsupportedVoiceConnectionHealth(db, { companyId, signal });
+      voiceHealthRepaired = true;
     }
     const deadlines: ConnectionHealthDeadline[] = [];
     let cursor: string | undefined;
