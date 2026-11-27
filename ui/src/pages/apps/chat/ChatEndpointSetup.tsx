@@ -472,6 +472,19 @@ function ChatSdkEndpointSetup() {
         tone: "error",
       }),
   });
+  const finishSpekoWithoutTest = useMutation({
+    mutationFn: () => chatEndpointsApi.finishSlackSetup(endpoint!.id),
+    onSuccess: (next) => {
+      syncEndpointSnapshot(next);
+      if (next.status === "active") navigate(`/apps/chat/${next.id}/settings`);
+    },
+    onError: (error) =>
+      pushToast({
+        title: "Couldn't finish setup",
+        body: describeError(error).body,
+        tone: "error",
+      }),
+  });
   const testConnection = useMutation({
     mutationFn: () => provider === "slack" ? chatEndpointsApi.finishSlackSetup(endpoint!.id) : chatEndpointsApi.test(endpoint!.id),
     onSuccess: (next) => {
@@ -668,7 +681,10 @@ function ChatSdkEndpointSetup() {
             <h1 className="text-xl font-bold">Test your Speko voice connection</h1>
             <p className="text-sm text-muted-foreground">Ask the agent to do some work, add a spoken follow-up, and listen for its result. Accepted work stays in Paperclip when you end the call.</p>
             <NativeVoiceConversation companyId={endpoint.companyId} endpointId={endpoint.id} agentName={selectedAgent?.name ?? endpoint.assignedAgentName} />
-            <SetupWizardFooter onSaveExit={() => navigate("/apps")}><Button disabled={testConnection.isPending} onClick={() => testConnection.mutate()}>Verify test conversation</Button></SetupWizardFooter>
+            <SetupWizardFooter onSaveExit={() => navigate("/apps")}>
+              <Button variant="outline" disabled={testConnection.isPending || finishSpekoWithoutTest.isPending} onClick={() => finishSpekoWithoutTest.mutate()}>{finishSpekoWithoutTest.isPending ? "Finishing…" : "Skip test & finish"}</Button>
+              <Button disabled={testConnection.isPending || finishSpekoWithoutTest.isPending} onClick={() => testConnection.mutate()}>Verify test conversation</Button>
+            </SetupWizardFooter>
           </div>
         )}
         {endpoint && step === tryStep && provider !== "speko" && (!automaticSlack || automaticSlackComplete) && (
