@@ -33,9 +33,6 @@ const REMOTE_ADDITIONAL_SOURCE_HEAVY_DIR_EXCLUDES = [
   ".git",
 ].flatMap((entry) => [entry, `${entry}/*`, `*/${entry}`, `*/${entry}/*`]);
 
-// The SSH git transport's tar `--exclude .git` drops `.git` at every depth, so
-// the restore baseline must skip nested ones too (for example the `.git` link
-// of a worktree under `.paperclip/worktrees`), or the merge deletes them.
 const SSH_GIT_WORKSPACE_EXCLUDES = [...GIT_ARCHIVE_EXCLUDES, "*/.git", ".paperclip-runtime"];
 
 export interface RemoteManagedRuntimeAsset {

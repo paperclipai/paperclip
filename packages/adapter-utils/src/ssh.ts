@@ -658,8 +658,6 @@ async function clearLocalDirectory(
       .filter((entry) => !preserve.has(entry.name))
       .map(async (entry) => {
         const entryPath = path.join(localDir, entry.name);
-        // The remote tar drops `.git` at every depth, so a nested one (such as
-        // a worktree's link file) is never restored and must survive the clear.
         if (preserve.has(".git") && entry.isDirectory()) {
           await clearLocalDirectory(entryPath, [".git"]);
           if ((await fs.readdir(entryPath)).length === 0) await fs.rmdir(entryPath);

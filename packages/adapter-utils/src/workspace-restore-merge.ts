@@ -598,6 +598,16 @@ async function withCanonicalDirectoryMergeLock<T>(
   }
 }
 
+async function containsExcludedGitMetadata(rootDir: string, relative: string, exclude: readonly string[]): Promise<boolean> {
+  const entries = await fs.readdir(path.join(rootDir, relative), { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    const child = path.posix.join(relative, entry.name);
+    if (entry.name === ".git" && shouldExcludePath(child, exclude)) return true;
+    if (entry.isDirectory() && await containsExcludedGitMetadata(rootDir, child, exclude)) return true;
+  }
+  return false;
+}
+
 async function copySnapshotEntry(sourceDir: string, targetDir: string, relative: string, entry: SnapshotEntry): Promise<void> {
   const sourcePath = path.join(sourceDir, relative);
   const targetPath = path.join(targetDir, relative);
@@ -784,6 +794,12 @@ export async function mergeDirectoryWithBaseline(input: {
           const conflicts = directoryMergeConflicts(input.baseline, source, current);
           if (conflicts.length) throw new DirectoryMergeConflict(conflicts);
         }
+        const gitMetadataReplacements: string[] = [];
+        for (const [relative, entry] of orderedEntries(source)) {
+          if (entry.kind !== "dir" && current.entries.get(relative)?.kind === "dir" &&
+              await containsExcludedGitMetadata(canonicalTargetDir, relative, input.baseline.exclude)) gitMetadataReplacements.push(relative);
+        }
+        if (gitMetadataReplacements.length) throw new DirectoryMergeConflict(gitMetadataReplacements);
         for (const [relative, baselineEntry] of orderedEntries(input.baseline)) {
           if (baselineEntry.kind === "dir" || source.entries.has(relative)) continue;
           if (!entriesMatch(current.entries.get(relative), baselineEntry)) continue;
