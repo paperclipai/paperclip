@@ -2834,6 +2834,27 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await act(async () => root.unmount());
     });
 
+    it("loads the model catalog for opencode_local so Connect can verify the selected model", async () => {
+      // Upstream #18309 limited the adapter-models query to Claude and
+      // Codex, so an opencode_local onboarding never fetched its catalog
+      // and Connect always failed with "No OpenCode models discovered",
+      // even with a working key and model: handleGiveHeartbeat treats a
+      // missing catalog as an empty list.
+      mockAgentsApi.adapterModels.mockResolvedValue([
+        { id: "anthropic/claude-sonnet-4-5", label: "Claude Sonnet 4.5" },
+      ]);
+      mockAdapterRegistry.list = [setupAdapterInfo({ type: "claude_local" }), { type: "opencode_local" }];
+      const { root } = await openStep4({ adapterType: "opencode_local", model: "anthropic/claude-sonnet-4-5" });
+      try {
+        expect(
+          mockAgentsApi.adapterModels,
+          "the catalog query must run for opencode_local, or Connect can never verify the model",
+        ).toHaveBeenCalledWith("company-new", "opencode_local", expect.objectContaining({ environmentId: null }));
+      } finally {
+        await act(async () => root.unmount());
+      }
+    });
+
     it("will not hire from the keyboard on a source nobody selected", async () => {
       // The step has two ways forward, and gating only the visible one leaves
       // the defect intact behind a keystroke. Cmd+Enter called

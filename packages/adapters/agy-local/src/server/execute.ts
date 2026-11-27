@@ -466,6 +466,34 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     cleanupRemoteSetupFailure = preparedRemoteRun.cleanupSetupFailure;
   }
 
+  if (executionTargetIsRemote) {
+    // A remote run must not inherit the server's ambient environment: the
+    // sandbox is a different tenant boundary, and runtimeEnv above is the
+    // full process.env plus the run's explicit variables. Rebuild it from
+    // the explicit variables only — Paperclip runtime vars, workspace vars,
+    // agent-assigned config.env, and the remote HOME/CLI-home overrides
+    // prepareAgyRemoteRun just merged into env. An API key reaches a
+    // remote run only when it is assigned to the agent (config.env or a
+    // managed connection); the operator's ambient key must not leak, so a
+    // remote run with no assigned credential fails closed at auth instead
+    // of silently borrowing the host key. Ambient inheritance stays
+    // local-only. The bridge env is merged into runtimeEnv below (and
+    // into env), so it still reaches the remote process.
+    const remoteEnv = ensurePathInEnv({ ...env });
+    applyAgyApiKeyAlias(remoteEnv);
+    for (const key of Object.keys(runtimeEnv)) {
+      delete runtimeEnv[key];
+    }
+    Object.assign(
+      runtimeEnv,
+      Object.fromEntries(
+        Object.entries(remoteEnv).filter(
+          (entry): entry is [string, string] => typeof entry[1] === "string",
+        ),
+      ),
+    );
+  }
+
   const runtimeExecutionTarget = overrideAdapterExecutionTargetRemoteCwd(
     executionTarget,
     effectiveExecutionCwd,

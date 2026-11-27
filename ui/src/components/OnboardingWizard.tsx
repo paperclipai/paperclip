@@ -225,6 +225,19 @@ const ONBOARDING_GRID_ADAPTER_TYPES = new Set([
   "hermes_local",
 ]);
 
+// Adapters whose Connect step verifies the selected model against the
+// discovered catalog. handleGiveHeartbeat checks an opencode_local model
+// against adapterModels, so the query must run for opencode too — not just
+// the recommended Claude/Codex pair (upstream #18309 limited it to that
+// pair, which left OpenCode onboarding unable to finish: a missing catalog
+// reads as an empty list, so Connect always reported "No OpenCode models
+// discovered"). The other "More harnesses" adapters do not consult the
+// catalog on Connect, so they stay out.
+const ONBOARDING_MODEL_CATALOG_ADAPTER_TYPES = new Set([
+  ...ONBOARDING_ADAPTER_TYPES,
+  "opencode_local",
+]);
+
 function restoreOnboardingAdapterType(savedAdapterType: unknown, provider?: unknown, savedCopilot?: unknown): AdapterType {
   if (savedAdapterType === "paperclip_runner" && provider === "pi") return "pi_local";
   if (savedAdapterType === "paperclip_runner" && provider === "opencode") return "opencode_local";
@@ -1194,7 +1207,7 @@ function OnboardingWizardInner({
   } = useQuery({
     queryKey: createdCompanyId ? queryKeys.agents.adapterModels(createdCompanyId, adapterType, null) : ["agents", "none", "adapter-models", adapterType, null],
     queryFn: () => agentsApi.adapterModels(createdCompanyId!, adapterType, { environmentId: null }),
-    enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 4 && ONBOARDING_ADAPTER_TYPES.has(adapterType),
+    enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 4 && ONBOARDING_MODEL_CATALOG_ADAPTER_TYPES.has(adapterType),
     });
   // Automatic selection uses native Claude/Codex on qualified execution targets and
   // silently falls back to legacy on Windows, keeping the same onboarding UI.

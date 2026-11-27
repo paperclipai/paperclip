@@ -415,6 +415,122 @@ describe("agy-local execute (remote execution)", () => {
     expect(existsSync(hostTokenPath)).toBe(false);
   });
 
+  it("does not send unrelated server environment to a remote run", async () => {
+    const rootDir = await makeTmpDir();
+    const workspaceDir = path.join(rootDir, "workspace");
+    await fs.mkdir(workspaceDir, { recursive: true });
+    const hostHome = path.join(rootDir, "home");
+    await fs.mkdir(path.join(hostHome, ".gemini", "antigravity-cli"), { recursive: true });
+
+    // Poison the ambient server environment with secrets no agent was
+    // assigned. The remote process must never see them.
+    const previousDatabaseUrl = process.env.DATABASE_URL;
+    const previousAmbientKey = process.env.GEMINI_API_KEY;
+    process.env.DATABASE_URL = "postgres://operator:secret@localhost/paperclip";
+    process.env.GEMINI_API_KEY = "ambient-operator-key";
+    try {
+      const ctx: AdapterExecutionContext = {
+        runId: "run-remote-1",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Remote Agent",
+          adapterType: "agy_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          env: {
+            HOME: hostHome,
+          },
+        },
+        context: {
+          paperclipWorkspace: {
+            cwd: workspaceDir,
+          },
+        },
+        executionTarget: makeSandboxTarget(),
+        onLog: async () => {},
+      };
+
+      const result = await execute(ctx);
+      expect(result.exitCode).toBe(0);
+      expect(capturedProcessRuns).toHaveLength(1);
+      const launchEnv = capturedProcessRuns[0].options.env as Record<string, string | undefined>;
+      expect(launchEnv.DATABASE_URL).toBeUndefined();
+      // The operator's ambient API key is not assigned to this agent: the
+      // remote run must not receive it either.
+      expect(launchEnv.GEMINI_API_KEY).toBeUndefined();
+      // The run's own explicit variables still reach the remote process.
+      expect(launchEnv.PAPERCLIP_RUN_ID).toBe("run-remote-1");
+      expect(launchEnv.PAPERCLIP_AGENT_ID).toBe("agent-1");
+      expect(launchEnv.ANTIGRAVITY_CLI_HOME).toBe("/remote/runtime/assets/agy-home");
+      expect(typeof launchEnv.PATH).toBe("string");
+    } finally {
+      if (previousDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = previousDatabaseUrl;
+      if (previousAmbientKey === undefined) delete process.env.GEMINI_API_KEY;
+      else process.env.GEMINI_API_KEY = previousAmbientKey;
+    }
+  });
+
+  it("still sends an agent-assigned API key to a remote run", async () => {
+    const rootDir = await makeTmpDir();
+    const workspaceDir = path.join(rootDir, "workspace");
+    await fs.mkdir(workspaceDir, { recursive: true });
+    const hostHome = path.join(rootDir, "home");
+    await fs.mkdir(path.join(hostHome, ".gemini", "antigravity-cli"), { recursive: true });
+
+    const previousDatabaseUrl = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = "postgres://operator:secret@localhost/paperclip";
+    try {
+      const ctx: AdapterExecutionContext = {
+        runId: "run-remote-1",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Remote Agent",
+          adapterType: "agy_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          env: {
+            HOME: hostHome,
+            GEMINI_API_KEY: "assigned-key",
+          },
+        },
+        context: {
+          paperclipWorkspace: {
+            cwd: workspaceDir,
+          },
+        },
+        executionTarget: makeSandboxTarget(),
+        onLog: async () => {},
+      };
+
+      const result = await execute(ctx);
+      expect(result.exitCode).toBe(0);
+      expect(capturedProcessRuns).toHaveLength(1);
+      const launchEnv = capturedProcessRuns[0].options.env as Record<string, string | undefined>;
+      expect(launchEnv.GEMINI_API_KEY).toBe("assigned-key");
+      expect(launchEnv.DATABASE_URL).toBeUndefined();
+    } finally {
+      if (previousDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = previousDatabaseUrl;
+    }
+  });
+
   it("saves the resumed conversation under the host CLI home, not the remote asset path", async () => {
     const rootDir = await makeTmpDir();
     const workspaceDir = path.join(rootDir, "workspace");
