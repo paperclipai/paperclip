@@ -81,7 +81,7 @@ if (optedIn && !live) {
 
   afterAll(async () => {
     await resetRuntimeServicesForTests();
-    await tempDb?.stop?.();
+    await tempDb?.cleanup();
   }, 60_000);
 
   it("upgrades a pre-existing HTTP workspace in place to a browser-trusted HTTPS URL", async () => {
@@ -181,6 +181,7 @@ if (optedIn && !live) {
           strategy: "project_primary",
           cwd: workspaceRoot,
           branchName: null,
+          branchCreatedByRuntime: false,
           worktreePath: null,
           warnings: [],
           created: false,
@@ -243,7 +244,6 @@ if (optedIn && !live) {
       await stopRuntimeServicesForProjectWorkspace({
         db,
         projectWorkspaceId,
-        workspaceCwd: workspaceRoot,
       }).catch((error) => console.error("[PAP-17158] teardown failed", error));
       await resetRuntimeServicesForTests();
       await fs.rm(paperclipHome, { recursive: true, force: true });

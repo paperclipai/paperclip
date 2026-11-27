@@ -12,10 +12,10 @@ export interface RemoteMcpSetupState {
   grantKind: "user" | "organization";
   setupComplete: boolean;
   url: string;
+  managementUrl?: string;
   auth: "auto" | "bearer" | "headers" | "none";
   token: string;
   headers: { id: string; name: string; value: string }[];
-  advanced: boolean;
   connectStatus: ConnectStatus;
   connected: boolean;
   identity: string | null;

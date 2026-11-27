@@ -6,7 +6,8 @@ interface EntityRowProps {
   leading?: ReactNode;
   identifier?: string;
   title: string;
-  subtitle?: string;
+  titleAccessory?: ReactNode;
+  subtitle?: ReactNode;
   /**
    * Optional metadata columns rendered immediately after the title. When set,
    * the title stops flex-growing and a spacer is inserted between `meta` and
@@ -22,7 +23,6 @@ interface EntityRowProps {
   titleClassName?: string;
   titleTextClassName?: string;
   subtitleClassName?: string;
-  reserveSubtitleSpace?: boolean;
   /**
    * Make the title (the row's primary identifier) win the flex fight: it keeps a
    * usable min-width floor and ellipsizes, while the `meta` cluster is the item
@@ -38,12 +38,15 @@ interface EntityRowProps {
    * behind `hidden xl:flex` so wide layouts are unchanged.
    */
   secondaryRow?: ReactNode;
+  /** Override the secondary line's default spacing or indentation. */
+  secondaryRowClassName?: string;
 }
 
 export function EntityRow({
   leading,
   identifier,
   title,
+  titleAccessory,
   subtitle,
   meta,
   metaSpacerClassName,
@@ -55,9 +58,9 @@ export function EntityRow({
   titleClassName,
   titleTextClassName,
   subtitleClassName,
-  reserveSubtitleSpace,
   titlePriority,
   secondaryRow,
+  secondaryRowClassName,
 }: EntityRowProps) {
   const isClickable = !!(to || onClick);
   const shellClasses = cn(
@@ -91,16 +94,15 @@ export function EntityRow({
           <span className={cn(!titleTextClassName && "truncate", titleTextClassName)} title={title}>
             {title}
           </span>
+          {titleAccessory}
         </div>
-        {(subtitle || reserveSubtitleSpace) && (
+        {Boolean(subtitle) && (
           <p
             className={cn(
               "text-xs text-muted-foreground mt-0.5 min-h-4",
               !subtitleClassName && "truncate",
               subtitleClassName,
-              !subtitle && "invisible",
             )}
-            aria-hidden={!subtitle}
           >
             {subtitle}
           </p>
@@ -129,7 +131,7 @@ export function EntityRow({
   const body = secondaryRow ? (
     <>
       <div className="flex items-center gap-3">{content}</div>
-      <div className="mt-1 pl-5">{secondaryRow}</div>
+      <div className={cn("mt-1 pl-5", secondaryRowClassName)}>{secondaryRow}</div>
     </>
   ) : (
     content

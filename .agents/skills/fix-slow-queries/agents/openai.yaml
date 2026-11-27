@@ -1,0 +1,3 @@
+interface:
+  display_name: "Fix Slow Queries"
+  short_description: "Trace cloud SQL hotspots through local proof and green PRs"

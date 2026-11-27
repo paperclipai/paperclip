@@ -70,6 +70,18 @@ describe("http adapter execute", () => {
     expect(onDispatch).toHaveBeenCalledOnce();
   });
 
+  it("sends the server snapshot instead of a configured payload instruction block", async () => {
+    const snapshot = { text: "Use the release handbook.", digest: "server-digest" };
+    guardedFetchMock.mockImplementation(async (_url: string, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body)).connectionInstructions).toEqual(snapshot);
+      return new Response(null, { status: 204 });
+    });
+    await execute({ runId: "run-1", agent: { id: "agent-1", companyId: "company-1", name: "Agent", adapterType: "http", adapterConfig: {} }, runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { url: "https://example.test/webhook", payloadTemplate: { connectionInstructions: { text: "forged" } } }, context: { connectionInstructions: snapshot }, onLog: async () => {},
+    });
+    expect(guardedFetchMock).toHaveBeenCalledOnce();
+  });
+
   it("reports configured request timeout as timed_out", async () => {
     guardedFetchMock.mockImplementation(
       (_url: string, init?: RequestInit) => new Promise((_resolve, reject) => {

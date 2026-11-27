@@ -5,6 +5,7 @@ import {
   CONNECTION_REQUEST_TOOL_DESCRIPTION,
   CONNECTIONS_SEARCH_TOOL_DESCRIPTION,
   completeConnectionIntentSchema,
+  connectionIntentPayloadSchema,
   connectionRequestInputSchema,
   connectionsSearchInputSchema,
   declineConnectionIntentSchema,
@@ -59,7 +60,7 @@ export function runtimeConnectionIntentRoutes(db: Db) {
 
   router.get("/mcp/runtime-tools", async (req, res) => {
     await service.validate(runtimeClaims(req));
-    res.json({ name: "paperclip-runtime-tools", protocolVersion: "2025-03-26" });
+    res.set("Allow", "POST").status(405).end();
   });
 
   router.post("/mcp/runtime-tools", async (req, res) => {
@@ -109,7 +110,7 @@ export function runtimeConnectionIntentRoutes(db: Db) {
       }
       if (name === "connection_request") {
         const input = connectionRequestInputSchema.parse(params.arguments ?? {});
-        const result = await service.request(claims, input.service, { selectionInteractionId: input.selectionInteractionId, targetService: input.targetService });
+        const result = await service.request(claims, input.service, { selectionInteractionId: input.selectionInteractionId, targetService: input.targetService, connectionId: input.connectionId, toolNames: input.toolNames });
         res.json({ jsonrpc: "2.0", id, result: resultContent(result) });
         return;
       }
@@ -133,7 +134,7 @@ export function runtimeConnectionIntentRoutes(db: Db) {
   });
   router.post("/runtime-tools/connections/request", async (req, res) => {
     const input = connectionRequestInputSchema.parse(req.body ?? {});
-    res.json(await service.request(runtimeClaims(req), input.service, { selectionInteractionId: input.selectionInteractionId, targetService: input.targetService }));
+    res.json(await service.request(runtimeClaims(req), input.service, { selectionInteractionId: input.selectionInteractionId, targetService: input.targetService, connectionId: input.connectionId, toolNames: input.toolNames }));
   });
   return router;
 }
@@ -187,7 +188,7 @@ export function connectionIntentBoardRoutes(db: Db, heartbeat: Heartbeat) {
   });
 
   router.post("/connection-intents/:interactionId/phase", async (req, res) => {
-    const { userId } = await addressedIntent(req);
+    const { loaded, userId } = await addressedIntent(req);
     const phase = req.body?.phase;
     if (phase !== "requested" && phase !== "authorizing" && phase !== "needs_retry") {
       res.status(422).json({ error: "phase must be requested, authorizing, or needs_retry" });
@@ -195,6 +196,8 @@ export function connectionIntentBoardRoutes(db: Db, heartbeat: Heartbeat) {
     }
     res.json(await service.updatePhase(req.params.interactionId as string, phase, userId, {
       bypassCurrentMembershipCheck: bypassCurrentMembershipCheck(req),
+      canManageOrganizationGrant: await canManageCompanyConnections(req, loaded.issue.companyId),
+      setupAccess: connectionIntentPayloadSchema.shape.setupAccess.parse(req.body?.setupAccess),
     }));
   });
 

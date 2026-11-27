@@ -14,6 +14,7 @@ import {
 import {
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetDirectory,
+  isAdapterExecutionTargetUnavailableError,
   maybeRunSandboxInstallCommand,
   runAdapterExecutionTargetProcess,
   describeAdapterExecutionTarget,
@@ -23,7 +24,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DEFAULT_CURSOR_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js";
-import { parseCursorJsonl } from "./parse.js";
+import { firstCursorDiagnosticLine, parseCursorJsonl } from "./parse.js";
 import { isDefaultCursorCommand, prepareCursorSandboxCommand } from "./remote-command.js";
 import { hasCursorTrustBypassArg } from "../shared/trust.js";
 
@@ -37,17 +38,8 @@ function isNonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-function firstNonEmptyLine(text: string): string {
-  return (
-    text
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .find(Boolean) ?? ""
-  );
-}
-
 function summarizeProbeDetail(stdout: string, stderr: string, parsedError: string | null): string | null {
-  const raw = parsedError?.trim() || firstNonEmptyLine(stderr) || firstNonEmptyLine(stdout);
+  const raw = parsedError?.trim() || firstCursorDiagnosticLine(stderr) || firstCursorDiagnosticLine(stdout);
   if (!raw) return null;
   const clean = raw.replace(/\s+/g, " ").trim();
   const max = 240;
@@ -129,6 +121,7 @@ export async function testEnvironment(
   } catch (err) {
     checks.push({
       code: "cursor_cwd_invalid",
+      ...(isAdapterExecutionTargetUnavailableError(err) ? { retryable: true } : {}),
       level: "error",
       message: err instanceof Error ? err.message : "Invalid working directory",
       detail: cwd,
@@ -183,6 +176,7 @@ export async function testEnvironment(
   } catch (err) {
     checks.push({
       code: "cursor_command_unresolvable",
+      ...(isAdapterExecutionTargetUnavailableError(err) ? { retryable: true } : {}),
       level: "error",
       message: err instanceof Error ? err.message : "Command is not executable",
       detail: command,
