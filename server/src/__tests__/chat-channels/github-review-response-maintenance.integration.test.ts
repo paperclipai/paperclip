@@ -129,8 +129,10 @@ describeEmbeddedPostgres("chat channels: github review response maintenance", ()
       await responses.processPending();
       expect(f.responseWrites).toHaveLength(writes);
     });
-    it("links the latest response when a request's run ends without its own reply", async () => {
+    it.each(["in_progress", "blocked"] as const)("links the latest response when a request's run ends without its own reply: %s",
+      async issueStatus => {
       const f = await toolReplyFixture("github:paperclipai/paperclip:418:rc:4100");
+      await db.update(issues).set({ status: issueStatus }).where(eq(issues.id, f.conversation.issueId!));
       const [firstId] = [...f.responseComments.keys()];
       const [main] = await db.insert(chatConversations).values({ companyId: f.companyId, endpointId: f.endpoint.id,
         issueId: f.conversation.issueId, externalConversationId: "github:paperclipai/paperclip",

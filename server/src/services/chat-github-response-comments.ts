@@ -428,7 +428,7 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
         if (await githubRunReplyState(db, input) !== "none") throw conflict("GitHub reply is still being resolved");
       };
       const source = await context(link.deliveryId);
-      const notice = source.issueStatus === "blocked" ? null : await latestResponseNotice(db, { companyId: input.companyId,
+      const notice = await latestResponseNotice(db, { companyId: input.companyId,
         endpointId: input.endpointId, issueId: input.issueId, since: source.delivery.createdAt, threadId: source.conversation.externalThreadId });
       receipt = await acknowledge(link.deliveryId, notice ?? input.body, assertRun);
     }
