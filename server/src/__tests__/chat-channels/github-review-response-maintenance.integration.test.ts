@@ -19,6 +19,7 @@ vi.mock("@chat-adapter/telegram", async (importOriginal) => {
   return candidate ? import(/* @vite-ignore */ candidate) : importOriginal();
 });
 import { githubResponseCommentService } from "../../services/chat-github-response-comments.js";
+import { createDeliveryWorkCoordinator } from "../../services/delivery-work-coordinator.js";
 import { githubChatReviewService } from "../../services/chat-github-reviews.js";
 import { type TestDb, describeEmbeddedPostgres, makeThread, makeMessage } from "./providers.js";
 import { createChatChannelHarness } from "./harness.js";
@@ -160,6 +161,28 @@ describeEmbeddedPostgres("chat channels: github review response maintenance", ()
         await responses.failRun(stopped);
       }
       expect(f.responseComments.get(firstId)?.body).toContain(settled);
+    });
+    it("settles a request still waiting for a continuation once the wait expires, through the registered worker", async () => {
+      const f = await toolReplyFixture("github:paperclipai/paperclip:418:rc:4100");
+      const [firstId] = [...f.responseComments.keys()];
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        await db.update(heartbeatRuns).set({ status: "failed", runtimeMode: "native",
+          errorCode: "native_continuation_requires_reconciliation", updatedAt: new Date(Date.now() - 29 * 60_000) })
+          .where(eq(heartbeatRuns.id, f.run.id));
+        await githubResponseCommentService(db, f.providerFetch).registerTerminalResponseWork(coordinator, () => true).ready;
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(f.responseComments.get(firstId)?.body).toContain("Working on this");
+        await vi.advanceTimersByTimeAsync(2 * 60_000);
+        await vi.waitFor(() => expect(f.responseComments.get(firstId)?.body).toContain("stopped before completing"),
+          { timeout: 10_000 });
+        expect(errors).toEqual([]);
+      } finally {
+        await coordinator.stop();
+        vi.useRealTimers();
+      }
     });
     it("links a GitHub thread whose run waited to the response a later run published", async () => {
       const f = await toolReplyFixture("github:paperclipai/paperclip:418:rc:4100");

@@ -98,9 +98,13 @@ export function registerGitHubTerminalResponseWork(
   async function entry(row: Row, read: GitHubResponseRunRead): Promise<Entry | { parkable: boolean }> {
     try {
       const execution = await githubResponseExecution(db, { ...row, agentId: row.agentId!, deliveryId: row.deliveryId! }, read);
+      if (execution.continuationDeadline !== undefined) {
+        const entry = pending(row);
+        return { ...entry, dueAt: Math.max(entry.dueAt, execution.continuationDeadline) };
+      }
       if (execution.body === undefined || execution.reply === "unsettled" ||
           (execution.paused && row.result?.pausedVersion === execution.version))
-        return { parkable: !execution.presentationPending && execution.reply === "none" && !execution.awaitingContinuation };
+        return { parkable: !execution.presentationPending && execution.reply === "none" };
     } catch (error) {
       if (!(error instanceof HttpError) || error.status !== 403) throw error;
       // Keep this request eligible for the acknowledgement owner's authority
