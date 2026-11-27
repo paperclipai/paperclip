@@ -175,10 +175,6 @@ if (!completion.ok) throw new Error(await completion.text());
 `;
 }
 
-function escapeRegExp(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 test("AgentMail request shows a durable inline key card in agent chat", async ({ page, request }, testInfo) => {
   test.setTimeout(120_000);
   const settings = await json(await request.get("/api/instance/settings/experimental"));
@@ -254,7 +250,7 @@ async function waitForAgentRun(
   companyId: string,
   agentId: string,
 ) {
-  let terminalRun: { id: string; status: string } | null = null;
+  let terminalRun = null as { id: string; status: string } | null;
   await expect
     .poll(
       async () => {
@@ -292,15 +288,11 @@ test("store setup and task connection intent share one fake provider through con
 
     // Entry point one: connect and test the provider through the Connections store.
     await page.goto(`/${seed.prefix}/apps`);
-    await expect(page.getByRole("heading", { name: "Connectors" })).toBeVisible({
+    await expect(page.getByRole("heading", { name: "Plugins" })).toBeVisible({
       timeout: 30_000,
     });
-    const customConnector = page
-      .getByRole("list", { name: "Connector list" })
-      .getByRole("listitem")
-      .filter({ hasText: "Connect your own tool" });
-    await customConnector.getByRole("button", { name: "Connect", exact: true }).click();
-    await customConnector.getByRole("button", { name: "Connect your own MCP server" }).click();
+    await page.getByRole("button", { name: "Add", exact: true }).click();
+    await page.getByRole("menuitem", { name: /MCP server URL/ }).click();
     await page
       .getByPlaceholder("https://example.com/actions")
       .fill(provider.url);
@@ -393,24 +385,21 @@ test("store setup and task connection intent share one fake provider through con
     const taskUrl = `/${seed.prefix}/issues/${issue.identifier}`;
     await page.goto(taskUrl);
     await expect(
-      page.getByText("Connection requester needs Notion"),
+      page.getByText(`Grant Connection requester access to “${connection.name}”?`),
     ).toBeVisible({ timeout: 30_000 });
-    await page.getByRole("button", { name: "Connect / Use existing" }).click();
-    await expect(
-      page.getByRole("heading", { name: "Use an existing connection" }),
-    ).toBeVisible();
-    await page
-      .getByRole("button", { name: new RegExp(escapeRegExp(connection.name)) })
-      .click();
+    const permissions = page.getByRole("list", { name: "Tool permissions" });
+    await expect(permissions.getByText("notion:list_pages", { exact: true })).toBeVisible();
+    await expect(permissions.getByText("Allowed", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Grant access", exact: true }).click();
 
-    await expect(page.getByText("Notion connected")).toBeVisible({
+    await expect(page.getByText("Notion access granted")).toBeVisible({
       timeout: 30_000,
     });
     await expect(page).toHaveURL(new RegExp(`${taskUrl}$`));
     await expect(
       page
         .getByTestId("connection-intent-focus-target")
-        .filter({ hasText: "Notion connected" }),
+        .filter({ hasText: "Notion access granted" }),
     ).toBeFocused();
     expect(await page.locator("body").innerText()).not.toMatch(
       /\/authorize\?|authorizationUrl/,

@@ -1,3 +1,4 @@
+import { resolvePiThinkingLevel } from "../drivers/acpx/pi-thinking.js";
 import type { NativeExecutionInput } from "../contracts/native-execution.js";
 import type { NativeSessionBackend } from "../contracts/native-session-backend.js";
 import {
@@ -12,13 +13,10 @@ import {
   nativeTaskConstraints,
 } from "./runtime-context.js";
 
-export interface CodexAcpxNativeSessionBackendOptions extends Omit<
+export interface AcpxNativeSessionBackendOptions extends Omit<
   CodexAcpxDriverOptions,
-  "model" | "permissionMode" | "systemInstructions" | "providerPolicy"
+  "model" | "permissionMode" | "mode" | "piThinkingLevel" | "claudeEffort" | "grokEffort" | "grokDisableWebSearch" | "systemInstructions" | "providerPolicy" | "runtimeContext"
 > {}
-
-export type AcpxNativeSessionBackendOptions =
-  CodexAcpxNativeSessionBackendOptions;
 
 /**
  * Constructs a backend only after the persisted ACPX snapshot matches the
@@ -58,6 +56,7 @@ export function createAcpxNativeSessionBackend(
     throw new Error("ACPX candidate direct execution requires completed qualification; use the host-controlled runnerd evaluation path");
   }
 
+  resolvePiThinkingLevel(input.provider.agent, input.provider.piThinkingLevel);
   const constraints = nativeTaskConstraints(input);
   const systemInstructions = [
     nativeSystemInstructions(input),
@@ -72,21 +71,14 @@ export function createAcpxNativeSessionBackend(
       agent: input.provider.agent,
       model: input.provider.model,
       permissionMode: input.provider.permissionMode ?? "approve-reads",
+      mode: input.provider.mode,
+      piThinkingLevel: input.provider.piThinkingLevel,
+      claudeEffort: "claudeEffort" in input.provider ? input.provider.claudeEffort : undefined,
+      grokEffort: "grokEffort" in input.provider ? input.provider.grokEffort : undefined,
+      grokDisableWebSearch: "grokDisableWebSearch" in input.provider ? input.provider.grokDisableWebSearch : undefined,
       systemInstructions,
+      runtimeContext: "runtimeContext" in input ? input.runtimeContext : null,
       providerPolicy: { readOnly: "executionMode" in input && input.executionMode === "plan" },
     }),
   );
-}
-
-/** Backward-compatible Codex-specific constructor. */
-export function createCodexAcpxNativeSessionBackend(
-  input: NativeExecutionInput,
-  options: CodexAcpxNativeSessionBackendOptions,
-): NativeSessionBackend {
-  if (input.provider.kind !== "acpx" || input.provider.agent !== "codex") {
-    throw new Error(
-      "Codex ACPX backend requires provider kind acpx with agent codex",
-    );
-  }
-  return createAcpxNativeSessionBackend(input, options);
 }

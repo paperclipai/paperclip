@@ -208,22 +208,23 @@ export function FolderRail({
       <button
         type="button"
         className={cn(
-          "grid w-full grid-cols-(--gtc-folder-row) items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent/40",
+          "grid w-full grid-cols-(--gtc-folder-row-actions) items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent/40",
           active ? "bg-accent/60 text-foreground" : "text-muted-foreground",
         )}
         aria-current={active ? "page" : undefined}
         onClick={() => onSelect(key)}
       >
-        <span className="h-4 w-4">{icon}</span>
+        <span className="flex h-4 w-4 items-center">{icon}</span>
         <span className="truncate">{label}</span>
         <span className="text-xs text-muted-foreground">{count}</span>
+        <span aria-hidden="true" className="h-6 w-6" />
       </button>
     );
   }
 
   return (
     <nav aria-label={`${itemLabelPlural} folders`} className="hidden w-(--sz-folder-rail) shrink-0 border-r border-border pr-3 md:block">
-      <div className="mb-2 flex items-center justify-between gap-2">
+      <div className="mb-2 flex items-center justify-between gap-2 px-2">
         <div className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">Folders</div>
         <Button variant="ghost" size="icon-sm" title="New folder" onClick={onCreate}>
           <Plus className="h-3.5 w-3.5" />
@@ -257,7 +258,7 @@ export function FolderRail({
           <div className="px-2 pb-1 pt-3 text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">
             System
           </div>
-          {renderVirtualRow("unfiled", "Unfiled", result?.unfiledCount ?? 0, <FolderSwatch color={null} className="mt-0.5" />)}
+          {renderVirtualRow("unfiled", "Unfiled", result?.unfiledCount ?? 0, <FolderSwatch color={null} />)}
         </div>
       )}
     </nav>
@@ -265,9 +266,8 @@ export function FolderRail({
 }
 
 /**
- * One selectable rail row. The leading 1rem grid column is the reserved
- * disclosure/indent slot so nested folders can slot in later without relayout
- * (ux-spec §3.1/§3.2 "nesting-ready").
+ * One selectable rail row. Use the same icon, label, count and action columns
+ * as All and Unfiled so every folder label and count aligns.
  */
 export function FolderRailItem({
   folder,
@@ -297,19 +297,20 @@ export function FolderRailItem({
   return (
     <div
       className={cn(
-        "group grid grid-cols-(--gtc-folder-row-actions) items-center gap-2 rounded-md px-2 py-1 text-sm transition-colors hover:bg-accent/40",
+        "group grid grid-cols-(--gtc-folder-row-actions) items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-accent/40",
         active ? "bg-accent/60 text-foreground" : "text-muted-foreground",
       )}
     >
-      <span className="h-4 w-4" />
       <button
         type="button"
-        className="flex min-w-0 items-center gap-2 text-left"
+        className="col-span-2 flex min-w-0 items-center gap-2 text-left"
         aria-current={active ? "page" : undefined}
         onClick={onSelect}
         onDoubleClick={onStartRename}
       >
-        <FolderSwatch color={folder.color} />
+        <span className="flex h-4 w-4 shrink-0 items-center">
+          <FolderSwatch color={folder.color} />
+        </span>
         {renaming ? (
           <input
             value={renameDraft}

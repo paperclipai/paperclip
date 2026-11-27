@@ -7,6 +7,8 @@ export const connectionsSearchInputSchema = z.object({
 
 export const connectionRequestInputSchema = z.object({
   service: z.string().trim().min(1).max(120),
+  connectionId: z.string().guid().optional().describe("Reuse this saved connection; never create a replacement gateway"),
+  toolNames: z.array(z.string().trim().min(1).max(160)).min(1).max(20).refine(names => new Set(names).size === names.length, "Requested tools must be unique").optional().describe("Exact indexed tool names needed by this agent; writes require approval"),
   selectionInteractionId: z.string().guid().optional(),
   targetService: z.string().regex(/^[a-z0-9][a-z0-9-]{0,79}$/).optional().describe("App slug returned by search only when the user explicitly named this external provider"),
 }).strict();

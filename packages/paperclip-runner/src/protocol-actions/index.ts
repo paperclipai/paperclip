@@ -1,4 +1,11 @@
+import { getWorkspaceAction } from "./get-workspace.js";
+import { listWorkspacesAction } from "./list-workspaces.js";
+import { selectWorkspaceAction } from "./select-workspace.js";
+import { prepareRepositoryAction } from "./prepare-repository.js";
+import { setTaskMonitorAction } from "./set-task-monitor.js";
 import { setTaskTitleAction } from "./set-task-title.js";
+import { sendChatMessageAction } from "./send-chat-message.js";
+import { submitComplaintAction, submitSuggestionAction } from "./submit-agent-commentary.js";
 import { readAgentInstructionsAction } from "./read-agent-instructions.js";
 import { updateAgentInstructionsAction } from "./update-agent-instructions.js";
 import { getAgentInstructionHistoryAction } from "./get-agent-instruction-history.js";
@@ -8,6 +15,13 @@ import { createSkillAction } from "./create-skill.js";
 import { updateSkillAction } from "./update-skill.js";
 import { createProjectAction } from "./create-project.js";
 import { listProjectRepositoriesAction } from "./list-project-repositories.js";
+import { updateRoutineAction } from "./update-routine.js";
+import { updateSkillDetailsAction } from "./update-skill-details.js";
+import {
+  createAreaAction, createResponsibilityAction, deleteAreaAction, deleteResponsibilityAction, fileUnderResponsibilityAction,
+  findResponsibilitiesForAction, getResponsibilityAction, listResponsibilitiesAction, removeFromResponsibilityAction,
+  updateAreaAction, updateResponsibilityAction,
+} from "./responsibilities.js";
 import { searchApiAction } from "./search-api.js";
 import { callApiAction } from "./call-api.js";
 import { administerCompanyAction } from "./administer-company.js";
@@ -16,6 +30,9 @@ import { blockTaskAction } from "./block-task.js";
 import { commentOnApprovalAction } from "./comment-on-approval.js";
 import { controlWorkspaceServiceAction } from "./control-workspace-service.js";
 import { createTaskAction } from "./create-task.js";
+import { handoffCaseAction } from "./handoff-case.js";
+import { createCaseAction, readCaseAction, updateCaseAction } from "./case-data.js";
+import { listWorkflowsAction, readWorkflowAction, createWorkflowAction, updateWorkflowAction } from "./workflows.js";
 import { decideApprovalAction } from "./decide-approval.js";
 import { exportCompanyAction } from "./export-company.js";
 import { finishTaskAction } from "./finish-task.js";
@@ -55,7 +72,16 @@ import { writeDocumentAction } from "./write-document.js";
 import { deepFreezeProtocolAction } from "./freeze.js";
 
 export const PAPERCLIP_PROTOCOL_ACTIONS = deepFreezeProtocolAction([
+  getWorkspaceAction,
+  listWorkspacesAction,
+  selectWorkspaceAction,
+  prepareRepositoryAction,
+
   setTaskTitleAction,
+  sendChatMessageAction,
+  setTaskMonitorAction,
+  submitComplaintAction,
+  submitSuggestionAction,
   readAgentInstructionsAction,
   updateAgentInstructionsAction,
   getAgentInstructionHistoryAction,
@@ -65,6 +91,19 @@ export const PAPERCLIP_PROTOCOL_ACTIONS = deepFreezeProtocolAction([
   updateSkillAction,
   createProjectAction,
   listProjectRepositoriesAction,
+  listResponsibilitiesAction,
+  getResponsibilityAction,
+  findResponsibilitiesForAction,
+  createAreaAction,
+  updateAreaAction,
+  deleteAreaAction,
+  createResponsibilityAction,
+  updateResponsibilityAction,
+  deleteResponsibilityAction,
+  fileUnderResponsibilityAction,
+  removeFromResponsibilityAction,
+  updateRoutineAction,
+  updateSkillDetailsAction,
   searchApiAction,
   callApiAction,
   administerCompanyAction,
@@ -73,6 +112,11 @@ export const PAPERCLIP_PROTOCOL_ACTIONS = deepFreezeProtocolAction([
   commentOnApprovalAction,
   controlWorkspaceServiceAction,
   createTaskAction,
+  handoffCaseAction,
+  readCaseAction,
+  updateCaseAction,
+  createCaseAction,
+  listWorkflowsAction, readWorkflowAction, createWorkflowAction, updateWorkflowAction,
   decideApprovalAction,
   exportCompanyAction,
   finishTaskAction,

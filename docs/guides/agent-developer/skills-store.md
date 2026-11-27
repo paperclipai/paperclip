@@ -135,12 +135,13 @@ opens the standard setup in Apps. Completing or cancelling setup returns you to
 the importer with your draft retained; the repository list refreshes automatically.
 Use the refresh button beside the repository count to reload accessible repositories.
 
-The searchable tree starts with every discovered skill package checked, including
-hidden and deeply nested directories. Each package shows its name and file count;
-expand it to see the files included with it. Folder checkboxes select descendant
-packages. A package checkbox selects that whole directory, stopping at nested
-`SKILL.md` boundaries; nested skills remain independently selectable. Supporting
-files cannot be deselected individually.
+New imports keep repository files together. **View files** opens the included
+repository inventory. The skill tree stays open, with every discovered skill
+selected. Containing folders start expanded; individual package files start
+collapsed. Folder checkboxes select descendant skills. Uncheck skills that should
+not appear in the library; their files still accompany the selected skills as
+repository support content. Supporting files cannot be deselected individually.
+Existing sources retain their saved import mode.
 
 Use the inspection button or click an included file to open a read-only preview.
 The inspector shows the repository path, scanned commit, byte sizes, executable
@@ -150,22 +151,63 @@ download. Preview reads use the current caller's GitHub access and re-audit the
 package at that exact commit. Preview failures do not alter selection or installed
 content. Existing sources gain inspection metadata on their next successful refresh.
 
-**Check references** flags detectable Markdown links and inline-code relative
-resource paths that are missing or outside the package, including files belonging to
-nested skills. This is a best-effort check, not a complete dependency analysis;
-references do not cause external files to be imported automatically. Fix the source
-or leave the package unchecked if it needs those files. Declared requirements are
-shown separately from these warnings and from content-audit notices.
+Shared files present in the repository are included automatically. Missing
+references, omitted files, and setup problems appear in one expandable warnings
+list. The same warnings remain on the saved source after import and refresh.
+Reference detection is a best-effort check, not a complete dependency analysis.
+Declared runtime requirements appear in the file inspector.
 
-Validation errors appear beside affected skills; eligible selections import and
-skipped skills are reported. These skills become available in the current company's
-library and agent skill picker. Files are limited to 1 MiB each and a scan to 100 MiB
-of expanded skill content, counting repeated file copies. A scan supports up to
-1,000 skill packages and 10,000 package files. The repository path index includes
-directories and is limited to 100,000 paths, with paths up to 4,096 characters and
-64 levels deep. Discovery retains audited manifests without retaining every
-package's contents. Importing never runs scripts, hooks, dependency installation,
-or builds.
+Warnings do not require a repair choice or confirmation. Import saves available
+content and registers usable selected skills. A malformed entrypoint stays
+selected with a **Needs setup** warning; its supported original files remain
+repository content. Unsupported links, oversized files, and files rejected by
+execution or secret-disclosure checks are omitted with path-specific warnings.
+Importing never runs scripts, hooks, dependency installation, or builds.
+
+Scans support up to 1,000 skill packages and 10,000 package files, counting repeated
+file copies, with a 100 MiB scan budget. The repository path index supports up to
+100,000 paths, each at most 4,096 characters and 64 levels deep. Discovery returns
+manifests without retaining every package's content.
+
+### Keep repository files together
+
+This is the default for new imports, including skills that share agents, scripts,
+policies, or sibling skills.
+Paperclip saves supported repository files at the scanned commit. The skill checkboxes
+control which entrypoints appear in the company library; unselected helper skills
+remain available as supporting files. Add the imported skills to an agent to use
+that repository in its runtime. **View files** shows exactly what
+will be copied, including root license and credit files.
+
+Repository packages support regular files up to 1 MiB each, 9,990 files, and
+61 MiB of content. Omitted files produce warnings; they do not block the remaining
+repository. Source-access or download failures retain
+all previously installed versions. Changes to shared files create a new version
+for each selected entrypoint; pinned versions retain their original repository.
+
+Authors can optionally add `paperclip.skills.json` at the repository root:
+
+```json
+{
+  "version": 1,
+  "skills": ["skills/review/SKILL.md", "skills/research/SKILL.md"],
+  "requirements": "Requires Python 3.11, Git, and GitHub access for code reviews."
+}
+```
+
+The listed paths must identify existing skill entrypoints. They do not change the
+all-selected import default, remove other files, or prevent users from selecting
+other entrypoints. The manifest only supplies
+declarative metadata: it never runs setup commands. Dependencies, credentials,
+subagent tools, and scheduled jobs still need to be configured in the agent's environment.
+
+At runtime, each selected skill contains a generated discovery `SKILL.md` that
+points to the untouched original in `.paperclip-repository/`. Relative references
+resolve from that original directory. Original file bytes and executable flags
+are preserved; discovery policy in `agents/openai.yaml` is also copied beside the
+entrypoint. Existing adapters copy this self-contained package to their runtime.
+Multiple enabled entrypoints currently repeat the repository files in the runtime,
+while the company database stores each immutable repository snapshot once.
 
 Repeated scans resolve the branch's current commit and reuse the caller's cached
 snapshot when it is unchanged. Each server process allows one active scan per
