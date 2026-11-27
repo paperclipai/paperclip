@@ -405,7 +405,7 @@ export function Connections() {
             </button>
           )}
 
-          <div className={cn("overflow-hidden rounded-lg border border-border", ANALYTICS_MASK_CLASS)}>
+          <div className={cn("max-w-full overflow-x-auto rounded-lg border border-border", ANALYTICS_MASK_CLASS)}>
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border bg-muted/40 text-left text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">

@@ -2276,7 +2276,7 @@ export function Secrets() {
 
         <TabsContent value="secrets" className="flex flex-col gap-3">
           <div data-canonical-toolbar="secrets" role="toolbar" aria-label="Secrets controls" className="flex flex-wrap items-center gap-2">
-            <div className="relative w-48 sm:w-64 md:w-80">
+            <div className="relative w-full sm:w-64 md:w-80">
               <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input
                 value={search}

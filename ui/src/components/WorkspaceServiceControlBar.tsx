@@ -462,7 +462,7 @@ function MultiServiceBar({
                 <ChevronDown className="size-3 text-muted-foreground" />
               </button>
             </PopoverTrigger>
-            <PopoverContent align="end" className="w-96 p-0" onOpenAutoFocus={(event) => event.preventDefault()}>
+            <PopoverContent align="end" className="w-96 max-w-(--sz-calc-4) p-0" onOpenAutoFocus={(event) => event.preventDefault()}>
               <div className="px-4 pb-1 pt-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                 Services · {services.length}
               </div>
@@ -471,7 +471,7 @@ function MultiServiceBar({
                   <ServicePopoverRow key={entry.key} entry={entry} onAction={onAction} />
                 ))}
               </div>
-              <div className="flex items-center gap-1 border-t border-border px-4 py-2">
+              <div className="flex flex-wrap items-center gap-1 border-t border-border px-4 py-2">
                 <Button variant="ghost" size="xs" onClick={() => onAction("start", null)}>Start all</Button>
                 <Button variant="ghost" size="xs" onClick={() => onAction("stop", null)}>Stop all</Button>
                 <Button variant="ghost" size="xs" onClick={() => onAction("restart", null)}>Restart all</Button>

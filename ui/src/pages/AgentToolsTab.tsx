@@ -606,9 +606,9 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
         }}
       />
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+      <div className="grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-3">
         {/* Allowed tools table */}
-        <div className="lg:col-span-2">
+        <div className="min-w-0 lg:col-span-2">
           <div className="rounded-lg border border-border">
             <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2.5">
               <h3 className="text-sm font-semibold text-foreground">Allowed tools</h3>
@@ -621,7 +621,8 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
                 No tools are allowed for this agent. Bind a tool profile to grant access.
               </p>
             ) : (
-              <table className="w-full text-sm">
+              <div className="max-w-full overflow-x-auto">
+                <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border text-left text-xs text-muted-foreground">
                     <th className="px-3 py-2 font-medium">Tool</th>
@@ -656,6 +657,7 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
                   ))}
                 </tbody>
               </table>
+              </div>
             )}
           </div>
         </div>
