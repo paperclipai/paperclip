@@ -344,6 +344,20 @@ describe("managed AI connections", () => {
     }
   });
 
+  it("re-applies the agent's CLAUDE_CODE_SUBAGENT_MODEL after managed credential blanking", async () => {
+    const owner = "subagent-model-owner";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    await create(owner, owner);
+    const runtime = await prepareManagedAiRuntime(db, { ...input, responsibleUserId: owner, config: { env: { CLAUDE_CODE_SUBAGENT_MODEL: "sonnet", ANTHROPIC_MODEL: "opus", ANTHROPIC_API_KEY: "stale-agent-key" } } });
+    try {
+      expect(runtime.config.env).toMatchObject({
+        CLAUDE_CODE_SUBAGENT_MODEL: "sonnet",
+        ANTHROPIC_MODEL: "",
+        ANTHROPIC_API_KEY: `fixture-${owner}`,
+      });
+    } finally { await runtime.cleanup(); }
+  });
+
   it("uses a vaulted Copilot token with GitHub attribution and refuses revoked or foreign grants", async () => {
     const owner = "copilot-owner";
     const token = "github_pat_fixture_copilot";
