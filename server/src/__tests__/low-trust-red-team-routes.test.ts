@@ -1,4 +1,6 @@
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import express from "express";
@@ -49,13 +51,13 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { parseWakePayloadFromMessage } from "./helpers/wake-message.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { errorHandler } from "../middleware/index.js";
 import { agentRoutes } from "../routes/agents.js";
 import { issueRoutes } from "../routes/issues.js";
 import { issueService } from "../services/issues.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { decideRunLivenessContinuation, RUN_LIVENESS_CONTINUATION_REASON } from "../services/run-continuations.js";
 import { LOW_TRUST_QUARANTINED_BODY } from "../services/source-trust.js";
 
 const externalTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_LOW_TRUST_TEST_DATABASE_URL");
@@ -870,13 +872,10 @@ describeEmbeddedPostgres(
       ReturnType<typeof startEmbeddedPostgresTestDatabase>
     > | null = null;
 
-    async function readGatewayWakePayload(
+    // Preparation-only helper. Destination assertions below parse the actual message.
+    async function readPersistedWakePayload(
       payload: Record<string, unknown>,
     ): Promise<Record<string, unknown>> {
-      const message = String(payload.message ?? "");
-      if (message.includes("```json\n")) {
-        return parseWakePayloadFromMessage(message);
-      }
       const runId = typeof payload.idempotencyKey === "string"
         ? payload.idempotencyKey
         : null;
@@ -894,6 +893,11 @@ describeEmbeddedPostgres(
         throw new Error("Gateway payload omitted JSON without a structured wake context");
       }
       return wake as Record<string, unknown>;
+    }
+
+    function recordGatewayReceipt(name: string, receipt: unknown) {
+      const directory = process.env.PAPERCLIP_TEST_RECEIPT_DIR;
+      if (directory) writeFileSync(join(directory, `${name}.json`), JSON.stringify(receipt));
     }
 
     beforeAll(async () => {
@@ -1998,6 +2002,72 @@ describeEmbeddedPostgres(
       expect(JSON.stringify(lowTrust.headers)).not.toContain(hiddenId);
     });
 
+    it("delivers genuine bounded same-assignee native recovery through the gateway", async () => {
+      const fixture = await seedLowTrustFixture(db);
+      const gateway = await createControlledGatewayServer();
+      const heartbeat = heartbeatService(db, { runtimeEnv: {
+        ...process.env, PAPERCLIP_IN_WORKTREE: "false", PAPERCLIP_DATABASE_RESTORE_IN_PROGRESS: "false", PAPERCLIP_RESTORE_IN_PROGRESS: "false",
+      } });
+      try {
+        await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() })
+          .where(eq(heartbeatRuns.agentId, fixture.agents.standard.id));
+        const [issue] = await db.update(issues).set({ assigneeAgentId: fixture.agents.standard.id,
+          status: "in_progress", executionRunId: null, checkoutRunId: null })
+          .where(eq(issues.id, fixture.issues.reviewRoot.id)).returning();
+        const [agent] = await db.update(agents).set({ status: "idle", adapterType: "openclaw_gateway",
+          adapterConfig: { url: gateway.url, cwd: process.cwd(), headers: { "x-openclaw-token": "gateway-token" },
+            payloadTemplate: { message: "wake now" }, waitTimeoutMs: 2000 },
+          runtimeConfig: { heartbeat: { wakeOnDemand: true } } }).where(eq(agents.id, fixture.agents.standard.id)).returning();
+        const [source] = await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: issue!.id },
+          livenessState: "plan_only", livenessReason: "Planned without acting", nextAction: "Finish the assigned review.", continuationAttempt: 0 })
+          .where(eq(heartbeatRuns.id, fixture.runs.standard.id)).returning();
+        const decision = decideRunLivenessContinuation({ run: source!, issue: issue!, agent: agent!,
+          livenessState: source!.livenessState, livenessReason: source!.livenessReason, nextAction: source!.nextAction,
+          budgetBlocked: false, idempotentWakeExists: false });
+        expect(decision.kind).toBe("enqueue");
+        if (decision.kind !== "enqueue") throw new Error("native producer refused");
+        const run = await heartbeat.wakeup(agent!.id, { source: "automation", triggerDetail: "system",
+          reason: RUN_LIVENESS_CONTINUATION_REASON, payload: decision.payload,
+          contextSnapshot: { ...decision.contextSnapshot, originIdentityContextId: null, parentRunId: source!.id },
+          idempotencyKey: decision.idempotencyKey, requestedByActorType: "system", requestedByActorId: "heartbeat" });
+        expect(run).not.toBeNull();
+        await waitFor(() => gateway.getAgentPayloads().length === 1, 30000);
+        const payload = gateway.getAgentPayloads()[0]!;
+        const message = String(payload.message ?? "");
+        
+        const wake = await readPersistedWakePayload(payload);
+        expect(wake).toMatchObject({ reason: RUN_LIVENESS_CONTINUATION_REASON, issue: { id: issue!.id },
+          livenessContinuation: { attempt: 1, maxAttempts: 2, sourceRunId: source!.id, state: "plan_only",
+            reason: "Planned without acting", instruction: "Finish the assigned review." } });
+        // Destination evidence comes only from the actual message, independently
+        // of the persisted preparation snapshot checked above.
+        recordGatewayReceipt("recovery-wire", { message });
+        const bounded = message.split("Run liveness continuation:\n")[1];
+        expect(bounded).toBeDefined();
+        for (const line of ["- attempt: 1/2", `- source run: ${source!.id}`,
+          "- liveness state: plan_only", "- reason: Planned without acting",
+          "- instruction: Finish the assigned review."]) expect(bounded).toContain(line);
+        expect(message).toContain(issue!.id);
+        expect(message).toContain(RUN_LIVENESS_CONTINUATION_REASON);
+        expect(wake.commentIds ?? []).toEqual([]);
+        expectNoCanary(payload, fixture.canaries.raw);
+        const [persisted] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id));
+        expect(persisted!.contextSnapshot).toMatchObject({ parentRunId: source!.id, livenessContinuationSourceRunId: source!.id });
+        expect(persisted!.agentId).toBe(source!.agentId);
+        expect(decideRunLivenessContinuation({ run: source!, issue: issue!, agent: agent!, livenessState: "plan_only",
+          livenessReason: source!.livenessReason, nextAction: source!.nextAction, budgetBlocked: false, idempotentWakeExists: true }))
+          .toEqual({ kind: "skip", reason: "continuation wake already exists for this source run and attempt" });
+        recordGatewayReceipt("recovery", { message, sourceRunId: source!.id, runId: run!.id, issueId: issue!.id,
+          agentId: agent!.id, preparedRecovery: wake.livenessContinuation });
+        gateway.releaseFirstWait();
+        await waitFor(async () => { const [row] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id));
+          return ["succeeded", "failed", "cancelled"].includes(row!.status); }, 30000);
+        const [terminal] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id));
+        expect(terminal!.status).toBe("succeeded");
+        recordGatewayReceipt("terminal", { id: terminal!.id, status: terminal!.status, errorCode: terminal!.errorCode });
+      } finally { gateway.releaseFirstWait(); await gateway.close(); }
+    }, 120000);
+
     it("redacts quarantined low-trust output from higher-trust wake and continuation contexts", async () => {
       const fixture = await seedLowTrustFixture(db);
       const lowTrustApp = createApp(db, agentActor(fixture));
@@ -2152,7 +2222,7 @@ describeEmbeddedPostgres(
         await db.update(agents).set({ adapterConfig: { url: gateway.url, cwd: process.cwd(), headers: { "x-openclaw-token": "gateway-token" },
           payloadTemplate: { message: "wake now" }, waitTimeoutMs: 2000 } }).where(eq(agents.id, fixture.agents.standard.id));
         const authorized = await request(createApp(db, boardActor(fixture))).post(`/api/issues/${fixture.issues.reviewRoot.id}/comments`).send({
-          body: `[@Standard](agent://${fixture.agents.standard.id}) Continue from the sanitized quarantine stub only.`,
+          body: `[@Standard](agent://${fixture.agents.standard.id}) Continue from the sanitized quarantine stub only. Reference: /api/issues/${fixture.issues.reviewRoot.id}/heartbeat-context?wakeCommentId=${scopedComment.id}`,
           commentIntent: { kind: "actionable", recipientAgentId: fixture.agents.standard.id, request: "Continue from the sanitized quarantine stub only." }
         });
         expect(authorized.status, JSON.stringify(authorized.body)).toBe(201);
@@ -2165,7 +2235,9 @@ describeEmbeddedPostgres(
         // The gateway rejects unknown root params, so the wake context rides in the
         // generated message rather than a top-level `paperclip` field.
         expect(payload.paperclip).toBeUndefined();
-        const wake = await readGatewayWakePayload(payload);
+        const message = String(payload.message ?? "");
+        
+        const wake = await readPersistedWakePayload(payload);
         // Security-critical: low-trust quarantined output is redacted to the sanitized
         // stub before it reaches the higher-trust wake/continuation context. The raw
         // body must never appear (asserted by expectNoCanary below). The sourceTrust
@@ -2180,6 +2252,41 @@ describeEmbeddedPostgres(
           continuationSummary: { body: LOW_TRUST_QUARANTINED_BODY },
         });
         expect(wake.commentIds).not.toContain(scopedComment.id);
+        // The fresh authorized trigger carries an ordinary persisted reference, not
+        // fabricated wake IDs. Recipient read policy hydrates its protected source.
+        expect(wake.comments[0].body).toContain(scopedComment.id);
+        expect(wake.comments[0]).toMatchObject({ author: { type: "user", id: "board-user" }, id: authorized.body.id });
+        const recipient = createApp(db, { ...agentActor(fixture, fixture.agents.standard.id), runId: run!.id });
+        // Parse the reference from the received message, never the DB snapshot.
+        recordGatewayReceipt("reference-wire", { message });
+        const blocks = [...message.matchAll(/```text\n([\s\S]*?)\n```/g)]
+          .map((match) => JSON.parse(match[1]!) as Record<string, unknown>);
+        const delivered = blocks.find((block) => Array.isArray(block.messages) && block.trigger);
+        expect(delivered).toMatchObject({ issueId: fixture.issues.reviewRoot.id,
+          trigger: { reason: "issue_commented" }, originCommentIds: [authorized.body.id] });
+        const wireComments = delivered!.messages as Array<Record<string, unknown>>;
+        const wireTrigger = wireComments.find((comment) => comment.id === authorized.body.id);
+        expect(wireTrigger).toMatchObject({ authorType: "user", authorId: "board-user",
+          body: authorized.body.body });
+        expect(wireComments.find((comment) => comment.id === scopedComment.id))
+          .toMatchObject({ body: LOW_TRUST_QUARANTINED_BODY });
+        const referencePath = String(wireTrigger!.body).match(/Reference: (\/api\/issues\/[a-f0-9-]+\/heartbeat-context\?wakeCommentId=[a-f0-9-]+)/)?.[1];
+        expect(referencePath).toBeDefined();
+        expect(referencePath).toBe(`/api/issues/${fixture.issues.reviewRoot.id}/heartbeat-context?wakeCommentId=${scopedComment.id}`);
+        const referenced = await request(recipient).get(referencePath!);
+        expect(referenced.status, JSON.stringify(referenced.body)).toBe(200);
+        expect(referenced.body.wakeComment).toMatchObject({ id: scopedComment.id, body: LOW_TRUST_QUARANTINED_BODY });
+        expect(referenced.body.continuationSummary.body).toBe(LOW_TRUST_QUARANTINED_BODY);
+        expectNoCanary(referenced.body, fixture.canaries.raw);
+        const denialActor = agentActor(fixture);
+        const denied = await request(createApp(db, denialActor)).get(`/api/issues/${fixture.issues.siblingOutOfScope.id}/heartbeat-context`);
+        expect([403,404]).toContain(denied.status);
+        expectNoCanary(denied.body, fixture.canaries.issueSibling);
+        recordGatewayReceipt("reference", { runId: run!.id, recipientAgentId: fixture.agents.standard.id, delivered, triggerId: authorized.body.id,
+          referenceId: scopedComment.id, reason: wake.reason, commentIds: wake.commentIds, recipientStatus: referenced.status,
+          deniedStatus: denied.status, denialAgentId: denialActor.agentId, denialRunId: denialActor.runId, recipientDenialProved: false });
+        // The 404 above is the low-trust actor's denial, not a receiving-agent
+        // boundary. That separate recipient/source boundary remains unproved.
         // This proves real Board delivery and sanitized summary hydration. Synthetic
         // livenessContinuation fields and referenced-comment gateway delivery remain
         // separate coverage gaps; explicit HTTP hydration above is not that proof.
