@@ -361,6 +361,9 @@ function addedLinesFromDiff(root, baseRef, fileRel) {
   const diff = execFileSync("git", ["diff", "-U0", `${baseRef}...HEAD`, "--", fileRel], {
     cwd: root,
     encoding: "utf8",
+    // Retained-suite moves can include several MiB of removed lines. Keep the
+    // complete diff so added-line policy still examines every new statement.
+    maxBuffer: 16 * 1024 * 1024,
   });
   const added = new Set();
   let currentLine = 0;

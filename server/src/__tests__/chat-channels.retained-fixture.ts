@@ -1215,7 +1215,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         // selectors. After every assertion and worker shutdown, settle leftover
         // fixture work so later cases cannot claim its leases or retry its I/O.
         await db.update(chatActions).set({ status: "cancelled" })
-          .where(and(inArray(chatActions.companyId, companyIds), notInArray(chatActions.status, ["processed", "cancelled"])));
+          .where(and(inArray(chatActions.companyId, companyIds), or(
+            notInArray(chatActions.status, ["processed", "cancelled"]),
+            // Processed acknowledgements still own terminal-response work until
+            // final. Retire only the finished case after assertions and drainage.
+            and(eq(chatActions.kind, "github_response_comment"), eq(chatActions.status, "processed"),
+              sql`coalesce(${chatActions.result}->>'final', 'false') <> 'true'`),
+          )));
         await db.update(chatDeliveries).set({ state: "failed", nextAttemptAt: null })
           .where(and(inArray(chatDeliveries.companyId, companyIds), inArray(chatDeliveries.state, ["received", "processing", "retry"])));
         await db.update(chatPublications).set({ state: "cancelled", nextAttemptAt: null })
@@ -3446,7 +3452,10 @@ it("retains a provider-verified GitHub mention when its plain text uses an alias
     if (partition === 4) {
 it("reconciles a GitHub working comment when execution stops without a publication", async () => {
       const f = await toolReplyFixture("github:paperclipai/paperclip:418");
-      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "execution_finalization_deadline_exceeded" })
+      // A restart-class failure waits for automatic continuation for 30min
+      // in current stock. This case covers settling after that window expires.
+      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "execution_finalization_deadline_exceeded",
+        updatedAt: new Date(Date.now() - 31 * 60_000) })
         .where(eq(heartbeatRuns.id, f.run.id));
       await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, f.conversation.issueId!));
       await githubResponseCommentService(db, f.providerFetch).processPending();
@@ -5615,6 +5624,9 @@ it.each(["none", "confirmed", "unsettled", "check_only", "different_run", "diffe
         if (scenario !== "none") {
           await db.insert(chatActions).values({ companyId: f.companyId, endpointId: f.endpoint.id, conversationId: f.conversation.id,
             kind: "github_review_publication", providerActionId: `github_publication:${randomUUID()}`,
+            // This negative is an earlier other-run receipt. Later same-task
+            // publications link the latest response in current stock controls.
+            ...(scenario === "different_run" ? { updatedAt: new Date(0) } : {}),
             payload: { operation: scenario === "check_only" ? "assessment" : "comment", session: { ...f.session,
               ...(scenario === "different_run" ? { runId: randomUUID() } : {}),
               ...(scenario === "different_company" ? { companyId: randomUUID() } : {}),
