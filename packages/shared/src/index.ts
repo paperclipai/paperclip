@@ -3167,3 +3167,4 @@ export type { TailscaleConnection, TailscaleDeviceLogin } from "./types/tailscal
 export * from "./agent-setup-progress.js";
 export { antigravitySwarmAvailable, antigravitySwarmWorkModeAllows, isAntigravityAgent, parseLeadingUserCommand, SWARM_REQUEST_MAX_CHARS, type LeadingUserCommand } from "./leading-user-command.js";
 export * from "./cloud-inference.js";
+export { deploymentManifestSchema, type DeploymentManifest } from "./deployment-manifest.js";

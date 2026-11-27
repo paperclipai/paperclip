@@ -430,6 +430,32 @@ Database backups do not include non-database instance files such as local-disk
 uploads, workspace files, or the local encrypted secrets master key. Back those paths
 up separately when you need full instance disaster recovery.
 
+## Managed deployment ownership
+
+Managed deployment startup can use `acquireDeploymentLease` to reserve a
+dedicated PostgreSQL connection for its whole controller or offline-apply
+lifetime. Competing managed owners of the same database fail acquisition. The
+caller must stop on connection loss; the lease never reconnects to regain
+ownership. Release is idempotent and does not report expected shutdown as loss.
+
+Before managed migrations, `assertDeploymentSchemaCompatible` checks every
+stored migration hash against the installed SQL files. Unknown hashes refuse
+startup without changing the journal. Use the matching application or a verified
+compatible backup; renumbering a fork's applied migrations is not an upgrade.
+
+Migration `0511_complex_anita_blake.sql` adds the `deployment_resources` ownership
+ledger and guards owned resource fields and secret versions. Resource identities
+use owner, kind, and key; no cascading foreign key can silently erase ownership.
+Operational pauses and spending remain mutable. The reconciler uses a
+transaction-local setting for its own writes. This guard controls application
+writes, not arbitrary SQL access by the database owner.
+
+This migration is generated from the upstream `0510` schema for fresh staging
+and upstream-history databases. A database with the older fork-only
+`0284_bizarre_mastermind` / `0285_deployment_workspaces` history needs a separate
+verified migration/restore procedure. The compatibility check refuses that
+unknown history.
+
 ## More documentation
 
 | Area | Doc |

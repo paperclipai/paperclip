@@ -6,8 +6,9 @@ import { agents, agentApiKeys, companies, type Db } from "@paperclipai/db";
 import { conflict, notFound } from "../../../errors.js";
 import { agentRecordQueries, type CreateAgentOptions, type CreateAgentData } from "../../../lib/agent-records.js";
 import { isAgentSetupDraft, canConfigureAgentConnection } from "../domain/policy.js";
+import type { ActivityPublication } from "../../../types/activity-publication.js";
 
-export function agentRecords(db: Db, effects: LifecycleEffects) {
+export function agentRecords(db: Db, effects: LifecycleEffects, postCommitPublications?: ActivityPublication[]) {
   const { getById } = agentRecordQueries(db);
 
   return {
@@ -61,10 +62,10 @@ export function agentRecords(db: Db, effects: LifecycleEffects) {
           : tx.insert(agents).values(values))
           .returning()
           .then((rows) => rows[0]);
-        await effects.initializeHire(txDb, created, options);
+        await effects.initializeHire(txDb, created, options, postCommitPublications ?? publications);
         if (!options?.setupOnly && status !== "pending_approval" && status !== "terminated"
           && created.budgetMonthlyCents > 0 && options?.initialBudgetPolicyUserId) {
-          await effects.setAgentBudget(txDb, publications, companyId, created.id, created.budgetMonthlyCents, options.initialBudgetPolicyUserId);
+          await effects.setAgentBudget(txDb, postCommitPublications ?? publications, companyId, created.id, created.budgetMonthlyCents, options.initialBudgetPolicyUserId);
         }
         if (!options?.setupOnly && created.status !== "pending_approval" && created.status !== "terminated") {
           await effects.recordCreation(txDb, companyId, created.id);
@@ -140,7 +141,7 @@ export function agentRecords(db: Db, effects: LifecycleEffects) {
           .returning()
           .then((rows) => rows[0] ?? null);
         if (!updated) return null;
-        await effects.completeHireApproval(txDb, updated, existing);
+        await effects.completeHireApproval(txDb, updated, existing, postCommitPublications);
         await effects.recordCreation(txDb, existing.companyId, updated.id);
         const agent = await agentRecordQueries(txDb).getById(updated.id);
         if (!agent) {
