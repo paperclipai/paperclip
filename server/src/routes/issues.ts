@@ -26,6 +26,7 @@ import { listIssueStatusBlockerAttention } from "../services/issue-status-presen
 import { assertNoCaseHandoffMutation } from "../services/heartbeat/case-handoff-lifecycle.js";
 import { assertHandedOffRunTaskOwnership } from "../run-task-ownership.js";
 import { recordNativeHumanSelfHandoff } from "../services/native-runtime/native-human-self-handoff.js";
+import { recordAgentSelfHandoff } from "../services/agent-self-handoff.js";
 import { recordChildTaskRead, recordChildTaskReads } from "../services/native-runtime/native-child-completion-delivery.js";
 import { recordCompletedHandoffRead, recordCompletedHandoffReads } from "../services/chat-completion-delivery.js";
 import { recordDeclinedInteractionRead } from "../services/chat-interaction-outcome-report.js";
@@ -5975,8 +5976,8 @@ export function issueRoutes(
       res.status(403).json({ error: "Agent authentication required" });
       return false;
     }
-    if (req.actor.source === "agent_jwt" && req.actor.runId &&
-        issue.assigneeAgentId === null && issue.assigneeUserId) {
+    if (req.actor.source === "agent_jwt" && req.actor.runId && issue.assigneeAgentId !== actorAgentId &&
+        (issue.assigneeAgentId !== null || issue.assigneeUserId)) {
       const run = await heartbeat.getRun(req.actor.runId);
       if (run?.agentId === actorAgentId) assertHandedOffRunTaskOwnership(run, issue);
     }
@@ -15680,12 +15681,6 @@ export function issueRoutes(
           runToStopForReassignment.agentId === req.actor.agentId &&
           runToStopForReassignment.companyId === existing.companyId &&
           runToStopForReassignment.contextSnapshot?.issueId === existing.id;
-        // A legacy run handing its own task to another agent (directly, or as
-        // a review stage moving it to its reviewer) also finishes its turn.
-        // Cancelling it would kill the request that saves the hand-off. The
-        // new assignee's wake re-binds the execution lock to this still-running
-        // run and waits behind it, and the assignee boundary refuses this run's
-        // later writes to a task another agent now owns.
         const isAgentSelfHandoff =
           req.actor.type === "agent" &&
           req.actor.source === "agent_jwt" &&
@@ -15706,6 +15701,14 @@ export function issueRoutes(
           // save an assignment its own terminal fence would then refuse.
           throw conflict("The run handing off this task is no longer running it. Read the task again and retry.", {
             code: "native_self_handoff_run_changed",
+            runId: runToStopForReassignment.id,
+          });
+        }
+        if (isAgentSelfHandoff && !await recordAgentSelfHandoff(db, { companyId: existing.companyId,
+          runId: runToStopForReassignment.id, agentId: runToStopForReassignment.agentId, issueId: existing.id,
+          assigneeAgentId: nextAssigneeAgentId as string })) {
+          throw conflict("The run handing off this task is no longer running it. Read the task again and retry.", {
+            code: "agent_self_handoff_run_changed",
             runId: runToStopForReassignment.id,
           });
         }

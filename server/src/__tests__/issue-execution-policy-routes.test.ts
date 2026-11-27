@@ -78,8 +78,10 @@ const mockRunnerGoalService = vi.hoisted(() => ({
   projection: vi.fn(async () => null),
   act: vi.fn(),
 }));
+const mockRecordAgentSelfHandoff = vi.hoisted(() => vi.fn(async () => true));
 
 function registerModuleMocks() {
+  vi.doMock("../services/agent-self-handoff.js", () => ({ recordAgentSelfHandoff: mockRecordAgentSelfHandoff }));
   vi.doMock("../services/queued-interaction-response.js", () => ({
     hasQueuedInteractionResponse: vi.fn(async () => false),
   }));
@@ -861,6 +863,40 @@ describe("issue execution policy routes", () => {
       }),
       expect.anything(),
     );
+    expect(mockRecordAgentSelfHandoff).toHaveBeenCalledWith(expect.anything(), {
+      companyId: "company-1",
+      runId: executorRun.id,
+      agentId: executorRun.agentId,
+      issueId: issue.id,
+      assigneeAgentId: "44444444-4444-4444-8444-444444444444",
+    });
+
+    mockIssueService.getById.mockResolvedValue({
+      ...issue,
+      status: "in_review",
+      assigneeAgentId: "44444444-4444-4444-8444-444444444444",
+    });
+    mockHeartbeatService.getRun.mockResolvedValue({
+      ...executorRun,
+      contextSnapshot: {
+        ...executorRun.contextSnapshot,
+        agentSelfHandoff: { issueId: issue.id, fromAgentId: executorRun.agentId },
+      },
+    } as never);
+    mockIssueService.update.mockClear();
+    const late = await request(await createApp({
+      type: "agent",
+      agentId: executorRun.agentId,
+      companyId: "company-1",
+      runId: executorRun.id,
+      source: "agent_jwt",
+    }))
+      .patch(`/api/issues/${issue.id}`)
+      .send({ status: "done" });
+
+    expect(late.status, JSON.stringify(late.body)).toBe(403);
+    expect(late.body.details).toMatchObject({ code: "issue_handed_off" });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("allows an agent-authored in_review transition with a scheduled monitor", async () => {

@@ -114,6 +114,17 @@ Updatable fields: `title`, `description`, `status`, `priority`, `assigneeAgentId
 
 For `PATCH /api/issues/{issueId}`, `assigneeAgentId` may be either the agent UUID or the agent shortname/urlKey within the same company.
 
+#### Reassignment and the active run
+
+When an update changes the assignee away from an agent, the server stops that agent's active run on the task before it saves the change (`errorCode: issue_reassigned`). There are two exceptions. In both, the run that sends the request finishes its turn and is not stopped:
+
+- **Hand-off to a person.** The task's assigned agent, authenticated by its run token, sets `assigneeUserId` on its own task from its own running run (legacy or native).
+- **Hand-off to another agent.** The task's assigned agent, authenticated by its run token, sets a different `assigneeAgentId` on its own task from its own running legacy run. This also applies when an execution-policy review stage moves the task to an agent reviewer in the same update (for example `status: "in_review"`).
+
+All other reassignments stop the active run first: a board user or a different agent reassigns the task, the caller uses an agent API key, the request comes from a different run, a native run hands off to another agent, or the agent clears the assignee.
+
+After a hand-off, the run that gave the task away keeps no write access to it. Its later updates to that task return `403` with code `issue_handed_off`, while a person or a different agent owns the task. This applies to edits, status changes and taking the task back. The run can still comment on the task. If the task is assigned back to the same agent, the run can update it again. If the run is no longer the running legacy run of the task when it sends the hand-off, the update returns `409` with code `agent_self_handoff_run_changed` and changes nothing.
+
 When updating `executionPolicy`, you can also send `expectedExecutionPolicy` with the complete policy object from your last task read (or `null` if no policy exists). The server compares this snapshot under the task row lock. If the policy has changed, the update returns `409` with code `execution_policy_changed`. Read the task again before retrying. Snapshot-guarded requests must contain only `executionPolicy` and `expectedExecutionPolicy`. They cannot change task status or ownership, including through a policy transition. Mixed requests return `422` before execution-control side effects. Omit this field to retain the existing update behavior.
 
 ### Update Response
