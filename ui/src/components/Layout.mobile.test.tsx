@@ -116,6 +116,13 @@ vi.mock("./access/CompanySettingsNav", () => ({
 vi.mock("./AppsSidebar", () => ({
   AppsSidebar: () => <div data-testid="apps-sidebar">Apps Sidebar</div>,
   AppsMobileNav: () => <div data-testid="apps-mobile-nav">Apps Mobile Nav</div>,
+  appsRouteHasMobileNav: (pathname: string, hasDeveloperTabs: boolean) => {
+    if (pathname.replace(/\/+$/, "").endsWith("/apps/chat/connect")) return false;
+    if (/\/apps\/chat\/([^/]+)(?:\/(?:settings|access|conversations|activity)|\/reviews(?:\/[^/]+)?)?\/?$/.test(pathname)) {
+      return true;
+    }
+    return hasDeveloperTabs;
+  },
   useAppsDeveloperTabs: () => [],
 }));
 
@@ -187,6 +194,7 @@ describe("Layout mobile drawer & contextual navigation", () => {
             <Routes>
               <Route path="/:companyPrefix" element={<Layout />}>
                 <Route path="agents/:agentId/:tab" element={<div>Agent Page</div>} />
+                <Route path="apps/chat/connect" element={<div>Chat Connect Page</div>} />
                 <Route path="custom-plugin" element={<div>Plugin Page</div>} />
               </Route>
             </Routes>
@@ -234,6 +242,23 @@ describe("Layout mobile drawer & contextual navigation", () => {
     renderAt("/PAP/custom-plugin");
 
     expect(container.querySelector('[data-testid="plugin-sidebar-slot"]')).not.toBeNull();
+
+    const workspaceBtn = Array.from(
+      container.querySelectorAll('[data-slot="mobile-drawer-switcher"] button'),
+    ).find((b) => b.textContent?.includes("Workspace")) as HTMLButtonElement;
+    expect(workspaceBtn).toBeDefined();
+
+    flushSync(() => {
+      workspaceBtn.click();
+    });
+    expect(container.querySelector('[data-testid="global-workspace-sidebar"]')).not.toBeNull();
+  });
+
+  it("opens the mobile drawer to the contextual setup sidebar on /apps/chat/connect where no inline bar is rendered", () => {
+    renderAt("/PAP/apps/chat/connect?provider=slack");
+
+    expect(container.querySelector('[data-testid="apps-mobile-nav"]')).toBeNull();
+    expect(container.querySelector('[data-testid="apps-sidebar"]')).not.toBeNull();
 
     const workspaceBtn = Array.from(
       container.querySelectorAll('[data-slot="mobile-drawer-switcher"] button'),

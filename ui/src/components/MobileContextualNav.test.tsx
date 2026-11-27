@@ -7,7 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentContextualMobileNav } from "./AgentContextualSidebar";
 import { AppDetailMobileNav } from "./AppConnectionSidebar";
-import { AppsMobileNav } from "./AppsSidebar";
+import { AppsMobileNav, appsRouteHasMobileNav } from "./AppsSidebar";
 import { ChatDetailMobileNav } from "./chat/ChatDetailSidebar";
 import { AgentConversationSidebar } from "./AgentConversationSidebar";
 import { MobileContextualNav } from "./MobileContextualNav";
@@ -199,6 +199,11 @@ describe("Mobile contextual section switchers", () => {
     expect(nav).not.toBeNull();
     const labels = Array.from(nav!.querySelectorAll("a")).map((a) => a.textContent);
     expect(labels).toEqual(["All plugins", "Smoke Lab"]);
+    expect(appsRouteHasMobileNav("/PAP/apps/chat/connect", false)).toBe(false);
+    expect(appsRouteHasMobileNav("/PAP/apps/chat/connect/", true)).toBe(false);
+    expect(appsRouteHasMobileNav("/PAP/apps/chat/ep-1/settings", false)).toBe(true);
+    expect(appsRouteHasMobileNav("/PAP/apps/advanced/smoke-lab", true)).toBe(true);
+    expect(appsRouteHasMobileNav("/PAP/apps/advanced/smoke-lab", false)).toBe(false);
   });
 
   it("renders inline mobile switcher trigger for AgentConversationSidebar with active agent and other unread count", () => {

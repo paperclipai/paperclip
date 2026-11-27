@@ -10,6 +10,16 @@ import { contextualSidebarStyles } from "./contextual-sidebar-styles";
 
 const CHAT_DETAIL_PATH_RE = /\/apps\/chat\/([^/]+)(?:\/(?:settings|access|conversations|activity)|\/reviews(?:\/[^/]+)?)?\/?$/;
 
+function isChatConnectPath(pathname: string): boolean {
+  return pathname.replace(/\/+$/, "").endsWith("/apps/chat/connect");
+}
+
+export function appsRouteHasMobileNav(pathname: string, hasDeveloperTabs: boolean): boolean {
+  if (isChatConnectPath(pathname)) return false;
+  if (CHAT_DETAIL_PATH_RE.test(pathname)) return true;
+  return hasDeveloperTabs;
+}
+
 /** Developer tabs that are switched on for this instance; Gateways and Profiles stay hidden until they ship. */
 export function useAppsDeveloperTabs() {
   const { enabled: smokeLabEnabled } = useSmokeLabEnabled();
@@ -28,7 +38,7 @@ export function AppsSidebar() {
   const { pathname } = useLocation();
   const developerTabs = useAppsDeveloperTabs();
 
-  if (pathname.endsWith("/apps/chat/connect")) return <ChatSetupSidebar />;
+  if (isChatConnectPath(pathname)) return <ChatSetupSidebar />;
   const chatDetail = pathname.match(CHAT_DETAIL_PATH_RE);
   if (chatDetail) return <ChatDetailSidebar endpointId={chatDetail[1]} />;
 
@@ -78,7 +88,7 @@ export function AppsMobileNav() {
   const { pathname } = useLocation();
   const developerTabs = useAppsDeveloperTabs();
 
-  if (pathname.endsWith("/apps/chat/connect")) return null;
+  if (isChatConnectPath(pathname)) return null;
   const chatDetail = pathname.match(CHAT_DETAIL_PATH_RE);
   if (chatDetail) return <ChatDetailMobileNav endpointId={chatDetail[1]} />;
   if (developerTabs.length === 0) return null;

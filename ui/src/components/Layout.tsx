@@ -14,7 +14,7 @@ import { Outlet, useLocation, useNavigate, useNavigationType, useParams } from "
 import { Sidebar } from "./Sidebar";
 import { CompanySettingsSidebar } from "./CompanySettingsSidebar";
 import { CompanySettingsNav } from "./access/CompanySettingsNav";
-import { AppsMobileNav, AppsSidebar, useAppsDeveloperTabs } from "./AppsSidebar";
+import { AppsMobileNav, AppsSidebar, appsRouteHasMobileNav, useAppsDeveloperTabs } from "./AppsSidebar";
 import { appsRouteHasRail } from "../pages/apps/apps-rail";
 import { AppDetailMobileNav, AppDetailSidebar } from "./AppConnectionSidebar";
 import { AgentContextualMobileNav, AgentContextualSidebar } from "./AgentContextualSidebar";
@@ -255,7 +255,8 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
     <AppDetailMobileNav kind="connection" connectionId={appDetailConnectionId} />
   ) : appDetailApplicationId ? (
     <AppDetailMobileNav kind="application" applicationId={appDetailApplicationId} />
-  ) : appsRouteHasRail(companyPathSegments, appsDeveloperTabs.length > 0) ? (
+  ) : appsRouteHasRail(companyPathSegments, appsDeveloperTabs.length > 0)
+    && appsRouteHasMobileNav(location.pathname, appsDeveloperTabs.length > 0) ? (
     <AppsMobileNav />
   ) : null;
   const mobileDrawerContextualLabel = isAgentChatRoute
