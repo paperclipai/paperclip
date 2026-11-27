@@ -93,7 +93,6 @@ async function reserveConnection(
 ): Promise<boolean> {
   return db.transaction(async transaction => {
     const tx = transaction as unknown as Db;
-    // All Paperclip processes sharing this database reserve from the same port pool.
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${origin(policy.gatewayHost).origin}, 0))`);
     const agent = await lockedAgent(tx, snapshot);
     if (!agent) return false;
@@ -120,7 +119,6 @@ async function reserveConnection(
     const [project] = await tx.select({ id: projects.id }).from(projects)
       .where(and(eq(projects.id, policy.projectId), eq(projects.companyId, agent.companyId)));
     if (!project) throw new Error("Managed Hermes reporting project is unavailable");
-    // Termination has settled. Historical adapter settings no longer reserve that port.
     const rows = await tx.select({ config: agents.adapterConfig }).from(agents)
       .where(and(eq(agents.adapterType, "hermes_gateway"), ne(agents.lifecycleState, "terminated")));
     const occupied = new Set(rows.map(row => row.config.apiBaseUrl).filter(value => typeof value === "string")
@@ -149,7 +147,6 @@ async function reserveConnection(
       expectedProfile: profile, paperclipApiUrl: policy.paperclipApiUrl,
       managedProfileAdminOrigin: origin(slot.adminUrl).origin,
     }, { adapterType: "hermes_gateway" });
-    // Save the binding under this lease. A normal edit resets verification.
     await storeBinding(tx, agent, config);
     await audit(tx, agent, "agent.hermes_gateway_bound");
     return true;
@@ -177,7 +174,6 @@ async function prepareProfile(tx: Db, agent: AgentRow, policy: Policy, admin: He
   const { config } = await secrets.resolveAdapterConfigForRuntime(agent.companyId, {
     apiKey: reference(gateway.id),
   }, context, { adapterType: "hermes_gateway" });
-  // Resolve only the reporting key saved for this agent.
   const report = await secrets.resolveAdapterConfigForRuntime(agent.companyId, {
     env: { PAPERCLIP_BRIDGE_API_KEY: reference(reporting.id) },
   }, context, { userSecretMediation: "owner_scoped" });
@@ -260,8 +256,6 @@ export async function reconcileManagedHermesGateway(db: Db, snapshot: LifecycleA
 
   return db.transaction(async transaction => {
     const tx = transaction as unknown as Db;
-    // This lock covers Paperclip writes. Hermes orders gateway commands because
-    // an HTTP timeout does not cancel the remote work.
     const agent = await lockedAgent(tx, snapshot);
     if (!agent) return "pending" as const;
     const admin = await adminForBinding(agent, policy);
