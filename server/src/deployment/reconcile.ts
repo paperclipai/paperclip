@@ -147,8 +147,14 @@ export async function reconcileDeployment(db: Db, raw: unknown, options: {
           if (!created) throw new Error("Declared workspace could not be created");
           return created.id;
         },
-        update: async () => {
-          if (!await projectSvc.updateWorkspace(projectId, getId("workspace", key), fields)) throw new Error("Declared workspace could not be updated");
+        update: async (updateFields) => {
+          const workspaceId = getId("workspace", key);
+          let payload = updateFields;
+          if (updateFields.name === undefined && (updateFields.cwd !== undefined || updateFields.repoUrl !== undefined)) {
+            const [existing] = await tx.select({ name: projectWorkspaces.name }).from(projectWorkspaces).where(eq(projectWorkspaces.id, workspaceId));
+            if (existing) payload = { ...updateFields, name: existing.name };
+          }
+          if (!await projectSvc.updateWorkspace(projectId, workspaceId, payload)) throw new Error("Declared workspace could not be updated");
         } });
     }
     const agentKeys: string[] = [];

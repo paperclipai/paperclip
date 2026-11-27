@@ -1,12 +1,15 @@
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { createDb, startEmbeddedPostgresTestDatabase, deploymentResources, agents, companies, projects, companyMemberships, companySecrets, companySecretVersions, budgetPolicies, authAccounts, routines, routineTriggers, agentApiKeys, acquireDeploymentLease, assertDeploymentSchemaCompatible } from "@paperclipai/db";
+import { createDb, startEmbeddedPostgresTestDatabase, deploymentResources, agents, companies, projects, companyMemberships, companySecrets, companySecretVersions, budgetPolicies, authAccounts, authSessions, authUsers, instanceUserRoles, routines, routineTriggers, agentApiKeys, acquireDeploymentLease, assertDeploymentSchemaCompatible } from "@paperclipai/db";
 import { reconcileDeployment } from "./reconcile.js";
+import { bootstrapOperator } from "./bootstrap.js";
+import { createBetterAuthInstance } from "../auth/better-auth.js";
 import { loadConfig } from "../config.js";
 import { secretService } from "../services/secrets.js";
 import type { DeploymentDescriptor } from "./runtime.js";
@@ -295,6 +298,39 @@ it("reconciles named workspaces, switches primaries and protects owned native fi
   expect(await read()).toEqual(rows);
 });
 
+it("preserves a workspace's saved name when relinquishing name ownership", async () => {
+  const declaration = {
+    version: 1, owner: "workspace-name-relinquish",
+    companies: { example: { fields: { name: "Workspace name company" } } },
+    projects: { main: { company: "example", fields: { name: "Workspace name project" } } },
+    projectWorkspaces: {
+      prod: { project: "main", fields: { name: "Production", cwd: "/srv/app", isPrimary: true } },
+    },
+  };
+  const first = await reconcile(declaration);
+  const workspaceId = first.bindings["workspace/prod"];
+  const read = async () => (await db.select().from(projectWorkspaces).where(eq(projectWorkspaces.id, workspaceId)))[0];
+  expect((await read()).name).toBe("Production");
+  const relinquished = {
+    ...declaration,
+    projectWorkspaces: {
+      prod: { project: "main", fields: { cwd: "/srv/app", isPrimary: true } },
+    },
+  };
+  expect((await reconcile(relinquished)).bindings).toEqual(first.bindings);
+  expect((await read()).name).toBe("Production");
+  await db.update(projectWorkspaces).set({ name: "Operator renamed" }).where(eq(projectWorkspaces.id, workspaceId));
+  expect((await read()).name).toBe("Operator renamed");
+  const moved = {
+    ...declaration,
+    projectWorkspaces: {
+      prod: { project: "main", fields: { cwd: "/srv/app-v2", isPrimary: true } },
+    },
+  };
+  await reconcile(moved);
+  expect(await read()).toMatchObject({ name: "Operator renamed", cwd: "/srv/app-v2" });
+});
+
 it("rejects implicit primary takeover and wrong-project adoption before writes", async () => {
   const declaration = {
     version: 1, owner: "workspace-adoption",
@@ -472,3 +508,68 @@ it("restores ownership, stable IDs, encrypted credentials and schema guards from
   expect(resolved.config.apiKey).toBe("fixture-only-gateway-key");
   await expect(restored.update(agents).set({ name: "bypass after restore" }).where(eq(agents.id, agent.id))).rejects.toThrow();
 }, 90000);
+
+describe("pre-listen operator bootstrap", () => {
+  let bootstrapDatabase: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let bootstrapDb: ReturnType<typeof createDb>;
+  let bootstrapRoot: string;
+  const bootstrapConfig = { ...loadConfig(), deploymentMode: "authenticated" as const,
+    authBaseUrlMode: "explicit" as const, authPublicBaseUrl: "http://localhost:3100", authDisableSignUp: true };
+  const input = { email: "operator@example.test", name: "Operator", passwordFile: "" };
+  beforeAll(async () => {
+    vi.stubEnv("BETTER_AUTH_SECRET", "bootstrap-fixture-signing-secret-at-least-32-characters");
+    bootstrapDatabase = await startEmbeddedPostgresTestDatabase("paperclip-bootstrap-");
+    bootstrapDb = createDb(bootstrapDatabase.connectionString);
+    bootstrapRoot = await mkdtemp(join(tmpdir(), "paperclip-bootstrap-"));
+    input.passwordFile = join(bootstrapRoot, "password");
+    await writeFile(input.passwordFile, "fixture-only-operator-password", { mode: 0o600 });
+  }, 90_000);
+  afterAll(async () => {
+    vi.unstubAllEnvs();
+    await bootstrapDb?.$client.end({ timeout: 1 });
+    await bootstrapDatabase?.cleanup();
+    if (bootstrapRoot) await rm(bootstrapRoot, { recursive: true, force: true });
+  });
+  const snapshot = async () => ({ users: await bootstrapDb.select().from(authUsers), accounts: await bootstrapDb.select().from(authAccounts),
+    roles: await bootstrapDb.select().from(instanceUserRoles), sessions: await bootstrapDb.select().from(authSessions) });
+
+  it("rolls back account creation if the administrator claim fails", async () => {
+    await bootstrapDb.execute(sql`create function fail_bootstrap_claim() returns trigger language plpgsql as $$ begin raise exception 'injected claim failure'; end; $$`);
+    await bootstrapDb.execute(sql`create trigger fail_bootstrap_claim before insert on instance_user_roles for each row execute function fail_bootstrap_claim()`);
+    const before = await snapshot();
+    try {
+      await expect(bootstrapOperator(bootstrapDb, bootstrapConfig, input)).rejects.toThrow();
+      expect(await snapshot()).toEqual(before);
+    } finally {
+      await bootstrapDb.execute(sql`drop trigger fail_bootstrap_claim on instance_user_roles`);
+      await bootstrapDb.execute(sql`drop function fail_bootstrap_claim()`);
+    }
+  }, 30_000);
+
+  it("bootstraps once without sessions and preserves credentials on concurrent reapply", async () => {
+    const id = await bootstrapOperator(bootstrapDb, bootstrapConfig, input);
+    expect(await bootstrapDb.select().from(instanceUserRoles)).toMatchObject([{ userId: id, role: "instance_admin" }]);
+    expect(await bootstrapDb.select().from(authSessions)).toHaveLength(0);
+    const before = await snapshot();
+    await writeFile(input.passwordFile, "different-fixture-only-password", { mode: 0o600 });
+    expect(await Promise.all([bootstrapOperator(bootstrapDb, bootstrapConfig, input), bootstrapOperator(bootstrapDb, bootstrapConfig, input)])).toEqual([id, id]);
+    expect(await snapshot()).toEqual(before);
+    const auth = createBetterAuthInstance(bootstrapDb, bootstrapConfig, []);
+    const request = (endpoint: string, body: unknown) => auth.handler(new Request(`${bootstrapConfig.authPublicBaseUrl}/api/auth/${endpoint}`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    }));
+    expect((await request("sign-in/email", { email: input.email, password: "fixture-only-operator-password" })).status).toBe(200);
+    expect((await request("sign-up/email", { email: "outsider@example.test", name: "Outsider", password: "fixture-only-operator-password" })).ok).toBe(false);
+    expect(await bootstrapDb.select().from(authUsers)).toHaveLength(1);
+  }, 30_000);
+
+  it("refuses to replace an administrator or adopt a non-admin account", async () => {
+    await bootstrapDb.insert(authUsers).values({ id: "non-admin", name: "Existing", email: "existing@example.test",
+      createdAt: new Date(), updatedAt: new Date() });
+    const before = await snapshot();
+    await expect(bootstrapOperator(bootstrapDb, bootstrapConfig, { ...input, email: "other@example.test" })).rejects.toThrow("replace");
+    await expect(bootstrapOperator(bootstrapDb, bootstrapConfig, { ...input, email: "existing@example.test" })).rejects.toThrow("non-administrator");
+    expect(await snapshot()).toEqual(before);
+    await bootstrapDb.delete(authUsers).where(eq(authUsers.id, "non-admin"));
+  });
+});
