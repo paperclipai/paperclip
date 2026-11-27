@@ -2262,17 +2262,26 @@ describeEmbeddedPostgres(
         // Parse the reference from the received message, never the DB snapshot.
         recordGatewayReceipt("reference-wire", { message });
         const blocks = [...message.matchAll(/```text\n([\s\S]*?)\n```/g)]
-          .map((match) => JSON.parse(match[1]!) as Record<string, unknown>);
+          .map((match) => match[1]!)
+          .filter((block) => block.trimStart().startsWith("{"))
+          .map((block) => JSON.parse(block) as Record<string, unknown>);
         const delivered = blocks.find((block) => Array.isArray(block.messages) && block.trigger);
         expect(delivered).toMatchObject({ issueId: fixture.issues.reviewRoot.id,
           trigger: { reason: "issue_commented" }, originCommentIds: [authorized.body.id] });
         const wireComments = delivered!.messages as Array<Record<string, unknown>>;
         const wireTrigger = wireComments.find((comment) => comment.id === authorized.body.id);
-        expect(wireTrigger).toMatchObject({ authorType: "user", authorId: "board-user",
-          body: authorized.body.body });
+        expect(wireTrigger).toMatchObject({ authorType: "user", authorId: "board-user" });
+        // Upstream emits the latest body once above JSON and marks its omission.
+        const shownAbove = `Latest request from the user, message ${authorized.body.id}:\n\`\`\`text\n`;
+        const shownStart = message.indexOf(shownAbove);
+        expect(shownStart).toBeGreaterThanOrEqual(0);
+        const deliveredBody = wireTrigger!.bodyShownAbove === true
+          ? message.slice(shownStart + shownAbove.length).split("\n```", 1)[0]
+          : wireTrigger!.body;
+        expect(deliveredBody).toBe(authorized.body.body);
         expect(wireComments.find((comment) => comment.id === scopedComment.id))
           .toMatchObject({ body: LOW_TRUST_QUARANTINED_BODY });
-        const referencePath = String(wireTrigger!.body).match(/Reference: (\/api\/issues\/[a-f0-9-]+\/heartbeat-context\?wakeCommentId=[a-f0-9-]+)/)?.[1];
+        const referencePath = String(deliveredBody).match(/Reference: (\/api\/issues\/[a-f0-9-]+\/heartbeat-context\?wakeCommentId=[a-f0-9-]+)/)?.[1];
         expect(referencePath).toBeDefined();
         expect(referencePath).toBe(`/api/issues/${fixture.issues.reviewRoot.id}/heartbeat-context?wakeCommentId=${scopedComment.id}`);
         const referenced = await request(recipient).get(referencePath!);

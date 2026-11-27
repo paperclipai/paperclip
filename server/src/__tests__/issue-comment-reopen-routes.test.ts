@@ -1391,7 +1391,12 @@ describe("issue comment reopen routes", () => {
   it("records a signed-in user's /swarm request and marks the assignee's wake with it", async () => {
     mockSwarm.refusal.mockResolvedValue(null);
     mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({ ...makeIssue("blocked"), ...patch }));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => {
+      const updated = { ...makeIssue("blocked"), ...patch };
+      // Match the committed row on the route's fresh admission read.
+      mockIssueService.getById.mockResolvedValue(updated);
+      return updated;
+    });
     const res = await request(await installActor(createApp()))
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "two helpers write a.txt and b.txt", nativeCommand: "swarm" });
