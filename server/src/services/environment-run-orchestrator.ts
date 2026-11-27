@@ -41,7 +41,7 @@ import {
   runnerLifecycleDefaultNeedsLeaseProbe,
   resolveWarmRunnerIdleTimeoutMsForRun,
 } from "./runner-environment-lifecycle.js";
-import { assertEnvironmentCompanyBinding, environmentService, toEnvironmentLease } from "./environments.js";
+import { assertEnvironmentCompanyBinding, EnvironmentCapacityExhaustedError, environmentService, toEnvironmentLease } from "./environments.js";
 import {
   environmentRuntimeService,
   buildEnvironmentLeaseContext,
@@ -246,6 +246,7 @@ export function environmentRunOrchestrator(
         heartbeatRunId: input.heartbeatRunId, issueId: input.issueId });
       return await environmentRuntime.acquireRunLease({ ...input, assertCompanyBinding: true });
     } catch (err) {
+      if (err instanceof EnvironmentCapacityExhaustedError) throw err;
       // Lease acquisition precedes any provider work, so a failure without a
       // definite non-transient status (HTTP 5xx/429, errno, acquisition
       // deadline, unfinished creation, database error) is retried by the setup

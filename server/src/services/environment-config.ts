@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { environmentCapacitySchema } from "@paperclipai/shared";
 import { tailscaleConnectionService } from "./connectors/tailscale/connections.js";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
@@ -38,7 +39,11 @@ const secretRefSchema = z.object({
   version: z.union([z.literal("latest"), z.number().int().positive()]).optional().default("latest"),
 }).strict();
 
+const hostCapacityFields = { capacity: environmentCapacitySchema.optional() };
+const localEnvironmentConfigSchema = z.object(hostCapacityFields).passthrough();
+
 const sshEnvironmentConfigSchema = z.object({
+  ...hostCapacityFields,
   useHostAuth: z.boolean().optional(),
   tailscaleConnectionId: z.string().uuid().optional(),
   tailscaleDeviceId: z.string().trim().min(1).max(256).optional(),
@@ -461,7 +466,13 @@ export function normalizeEnvironmentConfig(input: {
   config: Record<string, unknown> | null | undefined;
 }): Record<string, unknown> {
   if (input.driver === "local") {
-    return { ...parseObject(input.config) };
+    const parsed = localEnvironmentConfigSchema.safeParse(parseObject(input.config));
+    if (!parsed.success) {
+      throw unprocessable(toErrorMessage(parsed.error), {
+        issues: parsed.error.issues,
+      });
+    }
+    return parsed.data;
   }
 
   if (input.driver === "ssh") {
@@ -839,7 +850,7 @@ export function parseEnvironmentDriverConfig(
   if (environment.driver === "local") {
     return {
       driver: "local",
-      config: { ...parseObject(environment.config) },
+      config: localEnvironmentConfigSchema.parse(parseObject(environment.config)),
     };
   }
 
