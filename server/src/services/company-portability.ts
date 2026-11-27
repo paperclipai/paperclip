@@ -5797,7 +5797,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             ? manifestAgent.adapterConfig.env
             : {};
           for (const envInput of materializedAgentInputs) {
-            const binding = sourceAdapterSecretFields.includes(envInput.key)
+            const binding = envInput.kind === "secret"
+              && sourceAdapterSecretFields.includes(envInput.key)
               ? manifestAgent.adapterConfig[envInput.key]
               : manifestAdapterEnv[envInput.key];
             if (binding === undefined) continue;

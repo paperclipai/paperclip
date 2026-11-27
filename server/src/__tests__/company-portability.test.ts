@@ -2193,14 +2193,16 @@ describe("company portability", () => {
     }), { createdByUserId: "user-1" });
   });
 
-  it("rechecks strict secret constraints after restoring supplied adapter inputs", async () => {
+  it("rechecks strict secret constraints for a plain input named like an adapter secret", async () => {
     const previousStrictMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE;
     process.env.PAPERCLIP_SECRETS_STRICT_MODE = "true";
     const portability = companyPortabilityService({} as any);
     agentSvc.list.mockResolvedValue([]);
+    secretSvc.listAdapterSchemaSecretFieldKeys.mockImplementation(async (adapterType) => (
+      adapterType === "hermes_gateway" ? ["apiKey"] : []
+    ));
     secretSvc.normalizeAdapterConfigForPersistence.mockImplementation(async (_companyId, config, options) => {
-      const env = config.env as Record<string, unknown> | undefined;
-      const binding = env?.API_KEY as Record<string, unknown> | undefined;
+      const binding = config.apiKey as Record<string, unknown> | undefined;
       if (options?.strictMode && binding?.type === "plain") {
         throw new Error("strict mode rejected restored plain input");
       }
@@ -2237,7 +2239,7 @@ describe("company portability", () => {
               "      config: {}",
               "    inputs:",
               "      env:",
-              "        API_KEY:",
+              "        apiKey:",
               "          kind: plain",
               "          requirement: optional",
               "",
@@ -2247,7 +2249,7 @@ describe("company portability", () => {
         include: { company: false, agents: true, projects: false, issues: false },
         target: { mode: "existing_company", companyId: "company-1" },
         collisionStrategy: "rename",
-        secretValues: { "agent:hermes:API_KEY": "plain-imported-value" },
+        secretValues: { "agent:hermes:apiKey": "plain-imported-value" },
         adapterOverrides: {
           hermes: {
             adapterType: "hermes_gateway",
