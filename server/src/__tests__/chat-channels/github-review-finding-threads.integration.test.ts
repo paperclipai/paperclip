@@ -1,3 +1,7 @@
+import { execFileSync } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
@@ -114,6 +118,9 @@ describeEmbeddedPostgres("chat channels: github review finding threads and fallb
         vi.stubEnv("PAPERCLIP_API_URL", "https://paperclip.example.test");
         onTestFinished(() => { vi.unstubAllEnvs(); });
         const f = await subscribedGitHubFixture(pr);
+        const cwd = await mkdtemp(path.join(tmpdir(), "github-finding-thread-"));
+        execFileSync("git", ["init", "--quiet", cwd]);
+        const [configuredAgent] = await db.select().from(agents).where(eq(agents.id, f.assignedAgentId));
         const adapterType = `github-finding-thread-test-${randomUUID()}`;
         const execute = vi.fn(async (_input: { runId: string; context: Record<string, unknown> }) => ({
           exitCode: 0, signal: null, timedOut: false, errorMessage: null, summary: "Answered the finding thread",
@@ -126,10 +133,11 @@ describeEmbeddedPostgres("chat channels: github review finding threads and fallb
           runningProcesses.delete(activeRunId);
           await heartbeat.drainActiveRunExecutions();
           unregisterServerAdapter(adapterType);
+          await rm(cwd, { recursive: true, force: true });
         });
         const issueId = f.conversation.issueId!;
         await db.update(companies).set({ defaultResponsibleUserId: "owner-user" }).where(eq(companies.id, f.companyId));
-        await db.update(agents).set({ adapterType, runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } } })
+        await db.update(agents).set({ adapterType, adapterConfig: { ...configuredAgent!.adapterConfig, cwd }, runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } } })
           .where(eq(agents.id, f.assignedAgentId));
         // Published findings bind their inline threads to the PR review task.
         const { id: _id, ...base } = f.conversation;
