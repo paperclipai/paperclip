@@ -35,6 +35,7 @@ async function authorizeManagedHermesProfile(
   const {
     managedProfileAuthorizedBy: _callerValue,
     managedProfilePolicyDigest: _callerDigest,
+    managedProfileAdminOrigin: _callerOrigin,
     ...adapterConfig
   } = config;
   if (!usesManagedHermesProfile(adapterType, adapterConfig)) return adapterConfig;

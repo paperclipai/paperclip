@@ -127,12 +127,12 @@ async function reserveConnection(
       .map(value => URL.canParse(value) ? new URL(value) : null)
       .filter(url => url?.hostname === origin(policy.gatewayHost).hostname)
       .map(url => Number(url?.port)));
-    const port = policy.ports.find(candidate => !occupied.has(candidate));
-    if (port === undefined) throw new Error("No managed Hermes gateway port is available");
+    const slot = policy.slots.find(candidate => !occupied.has(candidate.port));
+    if (!slot) throw new Error("No managed Hermes gateway port is available");
 
     const profile = profileFor(agent);
     const endpoint = origin(policy.gatewayHost);
-    endpoint.port = String(port);
+    endpoint.port = String(slot.port);
     endpoint.pathname = `/p/${profile}`;
     const gateway = await secrets.create(agent.companyId, {
       provider: "local_encrypted", name: `${profile}-gateway`, description: markerFor(agent), value: randomBytes(32).toString("hex"),
@@ -147,6 +147,7 @@ async function reserveConnection(
     const config = await secrets.normalizeAdapterConfigForPersistence(agent.companyId, {
       ...adapterConfig, apiBaseUrl: endpoint.toString(), apiKey: reference(gateway.id),
       expectedProfile: profile, paperclipApiUrl: policy.paperclipApiUrl,
+      managedProfileAdminOrigin: origin(slot.adminUrl).origin,
     }, { adapterType: "hermes_gateway" });
     // Save the binding under this lease. A normal edit resets verification.
     await storeBinding(tx, agent, config);
@@ -207,10 +208,10 @@ async function prepareProfile(tx: Db, agent: AgentRow, policy: Policy, admin: He
     ? "complete" as const : "pending" as const;
 }
 
-async function retireProfile(tx: Db, agent: AgentRow, admin: HermesAdmin) {
+async function retireProfile(tx: Db, agent: AgentRow, admin: HermesAdmin | null) {
   const profile = profileFor(agent);
-  const owned = (await admin.profiles()).find(row => row.name === profile);
-  if (owned) {
+  const owned = admin && (await admin.profiles()).find(row => row.name === profile);
+  if (admin && owned) {
     if (owned.description !== markerFor(agent)) throw new Error("Managed Hermes profile ownership conflict");
     if (!await admin.settle(profile, "retired")) return "pending" as const;
     for (const key of ["API_SERVER_KEY", "PAPERCLIP_BRIDGE_API_KEY"]) {
@@ -222,10 +223,30 @@ async function retireProfile(tx: Db, agent: AgentRow, admin: HermesAdmin) {
   const reporting = await ownedSecret(tx, agent, "reporting");
   if (gateway) await secrets.remove(gateway.id);
   if (reporting) await secrets.remove(reporting.id);
-  const { apiBaseUrl: _base, apiKey: _key, expectedProfile: _profile, ...config } = agent.adapterConfig;
+  const { apiBaseUrl: _base, apiKey: _key, expectedProfile: _profile, managedProfileAdminOrigin: _origin, ...config } = agent.adapterConfig;
   await storeBinding(tx, agent, config);
   await audit(tx, agent, "agent.hermes_gateway_retired");
   return "complete" as const;
+}
+
+async function adminForBinding(agent: AgentRow, policy: Policy): Promise<HermesAdmin | null> {
+  const { apiBaseUrl, managedProfileAdminOrigin } = agent.adapterConfig;
+  if (apiBaseUrl === undefined) return null;
+  const endpoint = new URL(z.string().parse(apiBaseUrl));
+  const gatewayHost = origin(policy.gatewayHost);
+  const slot = policy.slots.find(candidate => candidate.port === Number(endpoint.port));
+  if (!slot || endpoint.hostname !== gatewayHost.hostname || endpoint.protocol !== gatewayHost.protocol ||
+      endpoint.pathname !== `/p/${profileFor(agent)}`) {
+    throw new Error("Managed Hermes binding does not match an admitted slot");
+  }
+  const base = origin(slot.adminUrl);
+  if (managedProfileAdminOrigin !== base.origin &&
+      (managedProfileAdminOrigin !== undefined || policy.slots.length !== 1)) {
+    throw new Error("Managed Hermes Dashboard changed after this slot was reserved");
+  }
+  const token = (await readFile(slot.adminTokenFile, "utf8")).trim();
+  if (!token) throw new Error("Hermes management credential is missing");
+  return new HermesAdmin(base, token);
 }
 
 export async function reconcileManagedHermesGateway(db: Db, snapshot: LifecycleAgent) {
@@ -237,17 +258,15 @@ export async function reconcileManagedHermesGateway(db: Db, snapshot: LifecycleA
   if (snapshot.lifecycleState === "preparing" && !await reserveConnection(db, snapshot, binding)) return "pending" as const;
   const { policy } = binding;
 
-  const token = (await readFile(policy.adminTokenFile, "utf8")).trim();
-  if (!token) throw new Error("Hermes management credential is missing");
-  const admin = new HermesAdmin(origin(policy.adminUrl), token);
   return db.transaction(async transaction => {
     const tx = transaction as unknown as Db;
     // This lock covers Paperclip writes. Hermes orders gateway commands because
     // an HTTP timeout does not cancel the remote work.
     const agent = await lockedAgent(tx, snapshot);
     if (!agent) return "pending" as const;
-    return snapshot.lifecycleState === "preparing"
-      ? prepareProfile(tx, agent, policy, admin)
-      : retireProfile(tx, agent, admin);
+    const admin = await adminForBinding(agent, policy);
+    if (snapshot.lifecycleState !== "preparing") return retireProfile(tx, agent, admin);
+    if (!admin) throw new Error("Managed Hermes profile has no reserved slot");
+    return prepareProfile(tx, agent, policy, admin);
   });
 }
