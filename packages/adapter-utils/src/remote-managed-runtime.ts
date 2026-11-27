@@ -33,8 +33,6 @@ const REMOTE_ADDITIONAL_SOURCE_HEAVY_DIR_EXCLUDES = [
   ".git",
 ].flatMap((entry) => [entry, `${entry}/*`, `*/${entry}`, `*/${entry}/*`]);
 
-const SSH_GIT_WORKSPACE_EXCLUDES = [...GIT_ARCHIVE_EXCLUDES, "*/.git", ".paperclip-runtime"];
-
 export interface RemoteManagedRuntimeAsset {
   key: string;
   localDir: string;
@@ -177,7 +175,8 @@ export async function prepareRemoteManagedRuntime(input: {
     ? await captureDirectorySnapshot(input.workspaceLocalDir, {
         exclude: preparedWorkspace.gitBacked
           ? [
-              ...SSH_GIT_WORKSPACE_EXCLUDES,
+              ...GIT_ARCHIVE_EXCLUDES,
+              ".paperclip-runtime",
               ...(projectRepositories.length > 0 ? [PROJECT_REPOSITORIES_DIR] : preparedWorkspace.excludedPaths ?? []),
             ]
           : [".paperclip-runtime", ...(preparedWorkspace.excludedPaths ?? []), ...(input.workspaceFileMode === "all" ? input.workspaceExclude ?? [] : [])],
@@ -188,7 +187,7 @@ export async function prepareRemoteManagedRuntime(input: {
     repositoryBaselines.push({
       path: repository,
       baselineSnapshot: await captureDirectorySnapshot(path.join(input.workspaceLocalDir, repository), {
-        exclude: SSH_GIT_WORKSPACE_EXCLUDES,
+        exclude: [...GIT_ARCHIVE_EXCLUDES, ".paperclip-runtime"],
       }),
     });
   }

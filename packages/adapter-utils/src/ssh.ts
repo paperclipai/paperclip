@@ -649,17 +649,18 @@ async function runSshScript(
 async function clearLocalDirectory(
   localDir: string,
   preserveEntries: string[] = [],
+  preserveNamesAtAnyDepth: string[] = [],
 ): Promise<void> {
   await fs.mkdir(localDir, { recursive: true });
-  const preserve = new Set(preserveEntries);
+  const preserve = new Set([...preserveEntries, ...preserveNamesAtAnyDepth]);
   const entries = await fs.readdir(localDir, { withFileTypes: true });
   await Promise.all(
     entries
       .filter((entry) => !preserve.has(entry.name))
       .map(async (entry) => {
         const entryPath = path.join(localDir, entry.name);
-        if (preserve.has(".git") && entry.isDirectory()) {
-          await clearLocalDirectory(entryPath, [".git"]);
+        if (preserveNamesAtAnyDepth.length > 0 && entry.isDirectory()) {
+          await clearLocalDirectory(entryPath, [], preserveNamesAtAnyDepth);
           if ((await fs.readdir(entryPath)).length === 0) await fs.rmdir(entryPath);
           return;
         }
@@ -1619,6 +1620,7 @@ export async function syncDirectoryFromSsh(input: {
   localDir: string;
   exclude?: string[];
   preserveLocalEntries?: string[];
+  preserveLocalNamesAtAnyDepth?: string[];
   onProgress?: RuntimeProgressSink;
   progressLabel?: string;
 }): Promise<void> {
@@ -1719,7 +1721,7 @@ export async function syncDirectoryFromSsh(input: {
     });
     await progress?.finish();
 
-    await clearLocalDirectory(input.localDir, input.preserveLocalEntries);
+    await clearLocalDirectory(input.localDir, input.preserveLocalEntries, input.preserveLocalNamesAtAnyDepth);
     await copyDirectoryContents(stagingDir, input.localDir);
   } catch (error) {
     await progress?.fail();
@@ -1924,7 +1926,8 @@ async function restoreWorkspaceRootFromSsh(input: {
       remoteDir,
       localDir: input.localDir,
       exclude: [".git", ".paperclip-runtime", ...projectRepositoryEntries],
-      preserveLocalEntries: [".git", ...projectRepositoryEntries],
+      preserveLocalEntries: projectRepositoryEntries,
+      preserveLocalNamesAtAnyDepth: [".git"],
       onProgress: input.onProgress,
       progressLabel: input.progressLabel,
     });

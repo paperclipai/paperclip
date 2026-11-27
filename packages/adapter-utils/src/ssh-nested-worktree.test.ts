@@ -20,6 +20,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 
 import { prepareRemoteManagedRuntime } from "./remote-managed-runtime.js";
+import { prepareWorkspaceForSshExecution, restoreWorkspaceFromSshExecution } from "./ssh.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -75,6 +76,37 @@ describe("SSH restore of nested git worktrees", () => {
     await prepared.restoreWorkspace();
 
     await expect(readFile(path.join(repositoryDir, "tracked.txt"), "utf8")).resolves.toBe("remote edit\n");
+    await expect(readFile(path.join(worktreeDir, ".git"), "utf8")).resolves.toBe(link);
+    expect(await git(worktreeDir, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("task");
+  }, 30_000);
+
+  it("keeps the .git link of a nested worktree when restoring without a baseline", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "ssh-nested-worktree-"));
+    roots.push(root);
+    const localDir = path.join(root, "shared");
+    const remoteCwd = path.join(root, "remote");
+    await mkdir(remoteCwd);
+    await createRepository(localDir);
+    await writeFile(path.join(localDir, "removed.txt"), "remove me\n");
+    await git(localDir, ["add", "removed.txt"]);
+    await git(localDir, ["commit", "-m", "add removed"]);
+    await writeFile(path.join(localDir, ".git", "info", "exclude"), "/.paperclip/\n");
+    await git(localDir, ["worktree", "add", "-b", "task", ".paperclip/worktrees/task"]);
+    const worktreeDir = path.join(localDir, ".paperclip", "worktrees", "task");
+    const link = await readFile(path.join(worktreeDir, ".git"), "utf8");
+    const spec = {
+      host: "fixture.invalid", username: "fixture", port: 22,
+      remoteCwd, remoteWorkspacePath: remoteCwd,
+      privateKey: null, knownHosts: null, strictHostKeyChecking: false,
+    };
+
+    await prepareWorkspaceForSshExecution({ spec, localDir, remoteDir: remoteCwd });
+    await writeFile(path.join(remoteCwd, "tracked.txt"), "remote edit\n");
+    await rm(path.join(remoteCwd, "removed.txt"));
+    await restoreWorkspaceFromSshExecution({ spec, localDir, remoteDir: remoteCwd });
+
+    await expect(readFile(path.join(localDir, "tracked.txt"), "utf8")).resolves.toBe("remote edit\n");
+    await expect(readFile(path.join(localDir, "removed.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     await expect(readFile(path.join(worktreeDir, ".git"), "utf8")).resolves.toBe(link);
     expect(await git(worktreeDir, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("task");
   }, 30_000);
