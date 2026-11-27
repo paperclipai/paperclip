@@ -21,6 +21,25 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 type RecordGitHubAttempt = (grant: typeof connectionGrants.$inferSelect) => void;
 
+/**
+ * "always" re-registers every installation's webhook binding (a person's health
+ * check, credential continuity). "changed", the default, skips it when the
+ * installation set is unchanged and no earlier binding sync is still owed.
+ * Repository catalog reads run during every agent run's workspace setup and
+ * scheduled health checks every 15 minutes; repeating unchanged registrations
+ * from many tenants at once saturates Cloud's connector capacity.
+ */
+export type GitHubBindingSyncPolicy = "always" | "changed";
+
+export function githubBindingSyncRequired(
+  previous: { installationIds?: string[]; bindingSync?: unknown } | undefined,
+  installationIds: string[],
+): boolean {
+  if (!previous?.installationIds || previous.bindingSync) return true;
+  const known = new Set(previous.installationIds);
+  return known.size !== new Set(installationIds).size || installationIds.some(id => !known.has(id));
+}
+
 type GitHubContinuityDependencies = {
   now: () => Date;
   currentCloudConnector: () => PaperclipCloudConnector | null;
@@ -34,6 +53,7 @@ export function createGitHubGrantContinuity(db: Db, { now, currentCloudConnector
     initialGrant: typeof connectionGrants.$inferSelect,
     actor?: ActorInfo,
     recordAttempt?: RecordGitHubAttempt,
+    bindingSyncPolicy: GitHubBindingSyncPolicy = "changed",
   ) {
     await actor?.managementContext?.reauthorize();
     return measureRunPhase("connectors.github.refresh", async () => {
@@ -43,6 +63,7 @@ export function createGitHubGrantContinuity(db: Db, { now, currentCloudConnector
           initialGrant,
           actor,
           recordAttempt,
+          bindingSyncPolicy,
         );
       } catch (error) {
         if (
@@ -61,7 +82,7 @@ export function createGitHubGrantContinuity(db: Db, { now, currentCloudConnector
             ),
           ));
         if (!current || current.status !== "active") throw error;
-        return refreshManagedGitHubGrantAccessOnce(connection, current, actor, recordAttempt);
+        return refreshManagedGitHubGrantAccessOnce(connection, current, actor, recordAttempt, bindingSyncPolicy);
       }
     });
   }
@@ -71,6 +92,7 @@ export function createGitHubGrantContinuity(db: Db, { now, currentCloudConnector
     initialGrant: typeof connectionGrants.$inferSelect,
     actor?: ActorInfo,
     recordAttempt?: RecordGitHubAttempt,
+    bindingSyncPolicy: GitHubBindingSyncPolicy = "changed",
   ) {
     await actor?.managementContext?.reauthorize();
     let grant = await measureRunPhase("connectors.github.credentials", () => refreshOAuthGrantCredentials({
@@ -147,7 +169,7 @@ export function createGitHubGrantContinuity(db: Db, { now, currentCloudConnector
         throw retryError;
       }
     }
-    const { updated } = await measureRunTransaction(db, "connectors.github.refresh", async (tx) => {
+    const { updated, syncBindings } = await measureRunTransaction(db, "connectors.github.refresh", async (tx) => {
       await notifyGitHubCredentialChange(tx, connection);
       const [currentGrant] = await measureRunPhase("connectors.github.grant_lock", () => tx
         .select()
@@ -176,17 +198,21 @@ export function createGitHubGrantContinuity(db: Db, { now, currentCloudConnector
           code: "github_access_changed",
         });
       }
+      // The row lock above makes this comparison authoritative: an unchanged,
+      // settled installation set already has its bindings registered.
+      const syncBindings = bindingSyncPolicy === "always"
+        || githubBindingSyncRequired(previousGitHub, metadata.installationIds);
       const providerTenant = {
         ...(currentGrant.providerTenant ?? {}),
         github: {
           ...metadata,
-          bindingSync: {
+          ...(syncBindings ? { bindingSync: {
             id: randomUUID(),
             removeInstallationIds: [...new Set([
               ...(previousGitHub?.bindingSync?.removeInstallationIds ?? []),
               ...(previousGitHub?.installationIds ?? []),
             ])].filter(id => !metadata.installationIds.includes(id)),
-          },
+          } } : {}),
           ...(previousGitHub?.lastWebhookAt
             ? { lastWebhookAt: previousGitHub.lastWebhookAt }
             : {}),
@@ -209,9 +235,10 @@ export function createGitHubGrantContinuity(db: Db, { now, currentCloudConnector
         )
         .returning());
       if (!updated) throw notFound("GitHub authorization not found");
-      return { updated, previousGitHub };
+      return { updated, previousGitHub, syncBindings };
     });
 
+    if (!syncBindings) return updated;
     return measureRunPhase("connectors.github.webhooks", () => syncGitHubGrantBindings(connection, updated, actor, accessToken, recordAttempt));
   }
 
@@ -345,7 +372,7 @@ export function createGitHubGrantContinuity(db: Db, { now, currentCloudConnector
         const actor: ActorInfo = { actorType: "system", actorId: "github-connection-continuity" };
         const updated = row.grant.providerTenant?.github?.bindingSync
           ? await syncGitHubGrantBindings(row.connection, row.grant, actor, undefined, recordAttempt)
-          : await refreshManagedGitHubGrantAccess(row.connection, row.grant, actor, recordAttempt);
+          : await refreshManagedGitHubGrantAccess(row.connection, row.grant, actor, recordAttempt, "always");
         // A successful provider response can still leave an unchanged/short-lived
         // credential due. Retain that obligation with bounded durable backoff.
         const next = githubGrantContinuityDeadline(row.connection, updated);
