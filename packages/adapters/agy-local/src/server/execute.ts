@@ -479,7 +479,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // of silently borrowing the host key. Ambient inheritance stays
     // local-only. The bridge env is merged into runtimeEnv below (and
     // into env), so it still reaches the remote process.
-    const remoteEnv = ensurePathInEnv({ ...env });
+    //
+    // Do NOT fill in a default PATH here: an unassigned PATH stays out so
+    // the target keeps its own path. The controller's default would shadow
+    // an SSH user's ~/.local/bin (SSH applies the env after loading the
+    // remote profiles), so a CLI that works in the remote terminal could
+    // not be found. An explicitly assigned PATH passes through unchanged.
+    const remoteEnv = { ...env };
     applyAgyApiKeyAlias(remoteEnv);
     for (const key of Object.keys(runtimeEnv)) {
       delete runtimeEnv[key];

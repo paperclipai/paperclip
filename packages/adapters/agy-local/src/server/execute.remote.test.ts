@@ -470,7 +470,11 @@ describe("agy-local execute (remote execution)", () => {
       expect(launchEnv.PAPERCLIP_RUN_ID).toBe("run-remote-1");
       expect(launchEnv.PAPERCLIP_AGENT_ID).toBe("agent-1");
       expect(launchEnv.ANTIGRAVITY_CLI_HOME).toBe("/remote/runtime/assets/agy-home");
-      expect(typeof launchEnv.PATH).toBe("string");
+      // An unassigned PATH stays out of the remote environment: adding the
+      // controller's default would shadow the target's own path (an SSH
+      // user's ~/.local/bin, the sandbox default), so `agy` could not be
+      // found even though it works in the remote terminal.
+      expect(launchEnv.PATH).toBeUndefined();
     } finally {
       if (previousDatabaseUrl === undefined) delete process.env.DATABASE_URL;
       else process.env.DATABASE_URL = previousDatabaseUrl;
@@ -529,6 +533,50 @@ describe("agy-local execute (remote execution)", () => {
       if (previousDatabaseUrl === undefined) delete process.env.DATABASE_URL;
       else process.env.DATABASE_URL = previousDatabaseUrl;
     }
+  });
+
+  it("still sends an agent-assigned PATH to a remote run", async () => {
+    const rootDir = await makeTmpDir();
+    const workspaceDir = path.join(rootDir, "workspace");
+    await fs.mkdir(workspaceDir, { recursive: true });
+    const hostHome = path.join(rootDir, "home");
+    await fs.mkdir(path.join(hostHome, ".gemini", "antigravity-cli"), { recursive: true });
+
+    const ctx: AdapterExecutionContext = {
+      runId: "run-remote-1",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Remote Agent",
+        adapterType: "agy_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        env: {
+          HOME: hostHome,
+          PATH: "/remote/custom/bin:/usr/bin:/bin",
+        },
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+        },
+      },
+      executionTarget: makeSandboxTarget(),
+      onLog: async () => {},
+    };
+
+    const result = await execute(ctx);
+    expect(result.exitCode).toBe(0);
+    expect(capturedProcessRuns).toHaveLength(1);
+    const launchEnv = capturedProcessRuns[0].options.env as Record<string, string | undefined>;
+    expect(launchEnv.PATH).toBe("/remote/custom/bin:/usr/bin:/bin");
   });
 
   it("saves the resumed conversation under the host CLI home, not the remote asset path", async () => {

@@ -4024,7 +4024,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         });
         for (let i = 0; i < 10; i++) await flushReact();
         await act(async () => {
-          await new Promise((resolve) => window.setTimeout(resolve, 1200));
+          await new Promise((resolve) => window.setTimeout(resolve, 1200)); // test-budget:allow-sleep: proves no login starts while the collapse is still running, so real time must elapse; a condition wait cannot prove that negative.
         });
         for (let i = 0; i < 6; i++) await flushReact();
 
