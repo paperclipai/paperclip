@@ -1,4 +1,5 @@
 import { reportingLineForHire } from "./reporting-line-hiring.js";
+import { currentPluginInteractionOrigin } from "./plugin-interaction-context.js";
 import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import { assertNoInitialAgentInteractionPermissions, preserveAgentInteractionPermissions } from "../lib/agent-interaction-permissions.js";
 import { assertEphemeralAgentInstructions } from "./agent-instructions.js";
@@ -25,7 +26,8 @@ import { assertProviderApiPlacementPolicy, isProviderApiSetupDraft, resolveProvi
 
 export async function prepareAgentHire(db: Db, companyId: string, input: CreateAgentData, options?: CreateAgentOptions): Promise<CreateAgentData> {
   assertNoInitialAgentInteractionPermissions(input.permissions);
-  const reportsTo = await reportingLineForHire(db, companyId, input, options?.createdByAgentId);
+  const hiringAgentId = currentPluginInteractionOrigin()?.agentId ?? options?.createdByAgentId;
+  const reportsTo = await reportingLineForHire(db, companyId, input, hiringAgentId);
   await assertAgentInteraction(db, { companyId, actorAgentId: options?.createdByAgentId, actorCompanyId: options?.createdByAgentCompanyId,
     operation: "mention", texts: [JSON.stringify(input), ...(options?.interactionTexts ?? [])], lock: "update" });
   await notifyAttentionRetentionWork(db, { companyId });

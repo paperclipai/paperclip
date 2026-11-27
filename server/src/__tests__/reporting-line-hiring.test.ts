@@ -6,8 +6,9 @@ import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { errorHandler } from "../middleware/error-handler.js";
 import { agentRoutes } from "../routes/agents.js";
-import { configureAgentLifecycle } from "../services/agent-lifecycle.js";
+import { configureAgentLifecycle, createAgentLifecycle } from "../services/agent-lifecycle.js";
 import { agentService } from "../services/agents.js";
+import { withPluginInteractionOrigin } from "../services/plugin-interaction-context.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { uniqueIssuePrefix } from "./helpers/issue-prefix.js";
 
@@ -106,6 +107,15 @@ describePostgres("reporting-line hiring restrictions", () => {
     expect(result.body.agent).toMatchObject({ status: "pending_approval", reportsTo: f.manager });
     const [approval] = await db.select().from(approvals).where(eq(approvals.id, result.body.approval.id));
     expect(approval?.payload).toMatchObject({ reportsTo: f.manager });
+  });
+
+  it("applies the hiring agent's reporting line in a plugin interaction", async () => {
+    const { companyId, lead } = await fixture();
+    const lifecycle = createAgentLifecycle(db);
+    const hire = await withPluginInteractionOrigin({ companyId, agentId: lead }, () =>
+      lifecycle.requestHire(companyId, { name: "New report", adapterType: "process" }),
+    );
+    expect(hire.reportsTo).toBe(lead);
   });
 
   it("checks depth and serializes hires for the last direct-report slot", async () => {
