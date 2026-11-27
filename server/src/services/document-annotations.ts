@@ -1076,16 +1076,43 @@ export function documentAnnotationService(db: Db) {
       dbOrTx: any = db,
     ) => {
       const runCleanup = async (tx: any) => {
-        const linkedComments: Array<Pick<DocumentAnnotationComment, "id" | "threadId">> = await tx
-          .select({
-            id: documentAnnotationComments.id,
-            threadId: documentAnnotationComments.threadId,
-          })
-          .from(documentAnnotationComments)
-          .where(and(
-            eq(documentAnnotationComments.issueId, issueId),
-            eq(documentAnnotationComments.issueCommentId, issueCommentId),
-          ));
+        const linkedRows: Array<Pick<DocumentAnnotationComment, "id" | "threadId" | "authorAgentId" | "authorUserId">> =
+          await tx
+            .select({
+              id: documentAnnotationComments.id,
+              threadId: documentAnnotationComments.threadId,
+              authorAgentId: documentAnnotationComments.authorAgentId,
+              authorUserId: documentAnnotationComments.authorUserId,
+            })
+            .from(documentAnnotationComments)
+            .where(and(
+              eq(documentAnnotationComments.issueId, issueId),
+              eq(documentAnnotationComments.issueCommentId, issueCommentId),
+            ));
+        if (linkedRows.length === 0) {
+          return { deletedCommentIds: [], resolvedThreadIds: [] };
+        }
+
+        // Only annotation comments written by the deleted issue comment's author go with it.
+        // Anyone on the issue can link an annotation to any issue comment, so deleting one
+        // comment must not destroy another author's annotation: those are detached instead.
+        const issueCommentAuthor: { authorAgentId: string | null; authorUserId: string | null } | null = await tx
+          .select({ authorAgentId: issueComments.authorAgentId, authorUserId: issueComments.authorUserId })
+          .from(issueComments)
+          .where(eq(issueComments.id, issueCommentId))
+          .then((rows: Array<{ authorAgentId: string | null; authorUserId: string | null }>) => rows[0] ?? null);
+        const sameAuthor = (row: { authorAgentId: string | null; authorUserId: string | null }) =>
+          issueCommentAuthor !== null
+          && (row.authorAgentId ?? null) === (issueCommentAuthor.authorAgentId ?? null)
+          && (row.authorUserId ?? null) === (issueCommentAuthor.authorUserId ?? null);
+        const linkedComments = linkedRows.filter(sameAuthor);
+        const detachedCommentIds = linkedRows.filter((row) => !sameAuthor(row)).map((row) => row.id);
+        if (detachedCommentIds.length > 0) {
+          await tx
+            .update(documentAnnotationComments)
+            .set({ issueCommentId: null })
+            .where(inArray(documentAnnotationComments.id, detachedCommentIds));
+        }
         if (linkedComments.length === 0) {
           return { deletedCommentIds: [], resolvedThreadIds: [] };
         }
