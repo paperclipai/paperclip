@@ -570,6 +570,50 @@ export function resolveLocalLoginPrimaryAction({
   return { kind: "waiting", label: "Connect", icon: "arrow", disabled: true };
 }
 
+/** Shared controller hook that wires local/hosted sign-in state to a host's FooterNav primary CTA. */
+export function useLocalLoginPrimaryAction({
+  enabled,
+  adapterType,
+  login,
+  onBeforeRetry,
+}: {
+  enabled: boolean;
+  adapterType: string;
+  login: {
+    isolated?: boolean;
+    authorizationUrl?: string | null;
+    preparing: boolean;
+    status?: "ready" | "sign_in_required" | "expired" | null;
+    error: string | null;
+    retry: () => void;
+  };
+  onBeforeRetry?: () => void;
+}) {
+  const [submitting, setSubmitting] = useState(false);
+  const action = enabled
+    ? resolveLocalLoginPrimaryAction({ adapterType, login, submitting })
+    : null;
+  function runPrimary(): boolean {
+    if (!action) return false;
+    if (action.kind === "retry") {
+      onBeforeRetry?.();
+      login.retry();
+    } else if (action.kind === "open_sign_in") {
+      window.open(action.url, "_blank", "noreferrer,noopener");
+    }
+    return true;
+  }
+  return {
+    action,
+    runPrimary,
+    resetSubmitting: () => setSubmitting(false),
+    instructionsProps: {
+      primaryHandlesRetry: true,
+      onSubmittingChange: setSubmitting,
+    },
+  };
+}
+
 /** Shared instructions for local subscription setup in every authentication host. */
 export function LocalProviderLoginInstructions({ adapterType, login, hostedRedirect = false, primaryHandlesRetry = false, onSubmittingChange }: {
   adapterType: string;
@@ -639,6 +683,7 @@ export function LocalProviderLoginInstructions({ adapterType, login, hostedRedir
   if (login?.preparing) return <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />Preparing sign-in…</p>;
   const ready = login?.status === "ready";
   const needsRetry = Boolean(login?.error) || login?.status === "expired";
+  const safeAuthorizationUrl = isHttpAuthorizationUrl(login?.authorizationUrl) ? login.authorizationUrl : null;
   const awaitingBrowserSignIn = browserLogin && !ready && !login?.authorizationUrl && !needsRetry;
   const showInlineRetry = Boolean(login && !login.preparing && !ready && !awaitingBrowserSignIn && (isolated || login.error) && !(primaryHandlesRetry && needsRetry));
   return <div className="min-w-0 max-w-full space-y-3 text-sm text-muted-foreground">
@@ -648,9 +693,9 @@ export function LocalProviderLoginInstructions({ adapterType, login, hostedRedir
     </> : !browserLogin && <p>{isolated ? `Sign in to ${provider} for this connection on the machine running Paperclip. Your existing terminal login stays separate.` : `Connect uses your local ${provider} account on the machine running Paperclip.`}</p>}
     {awaitingBrowserSignIn && <p role="status">Preparing browser sign-in…</p>}
     {(submitting || codeSubmitted) && !ready && !needsRetry && <p role="status">Finishing sign-in…</p>}
-    {browserLogin && !ready && !submitting && !codeSubmitted && !needsRetry && login?.authorizationUrl && <ProviderSubscriptionCard
+    {browserLogin && !ready && !submitting && !codeSubmitted && !needsRetry && safeAuthorizationUrl && <ProviderSubscriptionCard
       providerName={connectSourceName(adapterType)}
-      authorizationUrl={login.authorizationUrl}
+      authorizationUrl={safeAuthorizationUrl}
       mode={hostedGoogleRedirect && !optionalHostedGoogleRedirect ? "hosted_redirect" : adapterType === "antigravity_runtime" ? "browser_redirect" : adapterType === "claude_local" ? "submitted_code" : "displayed_code"}
     >
       {adapterType === "claude_local" ? <div className="flex flex-col gap-2">
@@ -683,7 +728,7 @@ export function LocalProviderLoginInstructions({ adapterType, login, hostedRedir
         />
         <Button type="button" disabled={!browserCode.trim() || submitting} onClick={() => void submitBrowserCode()}>Submit redirect URL</Button>
         {submitError && <p role="alert" className="px-2 text-xs text-destructive">{submitError}</p>}
-      </div> : adapterType === "antigravity_runtime" ? <p>Finish signing in in the Antigravity browser window, then return here.</p> : <OnboardingLoginCodeRow code={login.code ?? ""} />}
+      </div> : adapterType === "antigravity_runtime" ? <p>Finish signing in in the Antigravity browser window, then return here.</p> : <OnboardingLoginCodeRow code={login?.code ?? ""} />}
     </ProviderSubscriptionCard>}
     {!browserLogin && (!ready || showCommand) && !needsRetry && <>
       <p>Run this in a terminal on that machine and finish signing in in your browser. We’ll check automatically when you return.</p>

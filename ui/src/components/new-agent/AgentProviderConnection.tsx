@@ -18,7 +18,7 @@ import {
   LocalProviderLoginInstructions,
   OnboardingCardField,
   OnboardingLoginCard,
-  resolveLocalLoginPrimaryAction,
+  useLocalLoginPrimaryAction,
 } from "../AdapterLoginChrome";
 import { ModelSourceTiles, type ModelConnectionMode } from "../onboarding/ModelSourceTiles";
 import { useQueryView } from "../QueryView";
@@ -116,7 +116,6 @@ export function AgentProviderConnection({
   const awaitingLoginRequest = automaticComputer && !loginRequested;
   const [authorizationUrl, setAuthorizationUrl] = useState<string | null>(null);
   const [loginPhase, setLoginPhase] = useState<"preparing" | "ready" | "waiting" | "connecting">("preparing");
-  const [localLoginSubmitting, setLocalLoginSubmitting] = useState(false);
   const phaseBeforeSubmit = useRef<"ready" | "waiting">("ready");
   const [apiKey, setApiKey] = useState("");
   const [busy, setBusy] = useState(false);
@@ -265,21 +264,18 @@ export function AgentProviderConnection({
     !savedKeys.loading &&
     !storedLogin.data &&
     (Boolean(managedAccount) || auth.data?.status !== "present" || subscriptionId === "");
-  const usingLocalLogin =
-    !advanced &&
-    !needsLogin &&
-    method === "subscription" &&
-    canUseLocalLogin &&
-    !savedSubscription &&
-    !storedLogin.data;
-  const localLoginAction = opened && usingLocalLogin
-    ? resolveLocalLoginPrimaryAction({ adapterType, login: localLogin, submitting: localLoginSubmitting })
-    : null;
+  const localLoginPrimary = useLocalLoginPrimaryAction({
+    enabled: opened && !advanced && !needsLogin && method === "subscription" && canUseLocalLogin && !savedSubscription && !storedLogin.data,
+    adapterType,
+    login: localLogin,
+    onBeforeRetry: () => setError(null),
+  });
+  const localLoginAction = localLoginPrimary.action;
   const switchMode = (next: ModelConnectionMode) => {
     if (advancedConnection && next === (advanced ? "advanced" : method)) return;
     onDraftChanged?.();
     cancel();
-    setLocalLoginSubmitting(false);
+    localLoginPrimary.resetSubmitting();
     setAdvanced(next === "advanced");
     setOpened(advancedConnection ? true : opened);
     savedManagedAccount.current = null;
@@ -443,8 +439,7 @@ export function AgentProviderConnection({
               <LocalProviderLoginInstructions
                 adapterType={adapterType}
                 hostedRedirect={googleHostedRedirect}
-                primaryHandlesRetry
-                onSubmittingChange={setLocalLoginSubmitting}
+                {...localLoginPrimary.instructionsProps}
                 login={{ ...localLogin, retry: () => { setError(null); localLogin.retry(); } }}
               />
             ) : (
@@ -475,7 +470,7 @@ export function AgentProviderConnection({
       <FooterNav
         onBack={() => {
           if (opened && !advancedConnection) {
-            setLocalLoginSubmitting(false);
+            localLoginPrimary.resetSubmitting();
             cancel();
           } else onBack();
         }}
@@ -532,13 +527,8 @@ export function AgentProviderConnection({
             if (!authorizationUrl || loginPhase !== "ready") return;
             window.open(authorizationUrl, "_blank", "noreferrer,noopener");
             setLoginPhase("waiting");
-          } else if (localLoginAction) {
-            if (localLoginAction.kind === "retry") {
-              setError(null);
-              localLogin.retry();
-            } else if (localLoginAction.kind === "open_sign_in") {
-              window.open(localLoginAction.url, "_blank", "noreferrer,noopener");
-            }
+          } else if (localLoginPrimary.runPrimary()) {
+            return;
           } else void connect();
         }}
       />

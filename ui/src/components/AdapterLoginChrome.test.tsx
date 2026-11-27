@@ -408,4 +408,18 @@ describe("session replay", () => {
       login: { isolated: true, preparing: false, status: "ready", error: null },
     })).toBeNull();
   });
+
+  it("omits the inline sign-in card anchor when authorizationUrl is not http(s)", async () => {
+    const container = await render(
+      <LocalProviderLoginInstructions
+        adapterType="antigravity_runtime"
+        hostedRedirect
+        login={{
+          ...login,
+          authorizationUrl: "javascript:alert(1)",
+        }}
+      />,
+    );
+    expect(container.querySelector("a")).toBeNull();
+  });
 });
