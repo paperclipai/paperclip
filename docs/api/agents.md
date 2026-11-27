@@ -261,8 +261,8 @@ the history list.
 ## Agent hires within a reporting line
 
 When the [hiring restriction](companies.md#hiring-within-reporting-lines) is on, an
-agent with hiring permission can only hire under itself or a manager anywhere below
-it in the org chart. If the request omits `reportsTo`, the new agent reports to the caller.
+agent with `agents:create` can only hire under itself or a manager below it in the
+org chart. If the request omits `reportsTo`, the new agent reports to the caller.
 An explicit `null` asks for a top-level agent and is unavailable to agent callers
 under this policy.
 

@@ -119,7 +119,10 @@ Returns whether agent trace export is set up for the company. Every member of th
 
 A company owner can turn on **Limit hiring to each agent’s reporting line**
 in Company Settings. It is off by default. The setting limits where agents
-with hiring permission can place new agents or move their reports.
+with hiring permission can place new agents or move their reports. An agent
+still needs `agents:create` to hire. The stock **Can create new agents**
+setting is one way to grant that permission.
+
 **Require board approval for new hires** is a separate setting.
 
 To enable the restriction through the API, send this body to
