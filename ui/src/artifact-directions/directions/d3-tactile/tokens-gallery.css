@@ -1,0 +1,190 @@
+/*
+  3 · Tactile — the gallery's custom properties (materials are in tokens.css,
+  the folder in tokens-folder.css, the panel's in tokens-panel.css).
+
+  The Artifacts page is a shelf of folders. Opened, a folder's contents stand
+  by day on mats in the ground tone, each row on a ledge with its captions
+  under the ledge.
+*/
+
+[data-direction="d3-tactile"] {
+  /* ---- the shelf: three folders across the page's 72rem, never narrower than their contents */
+  --tac-shelf-cols: repeat(auto-fill, minmax(min(100%, 19rem), 1fr));
+  --tac-mat-top: 2rem; /* a stack of one: its mat starts this far down, so a sheet stands proud of it as in a thread row */
+
+  /* ---- the opened stack: day groups of objects on a mat ------------------- */
+  --tac-gl-cols: repeat(auto-fill, minmax(min(100%, 15.5rem), 1fr)); /* four across the page's 72rem */
+  --tac-mat-pad: 1.25rem; /* the mat's side padding, and… */
+  --tac-mat-gap: 1.5rem; /* …the gap between its columns */
+  --tac-gl-ring: 0.625rem; /* the focus ring stands this far off an item… */
+  --tac-gl-ring-top: 1rem; /* …and further above it, clear of a flag on the object's top edge */
+  --tac-gl-gap: calc(var(--tac-lip-h) + 0.5rem); /* ledge to caption */
+  --tac-gl-cap: 16.5rem; /* a caption is no wider than the widest object, so its actions stay under the object */
+  --tac-rule: oklch(0.3 0.02 80 / 0.16); /* the day ruler's ticks */
+  --tac-rule-strong: oklch(0.3 0.02 80 / 0.5);
+  --tac-ruler: repeating-linear-gradient(to bottom, var(--tac-rule) 0, var(--tac-rule) 1px, transparent 1px, transparent 0.75rem);
+  --tac-ruler-w: 0.4375rem;
+  --tac-ruler-major: 0.875rem;
+  --tac-ruler-gutter: 1.75rem;
+}
+
+.dark [data-direction="d3-tactile"] {
+  --tac-rule: oklch(1 0 0 / 0.14);
+  --tac-rule-strong: oklch(1 0 0 / 0.5);
+}
+
+/*
+  An item on a mat says how tall its own object is (--tac-obj-h, inline), so
+  its focus ring and hit area can reach from the caption's top up over the
+  object and no further. Declared on the item: a custom property resolves the
+  var()s inside it where it is declared, not where it is used.
+*/
+[data-direction="d3-tactile"] [data-tac-mat] > [data-tac-item] {
+  --tac-gl-reach: calc(var(--tac-lip-tuck) - var(--tac-obj-h) - var(--tac-gl-ring-top));
+}
+
+/*
+  `fd` — folder contents. Every shape comes to roughly 7–9.5rem wide, small
+  enough for three or four to stand in a folder and large enough that a
+  sheet's headline (about 10px on screen) and a print's picture are the real
+  ones. Extension tabs and stamps ride high, clear of the pocket's mouth.
+*/
+[data-direction="d3-tactile"] [data-tac-size="fd"] {
+  --tac-k: 0.5; /* page: 7.5rem × 9.7rem */
+  --tac-ear: 2.125rem;
+  --tac-page-pad: 1.375rem;
+  --tac-page-r: 0.375rem;
+  --tac-type-title: 1.28125rem;
+  --tac-type-body: 0.8125rem;
+  --tac-type-tab: 1.125rem;
+  --tac-tab-rise: 4.6em;
+  --tac-print-w: 9.5rem;
+  --tac-print-h: 7.75rem;
+  --tac-print-edge: 0.3125rem;
+  --tac-play: 1.75rem;
+  --tac-shadow-near: 0 1px 1.5px;
+  --tac-shadow-far: 1px 5px 8px;
+  --tac-back-dx: 3%;
+  --tac-tilt-back: 2deg;
+}
+[data-direction="d3-tactile"] [data-tac-size="fd"][data-tac-box="slide"] {
+  --tac-k: 0.44;
+  --tac-page-r: 0.4375rem;
+  --tac-type-title: 1.6875rem;
+  --tac-type-body: 0.875rem;
+  --tac-type-tab: 1.25rem;
+}
+[data-direction="d3-tactile"] [data-tac-size="fd"][data-tac-box="ledger"] {
+  --tac-k: 0.48;
+  --tac-type-body: 0.875rem;
+  --tac-tab-rise: 3.4em;
+}
+[data-direction="d3-tactile"] [data-tac-size="fd"][data-tac-box="box"] {
+  --tac-k: 0.38;
+  --tac-type-tab: 1.4375rem;
+}
+[data-direction="d3-tactile"] [data-tac-size="fd"][data-tac-box="card"] {
+  --tac-k: 0.44;
+  --tac-page-pad: 1.125rem;
+  --tac-type-body: 1.0625rem;
+}
+
+/*
+  `gl` — an artifact in the opened stack (and a stack of one on the shelf).
+  The largest the objects get in a grid: a sheet is 11.1rem × 14.3rem with its
+  headline at about 12.5px and its first lines at about 8px. Everything wider
+  than tall is sized to the grid cell instead — 15.25rem across — so a print
+  stands nearly as tall as a sheet.
+*/
+[data-direction="d3-tactile"] [data-tac-size="gl"] {
+  --tac-k: 0.74;
+  --tac-ear: 1.9375rem;
+  --tac-page-pad: 1.4375rem;
+  --tac-page-r: 0.25rem;
+  --tac-type-title: 1.0625rem;
+  --tac-type-body: 0.6875rem;
+  --tac-type-tab: 0.875rem;
+  --tac-print-w: 15.25rem;
+  --tac-print-h: 13.5rem;
+  --tac-print-edge: 0.5625rem;
+  --tac-play: 2.75rem;
+  --tac-shadow-near: 0 1px 2px;
+  --tac-shadow-far: 2px 8px 14px;
+}
+[data-direction="d3-tactile"] [data-tac-size="gl"][data-tac-box="slide"] {
+  --tac-k: 0.7625;
+  --tac-type-title: 1.5rem;
+  --tac-type-body: 0.75rem;
+  --tac-type-tab: 0.84375rem;
+}
+[data-direction="d3-tactile"] [data-tac-size="gl"][data-tac-box="ledger"] {
+  --tac-k: 0.87;
+  --tac-type-body: 0.75rem;
+  --tac-type-tab: 0.75rem;
+}
+[data-direction="d3-tactile"] [data-tac-size="gl"][data-tac-box="box"] {
+  --tac-k: 0.72;
+  --tac-type-tab: 0.875rem;
+}
+[data-direction="d3-tactile"] [data-tac-size="gl"][data-tac-box="card"] {
+  --tac-k: 0.7625;
+  --tac-page-pad: 1.125rem;
+  --tac-type-body: 0.8125rem;
+}
+
+/*
+  Narrow pages. `day` is one day's section of an opened stack: under 46rem its
+  objects step down so three columns hold at a 1024 viewport and two at 768.
+  `shelf` is the stacks grid: between 28.5rem and 40rem it keeps two columns
+  of compact folders rather than one very wide one, and under 19rem a single
+  compact one.
+*/
+@container day (width < 46rem) {
+  [data-direction="d3-tactile"] [data-tac-mat] {
+    --tac-gl-cols: repeat(auto-fill, minmax(min(100%, 12.25rem), 1fr));
+    --tac-gl-cap: 13.5rem;
+    --tac-mat-pad: 0.875rem;
+    --tac-mat-gap: 1rem;
+  }
+  [data-direction="d3-tactile"] [data-tac-size="gl"] {
+    --tac-fit: 0.79;
+  }
+}
+@container shelf (width < 40rem) {
+  [data-direction="d3-tactile"] [data-tac-shelf] {
+    --tac-shelf-cols: repeat(auto-fill, minmax(min(100%, 13.5rem), 1fr));
+  }
+  [data-direction="d3-tactile"] [data-tac-folder="shelf"] {
+    --tac-fol-h: 12.75rem;
+    --tac-fol-rise: 2rem;
+    --tac-fol-lift: 0.5rem;
+    --tac-pile-a-h: 5.375rem;
+    --tac-pile-b-h: 5.75rem;
+    --tac-pile-c-h: 6.25rem;
+    --tac-pile-d-h: 5rem;
+  }
+  [data-direction="d3-tactile"] [data-tac-slot] {
+    --tac-fit: 0.72;
+  }
+  [data-direction="d3-tactile"] [data-tac-stack="one"] [data-tac-size="gl"] {
+    --tac-fit: 0.6;
+  }
+}
+@container shelf (width < 28.5rem) and (width >= 19rem) {
+  [data-direction="d3-tactile"] [data-tac-shelf] {
+    --tac-shelf-cols: repeat(auto-fill, minmax(min(100%, 19rem), 1fr));
+  }
+  [data-direction="d3-tactile"] [data-tac-folder="shelf"] {
+    --tac-fol-h: 15.75rem;
+    --tac-fol-rise: 2.5rem;
+    --tac-fol-lift: 0.75rem;
+    --tac-pile-a-h: 7.375rem;
+    --tac-pile-b-h: 7.875rem;
+    --tac-pile-c-h: 8.625rem;
+    --tac-pile-d-h: 6.875rem;
+  }
+  [data-direction="d3-tactile"] [data-tac-slot],
+  [data-direction="d3-tactile"] [data-tac-stack="one"] [data-tac-size="gl"] {
+    --tac-fit: 1;
+  }
+}

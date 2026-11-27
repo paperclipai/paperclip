@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { githubLauncherSource } from "./github-launcher.js";
+import { ACP_PROCESS_TERMINAL_SIGNALS, type ACP_PROCESS_TERMINAL_SOURCES } from "./acpx-engine/constants.js";
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import {
   prepareCommandManagedRuntime,
@@ -46,6 +47,7 @@ import {
   startSandboxCallbackBridgeServer,
   startSandboxCallbackBridgeWorker,
   syncRemoteTextFileWithHashSkip,
+  syncRemoteTextFilesWithHashSkip,
   syncSandboxCallbackBridgeEntrypoint,
 } from "./sandbox-callback-bridge.js";
 import {
@@ -75,6 +77,7 @@ import {
 } from "./duplex-observability.js";
 import { createSshCommandManagedRuntimeRunner, parseSshRemoteExecutionSpec, runSshCommand, shellQuote } from "./ssh.js";
 import {
+  ensureAbsoluteDirectory,
   ensureCommandResolvable,
   resolveCommandForLogs,
   runChildProcess,
@@ -183,6 +186,11 @@ export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWor
   kind: "remote";
   transport: "sandbox";
   providerKey?: string | null;
+  /** Host-bound plugin task RPC. expectedTaskId pins an owner to its physical task after startup. */
+  runnerTask?: (operation: unknown, context?: { executionContext?: unknown; expectedTaskId?: string }) => Promise<unknown>;
+  runnerTaskProjectIds?: readonly string[];
+  /** Private Core-issued identity for a bounded, tool-free setup probe. */
+  runnerTaskProbe?: { runId: string; sessionId: string };
   /**
    * Read-only effective capability snapshot for this sandbox target. The host
    * resolves it from the provider declaration ∩ the verified worker methods ∩
@@ -202,6 +210,12 @@ export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWor
     | { mode: "per_turn"; idleTimeoutMs: null }
     | { mode: "warm"; idleTimeoutMs: number }
     | null;
+  /**
+   * The environment's configured warm idle window, present even when the
+   * environment inherits the lifecycle. A defaulted warm runner uses it first,
+   * as the provider's auto-stop does, so both keep the same window.
+   */
+  readonly runnerIdleTimeoutMs?: number;
   /** Whether this environment is configured to reuse its provider lease. */
   readonly reusableLeaseConfigured?: boolean;
   /** Host-observed provenance for this exact sandbox acquisition. */
@@ -271,6 +285,7 @@ export interface PreparedAdapterExecutionTargetRuntime {
     repositories?: NonNullable<GitWorkspaceSnapshot["repositories"]>;
   } | null;
   cleanupWorkspaceSnapshot?(): Promise<void>;
+  disposeRuntime?(): Promise<void>;
   restoreWorkspace(onProgress?: RuntimeProgressSink): Promise<void>;
 }
 
@@ -371,12 +386,24 @@ export interface AdapterExecutionTargetPaperclipBridgeHandle {
   stop(): Promise<void>;
 }
 
+// First terminal evidence a sandbox process session observed. Every field is a
+// closed value: no message, command, path, payload, or provider error text.
+export interface AdapterExecutionTargetProcessSessionTerminalEvidence {
+  source: (typeof ACP_PROCESS_TERMINAL_SOURCES)[number];
+  outcome: "exit" | "error";
+  exitCode: number | "unknown";
+  signal: (typeof ACP_PROCESS_TERMINAL_SIGNALS)[number] | "unknown";
+}
+
 export interface AdapterExecutionTargetProcessSessionBridgeHandle {
   agentCommand: string;
+  // Returns null until the session records terminal evidence.
+  readTerminalEvidence?(): AdapterExecutionTargetProcessSessionTerminalEvidence | null;
   stop(): Promise<void>;
 }
 
 export { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
+export { managedRemoteHomeEnvironment } from "./remote-execution-env.js";
 
 // Four-hour wall-clock backstop for sandbox-backed adapter runs. Keep this
 // execution limit independent of the earlier informational silence warnings
@@ -466,8 +493,9 @@ export function adapterExecutionTargetIsRemote(
 
 export function adapterExecutionTargetUsesManagedHome(
   target: AdapterExecutionTarget | null | undefined,
+  managedAiConnection = false,
 ): boolean {
-  return target?.kind === "remote" && target.transport === "sandbox";
+  return target?.kind === "remote" && (target.transport === "sandbox" || (managedAiConnection && target.spec.useHostAuth === false));
 }
 
 /**
@@ -729,23 +757,53 @@ export async function ensureAdapterExecutionTargetCommandResolvable(
   });
 }
 
+function executionTargetCheckUnavailable(message: string, cause?: unknown): Error {
+  return Object.assign(new Error(message, { cause }), { code: "adapter_execution_target_unavailable" });
+}
+
+/** Preserve target failures before an adapter translates them into a failed check. */
+export function isAdapterExecutionTargetUnavailableError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error
+    && error.code === "adapter_execution_target_unavailable";
+}
+
+async function runRemoteExecutionTargetCheck(
+  target: AdapterExecutionTarget,
+  description: string,
+  check: () => Promise<RunProcessResult>,
+): Promise<RunProcessResult> {
+  let result: RunProcessResult;
+  try {
+    result = await check();
+  } catch (error) {
+    throw executionTargetCheckUnavailable(`Could not complete ${description}`, error);
+  }
+  if (result.timedOut || result.signal || result.exitCode === null
+    || (target.kind === "remote" && target.transport === "ssh" && result.exitCode === 255)) {
+    throw executionTargetCheckUnavailable(`${result.timedOut ? "Timed out" : "Could not complete"} ${description}`);
+  }
+  return result;
+}
+
 async function probeSandboxCommandResolvable(
   command: string,
   target: AdapterSandboxExecutionTarget,
   env: Record<string, string>,
-): Promise<{ resolved: boolean; timedOut: boolean; stderr: string }> {
+): Promise<{ resolved: boolean; stderr: string }> {
   const runner = requireSandboxRunner(target);
   const probeScript = `command -v ${shellQuote(command)}`;
-  const result = await runner.execute({
-    command: "sh",
-    args: ["-c", probeScript],
-    cwd: target.remoteCwd,
-    env,
-    timeoutMs: target.timeoutMs ?? 15_000,
-  });
+  const result = await runRemoteExecutionTargetCheck(
+    target, `checking command "${command}" on sandbox target.`,
+    () => runner.execute({
+      command: "sh",
+      args: ["-c", probeScript],
+      cwd: target.remoteCwd,
+      env,
+      timeoutMs: target.timeoutMs ?? 15_000,
+    }),
+  );
   return {
-    resolved: !result.timedOut && (result.exitCode ?? 1) === 0,
-    timedOut: result.timedOut,
+    resolved: result.exitCode === 0,
     stderr: result.stderr.trim(),
   };
 }
@@ -766,15 +824,13 @@ async function ensureSandboxCommandResolvable(
   // SSH's buildSshSpawnTarget) so this and the hello probe agree on PATH.
   let probe = await probeSandboxCommandResolvable(command, target, env);
   if (probe.resolved) return;
-  if (probe.timedOut) {
-    throw new Error(`Timed out checking command "${command}" on sandbox target.`);
-  }
 
   // If the caller supplied an install command, attempt the install once via
   // the sandbox runner (which the sandbox provider wraps in a login shell)
   // and re-probe before reporting failure. This lets fresh sandbox leases
   // bring up the CLI before the resolvability gate, mirroring the test path.
   let installFailureDetail: string | null = null;
+  let installUnavailable: Error | null = null;
   if (installCommand) {
     const runner = requireSandboxRunner(target);
     const installTimeoutMs =
@@ -791,6 +847,9 @@ async function ensureSandboxCommandResolvable(
       });
       if (installResult.timedOut) {
         installFailureDetail = `install command timed out: ${installCommand}`;
+        installUnavailable = executionTargetCheckUnavailable("The runtime installation timed out.");
+      } else if (installResult.signal || installResult.exitCode === null) {
+        installUnavailable = executionTargetCheckUnavailable("The runtime installation did not complete.");
       } else if ((installResult.exitCode ?? 0) !== 0) {
         const tail = (text: string) =>
           text.split(/\r?\n/).filter((line) => line.trim().length > 0).slice(-2).join(" | ").slice(0, 240);
@@ -799,12 +858,11 @@ async function ensureSandboxCommandResolvable(
       }
     } catch (err) {
       installFailureDetail = `install command threw: ${err instanceof Error ? err.message : String(err)}`;
+      installUnavailable = executionTargetCheckUnavailable("The runtime installation was unavailable.", err);
     }
     probe = await probeSandboxCommandResolvable(command, target, env);
     if (probe.resolved) return;
-    if (probe.timedOut) {
-      throw new Error(`Timed out checking command "${command}" on sandbox target.`);
-    }
+    if (installUnavailable) throw installUnavailable;
   }
 
   const probeStderr = probe.stderr.length > 0 ? ` probe stderr: ${probe.stderr}` : "";
@@ -978,10 +1036,12 @@ export async function runAdapterExecutionTargetShellCommand(
           stdout?: string;
           stderr?: string;
           signal?: string | null;
+          killed?: boolean;
         };
         const stdout = timedOutError.stdout ?? "";
         const stderr = timedOutError.stderr ?? "";
-        if (typeof timedOutError.code === "number") {
+        const timedOut = timedOutError.killed === true || timedOutError.code === "ETIMEDOUT";
+        if (!timedOut && typeof timedOutError.code === "number") {
           if (stdout) await onLog("stdout", stdout);
           if (stderr) await onLog("stderr", stderr);
           return {
@@ -994,7 +1054,7 @@ export async function runAdapterExecutionTargetShellCommand(
             startedAt,
           };
         }
-        if (timedOutError.code !== "ETIMEDOUT") {
+        if (!timedOut) {
           throw error;
         }
         if (stdout) await onLog("stdout", stdout);
@@ -1256,6 +1316,11 @@ export async function ensureAdapterExecutionTargetFile(
   );
 }
 
+export async function ensureAdapterExecutionTargetLocalWorkspace(target: AdapterExecutionTarget | null | undefined, cwd: string): Promise<void> {
+  if (target?.kind === "remote" && target.workspaceRealization?.mode === "in_place") return;
+  await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+}
+
 /**
  * Ensure a working directory exists (and is a directory) on the execution target.
  *
@@ -1264,7 +1329,8 @@ export async function ensureAdapterExecutionTargetFile(
  * `mkdir -p` (when allowed) followed by a `[ -d ]` check so the result reflects
  * the directory state inside the environment, not on the Paperclip host.
  *
- * Throws an Error with a human-readable message on failure.
+ * Throws an Error with a human-readable message on failure. Temporary target
+ * failures carry a typed code so adapters can retain them as retryable checks.
  */
 export async function ensureAdapterExecutionTargetDirectory(
   runId: string,
@@ -1290,17 +1356,16 @@ export async function ensureAdapterExecutionTargetDirectory(
     ? `mkdir -p ${quoted} && [ -d ${quoted} ]`
     : `[ -d ${quoted} ]`;
 
-  const result = await runAdapterExecutionTargetShellCommand(runId, target, script, {
-    cwd: target.kind === "remote" ? target.remoteCwd : cwd,
-    env: options.env,
-    timeoutSec: options.timeoutSec ?? 15,
-    graceSec: options.graceSec ?? 5,
-    onLog: options.onLog,
-  });
-
-  if (result.timedOut) {
-    throw new Error(`Timed out checking working directory on remote target: "${cwd}"`);
-  }
+  const result = await runRemoteExecutionTargetCheck(
+    target, `checking working directory on remote target: "${cwd}"`,
+    () => runAdapterExecutionTargetShellCommand(runId, target, script, {
+      cwd: target.remoteCwd,
+      env: options.env,
+      timeoutSec: options.timeoutSec ?? 15,
+      graceSec: options.graceSec ?? 5,
+      onLog: options.onLog,
+    }),
+  );
   if ((result.exitCode ?? 1) !== 0) {
     const detail = (result.stderr || result.stdout || "").trim();
     if (createIfMissing) {
@@ -1326,6 +1391,23 @@ export function adapterExecutionTargetSessionIdentity(
     leaseId: target.leaseId ?? null,
     remoteCwd: target.remoteCwd,
   };
+}
+
+export function normalizeAdapterExecutionTargetSessionIdentity(value: unknown): Record<string, unknown> | null {
+  const saved = parseObject(value);
+  if (saved.transport === "ssh") {
+    if (!readStringMeta(saved, "host") || !readStringMeta(saved, "username") || !readStringMeta(saved, "remoteCwd")
+      || typeof saved.port !== "number" || !Number.isInteger(saved.port) || saved.port < 1 || saved.port > 65535
+      || (saved.useHostAuth !== undefined && typeof saved.useHostAuth !== "boolean")) return null;
+    const fields = Object.fromEntries(Object.entries(saved).filter(([key, entry]) => typeof entry === "string"
+      || (key === "port" && typeof entry === "number") || (key === "useHostAuth" && typeof entry === "boolean")));
+    return buildRemoteExecutionSessionIdentity(fields as unknown as SshRemoteExecutionSpec);
+  }
+  if (saved.transport === "sandbox" && readStringMeta(saved, "remoteCwd")) {
+    return adapterExecutionTargetSessionIdentity({ kind: "remote", transport: "sandbox", remoteCwd: readStringMeta(saved, "remoteCwd")!,
+      providerKey: readStringMeta(saved, "providerKey"), environmentId: readStringMeta(saved, "environmentId"), leaseId: readStringMeta(saved, "leaseId") });
+  }
+  return null;
 }
 
 export function adapterExecutionTargetSessionMatches(
@@ -1438,13 +1520,17 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   /** Sandbox transfer scratch, confined to the lease's reserved runtime tree. */
   runtimeRootDir?: string;
   syncWorkspace?: boolean;
+  privateRuntime?: boolean;
+  retainRuntime?: boolean;
   workspaceInboundMode?: WorkspaceInboundMode;
   workspaceSnapshotIsolation?: "worker";
+  workspaceGitIndexRefresh?: boolean;
   workspaceDurableSeed?: WorkspaceDurableSeedPaths;
   workspaceCheckpoint?: boolean;
   onWorkspaceCheckpoint?: (metrics: WorkspaceCheckpointMetrics) => Promise<void>;
   workspaceSeedCacheDirectory?: string;
   workspaceSeedCacheCompanyDirectory?: string;
+  workspaceSeedCacheScope?: "workspace" | "company";
   workspaceBaseline?: DirectorySnapshot;
   workspaceGitSnapshot?: GitWorkspaceSnapshot | null;
   workspaceRepositories?: NonNullable<GitWorkspaceSnapshot["repositories"]>;
@@ -1488,6 +1574,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     };
   }
 
+  const syncWorkspace = input.syncWorkspace ?? target.workspaceRealization?.mode !== "in_place";
   if (target.transport === "ssh") {
     const prepared = await prepareRemoteManagedRuntime({
       spec: target.spec,
@@ -1495,7 +1582,9 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       adapterKey: input.adapterKey,
       workspaceLocalDir: input.workspaceLocalDir,
       workspaceRemoteDir: input.workspaceRemoteDir,
-      syncWorkspace: input.syncWorkspace,
+      syncWorkspace,
+      privateRuntime: input.privateRuntime,
+      retainRuntime: input.retainRuntime,
       workspaceFileMode: input.workspaceFileMode,
       workspaceExclude: input.workspaceExclude,
       assets: input.assets,
@@ -1512,6 +1601,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       // reports a per-project staging failure.
       additionalSourceFailures: [],
       workspaceSyncSnapshot: null,
+      disposeRuntime: prepared.disposeRuntime,
       restoreWorkspace: prepared.restoreWorkspace,
     };
   }
@@ -1532,14 +1622,16 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     workspaceLocalDir: input.workspaceLocalDir,
     workspaceRemoteDir: input.workspaceRemoteDir,
     runtimeRootDir: input.runtimeRootDir,
-    syncWorkspace: input.syncWorkspace,
+    syncWorkspace,
     workspaceInboundMode: input.workspaceInboundMode,
     workspaceSnapshotIsolation: input.workspaceSnapshotIsolation,
+    workspaceGitIndexRefresh: input.workspaceGitIndexRefresh,
     workspaceDurableSeed: input.workspaceDurableSeed,
     workspaceCheckpoint: input.workspaceCheckpoint,
     onWorkspaceCheckpoint: input.onWorkspaceCheckpoint,
     workspaceSeedCacheDirectory: input.workspaceSeedCacheDirectory,
     workspaceSeedCacheCompanyDirectory: input.workspaceSeedCacheCompanyDirectory,
+    workspaceSeedCacheScope: input.workspaceSeedCacheScope,
     workspaceBaseline: input.workspaceBaseline,
     workspaceGitSnapshot: input.workspaceGitSnapshot,
     workspaceRepositories: input.workspaceRepositories,
@@ -1629,6 +1721,20 @@ async function githubOperationLauncherBasePath(
   return remotePath;
 }
 
+export const EXECUTION_TARGET_GIT_CONTEXT_UNAVAILABLE_CODE = "execution_target_git_context_unavailable";
+
+function gitContextUnavailable(reason: string): Error {
+  return Object.assign(new Error(`Could not read execution-target Git context: ${reason}`),
+    { code: EXECUTION_TARGET_GIT_CONTEXT_UNAVAILABLE_CODE });
+}
+
+function gitContextProbeFailureReason(result: Pick<RunProcessResult, "exitCode" | "signal" | "timedOut">): string {
+  if (result.timedOut) return "the probe timed out";
+  if (typeof result.signal === "string" && /^SIG[A-Z0-9]{1,12}$/.test(result.signal)) return `the probe was stopped by ${result.signal}`;
+  if (Number.isSafeInteger(result.exitCode)) return `the probe exited with code ${result.exitCode}`;
+  return "the probe reported no exit status";
+}
+
 /** Read only execution-target Git context; never import the controller's credentials into SSH. */
 export async function prepareGitHubExecutionEnvironment(input: {
   target: AdapterExecutionTarget | null | undefined;
@@ -1661,7 +1767,10 @@ process.stdout.write("\0" + JSON.stringify(env) + "\0");
   const args = ["-e", script, input.hostCredentials ? "host" : "managed"];
   const remote = input.target?.kind === "remote" ? input.target : null;
   let discovered: Record<string, string>;
-  if (remote) {
+  if (remote?.transport === "sandbox" && remote.runnerTask) {
+    if (input.hostCredentials) throw new Error("Task-only Runner environments cannot import host GitHub credentials");
+    discovered = {};
+  } else if (remote) {
     // A legacy SSH host may run a standalone agent binary without Node. Use
     // only the shell and Git, and emit bounded, NUL-framed environment records.
     const probe = String.raw`
@@ -1712,9 +1821,9 @@ printf '\0PAPERCLIP_GIT_CONTEXT_END\0'
       // workspaces can live at a different path on the execution target.
       cwd: remote.remoteCwd, timeoutMs: 15_000,
     });
-    if (result.exitCode !== 0) throw new Error("Could not read execution-target Git context");
+    if (result.exitCode !== 0) throw gitContextUnavailable(gitContextProbeFailureReason(result));
     const payload = result.stdout.split("\0PAPERCLIP_GIT_CONTEXT_V1\0")[1]?.split("\0PAPERCLIP_GIT_CONTEXT_END\0")[0];
-    if (payload === undefined) throw new Error("Could not read execution-target Git context");
+    if (payload === undefined) throw gitContextUnavailable("the probe output was incomplete");
     discovered = {};
     const records = payload.split("\0");
     const roots: string[] = [];
@@ -1731,7 +1840,7 @@ printf '\0PAPERCLIP_GIT_CONTEXT_END\0'
   } else {
     const result = await promisify(execFile)(process.execPath, args, { cwd: input.cwd, timeout: 15_000, maxBuffer: 1024 * 1024 });
     try { discovered = JSON.parse(result.stdout.split("\0")[1] ?? ""); }
-    catch { throw new Error("Could not read execution-target Git context"); }
+    catch { throw gitContextUnavailable("the probe output was not valid"); }
   }
   // Controller-derived roots and mode must not be replaced by agent bindings.
   return { ...discovered, ...input.env,
@@ -1746,6 +1855,8 @@ printf '\0PAPERCLIP_GIT_CONTEXT_END\0'
 /** Stage token-free launchers next to the execution, not in shared global Git config. */
 export async function prepareGitHubOperationLaunchers(input: {
   runId: string; target: AdapterExecutionTarget | null | undefined; cwd: string; env: Record<string, string>;
+  broker?: { url: string; token: string };
+  anonymous?: boolean;
 }): Promise<Record<string, string>> {
   const remote = input.target?.kind === "remote" ? input.target : null;
   const directory = githubOperationLauncherDirectory(input);
@@ -1765,31 +1876,32 @@ export async function prepareGitHubOperationLaunchers(input: {
     // Remote launchers live beneath the checkout. Pin their own package scope
     // so an enclosing project's "type": "module" cannot reinterpret require().
     ["package.json", '{"type":"commonjs"}\n'],
-    ...["git", "gh"].map((name) => [name, githubLauncherSource()] as const),
+    ...["git", "gh"].map((name) => [name, githubLauncherSource({ brokerFile: input.broker !== undefined, anonymous: input.anonymous })] as const),
     ...[".zshenv", ".zprofile", ".zshrc", ".bash_profile", ".bashrc", ".profile"].map((name) => [name, profile] as const),
+    ...(input.broker ? [["broker.json", `${JSON.stringify({ url: input.broker.url, token: input.broker.token })}\n`] as const] : []),
   ]);
   if (remote) {
     const runner = adapterExecutionTargetCommandRunner(remote);
-    const entries = Object.entries(files);
-    const width = runner.allowConcurrentSyncOperations === true ? 3 : 1;
-    for (let offset = 0; offset < entries.length; offset += width) {
-      const results = await Promise.allSettled(entries.slice(offset, offset + width).map(([program, body]) =>
-        syncRemoteTextFileWithHashSkip({
-          runner, remoteCwd: remote.remoteCwd, remoteDir: directory,
-          remotePath: path.posix.join(directory, program), body,
-          label: "GitHub operation launcher", action: "stage GitHub operation launcher",
-          lockDir: path.posix.join(directory, `.${program}.lock`),
-          timeoutMs: 15_000, shellCommand: adapterExecutionTargetShellCommand(remote),
-        })));
-      const failure = results.find((result) => result.status === "rejected");
-      if (failure?.status === "rejected") throw failure.reason;
-    }
-    const permissions = await runner.execute({ command: "sh", args: ["-c", `chmod 700 ${shellQuote(directory)}/git ${shellQuote(directory)}/gh && mkdir -p ${shellQuote(configDirectory)}`], cwd: remote.remoteCwd, timeoutMs: 15_000 });
-    if (permissions.exitCode !== 0) throw new Error("Could not prepare managed GitHub launchers");
+    await syncRemoteTextFilesWithHashSkip({
+      runner, remoteCwd: remote.remoteCwd,
+      files: Object.entries(files).map(([program, body]) => ({
+        remoteDir: directory, remotePath: path.posix.join(directory, program), body,
+        label: "GitHub operation launcher", action: "stage GitHub operation launcher",
+        lockDir: path.posix.join(directory, `.${program}.lock`),
+        executable: program === "git" || program === "gh",
+        private: program === "broker.json",
+      })),
+      ensureDirectories: [configDirectory], action: "stage GitHub operation launchers",
+      timeoutMs: 15_000, shellCommand: adapterExecutionTargetShellCommand(remote),
+    });
   } else {
     await fs.mkdir(directory, { recursive: true, mode: 0o700 });
     await fs.mkdir(configDirectory, { recursive: true, mode: 0o700 });
-    for (const [program, body] of Object.entries(files)) await fs.writeFile(path.join(directory, program), body, { mode: 0o700 });
+    for (const [program, body] of Object.entries(files)) {
+      const partial = path.join(directory, `.${program}.${randomUUID()}.partial`);
+      await fs.writeFile(partial, body, { mode: program === "broker.json" ? 0o600 : 0o700 });
+      await fs.rename(partial, path.join(directory, program));
+    }
   }
   return { ...input.env, PATH: managedPath, ZDOTDIR: directory, BASH_ENV: `${directory}/.bashrc`,
     GH_CONFIG_DIR: configDirectory, PAPERCLIP_GITHUB_LAUNCHER_DIR: directory };
@@ -2015,7 +2127,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   // it does not start the 100 ms poll. Default OFF: the bridge keeps the poll.
   streamOutputViaSession?: boolean;
 }): Promise<AdapterExecutionTargetProcessSessionBridgeHandle | null> {
-  if (!input.target || input.target.kind !== "remote" || input.target.transport !== "sandbox") {
+  if (!input.target || input.target.kind !== "remote") {
     return null;
   }
 
@@ -2026,7 +2138,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   const logFailureWithoutWaiting = (message: string) => {
     void Promise.resolve().then(() => onLog("stderr", message)).catch(() => undefined);
   };
-  const runner = requireSandboxRunner(target);
+  const runner = adapterExecutionTargetCommandRunner(target);
   // Run one unit of run-time work under its named wrapper span when a span
   // runner is injected. Without a runner, run the work under the current run
   // parent, so the inner `sandbox.exec` spans parent to the live run span,
@@ -2035,11 +2147,11 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     input.runtimeSpan
       ? input.runtimeSpan(name, work)
       : runWithRuntimeParent(input.getRuntimeParentContext?.(), work);
-  const shellCommand = preferredSandboxShell(target);
+  const shellCommand = adapterExecutionTargetShellCommand(target);
   const timeoutMs =
     typeof input.timeoutSec === "number" && Number.isFinite(input.timeoutSec) && input.timeoutSec > 0
       ? Math.trunc(input.timeoutSec * 1000)
-      : target.timeoutMs ?? undefined;
+      : adapterExecutionTargetTimeoutMs(target) ?? undefined;
   const bridgeRuntimeDir = path.posix.join(
     input.runtimeRootDir?.trim() || path.posix.join(target.remoteCwd, ".paperclip-runtime", input.adapterKey),
     "process-sessions",
@@ -2127,7 +2239,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   // event files with the host poll below. The streamed path launches the wrapper
   // as one foreground session command further down instead, so skip this.
   if (!streamOutput) {
-    await onLog("stdout", `[paperclip] Starting ACP process session bridge in sandbox (${target.providerKey ?? "provider"}).\n`);
+    await onLog("stdout", `[paperclip] Starting ACP process session bridge in ${describeAdapterExecutionTarget(target)}.\n`);
     const startResult = await runSandboxBridgeControlCommand(runner, {
       command: shellCommand,
       args: shellCommandArgs(
@@ -2199,22 +2311,19 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     }
   };
   let pollTimer: NodeJS.Timeout | null = null;
-  let terminalEvidenceRecorded = false;
+  let terminalEvidence: AdapterExecutionTargetProcessSessionTerminalEvidence | null = null;
   const recordTerminalEvidence = (
-    source: "remote_event" | "input_delivery" | "output_poll" | "output_stream" | "proxy_close",
+    source: AdapterExecutionTargetProcessSessionTerminalEvidence["source"],
     event: { type?: string; code?: number | null; signal?: string | null },
   ) => {
-    if (terminalEvidenceRecorded) return;
-    terminalEvidenceRecorded = true;
+    if (terminalEvidence) return;
     // Remote frames are untrusted. Keep the retained diagnostic bounded and
     // independent of messages, commands, paths, payloads, and provider errors.
     const outcome = event.type === "exit" ? "exit" : "error";
     const code = typeof event.code === "number" && Number.isInteger(event.code)
       && event.code >= 0 && event.code <= 255 ? event.code : "unknown";
-    const signal = typeof event.signal === "string" && [
-      "SIGHUP", "SIGINT", "SIGQUIT", "SIGILL", "SIGABRT", "SIGFPE", "SIGKILL",
-      "SIGSEGV", "SIGPIPE", "SIGALRM", "SIGTERM", "SIGBUS", "SIGXCPU", "SIGXFSZ",
-    ].includes(event.signal) ? event.signal : "unknown";
+    const signal = ACP_PROCESS_TERMINAL_SIGNALS.find((name) => name === event.signal) ?? "unknown";
+    terminalEvidence = { source, outcome, exitCode: code, signal };
     logFailureWithoutWaiting(
       `[paperclip] ACP process session terminal: source=${source} outcome=${outcome} exitCode=${code} signal=${signal}.\n`,
     );
@@ -2483,7 +2592,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
 
     await onLog(
       "stdout",
-      `[paperclip] Starting streamed ACP process session bridge in sandbox (${target.providerKey ?? "provider"}).\n`,
+      `[paperclip] Starting streamed ACP process session bridge in ${describeAdapterExecutionTarget(target)}.\n`,
     );
     // Fire the long-lived command; do NOT await it here. `useSession` forces the
     // persistent session so the provider streams the wrapper stdout back through
@@ -2593,6 +2702,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
 
   return {
     agentCommand,
+    readTerminalEvidence: () => terminalEvidence,
     stop: async () => {
       stopping = true;
       // End the `sandbox.agentProcess` span now, before the caller ends the run
@@ -2888,33 +2998,6 @@ function nextProbeFileName() {
 // have this call follow it, because "wx" fails closed on an existing path
 // instead of following a link to it.
 //
-// Cleanup checks identity, not only ownership of the initial create. This
-// wrapper reads the probe file's identity, (dev, ino, ctimeMs), off the open
-// file descriptor itself (fstat), not off the path, so a peer that swaps the
-// path in the short gap after create cannot poison the identity this
-// wrapper trusts as its own. Right before removal, this wrapper reads the
-// path's identity again and removes it only when that identity still
-// matches. A same-sandbox peer that deletes the probe file and creates its
-// own entry at the same path in between leaves a different identity behind,
-// so this wrapper leaves that entry untouched instead of removing it. This
-// covers a peer's replacement file, a peer's replacement directory, and a
-// peer's replacement symbolic link alike, because all three change the
-// identity this wrapper reads back. The identity check includes ctimeMs,
-// not only (dev, ino): a filesystem can hand this call's freed inode number
-// straight back out to a peer's very next create at the same path, so
-// (dev, ino) alone can match a path this call no longer owns; ctimeMs resets
-// on every create, so a peer's replacement carries a different one even when
-// the inode number repeats. Node's filesystem API has no call that removes a
-// path only when its identity still matches an earlier read as one atomic
-// step, so a gap remains between this wrapper's final identity read and the
-// removal call itself. A peer that wins this gap can put any entry at the
-// probe path before the removal call runs. This can include a pre-existing
-// file the peer renames into place, not only a file the peer creates fresh.
-// The removal call then removes whatever entry sits at the probe path at
-// that moment. Two bounds still hold on that removal. The path always
-// stays under dirPath. If the entry is a symbolic link, the removal call
-// removes the link itself instead of following it to a different target.
-// A non-recursive removal call also fails if the entry is a directory.
 async function birthtimeSurvivesProbe(dirPath) {
   let before;
   try {
@@ -2937,12 +3020,9 @@ async function birthtimeSurvivesProbe(dirPath) {
   let ownedIdentity = null;
   try {
     const createdStats = await handle.stat();
-    // ctimeMs guards against inode reuse; see the function comment above.
     ownedIdentity = { dev: createdStats.dev, ino: createdStats.ino, ctimeMs: createdStats.ctimeMs };
   } catch {
     ownedIdentity = null;
-  } finally {
-    await handle.close().catch(() => undefined);
   }
   if (!ownedIdentity) {
     // fstat on this call's own just-opened descriptor failed. This call then
@@ -2952,6 +3032,7 @@ async function birthtimeSurvivesProbe(dirPath) {
     // entry instead of this call's own file. Fail closed right here instead
     // of falling through to the birthtime comparison below, so a failed
     // identity read can never let this probe report success.
+    await handle.close().catch(() => undefined);
     return "its own probe file's identity could not be read from the open file descriptor";
   }
   // The one gap the fs API cannot close: this lstat and the removal below
@@ -2960,14 +3041,18 @@ async function birthtimeSurvivesProbe(dirPath) {
   // the probe path, including a pre-existing file it renames into place,
   // and the removal call below removes whatever entry is there when it
   // runs.
-  const currentStats = await fs.lstat(probePath).catch(() => null);
-  const stillOwned =
-    currentStats !== null &&
-    currentStats.dev === ownedIdentity.dev &&
-    currentStats.ino === ownedIdentity.ino &&
-    currentStats.ctimeMs === ownedIdentity.ctimeMs;
-  if (stillOwned) {
-    await fs.rm(probePath, { force: true }).catch(() => undefined);
+  try {
+    const currentStats = await fs.lstat(probePath).catch(() => null);
+    const stillOwned =
+      currentStats !== null &&
+      currentStats.dev === ownedIdentity.dev &&
+      currentStats.ino === ownedIdentity.ino &&
+      currentStats.ctimeMs === ownedIdentity.ctimeMs;
+    if (stillOwned) {
+      await fs.rm(probePath, { force: true }).catch(() => undefined);
+    }
+  } finally {
+    await handle.close().catch(() => undefined);
   }
   let after;
   try {

@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { GitShallowMetadataError } from "./git-workspace-sync.js";
 import { resolvePaperclipInstanceRootForAdapter } from "./server-utils.js";
 import {
   captureDirectorySnapshot,
@@ -182,6 +183,86 @@ describe("workspace restore merge", () => {
     }
   });
 
+  describe("entries removed by a concurrent writer during capture", () => {
+    async function captureWhileRemoving(
+      removeAt: "before-lstat" | "after-lstat",
+      setup: (rootDir: string) => Promise<string>,
+    ) {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-restore-merge-"));
+      cleanupDirs.push(rootDir);
+      await writeFile(path.join(rootDir, "kept.txt"), "kept");
+      const vanishing = await setup(rootDir);
+      const lstatSpy = vi.spyOn(fsPromises, "lstat").mockImplementation(async (target, ...rest) => {
+        if (target !== vanishing) return lstat(target, ...rest);
+        if (removeAt === "before-lstat") await rm(vanishing, { recursive: true, force: true });
+        const stats = await lstat(target, ...rest);
+        await rm(vanishing, { recursive: true, force: true });
+        return stats;
+      });
+      try {
+        return await captureDirectorySnapshot(rootDir, { exclude: [] });
+      } finally { lstatSpy.mockRestore(); }
+    }
+
+    it("omits a listed file that is renamed away before it is read", async () => {
+      const snapshot = await captureWhileRemoving("before-lstat", async (rootDir) => {
+        await mkdir(path.join(rootDir, "tests", "runner-e2e"), { recursive: true });
+        const temporary = path.join(rootDir, "tests", "runner-e2e", ".paperclip-merge-d3bcd290-dd7e-47bf-b2cd-7d2eb1d2b7f2");
+        await writeFile(temporary, "in flight");
+        return temporary;
+      });
+
+      expect(snapshot.entries.get("kept.txt")).toMatchObject({ kind: "file" });
+      expect(snapshot.entries.get("tests/runner-e2e")).toEqual({ kind: "dir" });
+      expect(snapshot.entries.has("tests/runner-e2e/.paperclip-merge-d3bcd290-dd7e-47bf-b2cd-7d2eb1d2b7f2")).toBe(false);
+    });
+
+    it("omits a file that is removed before its contents are hashed", async () => {
+      const snapshot = await captureWhileRemoving("after-lstat", async (rootDir) => {
+        const file = path.join(rootDir, "removed.txt");
+        await writeFile(file, "removed");
+        return file;
+      });
+
+      expect(snapshot.entries.get("kept.txt")).toMatchObject({ kind: "file" });
+      expect(snapshot.entries.has("removed.txt")).toBe(false);
+    });
+
+    it("omits the children of a directory that is removed before it is opened", async () => {
+      const snapshot = await captureWhileRemoving("after-lstat", async (rootDir) => {
+        const dir = path.join(rootDir, "removed");
+        await mkdir(dir);
+        await writeFile(path.join(dir, "child.txt"), "child");
+        return dir;
+      });
+
+      expect(snapshot.entries.get("kept.txt")).toMatchObject({ kind: "file" });
+      expect(snapshot.entries.has("removed/child.txt")).toBe(false);
+    });
+
+    it("still fails when the capture root itself is missing", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-restore-merge-"));
+      cleanupDirs.push(rootDir);
+
+      await expect(captureDirectorySnapshot(path.join(rootDir, "missing"), { exclude: [] }))
+        .rejects.toMatchObject({ code: "ENOENT" });
+    });
+
+    it("still fails on errors other than a vanished entry", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-restore-merge-"));
+      cleanupDirs.push(rootDir);
+      const unreadable = path.join(rootDir, "unreadable.txt");
+      await writeFile(unreadable, "secret");
+      const lstatSpy = vi.spyOn(fsPromises, "lstat").mockImplementation(async (target, ...rest) => {
+        if (target === unreadable) throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+        return lstat(target, ...rest);
+      });
+      try {
+        await expect(captureDirectorySnapshot(rootDir, { exclude: [] })).rejects.toMatchObject({ code: "EACCES" });
+      } finally { lstatSpy.mockRestore(); }
+    });
+  });
+
   describe("classifyWorkspaceRestoreFailure", () => {
     it.each([
       "Daytona syncOut refusing tarball with an unparseable entry listing: private listing",
@@ -195,6 +276,12 @@ describe("workspace restore merge", () => {
     ])("holds the deterministic confinement refusal: %s", (message) => {
       expect(classifyWorkspaceRestoreFailure(new Error(message))).toBe("restore_unsafe_archive");
       expect(describeWorkspaceRestoreFailure(classifyWorkspaceRestoreFailure(new Error(message)))).not.toContain("private");
+    });
+
+    it("keeps invalid metadata distinct from an omittable unsafe archive", () => {
+      const error = new GitShallowMetadataError("Invalid Git shallow boundaries /private/source");
+      expect(classifyWorkspaceRestoreFailure(error)).toBe("restore_invalid_metadata");
+      expect(describeWorkspaceRestoreFailure(classifyWorkspaceRestoreFailure(error))).not.toContain("private");
     });
 
     it("preserves the generic policy for other outbound command failures", () => {

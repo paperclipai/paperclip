@@ -1,4 +1,4 @@
-import type { Agent } from "@paperclipai/shared";
+import { googleWorkspaceToolTitle, type Agent } from "@paperclipai/shared";
 import type { CompanyUserProfile } from "./company-members";
 import { formatReviewPolicyValue } from "./review-policy";
 
@@ -23,6 +23,23 @@ interface ActivityFormatOptions {
 }
 
 const ACTIVITY_ROW_VERBS: Record<string, string> = {
+  "case.created": "created",
+  "case.updated": "updated",
+  "case.fields_changed": "updated details on",
+  "case.status_changed": "changed status on",
+  "case.issue_linked": "linked a task to",
+  "case.issue_unlinked": "unlinked a task from",
+  "case.child_linked": "linked a child to",
+  "case.attachment_added": "attached a file to",
+  "case.label_added": "added a label to",
+  "case.label_removed": "removed a label from",
+  "case.document_revised": "updated a document on",
+  "case.handoff_requested": "requested a handoff for",
+  "case.handoff_applied": "handed off",
+  "case.handoff_delivered": "delivered a handoff for",
+  "case.handoff_retry_requested": "retried a handoff for",
+  "case.handoff_cancelled": "cancelled a handoff for",
+  "case.handoff_completed": "completed",
   "issue.created": "created",
   "issue.updated": "updated",
   "issue.read_marked": "read",
@@ -57,6 +74,11 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "issue.successful_run_handoff_escalated": "escalated missing next step on",
   "issue.accepted_plan_decomposition_updated": "updated accepted-plan decomposition on",
   "issue.recovery_action_opened": "opened a recovery action on",
+  "issue.workspace_recovered": "recovered saved work for",
+  "issue.retry_continued_from_saved_work": "continued from saved work on",
+  "issue.workspace_recovery_requested": "requested workspace recovery for",
+  "issue.previous_run_files_waiting": "is still working to save the previous run's files on",
+  "issue.previous_run_files_lost": "continued from the last save on",
   "issue.recovery_action_resolved": "resolved the recovery action on",
   "issue.recovery_action_escalated": "escalated the recovery action on",
   "agent.created": "created",
@@ -86,6 +108,7 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "issue.thread_interaction_withdrawn": "withdrew the request on",
   "issue.thread_interaction_cancelled": "cancelled the request on",
   "issue.thread_interaction_skipped": "skipped the request on",
+  "issue.thread_interaction_dismissed": "deferred the request on",
   "issue.thread_interaction_expired": "expired the request on",
   "issue.thread_interaction_item_verdicts_submitted": "submitted verdicts on",
   "issue.stalled_review_decided": "recorded a review verdict on",
@@ -109,17 +132,26 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "tool_app.oauth_access_finalized": "finished credential access for",
   "tool_app.finished": "finished setup for",
   "tool_app.reconnected": "reconnected",
+  "tool_application.archived": "removed",
   "tool_connection.created": "created",
   "tool_connection.updated": "updated",
   "tool_connection.archived": "removed",
+  "tool_connection.sign_in_cancelled": "cancelled sign-in for",
   "tool_connection.catalog_refresh": "refreshed actions for",
   "tool_connection.installs_synced": "changed agent installs for",
   "tool_connection.install_access_extended": "extended agent access for",
   "tool_connection.grant_audience_replaced": "changed human access for",
   "tool_connection.grant_added": "added credentials to",
   "tool_connection.grant_revoked": "revoked credentials from",
+  "tool_connection.google_access_ended": "confirmed Google access ended for",
+  "tool_connection.google_access_not_ended": "stopped trying to end Google access for",
   "tool_connection.grant_delegated": "delegated credentials for",
   "tool_connection.grant_delegation_revoked": "revoked credential delegation for",
+  "tool_connection.content_deletion_requested": "asked to delete stored content from",
+  "tool_connection.content_deletion_started": "started deleting stored content from",
+  "tool_connection.content_deleted": "deleted stored content from",
+  "issue.connection_content_deleted": "deleted connected app content from",
+  "issue.connection_content_deletion_incomplete": "partly deleted connected app content from",
 };
 
 const ISSUE_ACTIVITY_LABELS: Record<string, string> = {
@@ -157,6 +189,11 @@ const ISSUE_ACTIVITY_LABELS: Record<string, string> = {
   "issue.cross_issue_influence_observed": "made a cross-task write",
   "issue.attribution_spoof_rejected": "tried to choose its own responsible user",
   "issue.recovery_action_opened": "Opened a source-scoped recovery action",
+  "issue.workspace_recovered": "Saved work recovered.",
+  "issue.retry_continued_from_saved_work": "Retry continued from saved work.",
+  "issue.workspace_recovery_requested": "Requested workspace recovery",
+  "issue.previous_run_files_waiting": "Still working to save the previous run's unsaved files. New runs start once they are saved. Paperclip keeps trying on its own.",
+  "issue.previous_run_files_lost": "Could not save the previous run's unsaved files because they were already gone. This task continues from its last save.",
   "issue.recovery_action_resolved": "Resolved the recovery action",
   "issue.recovery_action_escalated": "Escalated the recovery action",
   "issue.accepted_plan_decomposition_updated": "updated the accepted-plan decomposition",
@@ -180,10 +217,56 @@ const ISSUE_ACTIVITY_LABELS: Record<string, string> = {
   "issue.thread_interaction_withdrawn": "withdrew the request",
   "issue.thread_interaction_cancelled": "cancelled the request",
   "issue.thread_interaction_skipped": "skipped the request",
+  "issue.thread_interaction_dismissed": "deferred the request",
   "issue.thread_interaction_expired": "expired the request",
   "issue.thread_interaction_item_verdicts_submitted": "submitted verdicts on the request",
   "issue.stalled_review_decided": "recorded a review verdict",
+  "issue.connection_content_deleted": "deleted connected app content",
+  "issue.connection_content_deletion_incomplete": "partly deleted connected app content; some is still in use",
 };
+
+const ENTITY_LABELS: Record<string, string> = {
+  company: "the organization",
+  agent: "an agent",
+  goal: "a goal",
+  project: "a project",
+  routine: "a routine",
+  heartbeat_run: "a run",
+  approval: "an approval",
+  tool_connection: "the connection",
+  tool_application: "the app",
+};
+
+function readText(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function googleProviderAccessResult(details: ActivityDetails): string | null {
+  const access = asRecord(details?.providerAccess);
+  return access?.provider === "google" ? readText(access.result) : null;
+}
+
+function formatToolLabel(details: ActivityDetails): string {
+  const name = readText(details?.upstreamToolName)
+    ?? readText(details?.tool)?.replace(/^(?:mcp|app)\.[^:]*:|^(?:mcp|app)\.[a-z0-9-]*-[0-9a-f]{8}\./, "").replace(/-[0-9a-f]{16}$/, "");
+  const title = readText(details?.toolTitle);
+  if (!name) return title ?? "an app action";
+  return googleWorkspaceToolTitle(name, title) ?? name.replace(/[._-]+/g, " ");
+}
+
+export function formatActivityEntityLabel(entityType: string, details?: Record<string, unknown> | null): string {
+  const name = readText(details?.name);
+  if (entityType === "tool_application" && name) return name;
+  if (entityType === "tool_connection" && googleProviderAccessResult(details)) return "the Google Workspace connection";
+  return ENTITY_LABELS[entityType] ?? entityType.replace(/[._]+/g, " ");
+}
+
+export function formatActivityOutcome(action: string, details?: Record<string, unknown> | null): string | null {
+  if (action === "tool_application.archived" && details?.reason === "last_connection_removed") {
+    return "Its last connection was removed.";
+  }
+  return null;
+}
 
 /**
  * `issue.stalled_review_decided` carries the verb the actor chose, so the line
@@ -442,17 +525,14 @@ export function formatActivityVerb(
   options: ActivityFormatOptions = {},
 ): string {
   if (action.startsWith("tool_gateway.")) {
-    const rawTool = typeof details?.tool === "string"
-      ? details.tool
-      : typeof details?.upstreamToolName === "string"
-        ? details.upstreamToolName
-        : "an app action";
-    const tool = rawTool.replace(/[._-]+/g, " ");
+    const tool = formatToolLabel(details);
     const isTest = details?.source === "test";
     if (action === "tool_gateway.call_completed") return `${isTest ? "tested" : "used"} ${tool} on`;
     if (action === "tool_gateway.call_allowed") return `${isTest ? "started a test of" : "was allowed to use"} ${tool} on`;
     if (action === "tool_gateway.call_denied") return `was blocked from using ${tool} on`;
     if (action === "tool_gateway.approval_requested") return `asked to use ${tool} on`;
+    if (action === "tool_gateway.call_failed") return `could not ${isTest ? "test" : "use"} ${tool} on`;
+    if (action === "tool_gateway.call_deferred") return `could not finish ${isTest ? "testing" : "using"} ${tool} on`;
     if (action === "tool_gateway.session_created") return "opened an app session for";
     if (action === "tool_gateway.session_rejected") return "was blocked from opening an app session for";
     if (action === "tool_gateway.discovery") return "discovered app actions for";

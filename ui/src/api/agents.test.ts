@@ -1,8 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { agentsApi } from "./agents";
-import { api } from "./client";
+import { ApiError, api } from "./client";
 
 afterEach(() => vi.restoreAllMocks());
+
+it("reports a shortname conflict from the server without retrying", async () => {
+  const error = new ApiError("Agent reference is ambiguous", 409, {});
+  const get = vi.spyOn(api, "get").mockRejectedValue(error);
+  const options = { signal: new AbortController().signal };
+
+  await expect(agentsApi.get("research-agent", "company-1", options)).rejects.toBe(error);
+  expect(get).toHaveBeenCalledExactlyOnceWith("/agents/research-agent?companyId=company-1", options);
+});
 
 describe("agentsApi.retryFailedRun", () => {
   it("sends only the selected failed run and preserves a retry waiting for dispatch", async () => {

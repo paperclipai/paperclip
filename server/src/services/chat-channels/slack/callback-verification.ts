@@ -34,6 +34,15 @@ import {
 
 import { secretService } from "../../secrets.js";
 
+/** A signed provider challenge remains valid when those exact credentials enter the runtime vault. */
+export function preservesProvisionedSlackVerification(setup: EndpointRow["setup"], signingSecret: string, webhookUrl: string): boolean {
+  const internal = setup as InternalSetupState;
+  const observedUrl = internal.slackCallbackSurfaces?.events?.url;
+  return !!setup.webhookVerifiedAt && isProvisionedSlackSetup(setup.slackSetupMethod)
+    && internal.slackVerificationSigningFingerprint === createHash("sha256").update(signingSecret).digest("hex")
+    && !!observedUrl && slackCallbackMatchesPublicUrl(observedUrl, webhookUrl);
+}
+
 function slackRequestSignatureIsValid(
   request: Request,
   body: string,

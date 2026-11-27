@@ -1,10 +1,12 @@
 import { existsSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmod, writeFile, symlink, mkdir, open } from "node:fs/promises";
 import { join, dirname } from "node:path";
-import { eq } from "drizzle-orm";
-import { agents, assets, documents, heartbeatRuns, issues, projects, routineDocuments, routines, runnerApiResponseReservations, companySkills, companyMemberships, principalPermissionGrants } from "@paperclipai/db";
+import { and, eq, isNotNull } from "drizzle-orm";
+import { agents, agentApiKeys, agentWakeupRequests, activityLog, assets, authUsers, issueAttachments, cases, caseAttachments, companyLogos, toolRuntimeMetricCounters, documents, heartbeatRuns, issues, projects, routineDocuments, routineRevisions, routines, runnerApiResponseReservations, companySkills, companySkillVersions, companySkillTestRuns, companyMemberships, principalPermissionGrants, budgetPolicies, companies } from "@paperclipai/db";
+import { initializeRunIdentity } from "../run-identity.js";
 import { beforeAll, afterAll, beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import * as nativeSetupReadiness from "./setup-readiness.js";
 import { secretService } from "../secrets.js";
 import { authorizationService } from "../authorization.js";
 import { startRunnerApiTestServer } from "../../__tests__/helpers/runner-api-server.js";
@@ -14,10 +16,20 @@ import { registerRunnerPrpAuthority } from "../../realtime/runner-prp-ws.js";
 import { createLocalAgentJwt } from "../../agent-auth-jwt.js";
 import { RUNNER_API_RESPONSE_MAX_BYTES, RUNNER_API_RESPONSE_RUN_MAX_BYTES } from "./runner-api-response-limits.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
+import { finishPendingRunnerApiCaptureDeletes, RUNNER_API_CAPTURE_DELETE_FAILURE_METRIC } from "./runner-api-capture-retention.js";
 import { prepareHeartbeatTaskContext } from "../heartbeat/task-context.js";
+import { createHeartbeatRunPreparation } from "../heartbeat/run-preparation.js";
+import { createAssignedMcpTools } from "./assigned-mcp-tools.js";
+import type { ToolGatewayService } from "../tool-gateway.js";
+import { RUNNER_TOOL_RESULT_MAX_BYTES } from "./runner-tool-results.js";
 
 describe("runner API against real HTTP routes", () => {
   let server: Awaited<ReturnType<typeof startRunnerApiTestServer>>;
+  const nativeAuthProbe = vi.fn<typeof nativeSetupReadiness.testNativeRunnerAuthentication>(async () => ({
+    adapterType: "paperclip_runner", status: "fail", testedAt: new Date().toISOString(),
+    checks: [{ code: "codex_hello_probe_auth_required", level: "error", message: "The API authority fixture has no provider credentials." }],
+  }));
+  let restoreNativeAuthProbe: (() => void) | undefined;
   const oldSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
   const oldMasterKeyFile = process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
   beforeEach(() => {
@@ -26,16 +38,122 @@ describe("runner API against real HTTP routes", () => {
   });
   afterEach(() => vi.unstubAllEnvs());
   beforeAll(async () => {
+    // API authorization and replay use the real lifecycle; external model login is unavailable here.
+    const probe = vi.spyOn(nativeSetupReadiness, "testNativeRunnerAuthentication").mockImplementation(nativeAuthProbe);
+    restoreNativeAuthProbe = () => probe.mockRestore();
     process.env.PAPERCLIP_AGENT_JWT_SECRET = randomUUID();
     server = await startRunnerApiTestServer();
     process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = join(server.root, "master.key");
   }, 60_000);
   afterAll(async () => {
-    await server?.close();
-    if (oldMasterKeyFile === undefined) delete process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
-    else process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = oldMasterKeyFile;
-    if (oldSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
-    else process.env.PAPERCLIP_AGENT_JWT_SECRET = oldSecret;
+    try { await server?.close(); }
+    finally {
+      restoreNativeAuthProbe?.();
+      if (oldMasterKeyFile === undefined) delete process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
+      else process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = oldMasterKeyFile;
+      if (oldSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+      else process.env.PAPERCLIP_AGENT_JWT_SECRET = oldSecret;
+    }
+  });
+
+  it.each(["http_response", "runner_response"])("counts committed effects independently after losing the %s", async boundary => {
+    const fixture = await server.fixture();
+    const name = `Recovery effect ${randomUUID()}`;
+    const call = { tool: "call_api", callId: "one-project-effect", arguments: {
+      operationId: "POST /api/companies/{companyId}/projects", body: { name },
+    } };
+    const effects = () => server.db.select({ id: projects.id, name: projects.name }).from(projects)
+      .where(and(eq(projects.companyId, fixture.companyId), eq(projects.name, name)));
+    const fetchActual = globalThis.fetch;
+    let dispatched = 0;
+    const network = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const response = await fetchActual(url, init);
+      if (String(url) === `${fixture.apiUrl}/api/companies/${fixture.companyId}/projects` && init?.method === "POST") {
+        dispatched += 1;
+        expect(response.ok).toBe(true);
+        expect(await effects()).toHaveLength(1);
+        if (boundary === "http_response") throw new TypeError("fixture lost the committed HTTP response");
+      }
+      return response;
+    });
+    try {
+      const first = await fixture.authority.execute(call);
+      const ledgerBeforeRecovery = await effects();
+      expect(ledgerBeforeRecovery).toHaveLength(1);
+      const replacement = new PaperclipRunnerToolAuthority(server.db, fixture);
+      const recovered = await replacement.recover(call);
+      if (boundary === "http_response") {
+        expect(first).toMatchObject({ outcome: "unknown" });
+        expect(recovered).toBeNull();
+        expect(await replacement.execute(call)).toMatchObject({ outcome: "unknown" });
+      } else {
+        expect(first).toMatchObject({ ok: true, status: 201 });
+        expect(recovered).toEqual({ result: first });
+        expect(await replacement.execute(call)).toEqual(first);
+      }
+      expect(await effects()).toEqual(ledgerBeforeRecovery);
+      expect(dispatched).toBe(1);
+      await server.db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, fixture.runId));
+      await expect(replacement.recover(call)).rejects.toThrow("binding_not_authorized");
+      expect(await effects()).toEqual(ledgerBeforeRecovery);
+      expect(dispatched).toBe(1);
+    } finally { network.mockRestore(); }
+  });
+
+  it.each(["standard", "low_trust_review"])("delivers oversized assigned results without repeating the action (%s)", async trust => {
+    const fixture = await server.fixture({ apiToolsEnabled: false });
+    if (trust === "low_trust_review") {
+      await server.db.update(agents).set({ permissions: { trustPreset: trust, authorizationPolicy: {
+        trustBoundary: { mode: trust, companyId: fixture.companyId, issueIds: [fixture.issueId], allowedAgentIds: [fixture.agentId] },
+      } } }).where(eq(agents.id, fixture.agentId));
+    }
+    const original = { data: { content: "🧭é".repeat(120_000), last: "complete-result" } };
+    const executeTool = vi.fn().mockResolvedValue({ status: "completed", result: original });
+    const assignedMcpTools = await createAssignedMcpTools({
+      gatewayPublicId: "fixture", bearerToken: "fixture",
+      gateway: {
+        listToolsForNamedGateway: async () => [{ name: "app:write", displayName: "Write", description: "Fixture action",
+          parametersSchema: { type: "object" }, pluginId: "fixture", providerType: "mcp_remote_http", risk: "write" }],
+        executeTool,
+      } as unknown as ToolGatewayService,
+    });
+    const binding = { ...fixture.authority.binding, assignedMcpTools };
+    const authority = new PaperclipRunnerToolAuthority(server.db, binding);
+    const result: any = await authority.execute({ tool: assignedMcpTools.definitions()[0]!.name as string, callId: "large-action", arguments: {} });
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(32 * 1024);
+    expect(result).toMatchObject({ artifact: { artifactId: expect.any(String) }, readWith: { tool: "read_tool_result" } });
+    // Recreate the authority to prove that pages do not depend on a live cache.
+    const reopened = new PaperclipRunnerToolAuthority(server.db, binding);
+    expect(reopened.definitions().some(tool => tool.name === "read_tool_result")).toBe(true);
+    let offsetBytes: number | null = 0;
+    let text = "";
+    let pages = 0;
+    do {
+      const page: any = await reopened.execute({ tool: "read_tool_result", callId: randomUUID(),
+        arguments: { artifactId: result.artifact.artifactId, offsetBytes } });
+      expect(page).not.toHaveProperty("operationId");
+      expect(page.ok).toBe(true);
+      expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThanOrEqual(RUNNER_TOOL_RESULT_MAX_BYTES);
+      if (pages === 0) expect(Buffer.byteLength(page.data)).toBeGreaterThan(490_000);
+      pages++;
+      text += page.data;
+      offsetBytes = page.responseText.nextOffsetBytes;
+    } while (offsetBytes !== null);
+    expect(JSON.parse(text)).toEqual(original);
+    expect(pages).toBe(2);
+    expect(executeTool).toHaveBeenCalledOnce();
+    expect((await fixture.snapshot()).assets.filter(asset => asset.id === result.artifact.artifactId)).toHaveLength(1);
+    const foreign = await server.fixture();
+    const foreignAuthority = new PaperclipRunnerToolAuthority(server.db, { ...foreign.authority.binding, assignedMcpTools });
+    await expect(foreignAuthority.execute({ tool: "read_tool_result", callId: "foreign",
+      arguments: { artifactId: result.artifact.artifactId } })).rejects.toThrow();
+    await expect(reopened.execute({ tool: "read_tool_result", callId: "unrelated",
+      arguments: { artifactId: fixture.artifactId } })).rejects.toThrow("not available to this task");
+    await expect(reopened.execute({ tool: "call_api", callId: "disabled",
+      arguments: { operationId: "GET /api/companies/{companyId}/projects" } })).rejects.toThrow("not_advertised");
+    await server.db.update(agents).set({ status: "paused" }).where(eq(agents.id, fixture.agentId));
+    await expect(reopened.execute({ tool: "read_tool_result", callId: "paused",
+      arguments: { artifactId: result.artifact.artifactId } })).rejects.toThrow("binding_not_authorized");
   });
 
   it.skipIf(!process.env.PAPERCLIP_REQUIRE_RUNNER_API_INTEGRATION && !existsSync(defaultCapabilityRunnerdBinary())).each(["current", "legacy_http"])("runs runnerd → PRP → authority → actual authenticated HTTP (%s receipt)", async (receiptFormat) => {
@@ -124,6 +242,90 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     expect(result).toMatchObject({ ok: true, status: 200, data: { status: "blocked", billingCode: "REST-PARITY" } });
     expect((await fixture.snapshot()).issues.find(row => row.id === fixture.blockerId))
       .toMatchObject({ status: "blocked", billingCode: "REST-PARITY" });
+  });
+
+  it.each(["company owner", "unrelated parent", "no fallback"])(
+    "keeps the authenticated native run responsible user over %s", async fallback => {
+      const fixture = await server.fixture({ connectionScenario: "fresh", disableWakeOnDemand: true });
+      const ownerUserId = randomUUID();
+      if (fallback !== "no fallback") {
+        await server.db.insert(authUsers).values({ id: ownerUserId, name: "Company owner", email: `${ownerUserId}@fixture.invalid`,
+          emailVerified: true, createdAt: new Date(), updatedAt: new Date() });
+        await server.db.insert(companyMemberships).values({ companyId: fixture.companyId, principalType: "user",
+          principalId: ownerUserId, status: "active", membershipRole: "owner" });
+      }
+      if (fallback === "unrelated parent") {
+        await server.db.update(issues).set({ responsibleUserId: ownerUserId }).where(eq(issues.id, fixture.blockerId));
+      }
+      const call = { tool: "call_api", callId: "bound-routine", arguments: {
+        operationId: "POST /api/companies/{companyId}/routines", body: {
+          title: "Native run owned routine", assigneeAgentId: fixture.agentId, status: "paused",
+          ...(fallback === "unrelated parent" ? { parentIssueId: fixture.blockerId } : {}),
+          actorResponsibleUserId: ownerUserId, responsibleUserId: ownerUserId, createdByUserId: ownerUserId,
+        },
+      } };
+      const created = await fixture.authority.execute(call);
+      expect(created).toMatchObject({ ok: true, status: 201 });
+      expect(await new PaperclipRunnerToolAuthority(server.db, fixture).execute(call)).toEqual(created);
+      const [routine] = await server.db.select({ id: routines.id, responsibleUserId: routines.responsibleUserId,
+        createdByAgentId: routines.createdByAgentId, createdByUserId: routines.createdByUserId }).from(routines)
+        .where(eq(routines.companyId, fixture.companyId));
+      expect(routine).toEqual({ id: expect.any(String), responsibleUserId: fixture.responsibleUserId,
+        createdByAgentId: fixture.agentId, createdByUserId: null });
+      const revisions = await server.db.select({ responsibleUserId: routineRevisions.responsibleUserId,
+        createdByRunId: routineRevisions.createdByRunId }).from(routineRevisions)
+        .where(eq(routineRevisions.routineId, routine.id));
+      expect(revisions).toEqual([{ responsibleUserId: fixture.responsibleUserId, createdByRunId: fixture.runId }]);
+      await expect(fixture.authority.execute({ ...call, callId: "foreign-routine", arguments: {
+        ...call.arguments, pathParams: { companyId: fixture.foreignCompanyId },
+      } })).rejects.toThrow("another company");
+      await server.db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, fixture.runId));
+      await expect(fixture.authority.execute({ ...call, callId: "cancelled-routine" })).rejects.toThrow("binding_not_authorized");
+      expect(await server.db.select({ id: routines.id }).from(routines).where(eq(routines.companyId, fixture.companyId)))
+        .toEqual([{ id: routine.id }]);
+    },
+  );
+
+  it("uses the current run identity when an agent JWT carries a stale user claim", async () => {
+    const fixture = await server.fixture({ connectionScenario: "fresh", disableWakeOnDemand: true });
+    const token = createLocalAgentJwt(fixture.agentId, fixture.companyId, "paperclip_runner", fixture.runId, "stale-user");
+    const response = await fetch(`${fixture.apiUrl}/api/companies/${fixture.companyId}/routines`, {
+      method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "Current identity routine", assigneeAgentId: fixture.agentId, status: "paused" }),
+    });
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({ responsibleUserId: fixture.responsibleUserId,
+      createdByAgentId: fixture.agentId, createdByUserId: null });
+  });
+
+  it("rejects routine creation after the bound responsible user loses company membership", async () => {
+    const fixture = await server.fixture({ connectionScenario: "fresh", disableWakeOnDemand: true });
+    await server.db.delete(companyMemberships).where(and(eq(companyMemberships.companyId, fixture.companyId),
+      eq(companyMemberships.principalId, fixture.responsibleUserId!)));
+    await expect(fixture.authority.execute({ tool: "call_api", callId: "revoked-user-routine", arguments: {
+      operationId: "POST /api/companies/{companyId}/routines", body: {
+        title: "Revoked authority routine", assigneeAgentId: fixture.agentId, status: "paused",
+      },
+    } })).rejects.toMatchObject({ status: 403 });
+    expect(await server.db.select({ id: routines.id }).from(routines).where(eq(routines.companyId, fixture.companyId))).toEqual([]);
+  });
+
+  it.each([true, false])("keeps agent API-key responsibility binding (present=%s)", async bound => {
+    const fixture = await server.fixture({ connectionScenario: "fresh", disableWakeOnDemand: true });
+    const token = `pcp_fixture_${randomUUID()}`;
+    await server.db.insert(agentApiKeys).values({ companyId: fixture.companyId, agentId: fixture.agentId,
+      name: "Routine API fixture", keyHash: createHash("sha256").update(token).digest("hex"),
+      responsibleUserId: bound ? fixture.responsibleUserId : null });
+    const response = await fetch(`${fixture.apiUrl}/api/companies/${fixture.companyId}/routines`, {
+      method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "API-key routine", assigneeAgentId: fixture.agentId, status: "paused" }),
+    });
+    expect(response.status).toBe(bound ? 201 : 403);
+    const rows = await server.db.select({ responsibleUserId: routines.responsibleUserId,
+      createdByAgentId: routines.createdByAgentId, createdByUserId: routines.createdByUserId }).from(routines)
+      .where(eq(routines.companyId, fixture.companyId));
+    expect(rows).toEqual(bound ? [{ responsibleUserId: fixture.responsibleUserId,
+      createdByAgentId: fixture.agentId, createdByUserId: null }] : []);
   });
 
   it("manages owned routines and triggers with durable replay, attribution and owner denials", async () => {
@@ -288,6 +490,103 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     expect((await fixture.snapshot()).assets.filter(asset => asset.objectKey.includes("/runner-api/"))).toEqual([]);
   });
 
+  // s7504 run cb7994f9 (Codex, CHA-5): while a succeeded run's accounting held
+  // new company work, this live run's write_task_document was refused with
+  // "Company or budget authority unavailable", so it proposed a blocked result.
+  it("lets a running run write during a temporary accounting hold, but not after a hard stop", async () => {
+    const fixture = await server.fixture({ disableWakeOnDemand: true, conversation: true });
+    await server.db.insert(budgetPolicies).values({ companyId: fixture.companyId, scopeType: "company", scopeId: fixture.companyId,
+      metric: "billed_cents", windowKind: "calendar_month_utc", amount: 3000, notifyEnabled: false, unpricedUsagePolicy: "block" });
+    // Another run ended without succeeding and awaits accounting: new work waits.
+    await server.db.insert(heartbeatRuns).values({ companyId: fixture.companyId, agentId: fixture.agentId, invocationSource: "automation",
+      status: "failed", finishedAt: new Date(), costAccountingPending: true, usageJson: { accountingReceiptReady: false } });
+    const write = (key: string) => fixture.authority.execute({ tool: "write_task_document", callId: `hold-${key}`,
+      arguments: { taskId: fixture.issueId, key, title: "Brief", body: "Three bullets", baseRevisionId: null } });
+    await expect(write("brief")).resolves.toMatchObject({ ok: true });
+    await server.db.update(companies).set({ status: "paused", pauseReason: "budget", pausedAt: new Date() })
+      .where(eq(companies.id, fixture.companyId));
+    await expect(write("after-stop")).rejects.toThrow("Company or budget authority unavailable");
+  });
+
+  it.each(["comment_on_task", "write_task_document", "hire_agent"])("recovers completed %s receipts without repeating the write", async tool => {
+    const fixture = await server.fixture({ disableWakeOnDemand: true, conversation: true });
+    if (tool === "hire_agent") {
+      await server.db.insert(companyMemberships).values({ companyId: fixture.companyId, principalType: "agent", principalId: fixture.agentId, status: "active", membershipRole: "member" });
+      await server.db.insert(principalPermissionGrants).values([
+        { companyId: fixture.companyId, principalType: "agent", principalId: fixture.agentId, permissionKey: "agents:create" },
+        { companyId: fixture.companyId, principalType: "user", principalId: fixture.responsibleUserId!, permissionKey: "agents:create" },
+      ]);
+    }
+    const args = tool === "hire_agent" ? { name: "Recovery teammate", instructions: "Inspect the assigned task." }
+      : tool === "comment_on_task" ? { taskId: fixture.issueId, body: "  Persisted comment  " }
+      : { taskId: fixture.issueId, key: "recovery", title: "Recovery document", body: "Persisted document", baseRevisionId: null };
+    const call = { tool, callId: "completed-bridge-write", arguments: args };
+    const result = await fixture.authority.execute(call);
+    expect(result).toMatchObject({ ok: true, status: expect.any(Number), apiOperationId: expect.any(String) });
+    if (tool === "hire_agent") {
+      await expect.poll(() => nativeAuthProbe.mock.calls
+        .filter(([context]) => context.companyId === fixture.companyId)
+        .map(([context, provider]) => ({ companyId: context.companyId, provider, configProvider: context.config.provider })),
+      { timeout: 5_000 }).toEqual([{ companyId: fixture.companyId, provider: "codex", configProvider: "codex" }]);
+    }
+    const reopened = new PaperclipRunnerToolAuthority(server.db, fixture.authority.binding);
+    const effects = async () => {
+      const snapshot = await fixture.snapshot();
+      return { comments: snapshot.comments, revisions: snapshot.documentRevisions, approvals: snapshot.approvals,
+        agents: await server.db.select({ id: agents.id, name: agents.name }).from(agents).where(eq(agents.companyId, fixture.companyId)).orderBy(agents.id),
+        calls: snapshot.activity.filter(row => row.action === "runner.api_called") };
+    };
+    const before = await effects();
+    expect(before.calls).toHaveLength(1);
+    expect(await reopened.recover(call)).toEqual({ result });
+    expect(await reopened.recover({ ...call, arguments: { ...args, ...(tool === "hire_agent" ? { name: "Changed teammate" } : { body: "Changed body" }) } })).toBeNull();
+    expect(await reopened.recover({ ...call, callId: "missing-receipt" })).toBeNull();
+    const disabled = new PaperclipRunnerToolAuthority(server.db, { ...fixture.authority.binding, apiToolsEnabled: false });
+    expect(await disabled.recover(call)).toBeNull();
+    const [run] = await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    const pending = structuredClone(run.resultJson!);
+    for (const receipt of Object.values(pending.apiToolReceipts as Record<string, { state: string }>)) receipt.state = "pending";
+    await server.db.update(heartbeatRuns).set({ resultJson: pending }).where(eq(heartbeatRuns.id, fixture.runId));
+    expect(await reopened.recover(call)).toBeNull();
+    await server.db.update(heartbeatRuns).set({ resultJson: run.resultJson }).where(eq(heartbeatRuns.id, fixture.runId));
+    await server.db.update(agents).set({ status: "paused" }).where(eq(agents.id, fixture.agentId));
+    await expect(reopened.recover(call)).rejects.toThrow("paperclip_runner_tool_binding_not_authorized");
+    await server.db.update(agents).set({ status: "active" }).where(eq(agents.id, fixture.agentId));
+    expect(await effects()).toEqual(before);
+  });
+
+  it("recovers a body-less PATCH saved before the body rule while rejecting a new one before dispatch", async () => {
+    const fixture = await server.fixture();
+    const canonical = (value: unknown): string => Array.isArray(value) ? `[${value.map(canonical).join(",")}]`
+      : value && typeof value === "object" ? `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(",")}}`
+      : JSON.stringify(value) ?? "null";
+    const sha = (value: string) => createHash("sha256").update(value).digest("hex");
+    const bodyless = { operationId: "PATCH /api/projects/{id}", pathParams: { id: fixture.projectId } };
+    const call = { tool: "call_api", callId: "saved-bodyless-patch", arguments: bodyless };
+    // An older server accepted and completed this call; seed its receipt from a real completed PATCH.
+    const result = await fixture.authority.execute({ ...call, arguments: { ...bodyless, body: { name: "Saved before upgrade" } } });
+    expect(result).toMatchObject({ ok: true, status: 200 });
+    const [run] = await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    const receipts = structuredClone((run.resultJson as Record<string, any>).apiToolReceipts);
+    receipts[sha(call.callId)].digest = sha(canonical(bodyless));
+    await server.db.update(heartbeatRuns).set({ resultJson: { ...run.resultJson, apiToolReceipts: receipts } }).where(eq(heartbeatRuns.id, fixture.runId));
+    const reopened = new PaperclipRunnerToolAuthority(server.db, fixture.authority.binding);
+    const network = vi.spyOn(globalThis, "fetch");
+    try {
+      expect(await reopened.recover(call)).toEqual({ result });
+      expect(await reopened.execute(call)).toEqual(result);
+      const rejected = { ...call, callId: "new-bodyless-patch" };
+      await expect(reopened.execute(rejected)).rejects.toThrow(/not sent.*requires body/);
+      await expect(reopened.execute(rejected)).rejects.toThrow(/not sent.*requires body/);
+      expect(network).not.toHaveBeenCalled();
+    } finally { network.mockRestore(); }
+    // The rejected call reserved no receipt, so its callId stays usable for the corrected call.
+    const [after] = await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    expect(Object.keys((after.resultJson as Record<string, any>).apiToolReceipts)).not.toContain(sha("new-bodyless-patch"));
+    expect(await reopened.execute({ tool: "call_api", callId: "new-bodyless-patch", arguments: { ...bodyless, body: { name: "Corrected" } } }))
+      .toMatchObject({ ok: true, status: 200, data: { name: "Corrected" } });
+  });
+
   it("returns and replays scoped secret values without plaintext receipts or response assets", async () => {
     const fixture = await server.fixture();
     const value = "disposable-private-credential-".repeat(1500);
@@ -298,6 +597,12 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     const result = await fixture.authority.execute(call);
     expect(result).toMatchObject({ ok: true, status: 200, data: { key: secret.key, value } });
     expect(await fixture.authority.execute(call)).toEqual(result);
+    expect(await fixture.authority.recover(call)).toEqual({ result });
+    const disabled = new PaperclipRunnerToolAuthority(server.db, { ...fixture.authority.binding, apiToolsEnabled: false });
+    expect(await disabled.recover(call)).toBeNull();
+    await server.db.update(agents).set({ status: "paused" }).where(eq(agents.id, fixture.agentId));
+    await expect(fixture.authority.recover(call)).rejects.toThrow("paperclip_runner_tool_binding_not_authorized");
+    await server.db.update(agents).set({ status: "active" }).where(eq(agents.id, fixture.agentId));
     const snapshot = await fixture.snapshot();
     expect(snapshot.assets.filter(asset => asset.objectKey.includes("/runner-api/"))).toEqual([]);
     const [run] = await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
@@ -345,9 +650,10 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     const [agent] = await server.db.select().from(agents).where(eq(agents.id, fixture.agentId));
     const context = structuredClone(run.contextSnapshot ?? {});
     await prepareHeartbeatTaskContext(server.db, { run, agent,
-      task: { issueRef: issue, issueContext: null, wakeCommentContext: null, context, taskSession: null },
+      task: { issueRef: issue, issueContext: null, context, taskSession: null },
       policy: { recovering: true, trustPreset: { kind: "standard" }, experimentalInstanceSettings: {} },
-      services: { issuesSvc: { getAncestors: async () => [] }, getPinnedSkillTestContext: async () => null },
+      services: { issuesSvc: { getAncestors: async () => [] },
+        getPinnedSkillTestContext: createHeartbeatRunPreparation(server.db).getPinnedSkillTestContext },
     });
     await server.db.update(heartbeatRuns).set({ contextSnapshot: context }).where(eq(heartbeatRuns.id, fixture.runId));
   }
@@ -359,7 +665,17 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     } }).where(eq(heartbeatRuns.id, fixture.runId));
     await server.db.update(issues).set({ workMode: "skill_test" }).where(eq(issues.id, fixture.issueId));
     await server.db.update(issues).set({ workMode: "standard" }).where(eq(issues.id, fixture.issueId));
+    await expect(reprepareRun(fixture)).rejects.toThrow("The skill test's saved version is unavailable");
+    const [skill] = await server.db.insert(companySkills).values({ companyId: fixture.companyId,
+      key: `company/${fixture.companyId}/scope-test`, slug: "scope-test", name: "Scope test", markdown: "# Scope test", sourceType: "managed" }).returning();
+    const [version] = await server.db.insert(companySkillVersions).values({ companyId: fixture.companyId,
+      companySkillId: skill.id, revisionNumber: 1, fileInventory: [{ path: "SKILL.md", kind: "skill", content: "# Scope test" }] }).returning();
+    await server.db.insert(companySkillTestRuns).values({ companyId: fixture.companyId, skillId: skill.id,
+      skillVersionId: version.id, agentId: fixture.agentId, issueId: fixture.issueId, inputSnapshot: "Exercise the saved scope" });
     await reprepareRun(fixture);
+    const [prepared] = await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    expect(prepared.contextSnapshot).toMatchObject({ paperclipAgentJwtScope: { kind: "skill_test", issueId: fixture.issueId },
+      paperclipSkillTest: { skillKey: skill.key, skillVersionId: version.id } });
     const body = { kind: "secret", name: "parity/skill-test", value: "disposable-skill-test-value", justification: "Must remain denied" };
     const token = createLocalAgentJwt(fixture.agentId, fixture.companyId, "paperclip_runner", fixture.runId,
       fixture.responsibleUserId, { kind: "skill_test", issueId: fixture.issueId });
@@ -522,6 +838,88 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     expect((await fixture.snapshot()).projects.some(p => p.name === "Uncertain")).toBe(false);
   });
 
+  it.each([403, 422])("a deliberate retry can execute an exact mutation previously rejected with %s", async status => {
+    const fixture = await server.fixture();
+    const args = { operationId: "POST /api/companies/{companyId}/projects", body: { name: "Authorized on retry" } };
+    const rejected = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(Response.json({ error: "Rejected before mutation" }, { status }));
+    try {
+      expect(await fixture.authority.execute({ tool: "call_api", callId: "rejected", arguments: args }))
+        .toMatchObject({ ok: false, status });
+    } finally { rejected.mockRestore(); }
+    await server.db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, fixture.runId));
+    const id = randomUUID(), intentId = randomUUID();
+    await server.db.insert(heartbeatRuns).values({ id, companyId: fixture.companyId, agentId: fixture.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: fixture.issueId, responsibleUserId: fixture.responsibleUserId,
+      contextSnapshot: { issueId: fixture.issueId, previousRunId: fixture.runId } });
+    await server.db.update(issues).set({ executionRunId: id }).where(eq(issues.id, fixture.issueId));
+    await server.db.insert(agentWakeupRequests).values({ id: intentId, companyId: fixture.companyId,
+      agentId: fixture.agentId, runId: id, source: "on_demand", reason: "task_retry", status: "coalesced",
+      requestedByActorType: "user", requestedByActorId: fixture.responsibleUserId ?? "board",
+      payload: { issueId: fixture.issueId, taskRetry: { schema: "paperclip.task-retry.v1", generationId: intentId,
+        sourceRunId: fixture.runId, actorId: fixture.responsibleUserId ?? "board", strategy: "fresh_isolated_workspace" } } });
+    if (fixture.responsibleUserId) await initializeRunIdentity(server.db, { companyId: fixture.companyId, runId: id,
+      issueId: fixture.issueId, responsibleUserId: fixture.responsibleUserId, cause: "instruction" });
+    const authority = new PaperclipRunnerToolAuthority(server.db, { ...fixture, runId: id });
+    const network = vi.spyOn(globalThis, "fetch");
+    try {
+      const result = await authority.execute({ tool: "call_api", callId: "accepted-retry", arguments: args });
+      expect(result).toMatchObject({ ok: true, status: 201 });
+      expect(await authority.execute({ tool: "call_api", callId: "accepted-retry", arguments: args })).toEqual(result);
+      expect(network).toHaveBeenCalledTimes(1);
+    } finally { network.mockRestore(); }
+    expect((await fixture.snapshot()).projects.filter(project => project.name === "Authorized on retry")).toHaveLength(1);
+  });
+
+  it.each(["task_retry", "automatic_successor"])("%s reuses the completed effect and fences a different unresolved effect across run identities", async mode => {
+    const fixture = await server.fixture();
+    const args = { operationId: "POST /api/companies/{companyId}/projects", body: { name: "Already created" } };
+    const completed = await fixture.authority.execute({ tool: "call_api", callId: "first-publication", arguments: args });
+    expect(completed).toMatchObject({ status: 201 });
+    const [original] = await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    await server.db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date(),
+      resultJson: { ...original.resultJson, apiToolReceipts: { ...(original.resultJson?.apiToolReceipts as object),
+        unresolved: { operationId: "POST /api/companies/{companyId}/routines", state: "pending", digest: "unknown" } } },
+    }).where(eq(heartbeatRuns.id, fixture.runId));
+    let id = randomUUID();
+    const intentId = randomUUID();
+    await server.db.insert(heartbeatRuns).values({ id, companyId: fixture.companyId, agentId: fixture.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: fixture.issueId, responsibleUserId: fixture.responsibleUserId,
+      contextSnapshot: { issueId: fixture.issueId, previousRunId: fixture.runId } });
+    await server.db.update(issues).set({ executionRunId: id }).where(eq(issues.id, fixture.issueId));
+    await server.db.insert(agentWakeupRequests).values({ id: intentId, companyId: fixture.companyId,
+      agentId: fixture.agentId, runId: id, source: "on_demand", reason: "task_retry", status: "coalesced",
+      requestedByActorType: "user", requestedByActorId: fixture.responsibleUserId ?? "board",
+      payload: { issueId: fixture.issueId, taskRetry: { schema: "paperclip.task-retry.v1", generationId: intentId,
+        sourceRunId: fixture.runId, actorId: fixture.responsibleUserId ?? "board", strategy: "fresh_isolated_workspace" } } });
+    if (mode === "automatic_successor") {
+      const parentId = id;
+      id = randomUUID();
+      await server.db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() })
+        .where(eq(heartbeatRuns.id, parentId));
+      await server.db.insert(heartbeatRuns).values({ id, companyId: fixture.companyId, agentId: fixture.agentId,
+        status: "running", runtimeMode: "native", nativeIssueId: fixture.issueId, retryOfRunId: parentId,
+        responsibleUserId: fixture.responsibleUserId, invocationSource: "automation", contextSnapshot: { issueId: fixture.issueId } });
+      await server.db.update(issues).set({ executionRunId: id }).where(eq(issues.id, fixture.issueId));
+    }
+    if (fixture.responsibleUserId) await initializeRunIdentity(server.db, { companyId: fixture.companyId, runId: id,
+      issueId: fixture.issueId, responsibleUserId: fixture.responsibleUserId, cause: "instruction" });
+    const authority = new PaperclipRunnerToolAuthority(server.db, { ...fixture, runId: id });
+    const network = vi.spyOn(globalThis, "fetch");
+    try {
+      expect(await authority.execute({ tool: "call_api", callId: "replacement-publication", arguments: args })).toEqual(completed);
+      expect(await authority.execute({ tool: "call_api", callId: "uncertain-other-operation", arguments: {
+        operationId: "POST /api/companies/{companyId}/routines", body: { title: "Uncertain", assigneeAgentId: fixture.agentId },
+      } })).toMatchObject({ outcome: "unknown", error: "api_outcome_unknown" });
+      expect(network).not.toHaveBeenCalled();
+      expect(await authority.execute({ tool: "call_api", callId: "independent-read", arguments: {
+        operationId: "GET /api/companies/{companyId}/projects",
+      } })).toMatchObject({ status: 200 });
+      expect(network).toHaveBeenCalledTimes(1);
+    } finally { network.mockRestore(); }
+    expect((await fixture.snapshot()).projects.filter(project => project.name === "Already created")).toHaveLength(1);
+  });
+
   it("revalidates the active run after reading an upload", async () => {
     const fixture = await server.fixture();
     const original = server.storage.getObject.bind(server.storage);
@@ -658,27 +1056,278 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     expect(await call()).toMatchObject({ ok: false, error: "api_response_capture_limit" });
   });
 
-  it("counts old snapshots and other-run reservations against the company quota, and reclaims deletions", async () => {
+  it("evicts the oldest finished snapshots instead of blocking a read when the company quota is full", async () => {
     const fixture = await server.fixture();
     vi.stubEnv("PAPERCLIP_RUNNER_API_COMPANY_CAPTURE_MAX_BYTES", String(2 * RUNNER_API_RESPONSE_MAX_BYTES));
-    const [oldSnapshot] = await server.db.insert(assets).values({ companyId: fixture.companyId, provider: "local_disk",
-      objectKey: `${fixture.companyId}/runner-api/old-snapshot`, contentType: "text/plain", byteSize: RUNNER_API_RESPONSE_MAX_BYTES,
-      sha256: "old-snapshot", createdByAgentId: fixture.agentId }).returning();
-    const [reservation] = await server.db.insert(runnerApiResponseReservations).values({ companyId: fixture.companyId, runId: null, reservedBytes: RUNNER_API_RESPONSE_MAX_BYTES }).returning();
+    const stored = await server.storage.putFile({ companyId: fixture.companyId, namespace: "runner-api", originalFilename: "response.json",
+      contentType: "application/json", body: Buffer.from("{}") });
+    const [oldest] = await server.db.insert(assets).values({ ...stored, companyId: fixture.companyId, byteSize: RUNNER_API_RESPONSE_MAX_BYTES,
+      createdByAgentId: fixture.agentId, createdAt: new Date(Date.now() - 2 * 86_400_000) }).returning();
+    const finishedRunId = randomUUID();
+    await server.db.insert(heartbeatRuns).values({ id: finishedRunId, companyId: fixture.companyId, agentId: fixture.agentId,
+      status: "succeeded", runtimeMode: "native", nativeIssueId: fixture.blockerId, contextSnapshot: { issueId: fixture.blockerId } });
+    const [newer] = await server.db.insert(assets).values({ companyId: fixture.companyId, provider: "local_disk",
+      objectKey: `${fixture.companyId}/runner-api/newer-snapshot`, contentType: "text/plain", byteSize: RUNNER_API_RESPONSE_MAX_BYTES / 2,
+      sha256: "newer-snapshot", createdByAgentId: fixture.agentId, createdAt: new Date(Date.now() - 86_400_000) }).returning();
+    await server.db.insert(runnerApiResponseReservations).values({ companyId: fixture.companyId, runId: finishedRunId, assetId: newer.id, reservedBytes: newer.byteSize });
     await server.db.update(projects).set({ description: "x".repeat(32 * 1024) }).where(eq(projects.id, fixture.projectId));
-    // A fresh authority instance cannot reset reservations from another run/process.
     const authority = new PaperclipRunnerToolAuthority(server.db, fixture);
-    const call = () => authority.execute({ tool: "call_api", callId: randomUUID(), arguments: {
+    const result: any = await authority.execute({ tool: "call_api", callId: randomUUID(), arguments: {
+      operationId: "GET /api/projects/{id}", pathParams: { id: fixture.projectId },
+    } });
+    expect(result).toMatchObject({ ok: true });
+    const remaining = await server.db.select({ id: assets.id }).from(assets).where(eq(assets.companyId, fixture.companyId));
+    expect(remaining.map(row => row.id)).not.toContain(oldest.id);
+    expect(remaining.map(row => row.id)).toContain(newer.id);
+    expect(remaining.map(row => row.id)).toContain(result.artifact.artifactId);
+    expect((await server.storage.headObject(fixture.companyId, oldest.objectKey)).exists).toBe(false);
+  });
+
+  it("keeps an evicted snapshot counted until its stored object is deleted, then retries the delete", async () => {
+    const fixture = await server.fixture();
+    vi.stubEnv("PAPERCLIP_RUNNER_API_COMPANY_CAPTURE_MAX_BYTES", String(2 * RUNNER_API_RESPONSE_MAX_BYTES));
+    const stored = await server.storage.putFile({ companyId: fixture.companyId, namespace: "runner-api", originalFilename: "response.json",
+      contentType: "application/json", body: Buffer.from("{}") });
+    const [oldest] = await server.db.insert(assets).values({ ...stored, companyId: fixture.companyId, byteSize: RUNNER_API_RESPONSE_MAX_BYTES * 1.5,
+      createdByAgentId: fixture.agentId, createdAt: new Date(Date.now() - 86_400_000) }).returning();
+    await server.db.update(projects).set({ description: "x".repeat(32 * 1024) }).where(eq(projects.id, fixture.projectId));
+    const call = () => fixture.authority.execute({ tool: "call_api", callId: randomUUID(), arguments: {
+      operationId: "GET /api/projects/{id}", pathParams: { id: fixture.projectId },
+    } });
+    const spy = vi.spyOn(server.storage, "deleteObject").mockRejectedValue(new Error("storage unavailable"));
+    try {
+      expect(await call()).toMatchObject({ ok: false, error: "api_response_company_storage_limit" });
+    } finally { spy.mockRestore(); }
+    expect(await server.db.select().from(runnerApiResponseReservations).where(eq(runnerApiResponseReservations.companyId, fixture.companyId))).toEqual([
+      expect.objectContaining({ assetId: null, pendingDeleteObjectKey: oldest.objectKey, reservedBytes: oldest.byteSize }),
+    ]);
+    expect((await server.storage.headObject(fixture.companyId, oldest.objectKey)).exists).toBe(true);
+    expect(await call()).toMatchObject({ ok: true });
+    expect((await server.storage.headObject(fixture.companyId, oldest.objectKey)).exists).toBe(false);
+    const reservations = await server.db.select().from(runnerApiResponseReservations).where(eq(runnerApiResponseReservations.companyId, fixture.companyId));
+    expect(reservations.every(row => row.pendingDeleteObjectKey === null)).toBe(true);
+  });
+
+  it("reclaims enough space when eviction spans more than one page of small snapshots", async () => {
+    const fixture = await server.fixture();
+    vi.stubEnv("PAPERCLIP_RUNNER_API_COMPANY_CAPTURE_MAX_BYTES", String(2 * RUNNER_API_RESPONSE_MAX_BYTES));
+    const size = 4 * 1024 * 1024;
+    const start = Date.now() - 86_400_000;
+    const small = await server.db.insert(assets).values(Array.from({ length: 500 }, (_, index) => ({ companyId: fixture.companyId, provider: "local_disk",
+      objectKey: `${fixture.companyId}/runner-api/small-${index}`, contentType: "text/plain", byteSize: size,
+      sha256: `small-${index}`, createdByAgentId: fixture.agentId, createdAt: new Date(start + index * 1000) }))).returning({ id: assets.id });
+    await server.db.update(projects).set({ description: "x".repeat(32 * 1024) }).where(eq(projects.id, fixture.projectId));
+    expect(await fixture.authority.execute({ tool: "call_api", callId: randomUUID(), arguments: {
+      operationId: "GET /api/projects/{id}", pathParams: { id: fixture.projectId },
+    } })).toMatchObject({ ok: true });
+    const remaining = new Set((await server.db.select({ id: assets.id }).from(assets).where(eq(assets.companyId, fixture.companyId))).map(row => row.id));
+    const evicted = small.filter(row => !remaining.has(row.id)).length;
+    expect(evicted).toBeGreaterThan(200);
+    expect(evicted).toBeLessThan(500);
+    expect(small.slice(0, evicted).every(row => !remaining.has(row.id))).toBe(true);
+    expect(await server.db.select().from(runnerApiResponseReservations).where(and(eq(runnerApiResponseReservations.companyId, fixture.companyId),
+      isNotNull(runnerApiResponseReservations.pendingDeleteObjectKey)))).toEqual([]);
+  });
+
+  it("bounds a stalled snapshot delete and keeps it for a later retry", async () => {
+    const fixture = await server.fixture();
+    const objectKey = `${fixture.companyId}/runner-api/stalled-delete`;
+    await server.db.insert(runnerApiResponseReservations).values({ companyId: fixture.companyId, runId: null, reservedBytes: 1, pendingDeleteObjectKey: objectKey });
+    const stalled = { ...server.storage, deleteObject: (_companyId: string, _key: string, options?: { signal?: AbortSignal }) =>
+      new Promise<void>((_, reject) => options?.signal?.addEventListener("abort", () => reject(options.signal!.reason))) };
+    const startedAt = Date.now();
+    expect(await finishPendingRunnerApiCaptureDeletes(server.db, stalled as typeof server.storage, fixture.companyId, 50)).toEqual({ deleted: 0, failed: 1 });
+    expect(await server.db.select().from(toolRuntimeMetricCounters).where(and(eq(toolRuntimeMetricCounters.companyId, fixture.companyId),
+      eq(toolRuntimeMetricCounters.metric, RUNNER_API_CAPTURE_DELETE_FAILURE_METRIC)))).toEqual([expect.objectContaining({ count: 1 })]);
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
+    expect(await server.db.select().from(runnerApiResponseReservations).where(eq(runnerApiResponseReservations.companyId, fixture.companyId))).toEqual([
+      expect.objectContaining({ pendingDeleteObjectKey: objectKey }),
+    ]);
+    const deleteSpy = vi.spyOn(server.storage, "deleteObject");
+    try {
+      expect(await finishPendingRunnerApiCaptureDeletes(server.db, server.storage, fixture.companyId)).toEqual({ deleted: 1, failed: 0 });
+      expect(deleteSpy).toHaveBeenCalledWith(fixture.companyId, objectKey, expect.objectContaining({ allVersions: true }));
+    } finally { deleteSpy.mockRestore(); }
+    expect(await server.db.select().from(runnerApiResponseReservations).where(eq(runnerApiResponseReservations.companyId, fixture.companyId))).toEqual([]);
+  });
+
+  it("retries earlier pending deletes before evicting more snapshots", async () => {
+    const fixture = await server.fixture();
+    vi.stubEnv("PAPERCLIP_RUNNER_API_COMPANY_CAPTURE_MAX_BYTES", String(2 * RUNNER_API_RESPONSE_MAX_BYTES));
+    const stored = await server.storage.putFile({ companyId: fixture.companyId, namespace: "runner-api", originalFilename: "response.json",
+      contentType: "application/json", body: Buffer.from("{}") });
+    await server.db.insert(runnerApiResponseReservations).values({ companyId: fixture.companyId, runId: null,
+      reservedBytes: RUNNER_API_RESPONSE_MAX_BYTES, pendingDeleteObjectKey: stored.objectKey });
+    const [survivor] = await server.db.insert(assets).values({ companyId: fixture.companyId, provider: "local_disk",
+      objectKey: `${fixture.companyId}/runner-api/survivor`, contentType: "text/plain", byteSize: RUNNER_API_RESPONSE_MAX_BYTES / 2,
+      sha256: "survivor", createdByAgentId: fixture.agentId, createdAt: new Date(Date.now() - 86_400_000) }).returning();
+    await server.db.update(projects).set({ description: "x".repeat(32 * 1024) }).where(eq(projects.id, fixture.projectId));
+    expect(await fixture.authority.execute({ tool: "call_api", callId: randomUUID(), arguments: {
+      operationId: "GET /api/projects/{id}", pathParams: { id: fixture.projectId },
+    } })).toMatchObject({ ok: true });
+    expect((await server.db.select({ id: assets.id }).from(assets).where(eq(assets.companyId, fixture.companyId))).map(row => row.id)).toContain(survivor.id);
+    expect((await server.storage.headObject(fixture.companyId, stored.objectKey)).exists).toBe(false);
+  });
+
+  it("says storage cleanup is failing when old snapshot deletes keep failing", async () => {
+    const fixture = await server.fixture();
+    vi.stubEnv("PAPERCLIP_RUNNER_API_COMPANY_CAPTURE_MAX_BYTES", String(2 * RUNNER_API_RESPONSE_MAX_BYTES));
+    await server.db.insert(runnerApiResponseReservations).values({ companyId: fixture.companyId, runId: null,
+      reservedBytes: RUNNER_API_RESPONSE_MAX_BYTES * 1.5, pendingDeleteObjectKey: `${fixture.companyId}/runner-api/undeletable`,
+      createdAt: new Date(Date.now() - 3_600_000) });
+    await server.db.update(projects).set({ description: "x".repeat(32 * 1024) }).where(eq(projects.id, fixture.projectId));
+    const spy = vi.spyOn(server.storage, "deleteObject").mockRejectedValue(new Error("storage unavailable"));
+    let result: any;
+    try {
+      result = await fixture.authority.execute({ tool: "call_api", callId: randomUUID(), arguments: {
+        operationId: "GET /api/projects/{id}", pathParams: { id: fixture.projectId },
+      } });
+    } finally { spy.mockRestore(); }
+    expect(result).toMatchObject({ ok: false, error: "api_response_company_storage_limit" });
+    expect(result.message).toMatch(/keeps failing to delete/);
+    expect(result.message).not.toMatch(/operator|reservation|snapshot|quota/i);
+  });
+
+  it("rejects and removes an upload that finishes after its reservation was reclaimed", async () => {
+    const fixture = await server.fixture();
+    await server.db.update(projects).set({ description: "x".repeat(32 * 1024) }).where(eq(projects.id, fixture.projectId));
+    const before = (await server.db.select({ id: assets.id }).from(assets).where(eq(assets.companyId, fixture.companyId))).length;
+    const putFile = server.storage.putFile.bind(server.storage);
+    let objectKey = "";
+    let uploadSignal: AbortSignal | undefined;
+    const spy = vi.spyOn(server.storage, "putFile").mockImplementationOnce(async input => {
+      uploadSignal = input.signal;
+      const saved = await putFile(input);
+      objectKey = saved.objectKey;
+      await server.db.delete(runnerApiResponseReservations).where(eq(runnerApiResponseReservations.companyId, fixture.companyId));
+      return saved;
+    });
+    try {
+      await expect(fixture.authority.execute({ tool: "call_api", callId: randomUUID(), arguments: {
+        operationId: "GET /api/projects/{id}", pathParams: { id: fixture.projectId },
+      } })).rejects.toThrow("expired before it could be stored");
+    } finally { spy.mockRestore(); }
+    expect(uploadSignal).toBeInstanceOf(AbortSignal);
+    expect((await server.db.select({ id: assets.id }).from(assets).where(eq(assets.companyId, fixture.companyId))).length).toBe(before);
+    expect((await server.storage.headObject(fixture.companyId, objectKey)).exists).toBe(false);
+    expect(await server.db.select().from(runnerApiResponseReservations).where(eq(runnerApiResponseReservations.companyId, fixture.companyId))).toEqual([]);
+  });
+
+  it("evicts only expired snapshots of finished runs and records each eviction", async () => {
+    const fixture = await server.fixture();
+    vi.stubEnv("PAPERCLIP_RUNNER_API_COMPANY_CAPTURE_MAX_BYTES", String(2 * RUNNER_API_RESPONSE_MAX_BYTES));
+    const finishedRunId = randomUUID();
+    await server.db.insert(heartbeatRuns).values({ id: finishedRunId, companyId: fixture.companyId, agentId: fixture.agentId,
+      status: "cancelled", runtimeMode: "native", nativeIssueId: fixture.blockerId, contextSnapshot: { issueId: fixture.blockerId } });
+    const [recent] = await server.db.insert(assets).values({ companyId: fixture.companyId, provider: "local_disk",
+      objectKey: `${fixture.companyId}/runner-api/recent-finished`, contentType: "text/plain", byteSize: RUNNER_API_RESPONSE_MAX_BYTES * 1.5,
+      sha256: "recent-finished", createdByAgentId: fixture.agentId, createdAt: new Date(Date.now() - 5 * 60_000) }).returning();
+    await server.db.insert(runnerApiResponseReservations).values({ companyId: fixture.companyId, runId: finishedRunId, assetId: recent.id, reservedBytes: recent.byteSize });
+    await server.db.update(projects).set({ description: "x".repeat(32 * 1024) }).where(eq(projects.id, fixture.projectId));
+    const call = () => fixture.authority.execute({ tool: "call_api", callId: randomUUID(), arguments: {
       operationId: "GET /api/projects/{id}", pathParams: { id: fixture.projectId },
     } });
     expect(await call()).toMatchObject({ ok: false, error: "api_response_company_storage_limit" });
-    await server.db.delete(assets).where(eq(assets.id, oldSnapshot.id));
-    const first: any = await call();
-    expect(first).toMatchObject({ ok: true });
-    expect(await call()).toMatchObject({ ok: false, error: "api_response_company_storage_limit" });
-    await server.db.delete(assets).where(eq(assets.id, first.artifact.artifactId));
-    expect(await server.db.select().from(runnerApiResponseReservations).where(eq(runnerApiResponseReservations.companyId, fixture.companyId))).toEqual([expect.objectContaining({ id: reservation.id })]);
+    expect((await server.db.select({ id: assets.id }).from(assets).where(eq(assets.id, recent.id)))).toHaveLength(1);
+    await server.db.update(assets).set({ createdAt: new Date(Date.now() - 2 * 3_600_000) }).where(eq(assets.id, recent.id));
     expect(await call()).toMatchObject({ ok: true });
+    expect((await server.db.select({ id: assets.id }).from(assets).where(eq(assets.id, recent.id)))).toHaveLength(0);
+    expect(await server.db.select().from(activityLog).where(and(eq(activityLog.companyId, fixture.companyId), eq(activityLog.action, "asset.evicted")))).toEqual([
+      expect.objectContaining({ actorType: "system", entityType: "asset", entityId: recent.id, runId: finishedRunId }),
+    ]);
+  });
+
+  it("runs another eviction pass when a concurrent capture takes the freed space", async () => {
+    const fixture = await server.fixture();
+    vi.stubEnv("PAPERCLIP_RUNNER_API_COMPANY_CAPTURE_MAX_BYTES", String(2 * RUNNER_API_RESPONSE_MAX_BYTES));
+    const expired = async (name: string, ageMs: number) => (await server.db.insert(assets).values({ companyId: fixture.companyId, provider: "local_disk",
+      objectKey: `${fixture.companyId}/runner-api/${name}`, contentType: "text/plain", byteSize: RUNNER_API_RESPONSE_MAX_BYTES,
+      sha256: name, createdByAgentId: fixture.agentId, createdAt: new Date(Date.now() - ageMs) }).returning())[0];
+    const older = await expired("older", 3 * 3_600_000);
+    const newer = await expired("newer", 2 * 3_600_000);
+    const otherRunId = randomUUID();
+    await server.db.insert(heartbeatRuns).values({ id: otherRunId, companyId: fixture.companyId, agentId: fixture.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: fixture.blockerId, contextSnapshot: { issueId: fixture.blockerId } });
+    await server.db.update(projects).set({ description: "x".repeat(32 * 1024) }).where(eq(projects.id, fixture.projectId));
+    const deleteObject = server.storage.deleteObject.bind(server.storage);
+    let stolen = false;
+    const spy = vi.spyOn(server.storage, "deleteObject").mockImplementation(async (companyId, key, options) => {
+      if (!stolen) {
+        stolen = true;
+        await server.db.insert(runnerApiResponseReservations).values({ companyId: fixture.companyId, runId: otherRunId, reservedBytes: RUNNER_API_RESPONSE_MAX_BYTES });
+      }
+      return deleteObject(companyId, key, options);
+    });
+    let result: any;
+    try {
+      result = await fixture.authority.execute({ tool: "call_api", callId: randomUUID(), arguments: {
+        operationId: "GET /api/projects/{id}", pathParams: { id: fixture.projectId },
+      } });
+    } finally { spy.mockRestore(); }
+    expect(stolen).toBe(true);
+    expect(result).toMatchObject({ ok: true });
+    const remaining = (await server.db.select({ id: assets.id }).from(assets).where(eq(assets.companyId, fixture.companyId))).map(row => row.id);
+    expect(remaining).not.toContain(older.id);
+    expect(remaining).not.toContain(newer.id);
+  });
+
+  it("releases stale reservations left by interrupted captures of finished runs", async () => {
+    const fixture = await server.fixture();
+    vi.stubEnv("PAPERCLIP_RUNNER_API_COMPANY_CAPTURE_MAX_BYTES", String(2 * RUNNER_API_RESPONSE_MAX_BYTES));
+    const finishedRunId = randomUUID();
+    await server.db.insert(heartbeatRuns).values({ id: finishedRunId, companyId: fixture.companyId, agentId: fixture.agentId,
+      status: "failed", runtimeMode: "native", nativeIssueId: fixture.blockerId, contextSnapshot: { issueId: fixture.blockerId } });
+    const longAgo = new Date(Date.now() - 3_600_000);
+    await server.db.insert(runnerApiResponseReservations).values([
+      { companyId: fixture.companyId, runId: null, reservedBytes: RUNNER_API_RESPONSE_MAX_BYTES, createdAt: longAgo },
+      { companyId: fixture.companyId, runId: finishedRunId, reservedBytes: RUNNER_API_RESPONSE_MAX_BYTES, createdAt: longAgo },
+    ]);
+    await server.db.update(projects).set({ description: "x".repeat(32 * 1024) }).where(eq(projects.id, fixture.projectId));
+    const call = () => fixture.authority.execute({ tool: "call_api", callId: randomUUID(), arguments: {
+      operationId: "GET /api/projects/{id}", pathParams: { id: fixture.projectId },
+    } });
+    expect(await call()).toMatchObject({ ok: true });
+    expect(await call()).toMatchObject({ ok: true });
+    const reservations = await server.db.select().from(runnerApiResponseReservations).where(eq(runnerApiResponseReservations.companyId, fixture.companyId));
+    expect(reservations.every(row => row.runId === fixture.runId && row.assetId)).toBe(true);
+  });
+
+  it("keeps snapshots of active runs, attached snapshots, and in-flight reservations when the company quota is full", async () => {
+    const fixture = await server.fixture();
+    vi.stubEnv("PAPERCLIP_RUNNER_API_COMPANY_CAPTURE_MAX_BYTES", String(2 * RUNNER_API_RESPONSE_MAX_BYTES));
+    const activeRunId = randomUUID();
+    await server.db.insert(heartbeatRuns).values({ id: activeRunId, companyId: fixture.companyId, agentId: fixture.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: fixture.blockerId, contextSnapshot: { issueId: fixture.blockerId } });
+    const longAgo = new Date(Date.now() - 86_400_000);
+    const [held] = await server.db.insert(assets).values({ companyId: fixture.companyId, provider: "local_disk",
+      objectKey: `${fixture.companyId}/runner-api/active-run-snapshot`, contentType: "text/plain", byteSize: RUNNER_API_RESPONSE_MAX_BYTES / 2,
+      sha256: "active-run-snapshot", createdByAgentId: fixture.agentId, createdAt: longAgo }).returning();
+    await server.db.insert(runnerApiResponseReservations).values([
+      { companyId: fixture.companyId, runId: activeRunId, assetId: held.id, reservedBytes: held.byteSize },
+      { companyId: fixture.companyId, runId: null, reservedBytes: RUNNER_API_RESPONSE_MAX_BYTES / 2 },
+    ]);
+    const [attached] = await server.db.insert(assets).values({ companyId: fixture.companyId, provider: "local_disk",
+      objectKey: `${fixture.companyId}/runner-api/attached-snapshot`, contentType: "text/plain", byteSize: RUNNER_API_RESPONSE_MAX_BYTES / 2,
+      sha256: "attached-snapshot", createdByAgentId: fixture.agentId, createdAt: longAgo }).returning();
+    await server.db.insert(issueAttachments).values({ companyId: fixture.companyId, issueId: fixture.issueId, assetId: attached.id });
+    const linked = async (name: string) => (await server.db.insert(assets).values({ companyId: fixture.companyId, provider: "local_disk",
+      objectKey: `${fixture.companyId}/runner-api/${name}`, contentType: "text/plain", byteSize: 1024 * 1024,
+      sha256: name, createdByAgentId: fixture.agentId, createdAt: new Date(longAgo.getTime() - 1000) }).returning())[0];
+    const caseAsset = await linked("case-snapshot");
+    const logoAsset = await linked("logo-snapshot");
+    const caseId = randomUUID();
+    await server.db.insert(cases).values({ id: caseId, companyId: fixture.companyId, caseNumber: 1, identifier: `CASE-${caseId}`, caseType: "work", title: "Retention" });
+    await server.db.insert(caseAttachments).values({ companyId: fixture.companyId, caseId, assetId: caseAsset.id });
+    await server.db.insert(companyLogos).values({ companyId: fixture.companyId, assetId: logoAsset.id });
+    await server.db.update(projects).set({ description: "x".repeat(32 * 1024) }).where(eq(projects.id, fixture.projectId));
+    const result: any = await fixture.authority.execute({ tool: "call_api", callId: randomUUID(), arguments: {
+      operationId: "GET /api/projects/{id}", pathParams: { id: fixture.projectId },
+    } });
+    expect(result).toMatchObject({ ok: false, error: "api_response_company_storage_limit" });
+    expect(result.message).not.toMatch(/operator/i);
+    const remaining = await server.db.select({ id: assets.id }).from(assets).where(eq(assets.companyId, fixture.companyId));
+    expect(remaining.map(row => row.id)).toEqual(expect.arrayContaining([held.id, attached.id, caseAsset.id, logoAsset.id]));
+    expect(await server.db.select().from(runnerApiResponseReservations).where(eq(runnerApiResponseReservations.companyId, fixture.companyId))).toHaveLength(2);
   });
 
   it("keeps company storage reserved after an ambiguous upload failure", async () => {
@@ -789,6 +1438,22 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     const download = await fixture.authority.execute({ tool: "call_api", callId: "download", arguments: { operationId: "GET /api/assets/{assetId}/content", pathParams: { assetId: fixture.binaryArtifactId } } }) as any;
     expect(download).toMatchObject({ status: 206, byteSize: 32000, artifact: { artifactId: fixture.binaryArtifactId, byteSize: 32000 } });
     expect((await fixture.snapshot()).assets).toEqual(expect.arrayContaining([expect.objectContaining({ id: download.artifact.artifactId, companyId: fixture.companyId, createdByAgentId: fixture.agentId })]));
+  });
+
+  it.each(["sample.txt", "/home/agent/proof.txt"])("uploads remote task bytes at %s and fails closed without the reader", async (sourcePath) => {
+    const fixture=await server.fixture();
+    const bytes=Buffer.from("proof exists only on the execution host\n");
+    const read=vi.fn(async(path:string,maxBytes:number)=>{expect(path).toBe(sourcePath);expect(maxBytes).toBeGreaterThan(bytes.length);return bytes;});
+    const binding={...fixture.authority.binding,executionTargetKind:"remote" as const,readRemoteApiFile:read};
+    const authority=new PaperclipRunnerToolAuthority(server.db,binding);
+    const call={tool:"call_api" as const,callId:randomUUID(),arguments:{operationId:"POST /api/companies/{companyId}/issues/{issueId}/attachments",pathParams:{issueId:fixture.issueId},files:[{path:sourcePath}]}};
+    await expect(authority.execute(call)).resolves.toMatchObject({status:201});
+    expect(read).toHaveBeenCalledOnce();
+    expect((await fixture.snapshot()).assets).toEqual(expect.arrayContaining([expect.objectContaining({sha256:createHash("sha256").update(bytes).digest("hex"),byteSize:bytes.length})]));
+    const unsupported=new PaperclipRunnerToolAuthority(server.db,{...binding,readRemoteApiFile:undefined});
+    await expect(unsupported.execute({...call,callId:randomUUID()})).rejects.toThrow("Remote workspace file uploads are unavailable");
+    const changing=new PaperclipRunnerToolAuthority(server.db,{...binding,readRemoteApiFile:async()=>{await server.db.update(heartbeatRuns).set({status:"cancelled"}).where(eq(heartbeatRuns.id,fixture.runId));return bytes;}});
+    await expect(changing.execute({...call,callId:randomUUID()})).rejects.toThrow();
   });
 
   it("does not accept caller-supplied identity in an API comment", async () => {
@@ -920,7 +1585,7 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     expect((await treatment.snapshot()).issues[0].billingCode).toBeNull();
     const originalTools = (await baseline.authority.definitions()).map(tool => tool.name);
     const treatmentTools = (await treatment.authority.definitions()).map(tool => tool.name);
-    const apiTools = ["hire_agent", "search_api", "call_api", "get_task", "comment_on_task", "list_task_documents", "read_task_document", "write_task_document"];
+    const apiTools = ["hire_agent", "search_api", "call_api", "get_task", "comment_on_task", "list_task_documents", "read_task_document", "write_task_document", "save_api_response"];
     expect(treatmentTools.filter(name => !originalTools.includes(name))).toEqual(apiTools);
     expect(treatmentTools.filter(name => !apiTools.includes(String(name)))).toEqual(originalTools);
   });

@@ -42,6 +42,20 @@ import {
 } from "./installation-integrity.js";
 import { stageManagedCodexCredential } from "./codex-credentials.js";
 
+async function withLinuxX64TestPlatform<T>(run: () => Promise<T>): Promise<T> {
+  const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
+  const archDescriptor = Object.getOwnPropertyDescriptor(process, "arch");
+  if (!platformDescriptor || !archDescriptor) throw new Error("Missing process platform descriptors");
+  try {
+    Object.defineProperty(process, "platform", { ...platformDescriptor, value: "linux" });
+    Object.defineProperty(process, "arch", { ...archDescriptor, value: "x64" });
+    return await run();
+  } finally {
+    try { Object.defineProperty(process, "platform", platformDescriptor); }
+    finally { Object.defineProperty(process, "arch", archDescriptor); }
+  }
+}
+
 const temporaryDirectories: string[] = [];
 const descriptorCommandPath = "/proc/self/fd/4/server.js";
 
@@ -63,9 +77,9 @@ describe("ACPX installation integrity", () => {
       const runtime = join(bridge, "node_modules/@anthropic-ai/claude-agent-sdk");
       const name = `@anthropic-ai/claude-agent-sdk-${os}-${cpu}`;
       const platformRoot = join(parent, "node_modules", name);
-      const optionalDependencies = { [name]: "0.3.286" };
-      const runtimeMetadata = { name: "@anthropic-ai/claude-agent-sdk", version: "0.3.286" };
-      const platformMetadata = { name, version: "0.3.286", os: [os], cpu: [cpu] };
+      const optionalDependencies = { [name]: "0.3.328" };
+      const runtimeMetadata = { name: "@anthropic-ai/claude-agent-sdk", version: "0.3.328" };
+      const platformMetadata = { name, version: "0.3.328", os: [os], cpu: [cpu] };
       await Promise.all([mkdir(runtime, { recursive: true }), mkdir(platformRoot, { recursive: true })]);
       const command = 'process.stdout.write("unexecuted fixture");';
       const reset = () => Promise.all([
@@ -132,10 +146,10 @@ describe("ACPX installation integrity", () => {
     const runtime = join(root, "node_modules/@openai/codex/package.json");
     const platformRoot = join(parent, "node_modules/@openai/codex-linux-x64");
     const platform = join(platformRoot, "package.json");
-    const alias = "npm:@openai/codex@0.160.0-linux-x64";
+    const alias = "npm:@openai/codex@0.170.0-linux-x64";
     const selected = { name: "@paperclipai/server", optionalDependencies: { "@openai/codex-linux-x64": alias } };
-    const runtimeMetadata = { name: "@openai/codex", version: "0.160.0", ...(!publishedDeclaration && { optionalDependencies: selected.optionalDependencies }) };
-    const platformMetadata = { name: "@openai/codex", version: "0.160.0-linux-x64", os: ["linux"], cpu: ["x64"] };
+    const runtimeMetadata = { name: "@openai/codex", version: "0.170.0", ...(!publishedDeclaration && { optionalDependencies: selected.optionalDependencies }) };
+    const platformMetadata = { name: "@openai/codex", version: "0.170.0-linux-x64", os: ["linux"], cpu: ["x64"] };
     await mkdir(dirname(runtime), { recursive: true });
     await mkdir(platformRoot, { recursive: true });
     const reset = async () => Promise.all([
@@ -179,14 +193,14 @@ describe("ACPX installation integrity", () => {
     const runtime = join(bridge, "node_modules/@openai/codex");
     const platformRoot = join(parent, "node_modules/@openai/codex-linux-x64");
     const native = join(platformRoot, "vendor/x86_64-unknown-linux-musl/bin/codex");
-    const optionalDependencies = { "@openai/codex-linux-x64": "npm:@openai/codex@0.160.0-linux-x64" };
+    const optionalDependencies = { "@openai/codex-linux-x64": "npm:@openai/codex@0.170.0-linux-x64" };
     await Promise.all([mkdir(runtime, { recursive: true }), mkdir(dirname(native), { recursive: true })]);
     const command = 'process.stdout.write("unexecuted fixture");';
     await Promise.all([
       writeFile(join(root, "package.json"), JSON.stringify({ name: "@paperclipai/server", optionalDependencies })),
       writeFile(join(bridge, "package.json"), JSON.stringify({ name: "@agentclientprotocol/codex-acp", version: "1.6.2", bin: "server.js" })),
       writeFile(join(bridge, "server.js"), command),
-      writeFile(join(runtime, "package.json"), JSON.stringify({ name: "@openai/codex", version: "0.160.0" })),
+      writeFile(join(runtime, "package.json"), JSON.stringify({ name: "@openai/codex", version: "0.170.0" })),
       writeFile(native, "unqualified native bytes", { mode: 0o755 }),
     ]);
     const profile = { ...resolveQualifiedAcpxProfile("codex", "gpt-5.6-sol"), commandDigest: `sha256:${createHash("sha256").update(command).digest("hex")}` };
@@ -194,7 +208,7 @@ describe("ACPX installation integrity", () => {
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("linux");
     const archSpy = vi.spyOn(process, "arch", "get").mockReturnValue("x64");
     try {
-      const metadata = { name: "@openai/codex", version: "0.160.0-linux-x64", os: ["linux"], cpu: ["x64"] };
+      const metadata = { name: "@openai/codex", version: "0.170.0-linux-x64", os: ["linux"], cpu: ["x64"] };
       await writeFile(join(platformRoot, "package.json"), JSON.stringify(metadata));
       // A stale in-bundle package shadows the correct declared npm slot and
       // must fail rather than falling through to the hoisted installation.
@@ -618,7 +632,7 @@ describe("ACPX installation integrity", () => {
       },
       {
         name: "@anthropic-ai/claude-agent-sdk",
-        version: "0.3.286",
+        version: "0.3.328",
         directory: join(dependencyRoot, "claude-agent-sdk"),
       },
       {
@@ -786,11 +800,11 @@ describe("ACPX installation integrity", () => {
     expect(resolveQualifiedAcpxProfile("grok", "grok-4.7").agentServerPackage).toBe("builtin:grok-acp");
   });
 
-  it("reports a missing environment prerequisite before launching Grok", async () => {
+  it("reports a missing environment prerequisite before launching Grok", () => withLinuxX64TestPlatform(async () => {
     const fixture = await installationFixture();
     await expect(verifyProvisionedGrokExecutable(join(fixture.commandDirectory, "missing")))
       .rejects.toThrow(/Grok Build 1.0.13 prerequisite missing/);
-  });
+  }));
 
   it("resolves a controller-owned builtin root for descriptor-loaded sidecars and rejects relative roots", () => {
     vi.stubEnv("PAPERCLIP_ACPX_BUILTIN_ROOT", "/verified/dist/providers");
@@ -801,7 +815,7 @@ describe("ACPX installation integrity", () => {
     finally { vi.unstubAllEnvs(); }
   });
 
-  it("rejects a tampered native Grok executable and symlink substitution", async () => {
+  it("rejects a tampered native Grok executable and symlink substitution", () => withLinuxX64TestPlatform(async () => {
     const fixture = await installationFixture();
 
     const native = join(fixture.commandDirectory, "grok");
@@ -810,7 +824,7 @@ describe("ACPX installation integrity", () => {
     await rm(native);
     await symlink(fixture.commandPath, native);
     await expect(verifyProvisionedGrokExecutable(native)).rejects.toThrow(/regular file|symlink|no-follow/);
-  });
+  }));
 
   it("rejects package version and executable digest drift", async () => {
     const fixture = await installationFixture();

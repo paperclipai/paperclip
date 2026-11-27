@@ -325,12 +325,8 @@ function nextAssigneeIds(input: {
 export function stripMonitorFromExecutionPolicy(policy: IssueExecutionPolicy | null): IssueExecutionPolicy | null {
   if (!policy) return null;
   if (!policy.monitor) return policy;
-  if (policy.stages.length === 0) return null;
-  return {
-    mode: policy.mode,
-    commentRequired: policy.commentRequired,
-    stages: policy.stages,
-  };
+  const { monitor: _monitor, ...remainingPolicy } = policy;
+  return normalizeIssueExecutionPolicy(remainingPolicy);
 }
 
 export function setIssueExecutionPolicyMonitorScheduledBy(
@@ -402,12 +398,13 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
   const authorizationPolicy = parsed.data.authorizationPolicy;
 
   if (stages.length === 0 && !monitor && !reviewPreset && !authorizationPolicy
-    && parsed.data.maxReviewRounds == null) return null;
+    && parsed.data.maxReviewRounds == null && !parsed.data.requiredQualityReview) return null;
 
   return {
     mode: parsed.data.mode ?? "normal",
     commentRequired: true,
     stages,
+    ...(parsed.data.requiredQualityReview ? { requiredQualityReview: parsed.data.requiredQualityReview } : {}),
     ...(monitor ? { monitor } : {}),
     ...(reviewPreset ? { reviewPreset } : {}),
     ...(authorizationPolicy ? { authorizationPolicy } : {}),
@@ -1144,7 +1141,22 @@ function applyMonitorTransition(input: TransitionInput, stagePatch: Record<strin
   }
 
   if (stagePatch.executionState !== undefined || !monitorStatesEqual(currentMonitorState, targetMonitorState)) {
-    patch.executionState = executionStateWithMonitor(stageState, targetMonitorState);
+    const nextExecutionState = executionStateWithMonitor(stageState, targetMonitorState);
+    const previousDeferral =
+      !input.monitorExplicitlyUpdated &&
+      targetMonitorState?.status === "scheduled" &&
+      currentMonitorState?.status === "scheduled" &&
+      currentMonitorState.nextCheckAt === targetMonitorState.nextCheckAt &&
+      input.issue.executionState &&
+      typeof input.issue.executionState === "object" &&
+      !Array.isArray(input.issue.executionState) &&
+      "monitorDeferral" in input.issue.executionState
+        ? (input.issue.executionState as Record<string, unknown>).monitorDeferral
+        : undefined;
+    patch.executionState =
+      nextExecutionState && previousDeferral !== undefined
+        ? { ...nextExecutionState, monitorDeferral: previousDeferral }
+        : nextExecutionState;
   }
 
   return patch;
@@ -1238,6 +1250,39 @@ export function applyIssueExecutionPolicyTransition(input: TransitionInput): Tra
   const monitorPatch = applyMonitorTransition(input, stageResult.patch);
   Object.assign(stageResult.patch, monitorPatch);
   return stageResult;
+}
+
+/** Status decision reason when verified native work enters a configured review stage. */
+export const COMPLETION_REVIEW_STAGE_REASON = "execution_stage_review_required";
+/** Status decision reason when the configured review policy refuses the completion, as the route would. */
+export const COMPLETION_REVIEW_STAGE_REJECTED_REASON = "execution_stage_transition_rejected";
+
+export type CompletionReviewStageEntry =
+  | { kind: "none" }
+  | { kind: "starts"; patch: Record<string, unknown>; state: IssueExecutionState }
+  | { kind: "rejected"; message: string };
+
+/**
+ * What a worker's completion does to the task's configured execution policy,
+ * exactly as the issue route would apply `status: "done"`: start the next
+ * pending stage (with the monitor transition for the new assignee), leave the
+ * task free to close, or refuse the transition. Refusals fail closed.
+ */
+export function completionReviewStageEntry(issue: IssueLike, actorAgentId: string): CompletionReviewStageEntry {
+  let patch: Record<string, unknown>;
+  try {
+    const policy = normalizeIssueExecutionPolicy(issue.executionPolicy ?? null);
+    if (!policy) return { kind: "none" };
+    ({ patch } = applyIssueExecutionPolicyTransition({
+      issue, policy, previousPolicy: policy, requestedStatus: "done",
+      requestedAssigneePatch: {}, actor: { agentId: actorAgentId, userId: null },
+    }));
+  } catch (error) {
+    return { kind: "rejected", message: error instanceof Error ? error.message : String(error) };
+  }
+  const state = patch.executionState as IssueExecutionState | null | undefined;
+  if (patch.status !== "in_review" || state?.status !== "pending" || !state.currentParticipant) return { kind: "none" };
+  return { kind: "starts", patch, state };
 }
 
 export function applyIssueMonitorPolicyTransition(input: TransitionInput): TransitionResult {
