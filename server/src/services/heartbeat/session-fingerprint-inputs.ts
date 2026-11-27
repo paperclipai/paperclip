@@ -90,6 +90,7 @@ export const ENVIRONMENT_CONFIG_SESSION_INPUTS = {
   privateKeySecretRef: kept("SSH credential."),
   knownHosts: kept("SSH host identity."),
   strictHostKeyChecking: kept("SSH host identity policy."),
+  capacity: excluded("Admission policy only; the environment actually selected is hashed."),
   archiveOnRelease: excluded("What happens to a released sandbox; lease reuse decisions already ignore it."),
   streamRunLogs: excluded("Host log streaming during a run."),
   timeoutMs: excluded("Sandbox provider RPC timeout."),
@@ -98,6 +99,7 @@ export const ENVIRONMENT_CONFIG_SESSION_INPUTS = {
 export const AGENT_RUNTIME_CONFIG_SESSION_INPUTS = {
   aiConnection: kept("Provider account and credentials."),
   heartbeat: excluded("Wake scheduling, concurrency, daily caps, and max-turn continuation; none of it reaches the thread or the native execution input."),
+  fallbackEnvironmentIds: excluded("Overflow candidates only; the environment actually selected is hashed."),
 } as const satisfies Record<string, SessionFingerprintClassification>;
 
 export const SELECTED_ENVIRONMENT_SESSION_INPUTS = {
