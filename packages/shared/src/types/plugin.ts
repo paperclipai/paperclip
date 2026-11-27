@@ -789,6 +789,15 @@ export interface PluginCompanySettings {
 export interface PluginEntityQuery {
   /** Optional filter by entity type (e.g. 'project', 'issue'). */
   entityType?: string;
+  /**
+   * Optional tenant scope filter. Required in practice: the registry's list
+   * path is fail-closed — "company" must pair with `scopeId`, "instance"
+   * selects instance-scope rows, and a scope-less query is rejected so a
+   * plugin can never silently receive every tenant's rows.
+   */
+  scopeKind?: PluginStateScopeKind;
+  /** Owning company for `scopeKind: "company"` queries. */
+  scopeId?: string;
   /** Optional filter by external system identifier. */
   externalId?: string;
   /** Maximum number of records to return. Defaults to 100. */

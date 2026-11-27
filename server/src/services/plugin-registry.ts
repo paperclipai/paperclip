@@ -27,7 +27,7 @@ import type {
   PluginJobRunTrigger,
   PluginWebhookDeliveryStatus,
 } from "@paperclipai/shared";
-import { conflict, notFound } from "../errors.js";
+import { badRequest, conflict, notFound } from "../errors.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -476,12 +476,34 @@ export function pluginRegistryService(db: Db) {
     /**
      * List persistent entity mappings owned by a specific plugin, with filtering and pagination.
      *
+     * The scope filter is fail-closed: `scopeKind: "company"` requires `scopeId`
+     * (matching that tenant's rows only), `scopeKind: "instance"` requires the
+     * instance-scope rows, and a query with no `scopeKind` is rejected — a
+     * plugin must name its scope, never silently receive every tenant's rows
+     * (`getEntityByExternalId` guards the same way).
+     *
      * @param pluginId - The UUID of the plugin.
-     * @param query - Optional filters (type, externalId) and pagination (limit, offset).
+     * @param query - Optional filters (type, externalId, scope) and pagination (limit, offset).
      * @returns A list of matching `PluginEntityRecord` objects.
      */
     listEntities: (pluginId: string, query?: PluginEntityQuery) => {
+      const scopeKind = query?.scopeKind;
+      if (scopeKind === "company") {
+        if (!query?.scopeId) throw badRequest('entities.list with scopeKind "company" requires scopeId');
+      } else if (scopeKind === "instance") {
+        if (query?.scopeId) throw badRequest('entities.list with scopeKind "instance" does not take scopeId');
+      } else if (scopeKind !== undefined) {
+        throw badRequest(`entities.list got unknown scopeKind "${scopeKind}"`);
+      } else {
+        throw badRequest("entities.list requires scopeKind (\"company\" with scopeId, or \"instance\")");
+      }
+
       const conditions = [eq(pluginEntities.pluginId, pluginId)];
+      conditions.push(
+        scopeKind === "company"
+          ? eq(pluginEntities.companyId, query!.scopeId!)
+          : isNull(pluginEntities.companyId),
+      );
       if (query?.entityType) conditions.push(eq(pluginEntities.entityType, query.entityType));
       if (query?.externalId) conditions.push(eq(pluginEntities.externalId, query.externalId));
 
