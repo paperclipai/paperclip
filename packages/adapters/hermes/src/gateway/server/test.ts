@@ -4,6 +4,7 @@ import type {
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
 import { asString } from "@paperclipai/adapter-utils/server-utils";
+import { matchesNamedProfile, testNamedProfile } from "./profile-readiness.js";
 import {
   allowsInsecureRemoteHttp,
   isLoopbackHostname,
@@ -61,6 +62,8 @@ export async function testEnvironment(
   const checks: AdapterEnvironmentCheck[] = [];
   const apiBaseUrl = asString(ctx.config.apiBaseUrl ?? ctx.config.url, "").trim();
   const apiKey = asString(ctx.config.apiKey ?? ctx.config.token, "").trim();
+  const expectedProfile = ctx.config.expectedProfile;
+  const namedProfile = expectedProfile !== undefined && expectedProfile !== "";
 
   if (!apiBaseUrl) {
     checks.push({
@@ -121,6 +124,14 @@ export async function testEnvironment(
     });
   }
 
+  if (parsed && namedProfile && !matchesNamedProfile(parsed, expectedProfile)) {
+    checks.push({
+      code: "hermes_gateway_profile_url_mismatch",
+      level: "error",
+      message: "The API base URL must end with the expected /p/<profile> path.",
+    });
+  }
+
   if (checks.some((check) => check.level === "error") || !parsed || !apiKey) {
     return {
       adapterType: ctx.adapterType,
@@ -128,6 +139,11 @@ export async function testEnvironment(
       checks,
       testedAt: new Date().toISOString(),
     };
+  }
+
+  if (namedProfile) {
+    checks.push(await testNamedProfile(parsed, apiKey));
+    return { adapterType: ctx.adapterType, status: summarizeStatus(checks), checks, testedAt: new Date().toISOString() };
   }
 
   try {

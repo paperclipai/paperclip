@@ -87,9 +87,10 @@ export type CreateAgentData = Omit<typeof agents.$inferInsert, "companyId" | "li
 export type AgentConfigurationRecord = typeof agents.$inferSelect;
 export const AGENT_CONFIGURATION_FIELDS = [...CONFIG_REVISION_FIELDS, "permissions"] as const;
 export type AgentConfigurationPatch = Partial<Pick<typeof agents.$inferInsert, typeof AGENT_CONFIGURATION_FIELDS[number]>>;
-export type AgentHireRecord = Pick<typeof agents.$inferSelect, "id" | "companyId" | "adapterType" | "adapterConfig" | "permissions" | "metadata" | "status">;
+export type AgentHireRecord = Pick<typeof agents.$inferSelect, "id" | "companyId" | "reportsTo" | "adapterType" | "adapterConfig" | "permissions" | "metadata" | "status">;
 
 export interface CreateAgentOptions {
+  managedHermesApproverUserId?: string;
   createdByAgentId?: string | null;
   createdByAgentCompanyId?: string;
   interactionTexts?: readonly string[];

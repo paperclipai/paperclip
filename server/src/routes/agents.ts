@@ -4852,7 +4852,7 @@ export function agentRoutes(
             title: normalizedHireInput.title ?? null,
             icon: normalizedHireInput.icon ?? null,
             appearance: agent.appearance,
-            reportsTo: normalizedHireInput.reportsTo ?? null,
+            reportsTo: createdAgent.reportsTo,
             capabilities: normalizedHireInput.capabilities ?? null,
             adapterType: requestedAdapterType,
             adapterConfig: requestedAdapterConfig,

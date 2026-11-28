@@ -2,12 +2,13 @@ import { isDeepStrictEqual } from "node:util";
 import { conflict } from "../../../errors.js";
 import { agentConfigurationRevision } from "../../../lib/agent-configuration-revision.js";
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { agents, type Db } from "@paperclipai/db";
 import { agentRecordQueries, AGENT_CONFIGURATION_FIELDS, jsonEqual, type AgentConfigurationPatch, type UpdateAgentOptions } from "../../../lib/agent-records.js";
 import type { ActivityPublication } from "../../../types/activity-publication.js";
 import { AgentLifecycleConflict, canConfigureAgentConnection } from "../domain/policy.js";
 import type { LifecycleEffects } from "./effects.js";
+import type { LifecycleAgent } from "../application/ports.js";
 
 export async function updateAgentConfiguration(tx: Db, effects: LifecycleEffects, id: string, data: AgentConfigurationPatch, options?: UpdateAgentOptions, publications: ActivityPublication[] = []) {
   if (!("nestedIndex" in tx)) throw new AgentLifecycleConflict("Configuration integration requires a database transaction");
@@ -59,6 +60,25 @@ export async function updateAgentConfiguration(tx: Db, effects: LifecycleEffects
   if (pauseForEnvironment) await effects.recordStatus(tx, current.companyId, id, "idle", "paused");
   await effects.completeConfiguration(tx, current, updated, patch, options, publications);
   return agentRecordQueries(tx).getById(id);
+}
+
+/** Persist a binding written by the worker that owns the lifecycle operation. */
+export async function setLifecycleAdapterConfigInTransaction(
+  tx: Db, agent: LifecycleAgent, adapterConfig: Record<string, unknown>,
+) {
+  const operation = agent.lifecycleOperation;
+  if (!("nestedIndex" in tx) || !operation?.leaseOwner ||
+      (agent.lifecycleState !== "preparing" && agent.lifecycleState !== "cleaning_up")) {
+    throw new AgentLifecycleConflict("A preparing or cleaning-up lifecycle operation must own the adapter binding");
+  }
+  const [updated] = await tx.update(agents).set({ adapterConfig, updatedAt: new Date() })
+    .where(and(
+      eq(agents.id, agent.id), eq(agents.companyId, agent.companyId),
+      eq(agents.lifecycleState, agent.lifecycleState), eq(agents.lifecycleVersion, agent.lifecycleVersion),
+      sql`${agents.lifecycleOperation}->>'id' = ${operation.id}`,
+      sql`${agents.lifecycleOperation}->>'leaseOwner' = ${operation.leaseOwner}`,
+    )).returning({ id: agents.id });
+  if (!updated) throw new AgentLifecycleConflict("The lifecycle operation no longer owns the adapter binding");
 }
 
 function assertConfigurationFields(data: AgentConfigurationPatch) {

@@ -25,6 +25,7 @@ import { secretService, assertClaudeOAuthBindingInvariant } from "./secrets.js";
 import { agentCredentialService } from "./agent-credentials.js";
 import { clearPrimaryAgent } from "./primary-agent.js";
 import { budgetServiceInTransaction } from "./budgets.js";
+import { managedHermesConfigurationChanged, usesManagedHermesProfile } from "../lib/hermes-gateway-binding.js";
 import { releaseProviderLimitWaits } from "./heartbeat/provider-limit-wait.js";
 
 export async function lockAgentConfigurationInteractions(tx: Db, id: string, data: AgentConfigurationPatch, options?: UpdateAgentOptions) {
@@ -89,6 +90,14 @@ export async function prepareAgentConfiguration(db: Db, existing: AgentConfigura
     if (!asset || asset.contentType !== "image/png" || !asset.objectKey.startsWith(`${existing.companyId}/agent-avatars/${id}/`)) {
       throw unprocessable("Use the avatar upload endpoint to set this agent's image");
     }
+  }
+  const currentConfig = isPlainRecord(existing.adapterConfig) ? existing.adapterConfig : {};
+  const nextConfig = isPlainRecord(data.adapterConfig) ? data.adapterConfig : currentConfig;
+  if ((existing.adapterType === "hermes_gateway" || data.adapterType === "hermes_gateway") &&
+      (managedHermesConfigurationChanged(currentConfig, nextConfig) ||
+       usesManagedHermesProfile(existing.adapterType, currentConfig) !==
+         usesManagedHermesProfile(data.adapterType ?? existing.adapterType, nextConfig))) {
+    throw conflict("The Hermes lifecycle owns the managed gateway binding");
   }
   const normalizedPatch = { ...data } as AgentConfigurationPatch;
   if (options?.recordRevision?.createdByAgentId) delete normalizedPatch.budgetMonthlyCents;

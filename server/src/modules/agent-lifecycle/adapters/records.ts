@@ -121,12 +121,12 @@ export function agentRecords(db: Db, effects: LifecycleEffects) {
       return rows;
     },
 
-    activatePendingApproval: async (id: string, approvedPayload?: Record<string, unknown> | null, requestedByUserId?: string | null) => {
+    activatePendingApproval: async (id: string, approvedPayload?: Record<string, unknown> | null, requestedByUserId?: string | null, approverUserId?: string | null) => {
       const activatedAgent = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
         const existing = await agentRecordQueries(txDb).getById(id);
         if (!existing || existing.status !== "pending_approval") return null;
-        const patch = await effects.prepareHireApproval(txDb, existing, approvedPayload);
+        const patch = await effects.prepareHireApproval(txDb, existing, approvedPayload, approverUserId);
         const [company] = await tx.select({ status: companies.status }).from(companies).where(eq(companies.id, existing.companyId));
         const holds = existing.lifecycleHolds.filter(hold => hold !== "company_paused" && hold !== "company_archived");
         if (company?.status === "paused") holds.push("company_paused");

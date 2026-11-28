@@ -11,7 +11,7 @@ Paperclip ships both Hermes adapters as built-ins:
 
 - `hermes_local` runs the local `hermes` CLI as a child process on the
   Paperclip host.
-- `hermes_gateway` calls an already-running Hermes API server over HTTP/SSE.
+- `hermes_gateway` calls a Hermes API server over HTTP/SSE.
 
 No Adapter manager installation is required for normal use. Adapter manager is
 only needed when you intentionally install an external
@@ -55,9 +55,9 @@ Paperclip server process.
 
 If a run reports a loopback connection refusal, check the listener from the
 Paperclip server's host or container. Its loopback address does not refer to
-your browser's machine or an agent sandbox. `hermes_gateway` does not start
-Hermes: start the API server at the configured address, or set `apiBaseUrl`
-to its reachable address. Choose `hermes_local` when Paperclip should launch
+your browser's machine or an agent sandbox. For a manually bound agent, start
+the API server at the configured address or set `apiBaseUrl` to its reachable
+address. Choose `hermes_local` when Paperclip should launch
 the Hermes CLI itself. Connection guidance does not prove whether a remote
 run was accepted before a redirect failed; the task remains failed and the
 normal failure reporting and retry rules still apply.
@@ -67,6 +67,84 @@ the join flow; use HTTPS for real remote gateways. For private local
 development only, the join payload can set
 `dangerouslyAllowInsecureRemoteHttp: true`, and the smoke scripts expose the
 same escape hatch as `HERMES_GATEWAY_ALLOW_INSECURE_HTTP=1`.
+
+## Create a Hermes profile for a new agent
+
+Paperclip can ask Hermes to create and start a profile for a new agent.
+Paperclip saves the gateway key and creates a separate key for reporting tasks
+in one project. Queued work begins after the connection check passes.
+
+### Set up the connection
+
+Use a dedicated Hermes worker and Dashboard for each profile that can run at
+the same time. Use separate stores and non-root user IDs. Each Dashboard must
+support `PUT /api/gateway/lifecycle` and manage a standalone gateway under s6.
+Start each slot with an empty login store and a launch environment free of
+provider credentials.
+
+Set `PAPERCLIP_HERMES_PROFILE_POLICY_FILE` on the Paperclip server to the path
+of a private JSON file. The file uses the following fields.
+
+| Fields | What to set |
+| --- | --- |
+| `companyId`, `projectId` | The company that can use this option and the project where new agents can report their work. |
+| `gatewayHost` | The origin Paperclip uses to reach the profile gateways. |
+| `slots` | One entry per dedicated Hermes worker and Dashboard. Set `port`, `adminUrl`, and `adminTokenFile` in each entry. Keep the token accessible only to Paperclip and that Dashboard. |
+| `paperclipApiUrl` | The Paperclip URL that Hermes uses to report work. |
+| `profileConfig` | The Hermes model and tools to configure for each new profile. Use the Paperclip task helper for reporting. |
+| `allowReportingLineHires` | Optional. Set this to `true` to approve this profile configuration for native agent hires in the configured company. The default is `false`. |
+
+Each slot needs a distinct port, Dashboard origin, and token file. A legacy
+policy can still use a top-level `adminUrl`, `adminTokenFile`, and a single
+entry in `ports`. Let existing single-slot profiles retire before adding slots.
+
+Each profile gateway listens on IPv4 loopback. Run Paperclip in the same
+network namespace or use a private HTTPS proxy that forwards `/p/<profile>`.
+
+### Add an agent
+
+As an instance admin, send the following body to
+`POST /api/companies/{companyId}/agent-hires`.
+
+```json
+{
+  "name": "Researcher",
+  "adapterType": "hermes_gateway",
+  "adapterConfig": {
+    "managedProfile": true
+  }
+}
+```
+
+With `allowReportingLineHires: true`, a manager can submit the same selection
+with its own agent key to `POST /api/companies/{companyId}/agents` or
+`POST /api/companies/{companyId}/agent-hires`. It needs Paperclip's existing
+`agents:create` permission. The stock **Can create new agents** setting is
+one way to grant it.
+
+The operator approves the profile configuration once. The manager can use it
+to hire under itself or an agent in its reporting line. Paperclip refuses
+extra adapter settings, including custom gateway URLs and credentials.
+
+Paperclip records the manager and a digest of the operator's policy before
+provisioning. If the policy or reporting line changes while the hire waits,
+Paperclip refuses provisioning. Company-level approval rules still apply.
+When delegated hiring is off, an instance administrator authorizes managed
+hires. Paperclip checks the gateway before marking the agent `ready`.
+
+### Stop or recover a profile
+
+Wait for the agent to finish its current work, then terminate it in Paperclip.
+Paperclip revokes the reporting key. Hermes confirms the gateway has stopped
+and removes its credentials. If Hermes cannot confirm the stop, cleanup stays
+pending. Keep the policy file available until cleanup completes.
+
+Hermes keeps the profile's memory and sessions. Archive and replace its store
+before using the slot for a different agent. To recover the old profile, an
+administrator can set a fresh gateway key and start the profile explicitly in
+the Dashboard or CLI. Leave the retirement record in place so Paperclip cannot
+restart the profile. The old reporting key stays revoked. Stop the profile and
+remove the recovery key when you finish.
 
 ## Invite From Paperclip
 
