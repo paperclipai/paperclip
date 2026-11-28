@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockCompanyService = vi.hoisted(() => ({
   list: vi.fn(),
@@ -104,15 +104,19 @@ function registerCompanyRouteMocks() {
 
 let appImportCounter = 0;
 
-async function createApp(actor: Record<string, unknown>) {
+async function loadCompanyRouteModules() {
   registerCompanyRouteMocks();
   appImportCounter += 1;
   const routeModulePath = `../routes/companies.js?company-portability-routes-${appImportCounter}`;
   const middlewareModulePath = `../middleware/index.js?company-portability-routes-${appImportCounter}`;
-  const [{ companyRoutes }, { errorHandler }] = await Promise.all([
+  return Promise.all([
     import(routeModulePath) as Promise<typeof import("../routes/companies.js")>,
     import(middlewareModulePath) as Promise<typeof import("../middleware/index.js")>,
   ]);
+}
+
+async function createApp(actor: Record<string, unknown>) {
+  const [{ companyRoutes }, { errorHandler }] = await loadCompanyRouteModules();
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -224,14 +228,7 @@ function boardActor(userId: string) {
 // actor is chosen per request from the `x-test-user-id` header. This lets one
 // app exercise cross-user isolation and the per-user duplicate guard.
 async function createBoardApp() {
-  registerCompanyRouteMocks();
-  appImportCounter += 1;
-  const routeModulePath = `../routes/companies.js?company-portability-routes-${appImportCounter}`;
-  const middlewareModulePath = `../middleware/index.js?company-portability-routes-${appImportCounter}`;
-  const [{ companyRoutes }, { errorHandler }] = await Promise.all([
-    import(routeModulePath) as Promise<typeof import("../routes/companies.js")>,
-    import(middlewareModulePath) as Promise<typeof import("../middleware/index.js")>,
-  ]);
+  const [{ companyRoutes }, { errorHandler }] = await loadCompanyRouteModules();
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -335,6 +332,10 @@ const importMeta = {
 };
 
 describe("company portability routes", () => {
+  beforeAll(async () => {
+    await loadCompanyRouteModules();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockAgentService.getById.mockImplementation(async (id: string) => ({
@@ -1268,8 +1269,29 @@ describe("company portability routes", () => {
     expect(mockCompanyPortabilityService.importBundle).toHaveBeenCalledWith(
       { ...importRequest, pauseAutomations: true },
       null,
-      { mode: "agent_safe", sourceCompanyId: companyId, pauseAutomations: true },
+      { mode: "agent_safe", sourceCompanyId: companyId, actorAgentId: ceoAgentId, actorAgentCompanyId: companyId, pauseAutomations: true, assertCanCreateAgents: expect.any(Function) },
     );
+  });
+
+  it("refuses a CEO agent whose hiring is denied when its import would create agents", async () => {
+    (mockAccessService as Record<string, unknown>).decide = vi.fn(async () => ({
+      allowed: false, action: "agents:create", reason: "deny_missing_grant", explanation: "Missing permission: agents:create.",
+    }));
+    mockCompanyPortabilityService.importBundle.mockImplementationOnce(async (_body: unknown, _user: unknown, options: { assertCanCreateAgents?: () => Promise<void> }) => {
+      await options.assertCanCreateAgents?.();
+      return createImportResult("created");
+    });
+    const app = await createApp({ type: "agent", agentId: ceoAgentId, companyId, source: "agent_key", runId: "run-1" });
+
+    const res = await request(app).post(`/api/companies/${companyId}/imports/apply`).send(importRequest);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toContain("Missing permission: agents:create.");
+    expect(res.body.error).toContain("Importing new agents is hiring");
+    expect((mockAccessService as unknown as { decide: ReturnType<typeof vi.fn> }).decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "agents:create", resource: { type: "company", companyId },
+    }));
+    expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
   it("imports a company from a multipart zip upload, unzipping into the same inline bundle", async () => {

@@ -96,7 +96,11 @@ export const CompanyDashboard: Story = { render: () => <MonitoringPage path="/PA
 export const InboxRecent: Story = { render: () => <MonitoringPage path="/PAP/inbox" /> };
 export const ProfileRecentTasks: Story = { render: () => <MonitoringPage path="/PAP/users/riley" /> };
 export const StatusCardWatchedTasks: Story = { render: () => <StatusCardDetailDrawer card={makeStatusCard({ mentionedIssueIds: [monitored.id] })} companyId={companyId} open onOpenChange={() => undefined} initialTab="watched" /> };
-export const TaskDetailMobile: Story = { ...TaskDetail, globals: { viewport: { value: "mobile", isRotated: false } }, parameters: { waitForViewport: true } };
+export const TaskDetailMobile: Story = {
+  ...TaskDetail,
+  globals: { viewport: { value: "mobile", isRotated: false } },
+  parameters: { layout: "fullscreen", waitForViewport: true },
+};
 export const TaskDetailLight: Story = { ...TaskDetail, globals: { theme: "light" } };
 export const TaskDetailDark: Story = { ...TaskDetail, globals: { theme: "dark" } };
 export const SharedIndicators: Story = {

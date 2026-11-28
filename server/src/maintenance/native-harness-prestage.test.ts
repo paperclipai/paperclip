@@ -1,9 +1,9 @@
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
-const mocks = vi.hoisted(() => ({ close: vi.fn(async () => {}), prestage: vi.fn(), key: vi.fn(async () => {}), obligations: vi.fn(async () => false) }));
+const mocks = vi.hoisted(() => ({ close: vi.fn(async () => {}), prestage: vi.fn(), controllers: vi.fn(), key: vi.fn(async () => {}), obligations: vi.fn(async () => false) }));
 vi.mock("@paperclipai/db", () => ({ createDb: () => ({}), closeRegisteredClients: mocks.close }));
 vi.mock("../config.js", () => ({ loadConfig: () => ({ secretsMasterKeyFilePath: "/fixture/key" }) }));
 vi.mock("../services/cloud-runtime-config.js", () => ({ cloudRuntimeConfigService: () => ({}) }));
@@ -13,12 +13,15 @@ vi.mock("../storage/index.js", () => ({ getStorageService: () => ({ provider: "s
 vi.mock("../services/native-runtime/native-harness-backup-migration.js", () => ({
   prestageNativeHarnessBackups: mocks.prestage, hasLocalNativeHarnessObligations: mocks.obligations,
 }));
+vi.mock("../services/native-runtime/native-controller-migration.js", () => ({ prestageNativeControllers: mocks.controllers }));
 vi.mock("./native-harness-prestage-runtime.js", async importOriginal => ({
   ...await importOriginal<typeof import("./native-harness-prestage-runtime.js")>(), initializeNativeHarnessPrestageKey: mocks.key,
 }));
 
 const initialExitCode = process.exitCode;
-afterEach(() => { process.exitCode = initialExitCode; vi.useRealTimers(); vi.unstubAllEnvs(); vi.restoreAllMocks(); vi.resetModules(); mocks.close.mockClear(); mocks.obligations.mockReset().mockResolvedValue(false); });
+const initialArgv = process.argv;
+beforeEach(() => { process.argv = [process.execPath, "native-harness-prestage"]; });
+afterEach(() => { process.argv = initialArgv; mocks.controllers.mockReset(); process.exitCode = initialExitCode; vi.useRealTimers(); vi.unstubAllEnvs(); vi.restoreAllMocks(); vi.resetModules(); mocks.close.mockClear(); mocks.obligations.mockReset().mockResolvedValue(false); });
 
 it.each([true, false])("checks unfulfilled database obligations for an empty source scan (pending: %s)", async pending => {
   vi.stubEnv("PAPERCLIP_NATIVE_HARNESS_PRESTAGE", "true");
@@ -69,6 +72,7 @@ it("reports a failed deadline with real timers when the dependency holds no even
         export const isCloudManagedInstance = () => false, getStorageService = () => ({ provider: 's3' });
         export const initializeNativeHarnessPrestageKey = async () => {}, nativeHarnessPrestageDatabaseUrl = url => url;
         export const prestageNativeHarnessBackups = () => new Promise(() => {});
+        export const prestageNativeControllers = () => new Promise(() => {});
         export const hasLocalNativeHarnessObligations = async () => false;
       ` }));
     } }],
@@ -110,4 +114,21 @@ it.each(["SIGTERM", "deadline"])("bounds shutdown if a dependency does not settl
   expect(success).not.toHaveBeenCalled();
   expect(process.exitCode).toBe(1);
   expect(vi.getTimerCount()).toBe(0);
+});
+
+it("copies only settled controllers when the explicit mode is selected", async () => {
+  vi.stubEnv("PAPERCLIP_NATIVE_HARNESS_PRESTAGE", "true");
+  vi.stubEnv("DATABASE_URL", "postgres://fixture:fixture@localhost/fixture");
+  process.argv.push("--controllers-only");
+  const counts = { inspected: 2, published: 1, current: 0, deferred: { source_active: 1 } };
+  mocks.controllers.mockResolvedValue(counts);
+  mocks.prestage.mockClear();
+  const success = vi.spyOn(console, "log").mockImplementation(() => {});
+  await import("./native-harness-prestage.js");
+  expect(mocks.controllers).toHaveBeenCalledOnce();
+  expect(mocks.controllers.mock.calls[0][1].signal.aborted).toBe(false);
+  expect(mocks.prestage).not.toHaveBeenCalled();
+  expect(mocks.obligations).not.toHaveBeenCalled();
+  expect(success).toHaveBeenCalledWith(JSON.stringify({ schema: "paperclip.native-controller-prestage.v1", counts, enrollmentReady: false }));
+  expect(mocks.close).toHaveBeenCalled();
 });

@@ -1,4 +1,4 @@
-import { AI_PROVIDERS, AI_CONNECTION_CAPABILITIES, isAiConnectionCompatible, type AiConnectionBinding, type AiProvider } from "@paperclipai/shared";
+import { AI_PROVIDERS, AI_CONNECTION_CAPABILITIES, isAiConnectionCompatible, readProviderFailure, type AiConnectionBinding, type AiProvider } from "@paperclipai/shared";
 
 type AuthenticationFailure = {
   errorCode?: string | null;
@@ -39,15 +39,29 @@ export function isAiConnectionConfigurationFailure(run: AuthenticationFailure): 
   );
 }
 
-export function isAiAuthenticationRepairable(run: AuthenticationFailure): boolean {
-  return isAiAuthenticationFailure(run.errorCode) || isAiConnectionConfigurationFailure(run);
+/** Driver names that identify the same account as the Connections provider. */
+const AUTHENTICATION_PROVIDERS = new Map<string, AiProvider>([
+  ["claude", "anthropic"], ["codex", "openai"], ["grok", "xai"],
+  ["gemini", "google"], ["antigravity", "google"], ["copilot", "github"],
+]);
+
+function authenticationProvider(run: AuthenticationFailure): AiProvider | undefined {
+  const failure = readProviderFailure(record(run.resultJson)?.providerFailure);
+  if (failure?.category !== "authentication") return undefined;
+  return AI_PROVIDERS.find(provider => provider === failure.provider) ?? AUTHENTICATION_PROVIDERS.get(failure.provider);
+}
+
+export function isAiAuthenticationRepairable(run: AuthenticationFailure, provider?: AiProvider): boolean {
+  const failedProvider = authenticationProvider(run);
+  if (provider && failedProvider && provider !== failedProvider) return false;
+  return Boolean(failedProvider) || isAiAuthenticationFailure(run.errorCode) || isAiConnectionConfigurationFailure(run);
 }
 
 /** Provider authentication signals only. Tool authorization and quotas need different repairs. */
 export function isAiAuthenticationFailure(code: string | null | undefined): boolean {
   return Boolean(code && (
     /^(acpx|claude|codex|grok|opencode|gemini|kimi|pi|cursor|copilot)_auth_required$/i.test(code)
-    || ["adapter_auth_missing", "authentication_required", "auth_required", "refresh_token_reused", "refresh_token_expired", "refresh_token_invalidated"].includes(code)
+    || ["adapter_auth_missing", "provider_invalid_credentials", "authentication_required", "auth_required", "refresh_token_reused", "refresh_token_expired", "refresh_token_invalidated"].includes(code)
   ));
 }
 
@@ -63,8 +77,10 @@ export function aiBindingForAuthRecovery(
 ): AiConnectionBinding | undefined {
   if (failure?.errorCode === "configuration_incomplete" && !isAiConnectionConfigurationFailure(failure)) return undefined;
   const missingProvider = failure ? missingPersonalAiCredentialProvider(failure) : undefined;
+  const failedProvider = failure ? authenticationProvider(failure) : undefined;
   for (const provider of AI_PROVIDERS) {
     if (missingProvider && missingProvider !== provider) continue;
+    if (failedProvider && failedProvider !== provider) continue;
     for (const method of ["subscription", "api_key"] as const) {
       if (!AI_CONNECTION_CAPABILITIES[provider].methods[method]) continue;
       // Recovery presents a concrete sign-in method. A responsible-user binding

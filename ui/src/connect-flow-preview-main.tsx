@@ -285,7 +285,7 @@ function ConnectFlowPreview({
         : phase === "ready"
         ? { label: signInLabel, icon: "none" as const, disabled: false }
         : phase === "waiting"
-          ? { label: "Waiting for code", icon: "spinner" as const, disabled: true }
+          ? { label: selectedId === "codex_local" ? "Waiting for auth…" : "Waiting for code", icon: "spinner" as const, disabled: true }
           : phase === "connecting"
             ? { label: "Connecting", icon: "spinner" as const, disabled: true }
             : { label: "Next", icon: "arrow" as const, disabled: true };

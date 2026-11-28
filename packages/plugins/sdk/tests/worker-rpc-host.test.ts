@@ -403,6 +403,23 @@ describe("worker configChanged cross-tenant guard", () => {
     return { callWorker, initialize, stop };
   }
 
+  it.each([false, true])("advertises a fixed login credential read only with an explicit hook: %s", async supported => {
+    const params = { driverKey: "computer", companyId: "company", environmentId: "environment", providerLeaseId: "login", loginCommandKey: "codex" as const };
+    const worker = makeWorker(definePlugin({
+      async setup() {},
+      ...(supported ? { async onLoginPtyReadCredential(input: typeof params) {
+        expect(input).toEqual(params);
+        return { kind: "codex-auth-json" as const, authJson: '{"fixture":true}' };
+      } } : {}),
+    }));
+    try {
+      const initialized = await worker.initialize() as { supportedMethods: string[] };
+      expect(initialized.supportedMethods.includes("loginPtyReadCredential")).toBe(supported);
+      if (supported) expect(await worker.callWorker("loginPtyReadCredential", params)).toEqual({ kind: "codex-auth-json", authJson: '{"fixture":true}' });
+      else await expect(worker.callWorker("loginPtyReadCredential", params)).rejects.toMatchObject({ code: PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED });
+    } finally { worker.stop(); }
+  });
+
   it.each([false, true])("advertises and dispatches stop-only only with an explicit hook: %s", async supported => {
     let releases = 0, stops = 0;
     const worker = makeWorker(definePlugin({ async setup() {},
@@ -874,8 +891,8 @@ describe("worker setup-token pseudo-terminal dispatch", () => {
     let nextRequestId = 1;
 
     // The fake session the opener returns. The test drives its output and exit.
-    let emitOutput: ((chunk: string) => void) | null = null;
-    let resolveWait: ((value: { exitCode: number | null }) => void) | null = null;
+    let emitOutput = null as ((chunk: string) => void) | null;
+    let resolveWait = null as ((value: { exitCode: number | null }) => void) | null;
     const inputs: string[] = [];
     let killed = 0;
     let closed = 0;
@@ -900,6 +917,7 @@ describe("worker setup-token pseudo-terminal dispatch", () => {
         return { workerSessionId: "ws-1" };
       },
       async onLoginPtyInput(params) {
+        expect(params.inputId).toBe("input-1");
         inputs.push(params.data);
       },
       async onLoginPtyStop() {
@@ -986,7 +1004,7 @@ describe("worker setup-token pseudo-terminal dispatch", () => {
 
       // The worker streams output as a notification bound to the worker session id.
       emitOutput?.("prompt output");
-      await callWorker("loginPtyInput", { workerSessionId: "ws-1", data: "browser-code" });
+      await callWorker("loginPtyInput", { workerSessionId: "ws-1", data: "browser-code", inputId: "input-1" });
       await callWorker("loginPtyStop", { workerSessionId: "ws-1" });
       resolveWait?.({ exitCode: 0 });
       await expect(
@@ -1029,16 +1047,16 @@ describe("worker duplex channel dispatch", () => {
     let stopped = 0;
     let closed = 0;
 
-    // The plugin declares the four duplex channel handlers. The open returns a
-    // worker session id. The close keys on the host route id and returns a bound
-    // acknowledgement.
+    // The plugin declares the four duplex channel handlers. The open echoes the
+    // host route id and returns a worker session id. The close keys on the host
+    // route id and returns a bound acknowledgement.
     const controllablePlugin = definePlugin({
       async setup() {},
       async onDuplexChannelOpen(params) {
         expect(params.hostRouteId).toBe("route-1");
         expect(params.command).toEqual(["paperclip-bridge"]);
         expect(params.providerLeaseId).toBe("lease-1");
-        return { workerSessionId: "ws-1" };
+        return { hostRouteId: params.hostRouteId, workerSessionId: "ws-1" };
       },
       async onDuplexChannelWrite(params) {
         writes.push(params.data);
@@ -1117,7 +1135,7 @@ describe("worker duplex channel dispatch", () => {
           providerLeaseId: "lease-1",
           command: ["paperclip-bridge"],
         }),
-      ).resolves.toEqual({ workerSessionId: "ws-1" });
+      ).resolves.toEqual({ hostRouteId: "route-1", workerSessionId: "ws-1" });
 
       await callWorker("duplexChannelWrite", { workerSessionId: "ws-1", data: "payload" });
       await callWorker("duplexChannelStop", { workerSessionId: "ws-1" });
@@ -1212,7 +1230,7 @@ describe("AI connection router RPC", () => {
     const reader = createInterface({ input: output });
     const request = { companyId: "company", taskKey: "task", candidates: [], memberOrder: [] };
     let received: unknown;
-    const plugin = definePlugin({ async setup() {}, onRouteAiConnection(params) { received = params; return { kind: "selected", memberId: "authorized-member" }; } });
+    const plugin = definePlugin({ async setup() {}, async onRouteAiConnection(params) { received = params; return { kind: "selected", memberId: "authorized-member" }; } });
     const worker = startWorkerRpcHost({ plugin, stdin: input, stdout: output });
     let sequence = 0;
     const pending = new Map<string, (value: unknown) => void>();
@@ -1227,6 +1245,50 @@ describe("AI connection router RPC", () => {
   });
 });
 
+describe("plugin connector RPC", () => {
+  const connectorManifest = (tools: unknown) => ({ id: "fixture.connector", apiVersion: 1, version: "1.0.0", displayName: "Connector", description: "Fixture",
+    author: "Tests", categories: ["connector"], capabilities: ["connectors.provide"], entrypoints: {},
+    apps: [{ schemaVersion: 1, slug: "records", name: "Records", description: "Records", categories: ["data"], branding: { logoUrl: "/brands/apps/api-key-generic.svg" },
+      urlPatterns: [], methods: [{ key: "default", transport: "plugin", auth: "none", ownershipModes: ["customer"], whenToUse: "Use", guidanceMd: "Use", riskTier: "S1", tools }] }] });
+  async function host(setup: Parameters<typeof definePlugin>[0]["setup"]) {
+    const input = new PassThrough(), output = new PassThrough();
+    const reader = createInterface({ input: output });
+    const worker = startWorkerRpcHost({ plugin: definePlugin({ setup }), stdin: input, stdout: output });
+    let sequence = 0;
+    const pending = new Map<string, (value: unknown) => void>();
+    reader.on("line", line => { const response = parseMessage(line); if (isJsonRpcResponse(response)) { pending.get(String(response.id))?.(response); pending.delete(String(response.id)); } });
+    const call = (method: string, params: unknown) => new Promise<JsonRpcResponse>(resolve => { const id = String(++sequence); pending.set(id, value => resolve(value as JsonRpcResponse)); input.write(serializeMessage(createRequest(method, params, id))); });
+    return { call, stop: () => { worker.stop(); reader.close(); input.destroy(); output.destroy(); } };
+  }
+  const staticTools = { kind: "static", list: [{ name: "lookup", risk: "read", parametersSchema: { type: "object" } }] };
+
+  it("refuses to start when a declared static tool has no handler", async () => {
+    const worker = await host(async () => {});
+    try {
+      const initialized = await worker.call("initialize", { manifest: connectorManifest(staticTools), config: {}, databaseNamespace: null }) as { error?: { message: string } };
+      expect(initialized.error?.message).toContain('declares tool "lookup"');
+    } finally { worker.stop(); }
+  });
+
+  it("routes connector calls and tool lists to their handlers with the connection", async () => {
+    let received: unknown;
+    const worker = await host(async (ctx) => {
+      ctx.connectors.register("records", "lookup", async (params, runCtx) => { received = { params, runCtx }; return { content: "found" }; });
+      ctx.connectors.listTools("records", async (connection) => [{ name: `for_${connection.id}`, risk: "read", parametersSchema: { type: "object" } }]);
+    });
+    try {
+      expect((await worker.call("initialize", { manifest: connectorManifest(staticTools), config: {}, databaseNamespace: null }) as { error?: unknown }).error).toBeUndefined();
+      const connection = { id: "conn", appSlug: "records", methodKey: "default", grantId: "grant", settings: { region: "eu" } };
+      const runContext = { agentId: "agent", runId: "run", companyId: "company", projectId: "", connection };
+      expect((await worker.call("executeTool", { toolName: "lookup", appSlug: "records", parameters: { id: "1" }, runContext }) as { result: unknown }).result).toEqual({ content: "found" });
+      expect(received).toEqual({ params: { id: "1" }, runCtx: runContext });
+      expect((await worker.call("executeTool", { toolName: "lookup", appSlug: "records", parameters: {}, runContext: { ...runContext, connection: undefined } }) as { error?: unknown }).error).toBeTruthy();
+      expect((await worker.call("listConnectorTools", { companyId: "company", appSlug: "records", connection }) as { result: unknown }).result)
+        .toEqual({ tools: [{ name: "for_conn", risk: "read", parametersSchema: { type: "object" } }] });
+    } finally { worker.stop(); }
+  });
+});
+
 describe("Durable lifecycle inbox RPC", () => {
   it("sends company-scoped reads and acknowledgments through the worker SDK", async () => {
     const input = new PassThrough(), output = new PassThrough();
@@ -1235,9 +1297,10 @@ describe("Durable lifecycle inbox RPC", () => {
     const event = { id: "7", companyId: "company-a", resourceType: "agent", resourceId: "agent-a", action: "pause", createdAt: new Date(0).toISOString() };
     const plugin = definePlugin({ async setup(ctx) {
       ctx.data.register("drain", async ({ companyId }) => {
-        const events = await ctx.events.listLifecycle(companyId!, 10, "6");
-        await ctx.events.acknowledgeLifecycle(companyId!, events[0].id);
-        await ctx.agents.getRuntime("agent-a", companyId!, "environment-a", true);
+        if (typeof companyId !== "string") throw new Error("companyId is required");
+        const events = await ctx.events.listLifecycle(companyId, 10, "6");
+        await ctx.events.acknowledgeLifecycle(companyId, events[0].id);
+        await ctx.agents.getRuntime("agent-a", companyId, "environment-a", true);
         return events;
       });
     } });

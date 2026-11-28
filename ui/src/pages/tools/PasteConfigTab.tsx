@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation } from "@tanstack/react-query";
 import { CheckCircle2, KeyRound, Loader2, ShieldCheck } from "lucide-react";
@@ -15,14 +15,15 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { toolsApi } from "@/api/tools";
-import { navigateTopLevel } from "@/lib/browserNavigation";
-import { prepareOAuthNavigation, savePendingCloudHandoff } from "@/lib/oauthHandoff";
+import { useAuthorizationWindow } from "@/hooks/useAuthorizationWindow";
+import { readOAuthWindowOutcome } from "@/lib/oauthWindowOutcome";
 import { useNavigate } from "@/lib/router";
 import {
   OAuthConnectStateScreen,
   type OAuthConnectPhase,
 } from "@/features/connections/ConnectionSetupFlow";
 import { endpointHost } from "@/pages/apps/generic-mcp-connect";
+import { withoutUnavailableActions } from "@/pages/apps/app-detail/action-permissions";
 import { McpConfigHelpDialog } from "./McpConfigHelpDialog";
 import { describeError } from "@/api/errors";
 
@@ -114,6 +115,7 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
   const [oauthError, setOAuthError] = useState<string | null>(null);
   const [authorizationHost, setAuthorizationHost] = useState<string | null>(null);
 
+  const authorization = useAuthorizationWindow();
   const importMutation = useMutation({
     mutationFn: (mcpJson: string) => toolsApi.importMcpJson(companyId, { mcpJson }),
     onSuccess: (result) => {
@@ -129,23 +131,54 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
     handoff?: ToolOAuthStartResult["handoff"],
   ) => {
     try {
-      const target = await prepareOAuthNavigation({ authorizationUrl, handoff });
-      if (target.kind === "reauthentication" && handoff) {
-        savePendingCloudHandoff(handoff.session);
-      }
+      const target = await authorization.open({ authorizationUrl, handoff });
       setAuthorizationHost(target.host);
-      setOAuthPhase(target.kind === "authorization" ? "redirecting" : "starting");
-      navigateTopLevel(target.url);
+      setOAuthPhase("redirecting");
     } catch (error) {
       setOAuthPhase("error");
       setOAuthError(describeError(error).body);
     }
   };
 
+  const { windowRef: authorizationWindow, cancel: closeAuthorization } = authorization;
+  const oauthConnectionId = connectResult?.connectionId;
+  useEffect(() => {
+    if (oauthPhase !== "redirecting" || !oauthConnectionId) return;
+    let cancelled = false;
+    let checking = false;
+    const check = async () => {
+      if (cancelled || checking) return;
+      const outcome = readOAuthWindowOutcome(authorizationWindow.current, oauthConnectionId);
+      if (outcome === "waiting") return;
+      if (outcome !== "connected") {
+        closeAuthorization();
+        setOAuthPhase("error");
+        setOAuthError(outcome === "closed" ? "The sign-in window closed. Try again to finish connecting."
+          : outcome === "denied" ? "Sign-in was cancelled. Try again when you’re ready."
+            : "Sign-in failed. Try again to finish connecting.");
+        return;
+      }
+      checking = true;
+      try {
+        const saved = await toolsApi.getConnection(oauthConnectionId);
+        if (!cancelled && saved.status === "active") {
+          cancelled = true;
+          closeAuthorization();
+          navigate(`/apps/${oauthConnectionId}/permissions`);
+        }
+      } catch { /* A later focus or poll can retry verification. */ }
+      finally { checking = false; }
+    };
+    const timer = window.setInterval(() => void check(), 1000);
+    window.addEventListener("focus", check);
+    return () => { cancelled = true; window.clearInterval(timer); window.removeEventListener("focus", check); };
+  }, [oauthPhase, oauthConnectionId, authorizationWindow, closeAuthorization, navigate]);
+
   const oauthStartMutation = useMutation({
     mutationFn: (connectionId: string) => toolsApi.startOAuth(connectionId),
     onSuccess: (start) => void openAuthorizationPage(start.authorizationUrl, start.handoff),
     onError: (error) => {
+      authorization.cancel();
       setOAuthPhase("error");
       setOAuthError(
         describeError(error).body,
@@ -170,9 +203,11 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
         setAuthorizationHost(null);
         setOAuthError(null);
         if (result.auth.manualClientRequired) {
+          authorization.cancel();
           setOAuthPhase("error");
           setOAuthError(
-            "This server requires OAuth client details from its provider settings. Continue in setup to add them.",
+            result.auth.manualClientReason
+              ?? "This server requires OAuth client details from its provider settings. Continue in setup to add them.",
           );
           return;
         }
@@ -185,20 +220,25 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
         }
         return;
       }
+      authorization.cancel();
       const defaults: Record<string, boolean> = {};
       for (const action of result.actions.readOnly) defaults[action.catalogEntryId] = true;
       for (const action of result.actions.canMakeChanges) defaults[action.catalogEntryId] = true;
       setEnabled(defaults);
       setActivatedName(null);
     },
+    onError: () => authorization.cancel(),
   });
 
   const finishMutation = useMutation({
     mutationFn: () => {
       const askFirstLevels = connectResult ? askFirstLevelsFrom(connectResult) : [];
-      const enabledIds = Object.entries(enabled).filter(([, on]) => on).map(([id]) => id);
+      const enabledIds = withoutUnavailableActions(
+        Object.entries(enabled).filter(([, on]) => on).map(([id]) => id),
+        connectResult?.catalog ?? [],
+      );
       const askFirstIds = (connectResult?.actions.canMakeChanges ?? [])
-        .filter((action) => enabled[action.catalogEntryId] && askFirstLevels.includes(action.riskLevel))
+        .filter((action) => enabledIds.includes(action.catalogEntryId) && askFirstLevels.includes(action.riskLevel))
         .map((action) => action.catalogEntryId);
       return toolsApi.finishApp(companyId, connectResult!.connectionId, {
         enabledCatalogEntryIds: enabledIds,
@@ -229,7 +269,8 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
       : typeof connectResult.connection.transportConfig?.url === "string"
         ? connectResult.connection.transportConfig.url
         : "";
-    return (
+    return (<>
+      {authorization.fallback}
       <OAuthConnectStateScreen
         identity={{
           name: connectResult.application.name,
@@ -239,6 +280,7 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
         error={oauthError}
         authorizationHost={authorizationHost}
         onRetry={() => {
+          authorization.reserve();
           setOAuthError(null);
           setAuthorizationHost(null);
           setOAuthPhase("starting");
@@ -247,7 +289,7 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
         onBack={() => navigate(`/apps/${connectResult.connectionId}/permissions`)}
         onCancel={() => navigate("/apps")}
       />
-    );
+    </>);
   }
 
   return (
@@ -331,7 +373,7 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
                   }
                   checking={connectMutation.isPending && connectMutation.variables?.name === draft.name}
                   canCheck={Boolean(url) && missingFields.length === 0}
-                  onCheck={url ? () => connectMutation.mutate(draft) : undefined}
+                  onCheck={url ? () => { authorization.reserve(); connectMutation.mutate(draft); } : undefined}
                 />
               );
             })}

@@ -3,7 +3,8 @@ import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { expect, it, vi } from "vitest";
-import { DurablePrpControlPlane } from "../control-plane/durable-prp-control-plane.js";
+import { DurablePrpControlPlane, type RunnerProcessResult } from "../control-plane/durable-prp-control-plane.js";
+import { NativeSessionCloseUnrecoverableError } from "../contracts/native-session-backend.js";
 import { createCapabilityRunnerdCodexTransport, defaultCapabilityRunnerdBinary, readRunnerdArtifactBinding, runnerdRecoveryInternals } from "./runnerd-codex-transport.js";
 
 it.each(["resolved", "rejected"] as const)("keeps the checkpoint behind controller retirement (%s)", async outcome => {
@@ -32,14 +33,14 @@ it.each(["resolved", "rejected"] as const)("keeps the checkpoint behind controll
   }
 });
 
-it.each(["drain", "timeout", "external_close"] as const)("joins an output flush before controller retirement permits a successor writer (%s)", async mode => {
+it.each(["drain", "timeout", "external_close", "close_timeout"] as const)("joins an output flush before controller retirement permits a successor writer (%s)", async mode => {
   const root = await fs.mkdtemp(join(tmpdir(), "runnerd-detach-write-"));
   await fs.mkdir(join(root, "diagnostics"), { mode: 0o700 });
   const binary = defaultCapabilityRunnerdBinary();
   const artifact = readRunnerdArtifactBinding(binary);
   let core!: DurablePrpControlPlane;
   const start = DurablePrpControlPlane.prototype.start;
-  const startSpy = vi.spyOn(DurablePrpControlPlane.prototype, "start").mockImplementation(function (port) {
+  const startSpy = vi.spyOn(DurablePrpControlPlane.prototype, "start").mockImplementation(function (this: DurablePrpControlPlane, port) {
     core = this;
     return start.call(this, port);
   });
@@ -64,7 +65,7 @@ it.each(["drain", "timeout", "external_close"] as const)("joins an output flush 
     codexCommand: resolve(import.meta.dirname, "../../runner/target/debug/fake-codex-app-server"),
     codexArgs: ["--state-file", join(root, "provider-state.json"), "--split-event-burst", "--split-event-prefix-count", "1"],
     stateDirectory: root,
-    closeGraceMs: mode === "timeout" ? 200 : 1_500,
+    closeGraceMs: mode === "timeout" || mode === "close_timeout" ? 200 : 1_500,
     ...(mode === "external_close" ? { controlPlaneRegistration: async (authority: DurablePrpControlPlane) => {
       await authority.start();
       const stop = authority.stop.bind(authority);
@@ -81,7 +82,7 @@ it.each(["drain", "timeout", "external_close"] as const)("joins an output flush 
       let stderr = "";
       owned.stderr?.on("data", chunk => { stderr += String(chunk); });
       exit = new Promise(resolveExit => owned.once("exit", () => resolveExit()));
-      const completion = new Promise<{ code: number | null; signal: string | null; stdout: string; stderr: string }>((resolveExit, reject) => {
+      const completion = new Promise<RunnerProcessResult>((resolveExit, reject) => {
         owned.once("error", reject);
         owned.once("exit", (code, signal) => resolveExit({ code, signal, stdout: "", stderr }));
       });
@@ -103,6 +104,15 @@ it.each(["drain", "timeout", "external_close"] as const)("joins an output flush 
       });
       expect(closeSteps.indexOf("release")).toBeGreaterThanOrEqual(0);
       expect(closeSteps.indexOf("release")).toBeLessThan(closeSteps.indexOf("stop"));
+      return;
+    }
+    if (mode === "close_timeout") {
+      await expect(bundle.transport.close()).rejects.toThrow("journal drain timed out");
+      release();
+      await core.drainPendingConnectionProcessing();
+      const retried = await bundle.transport.close().then(() => null, (error: Error) => error);
+      expect(retried).toBeInstanceOf(NativeSessionCloseUnrecoverableError);
+      expect(retried?.message ?? "").not.toContain("journal drain timed out");
       return;
     }
     let settled = false;

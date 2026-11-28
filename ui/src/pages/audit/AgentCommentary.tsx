@@ -119,7 +119,7 @@ export function AgentCommentary({ companyId }: { companyId: string }) {
   return (
     <section className="flex flex-col gap-5" aria-label="Commentary">
       <div className="flex flex-col gap-1"><h2 className="text-lg font-semibold">Commentary</h2><p className="text-sm text-muted-foreground">Suggestions and complaints from your agents.</p></div>
-      <div className="flex flex-wrap items-center gap-2">
+      <div data-canonical-toolbar="audit-commentary" role="toolbar" aria-label="Commentary filters" className="flex flex-wrap items-center gap-2">
         <div className="relative min-w-48 flex-1 sm:max-w-sm"><Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><Input aria-label="Search commentary" placeholder="Search messages…" maxLength={200} value={search} onChange={(event) => setSearch(event.target.value)} className="pl-9" /></div>
         <Select value={agentId} onValueChange={(value) => updateFilters({ agentId: value })}><SelectTrigger aria-label="Filter by agent" className="min-w-40"><SelectValue placeholder="All agents" /></SelectTrigger><SelectContent><SelectItem value={ALL}>All agents</SelectItem>{agents.data?.map((agent) => <SelectItem key={agent.id} value={agent.id}><AgentIdentity agent={agent} size="xs" /></SelectItem>)}</SelectContent></Select>
         <Select value={kind ?? ALL} onValueChange={(value) => updateFilters({ kind: value })}><SelectTrigger aria-label="Filter by message type" className="min-w-36"><SelectValue /></SelectTrigger><SelectContent><SelectItem value={ALL}>All types</SelectItem><SelectItem value="suggestion">Suggestions</SelectItem><SelectItem value="complaint">Complaints</SelectItem></SelectContent></Select>

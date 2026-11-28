@@ -189,8 +189,15 @@ package connection to avoid a one-connection pool deadlock. No upload happens on
 unchanged warm preparation path.
 
 Uploads use unique attempt keys. An incomplete attempt has a durable claim with a
-ten-minute expiry. Retries after expiry use fresh keys; an ambiguous database result
-never triggers deletion of a possibly successful upload. A database trigger records
+ten-minute crash expiry. When an attempt fails or is cancelled, it expires only its
+own unpublished claim so a retry can use fresh keys immediately. This cleanup has
+a one-second client deadline and a transaction-local statement timeout. Cleanup
+queued behind a busy pool skips its write after that deadline. If the database is
+unavailable, the original crash expiry remains. Concurrent preparation on another
+connection or replica waits for the receipt or an expired claim within its existing
+three-minute request deadline. These reads stop when the request settles or is cancelled;
+they add no idle background polling. An ambiguous database result never triggers
+deletion of a possibly successful upload. A database trigger records
 retired keys in `skill_package_deletions`, including company cascades. Promotion of
 an upload to a published receipt does not enqueue its objects for deletion.
 

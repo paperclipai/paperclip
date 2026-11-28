@@ -41,7 +41,7 @@ endpoint authorization independently of whether the admin UI is visible.
 
 ### `gateway-client`
 
-Automated: [gateway service](../../server/src/__tests__/tool-gateway-service.test.ts), [connect client dialog](../../ui/src/pages/apps/gateways/ConnectClientDialog.test.tsx), and [token panel](../../ui/src/pages/apps/gateways/panels/TokensPanel.test.tsx) cover service/UI contracts.
+Automated: [gateway service](../../server/src/__tests__/tool-gateway-service.test.ts) and [token panel](../../ui/src/pages/apps/gateways/panels/TokensPanel.test.tsx) cover service and token-panel contracts (mocked `ConnectClientDialog` UI tests were removed; verify the connect-client dialog manually).
 
 Gateway regressions also cover a failed remote call followed by a successful
 sibling tool call. Transient failures preserve the catalog. Authentication
@@ -53,7 +53,7 @@ Manual: Create a disposable gateway with one harmless tool, connect a client usi
 
 ### `access-profile`
 
-Automated: [profile wizard](../../ui/src/pages/tools/profiles/ProfileWizard.test.tsx) and [profile detail](../../ui/src/pages/tools/profiles/ProfileDetail.test.tsx) cover component behavior with mocks.
+Automated: none for mocked UI (`ProfileWizard` and `ProfileDetail` component tests were removed; see backend test below and verify UI manually).
 
 Backend: [profile entry validation](../../server/src/__tests__/tool-profile-entry-validation.test.ts)
 uses isolated PostgreSQL to create and replace a 518-selector assignment with

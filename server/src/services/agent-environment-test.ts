@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { probePluginRunnerEnvironment } from "./native-runtime/plugin-runner-probe.js";
+import { pluginRunnerAiConnectionRequiredTestResult } from "./plugin-runner-ai-connection.js";
 import { registerPluginTaskCredentialHandoff } from "./plugin-task-credential-writeback.js";
 import { randomUUID } from "node:crypto";
 import { agents, companies, type Db } from "@paperclipai/db";
@@ -16,7 +17,9 @@ import { environmentService } from "./environments.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { resolveEnvironmentExecutionTarget } from "./environment-execution-target.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth } from "./ai-connection-runtime.js";
+import { isRunnerRevisionMismatch, runnerRevisionMismatchTestResult } from "./runner-revision-mismatch.js";
 import { aiConnectionService } from "./ai-connections.js";
+import { isAiKeyVerificationFailureCode } from "./ai-api-key-failures.js";
 import { validateAiApiKey } from "./ai-api-key-test.js";
 import { probeCopilotExecutionTarget } from "./copilot-connection-probe.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
@@ -55,7 +58,7 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
     if ((await instanceSettings.getExperimental()).enableManagedSandboxOnly === true) {
       const managed = await environmentsSvc.findManagedSandboxEnvironment(companyId);
       if (!managed) {
-        throw unprocessable("The managed sandbox is unavailable. Restore Paperclip Computer and retry.", {
+        throw unprocessable("The managed sandbox is unavailable. Restore Paperclip Sandbox and retry.", {
           code: "managed_sandbox_unavailable",
         });
       }
@@ -573,8 +576,19 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
         return { adapterType, status: "fail" as const, testedAt: new Date().toISOString(), checks: [{ code: error instanceof HttpError ? String(asRecord(error.details)?.code ?? "COPILOT_REQUEST_FAILED") : "COPILOT_REQUEST_FAILED", level: "error" as const, message: error instanceof HttpError ? error.message : "Copilot metadata verification failed." }] };
       }
     }
-    await assertManagedAiProjectAuth(context.config, binding.provider, context.executionTarget);
     const target = context.executionTarget;
+    // A preconfigured Runner home does not use the managed connection, so run admission refuses it.
+    if (adapterType === "paperclip_runner" && context.config.homeMode === "preconfigured"
+      && target?.kind === "remote" && target.transport === "sandbox" && target.runnerTask) {
+      return pluginRunnerAiConnectionRequiredTestResult(adapterType, true);
+    }
+    try { await assertManagedAiProjectAuth(context.config, binding.provider, target); }
+    catch (error) {
+      if (isRunnerRevisionMismatch(error)) return runnerRevisionMismatchTestResult(adapterType);
+      if (error instanceof HttpError || target?.kind !== "remote" || target.transport !== "sandbox" || !target.runnerTask) throw error;
+      return { adapterType, status: "fail", testedAt: new Date().toISOString(), checks: [{ code: "runner_environment_unavailable", level: "error", retryable: true,
+        message: "The selected plugin environment could not describe its Runner. Check the environment's computer and plugin status, then retry." }] };
+    }
     const result = adapterType === "paperclip_runner" && target?.kind === "remote" && target.transport === "sandbox" && target.runnerTask
       ? await probePluginRunnerEnvironment(context, { identity: managed.identity, accountIdentity: managed.sessionIdentity,
           home: managed.home ? join(managed.home, "provider") : undefined })
@@ -584,6 +598,8 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
     // exact model without a billable turn. Do not invoke another Google CLI.
     if (adapterType === "paperclip_runner" && context.config.provider === "acpx" && context.config.acpxAgent === "antigravity") {
       if (result.status === "pass" && result.checks.some(check => check.code === "antigravity_metadata_verified" && check.level === "info")) return result;
+      if (target?.kind === "remote" && !(target.transport === "sandbox" && target.runnerTask) && result.status === "warn"
+        && result.checks.some(check => check.code === "antigravity_remote_runtime_ready")) return result;
       return { ...result, status: "fail", checks: [...result.checks, { code: "ai_connection_validation_incomplete", level: "error",
         message: "The selected Google account has not completed native account and model verification. Retry before adopting it." }] };
     }
@@ -617,8 +633,8 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
         result.checks.push({ code: "ai_connection_api_key_reverified", level: "info", message: "The provider verified this API key for adoption." });
       } catch (error) {
         result.status = "fail";
-        const rejected = error instanceof HttpError && asRecord(error.details)?.code === "ai_connection_api_key_rejected";
-        result.checks.push({ code: rejected ? "ai_connection_api_key_rejected" : "ai_connection_verification_failed", level: "error", message: error instanceof HttpError ? error.message : "Could not verify the account. Try again." });
+        const code = error instanceof HttpError ? asRecord(error.details)?.code : undefined;
+        result.checks.push({ code: isAiKeyVerificationFailureCode(code) ? code : "ai_connection_verification_failed", level: "error", message: error instanceof HttpError ? error.message : "Could not verify the account. Try again." });
       }
       return finishManagedConnectionTest(adapterType, context, result);
     }

@@ -296,6 +296,7 @@ describe("inbox helpers", () => {
         kind: "dismiss",
         dismissedAt: new Date("2026-03-11T01:00:00.000Z"),
         snoozedUntil: null,
+        fingerprint: null,
         createdAt: new Date("2026-03-11T01:00:00.000Z"),
         updatedAt: new Date("2026-03-11T01:00:00.000Z"),
       },
@@ -985,6 +986,7 @@ describe("inbox helpers", () => {
         externalObjectStatuses: [],
         showAgentCreatedTasks: true,
         routineTasksOnly: false,
+        updatedWithin: "3d",
       },
     });
     saveInboxFilterPreferences("company-2", {
@@ -1020,6 +1022,9 @@ describe("inbox helpers", () => {
         externalObjectStatuses: [],
         showAgentCreatedTasks: true,
         routineTasksOnly: false,
+        updatedWithin: "3d",
+        updatedFrom: null,
+        updatedTo: null,
       },
     });
     expect(loadInboxFilterPreferences("company-2")).toEqual({
@@ -1037,6 +1042,9 @@ describe("inbox helpers", () => {
         externalObjectStatuses: [],
         showAgentCreatedTasks: false,
         routineTasksOnly: false,
+        updatedWithin: null,
+        updatedFrom: null,
+        updatedTo: null,
       },
     });
   });
@@ -1073,6 +1081,9 @@ describe("inbox helpers", () => {
         externalObjectStatuses: [],
         showAgentCreatedTasks: false,
         routineTasksOnly: false,
+        updatedWithin: null,
+        updatedFrom: null,
+        updatedTo: null,
       },
     });
   });

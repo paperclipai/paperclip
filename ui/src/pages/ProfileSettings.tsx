@@ -10,6 +10,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { InboxAgentPolicyControl } from "@/components/InboxAgentPolicyControl";
+import { ProductAnalyticsSetting } from "@/components/ProductAnalyticsSetting";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -29,14 +30,18 @@ export function ProfileSettings() {
   const queryClient = useQueryClient();
   const avatarInputId = useId();
   const avatarInputRef = useRef<HTMLInputElement | null>(null);
-  const [name, setName] = useState("");
-  const [image, setImage] = useState("");
+  // Unedited fields show the session's saved values from the first frame; a
+  // restored session must not render an empty name until an effect fills it.
+  const [nameDraft, setName] = useState<string | null>(null);
+  const [imageDraft, setImage] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const sessionQuery = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
   });
   const sessionView = useQueryView(sessionQuery);
+  const name = nameDraft ?? sessionQuery.data?.user.name ?? "";
+  const image = imageDraft ?? sessionQuery.data?.user.image ?? "";
 
   useEffect(() => {
     setBreadcrumbs([
@@ -46,10 +51,8 @@ export function ProfileSettings() {
   }, [setBreadcrumbs]);
 
   useEffect(() => {
-    const session = sessionQuery.data;
-    if (!session) return;
-    setName(session.user.name ?? "");
-    setImage(session.user.image ?? "");
+    setName(null);
+    setImage(null);
   }, [sessionQuery.data]);
 
   function syncSessionProfile(profile: CurrentUserProfile) {
@@ -156,7 +159,7 @@ export function ProfileSettings() {
     : "Select an organization to upload an avatar into Paperclip storage.";
 
   return (
-    <div className="max-w-6xl space-y-6">
+    <div className="min-w-0 max-w-6xl space-y-6">
       <div className="space-y-2">
         <div className="flex items-center gap-2">
           <UserRoundPen className="h-5 w-5 text-muted-foreground" />
@@ -173,16 +176,16 @@ export function ProfileSettings() {
         </div>
       ) : null}
 
-      <section className="space-y-8">
-        <Card className="block relative overflow-hidden rounded-(--rad-28) border-border/70">
+      <section className="min-w-0 max-w-full space-y-8">
+        <Card className="block relative min-w-0 max-w-full overflow-hidden rounded-(--rad-28) border-border/70">
           <div className="absolute inset-x-0 top-0 h-32 bg-(image:--gradient-extract-26)" />
           <div className="absolute inset-0 bg-(image:--gradient-extract-7)" />
-          <div className="relative p-6 pt-10">
-            <div className="flex flex-wrap items-end gap-5 rounded-(--rad-24) border border-border/70 bg-background/92 p-5 shadow-(--shadow-extract-18) backdrop-blur-sm">
-              <div className="space-y-3">
+          <div className="relative min-w-0 p-4 pt-8 sm:p-6 sm:pt-10">
+            <div className="flex min-w-0 flex-wrap items-end gap-5 rounded-(--rad-24) border border-border/70 bg-background/92 p-4 shadow-(--shadow-extract-18) backdrop-blur-sm sm:p-5">
+              <div className="min-w-0 max-w-full space-y-3">
                 <label
                   htmlFor={avatarInputId}
-                  className="group relative block cursor-pointer rounded-full focus-within:outline-none focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 focus-within:ring-offset-background"
+                  className="group relative inline-block w-fit cursor-pointer rounded-full focus-within:outline-none focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 focus-within:ring-offset-background"
                 >
                   <input
                     ref={avatarInputRef}
@@ -245,13 +248,13 @@ export function ProfileSettings() {
         </Card>
 
         <form
-          className="grid gap-6 md:grid-cols-2"
+          className="grid min-w-0 gap-6 md:grid-cols-2"
           onSubmit={(event) => {
             event.preventDefault();
             updateMutation.mutate({ name: resolveProfileName(), image: image.trim() || null });
           }}
         >
-          <div className="space-y-2">
+          <div className="min-w-0 space-y-2">
             <Label htmlFor="profile-name">Display name</Label>
             <Input
               id="profile-name"
@@ -265,7 +268,7 @@ export function ProfileSettings() {
             </p>
           </div>
 
-          <div className="space-y-2">
+          <div className="min-w-0 space-y-2">
             <Label htmlFor="profile-email">Email</Label>
             <Input
               id="profile-email"
@@ -287,6 +290,8 @@ export function ProfileSettings() {
         </form>
 
         <InboxAgentPolicyControl companyId={selectedCompanyId} />
+
+        <ProductAnalyticsSetting config={sessionQuery.data.browserAnalytics} />
       </section>
     </div>
   );

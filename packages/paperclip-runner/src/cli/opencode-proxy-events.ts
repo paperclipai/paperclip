@@ -20,10 +20,12 @@ export function openCodeProxyToolNotification(input: {
 }
 
 export function shouldForwardOpenCodeProxyItem(input: {
+  eventType?: string;
   turnId?: string;
-  kind?: unknown;
+  payload: Record<string, unknown>;
 }): boolean {
-  return !(input.turnId === undefined && input.kind === "model");
+  if (input.eventType === "item.delta") return openCodeProxyAssistantText(input.payload) !== null;
+  return !(input.turnId === undefined && input.payload.kind === "model");
 }
 
 export function openCodeProxyAssistantText(

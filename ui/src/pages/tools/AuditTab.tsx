@@ -25,6 +25,9 @@ import {
 import { agentsApi } from "@/api/agents";
 import { AgentSelect } from "@/components/AgentMultiSelect";
 import { ToolsPageHeader, LoadingState, RelativeTime } from "./shared";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { googleAccessRetrySummary } from "../../features/connections/googleAccessRemoval";
+import { auditTransportLabel } from "@/lib/connection-transport-label";
 
 const PAGE_SIZE = 50;
 const ALL = "__all";
@@ -112,6 +115,9 @@ function lifecycleSummary(event: ToolGatewayActivityEvent): string | null {
       return `${who} updated the allowlist for ${app}`;
     case "actions_quarantined":
       return `${count} new ${count === 1 ? "action needs" : "actions need"} review in ${app}`;
+    case "google_access_ended":
+    case "google_access_not_ended":
+      return `${googleAccessRetrySummary(event.lifecycleType, event.details ?? null)} (${app})`;
     default:
       return `${who} updated ${app}`;
   }
@@ -281,7 +287,7 @@ function ActivityRow({
                 <DetailFact label="Reason code" value={reasonCode} mono />
                 <DetailFact label="Actor type" value={event.actorType ?? "—"} />
                 {runId ? <DetailFact label="Run ID" value={runId} mono /> : null}
-                {transport ? <DetailFact label="Transport" value={transport} mono /> : null}
+                {transport ? <DetailFact label="Type" value={auditTransportLabel(transport)} /> : null}
                 {requestMethod && endpoint ? <DetailFact label="HTTP request" value={`${requestMethod} ${endpoint}`} mono /> : null}
                 {mcpMethod ? <DetailFact label="MCP method" value={mcpMethod} mono /> : null}
                 {requestId ? <DetailFact label="Request ID" value={requestId} mono /> : null}
@@ -299,7 +305,7 @@ function ActivityRow({
                       return connectionId ? (
                         <div key={connectionId} className="flex gap-2">
                           <span className="shrink-0 text-muted-foreground">Not installed</span>
-                          <Link to={`/apps/${connectionId}/permissions`} className="font-medium text-primary hover:underline">
+                          <Link to={`/apps/${connectionId}/permissions`} className={cn("font-medium text-primary hover:underline", ANALYTICS_MASK_CLASS)}>
                             {connectionName}
                           </Link>
                         </div>
@@ -310,7 +316,7 @@ function ActivityRow({
                 {argumentsText ? (
                   <div className="space-y-1">
                     <span className="text-muted-foreground">Parameters (redacted)</span>
-                    <pre className="whitespace-pre-wrap break-words rounded-md border border-border bg-background p-3 font-mono text-xs text-foreground">
+                    <pre className={cn("whitespace-pre-wrap break-words rounded-md border border-border bg-background p-3 font-mono text-xs text-foreground", ANALYTICS_MASK_CLASS)}>
                       {argumentsText}
                     </pre>
                   </div>
@@ -403,7 +409,7 @@ export function AuditTab({ companyId }: { companyId: string }) {
         description="What your agents actually did with your apps, newest first. Each line is one decision — allowed, blocked, asked first, waiting, or failed."
       />
 
-      <div className="flex flex-wrap items-center gap-2">
+      <div data-canonical-toolbar="tool-audit" role="toolbar" aria-label="Tool audit filters" className="flex flex-wrap items-center gap-2">
         <Select value={app} onValueChange={setApp}>
           <SelectTrigger className="w-40">
             <SelectValue placeholder="App" />

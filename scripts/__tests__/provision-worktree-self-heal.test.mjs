@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const script = new URL("../provision-worktree.sh", import.meta.url).pathname;
+const script = new URL("../setup-paperclip-worktree.sh", import.meta.url).pathname;
 const runtimeScript = new URL("../provision-worktree-runtime.sh", import.meta.url).pathname;
 
 // Keep the PATH minimal so the fallback ladder is deterministic: node must be
@@ -233,7 +233,7 @@ test("initializes a previously plain checkout once a registered seed source is a
 test("a plain checkout without a source is not ready for a seeded runtime", () => {
   const baseCwd = makeBaseWorkspace({ helpExit: 0, initExit: 0 });
   fs.mkdirSync(path.join(baseCwd, "scripts"));
-  fs.copyFileSync(script, path.join(baseCwd, "scripts", "provision-worktree.sh"));
+  fs.copyFileSync(script, path.join(baseCwd, "scripts", "setup-paperclip-worktree.sh"));
   const setupInstance = (home) => fs.rmSync(path.join(home, "instances"), { recursive: true });
   const { result, worktreeCwd } = runProvision(baseCwd, { setupInstance });
   assert.equal(result.status, 0, result.stderr);
@@ -568,7 +568,7 @@ test("runtime provisioning seeds a worktree config that has no seed markers", ()
 test("runtime provisioning bootstraps and seeds an empty .paperclip directory", () => {
   const baseCwd = makeBaseWorkspace({ helpExit: 0, initExit: 0 });
   fs.mkdirSync(path.join(baseCwd, "scripts"), { recursive: true });
-  fs.copyFileSync(script, path.join(baseCwd, "scripts", "provision-worktree.sh"));
+  fs.copyFileSync(script, path.join(baseCwd, "scripts", "setup-paperclip-worktree.sh"));
   const worktreeCwd = makeTempDir("paperclip-provision-runtime-empty-state-");
   fs.mkdirSync(path.join(worktreeCwd, ".paperclip"), { recursive: true });
 

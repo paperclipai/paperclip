@@ -1,16 +1,17 @@
+import { PERSONAL_ARCHIVE_QUERY_KEY } from "@/lib/inboxArchiveCache";
+import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useShowAgentCreatedTasks } from "../hooks/useShowAgentCreatedTasks";
 import { useCoordinatorWorkspaceEnabled } from "../hooks/useCoordinatorWorkspaceEnabled";
-import { CoordinatorTasks } from "./CoordinatorTasks";
+import { CoordinatorTaskViews } from "./CoordinatorTaskViews";
 import { useDesignSandbox } from "../context/DesignSandboxContext";
 import { DesignSandboxTasks } from "./DesignSandboxTasks";
 import { useEffect, useMemo, useCallback, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Navigate, useLocation, useNavigate, useSearchParams } from "@/lib/router";
+import { useLocation, useNavigate, useSearchParams } from "@/lib/router";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
-import { projectsApi } from "../api/projects";
 import { heartbeatsApi } from "../api/heartbeats";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -21,6 +22,7 @@ import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
 import { readIssueSortParams, type IssueSort } from "../lib/issue-sort";
+import { readIssueUpdatedParams, writeIssueUpdatedParams, type IssueUpdatedFilter } from "../lib/issue-filters";
 import { TaskViewsMenu } from "../components/TaskViewsMenu";
 import { Button } from "@/components/ui/button";
 import { CircleDot, Plus } from "lucide-react";
@@ -40,7 +42,9 @@ import {
   taskView,
   type TaskViewKey,
 } from "../lib/task-views";
+import { useTaskArchiveAction } from "../hooks/useTaskArchiveAction";
 import { useUpdateIssueMutation } from "../hooks/useUpdateIssueMutation";
+import { usePageContentReady } from "../hooks/usePageContentReady";
 
 const WORKSPACE_FILTER_ISSUE_LIMIT = 1000;
 const ISSUES_PAGE_SIZE = 100;
@@ -102,18 +106,9 @@ export function Issues() {
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const { enabled: combinedInboxTasksEnabled } = useCombinedInboxTasksEnabled();
   const { enabled: coordinatorEnabled } = useCoordinatorWorkspaceEnabled();
-  const [params] = useSearchParams();
-  const location = useLocation();
-  const requestedView = normalizeTaskViewKey(params.get(TASK_VIEW_PARAM));
-  const organizationScoped = [...ORGANIZATION_SCOPED_PARAMS, "workspaceId"].some(param => params.getAll(param).some(Boolean));
-  if (!designSandbox && coordinatorEnabled && !organizationScoped && requestedView && requestedView !== "unread" && taskView(requestedView).surface === "inbox") {
-    const next = new URLSearchParams(params); next.delete(TASK_VIEW_PARAM);
-    const search = next.toString();
-    return <Navigate to={`/inbox/${taskView(requestedView).inboxTab}${search ? `?${search}` : ""}${location.hash}`} replace />;
-  }
   // The merged surface is Combined Inbox + Task List only. With the flag off, and always in
   // the legacy shell, Tasks is the plain task list and Inbox keeps its pages.
-  return designSandbox ? <DesignSandboxTasks /> : coordinatorEnabled ? <CoordinatorTasks /> : streamlinedUiEnabled && combinedInboxTasksEnabled ? <StreamlinedTasks /> : <OrganizationIssues />;
+  return designSandbox ? <DesignSandboxTasks /> : coordinatorEnabled ? <CoordinatorTaskViews /> : streamlinedUiEnabled && combinedInboxTasksEnabled ? <StreamlinedTasks /> : <OrganizationIssues />;
 }
 
 function StreamlinedTasks() {
@@ -174,16 +169,21 @@ function StreamlinedTasks() {
     );
   }
 
-  return <OrganizationIssues toolbarContext={viewsMenu} initialStatuses={definition.statuses} />;
+  return <OrganizationIssues toolbarContext={viewsMenu} initialStatuses={definition.statuses} archiveView={view === "archived" ? "archived" : "include"} />;
 }
 
 function OrganizationIssues({
   toolbarContext,
   initialStatuses,
-}: { toolbarContext?: ReactNode; initialStatuses?: string[] } = {}) {
+  archiveView,
+}: { toolbarContext?: ReactNode; initialStatuses?: string[]; archiveView?: "archived" | "include" } = {}) {
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const issuesPresentation = resolveIssuesPresentation(streamlinedUiEnabled);
   const { selectedCompanyId } = useCompany();
+  const { userId, loaded: identitySettled } = useCoordinatorWorkspaceEnabled();
+  const inboxArchive = userId ? archiveView : undefined;
+  const archiveQueryScope = JSON.stringify([selectedCompanyId, userId, inboxArchive]);
+  const getArchiveAction = useTaskArchiveAction(selectedCompanyId, userId);
   const { setBreadcrumbs } = useBreadcrumbs();
   const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -202,29 +202,48 @@ function OrganizationIssues({
   const includeBlockedBy = sort?.sortField === "workflow";
   const serverSortField = sort?.sortField === "created" ? "created" : "updated";
   const serverSortDir = sort?.sortField === "created" || sort?.sortField === "updated" ? sort.sortDir : "desc";
-  const handleSortChange = useCallback((nextSort: IssueSort) => {
+  // React Router does not queue functional search updates, so writes made in the
+  // same event (Clear resets several URL filters) build on each other here.
+  const pendingSearchParamsRef = useRef<URLSearchParams | null>(null);
+  const writeTaskParams = useCallback((mutate: (next: URLSearchParams) => void) => {
     setSearchParams(current => {
-      const next = new URLSearchParams(current);
+      const next = new URLSearchParams(pendingSearchParamsRef.current ?? current);
       if (syncedSearch) next.set("q", syncedSearch);
       else next.delete("q");
-      next.set("sortField", nextSort.sortField);
-      next.set("sortDir", nextSort.sortDir);
+      mutate(next);
+      if (!pendingSearchParamsRef.current) queueMicrotask(() => { pendingSearchParamsRef.current = null; });
+      pendingSearchParamsRef.current = next;
       return next;
     }, { replace: true });
   }, [setSearchParams, syncedSearch]);
+  const handleSortChange = useCallback((nextSort: IssueSort) => {
+    writeTaskParams(next => {
+      next.set("sortField", nextSort.sortField);
+      next.set("sortDir", nextSort.sortDir);
+    });
+  }, [writeTaskParams]);
+  const [updatedBefore, setUpdatedBefore] = useState<string | undefined>(undefined);
+  // The Tasks URL owns the Updated filter, so a filtered link opens filtered.
+  const urlUpdated = searchParams.get("updated");
+  const urlUpdatedFrom = searchParams.get("updatedFrom");
+  const urlUpdatedTo = searchParams.get("updatedTo");
+  const updatedFilter = useMemo(() => readIssueUpdatedParams(new URLSearchParams({
+    ...(urlUpdated ? { updated: urlUpdated } : {}),
+    ...(urlUpdatedFrom ? { updatedFrom: urlUpdatedFrom } : {}),
+    ...(urlUpdatedTo ? { updatedTo: urlUpdatedTo } : {}),
+  })), [urlUpdated, urlUpdatedFrom, urlUpdatedTo]);
+  const handleUpdatedFilterChange = useCallback((filter: IssueUpdatedFilter) => {
+    writeTaskParams(next => writeIssueUpdatedParams(next, filter));
+  }, [writeTaskParams]);
   const routineTasksOnly = searchParams.get("originKind") === "routine_execution";
   const includeAgentCreatedTasks = showAgentCreatedTasks || routineTasksOnly;
   const originKind = routineTasksOnly ? "routine_execution" : undefined;
   const handleRoutineTasksOnlyChange = useCallback((checked: boolean) => {
-    setSearchParams(current => {
-      const next = new URLSearchParams(current);
-      if (syncedSearch) next.set("q", syncedSearch);
-      else next.delete("q");
+    writeTaskParams(next => {
       if (checked) next.set("originKind", "routine_execution");
       else next.delete("originKind");
-      return next;
-    }, { replace: true });
-  }, [setSearchParams, syncedSearch]);
+    });
+  }, [writeTaskParams]);
   const participantAgentId = searchParams.get("participantAgentId") ?? undefined;
   const initialWorkspaces = searchParams.getAll("workspace").filter((workspaceId) => workspaceId.length > 0);
   const workspaceIdFilter = initialWorkspaces.length === 1 ? initialWorkspaces[0] : undefined;
@@ -245,8 +264,7 @@ function OrganizationIssues({
   });
 
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId!, { includeArchived: true }),
-    queryFn: () => projectsApi.list(selectedCompanyId!, { includeArchived: true }),
+    ...companyProjectsQuery(selectedCompanyId!, { includeArchived: true }),
     enabled: !!selectedCompanyId,
   });
 
@@ -300,10 +318,14 @@ function OrganizationIssues({
       serverSortField,
       serverSortDir,
       includeBlockedBy,
+      updatedBefore ?? "__any__",
+      PERSONAL_ARCHIVE_QUERY_KEY,
+      archiveQueryScope,
     ],
     queryFn: ({ pageParam, signal }) => issuesApi.listCompact(selectedCompanyId!, {
       projection: streamlinedUiEnabled ? "index" : undefined,
       participantAgentId,
+      inboxArchive,
       workspaceId: workspaceIdFilter,
       includeRoutineExecutions: true,
       includeAgentCreatedTasks,
@@ -313,16 +335,20 @@ function OrganizationIssues({
       sortField: serverSortField,
       sortDir: serverSortDir,
       includeBlockedBy: includeBlockedBy || undefined,
+      updatedBefore,
     }, { signal }),
     initialPageParam: 0,
     getNextPageParam: (lastPage, _allPages, lastPageParam) =>
       getNextIssuesPageOffset(lastPage.length, lastPageParam, issuePageSize),
-    enabled: !!selectedCompanyId,
-    placeholderData: (previousData) => previousData,
+    enabled: !!selectedCompanyId && (archiveView !== "archived" || !!userId),
+    placeholderData: (previousData, previousQuery) =>
+      previousQuery?.queryKey.at(-1) === archiveQueryScope ? previousData : undefined,
   });
 
   const { data: issuePages, isFetchingNextPage, hasNextPage, fetchNextPage } = issuesQuery;
   const issuesView = useQueryView(issuesQuery);
+  // The task list is loaded once its first page of rows has rendered.
+  usePageContentReady(!selectedCompanyId || (issuesView.kind !== "loading" && issuesView.kind !== "reconnecting"));
   const issues = useMemo(() => mergeIssuePagesStable(issuePages?.pages ?? []) as Issue[], [issuePages]);
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
   const hasMoreServerIssues = syncedSearch.trim().length === 0
@@ -349,11 +375,18 @@ function OrganizationIssues({
     );
   }
 
+  if (archiveView === "archived" && !userId) return identitySettled
+    ? <EmptyState icon={CircleDot} message="Sign in to view archived tasks." />
+    : <p role="status">Loading archived tasks…</p>;
+
   if (issuesView.kind === "error") return <QueryErrorState size="page" error={issuesView.error} action="load tasks" onRetry={issuesView.retry} retrying={issuesView.isFetching} />;
 
   return (
     <IssuesList
+      key={archiveView === "archived" ? "archived" : undefined}
       issues={issues ?? []}
+      getArchiveAction={getArchiveAction}
+      preloadTaskChats
       isLoading={issuesView.kind === "loading" || issuesView.kind === "reconnecting"}
       isLoadingMoreIssues={isFetchingNextPage}
       agents={agents}
@@ -374,10 +407,16 @@ function OrganizationIssues({
       onRoutineTasksOnlyChange={handleRoutineTasksOnlyChange}
       sort={sort}
       onSortChange={handleSortChange}
+      onUpdatedBeforeChange={setUpdatedBefore}
+      updatedFilter={updatedFilter}
+      onUpdatedFilterChange={handleUpdatedFilterChange}
       hasMoreIssues={hasMoreServerIssues}
       onLoadMoreIssues={loadMoreServerIssues}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
-      searchFilters={participantAgentId || workspaceIdFilter || originKind || includeBlockedBy ? { participantAgentId, workspaceId: workspaceIdFilter, originKind, ...(includeBlockedBy ? { includeBlockedBy: true } : {}) } : undefined}
+      searchFilters={participantAgentId || workspaceIdFilter || originKind || includeBlockedBy || inboxArchive || updatedBefore ? {
+        participantAgentId, workspaceId: workspaceIdFilter, originKind, inboxArchive, updatedBefore,
+        ...(includeBlockedBy ? { includeBlockedBy: true } : {}),
+      } : undefined}
     />
   );
 }

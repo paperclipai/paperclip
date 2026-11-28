@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { WorkspaceManifestWriter, WorkspaceManifestMap, workspacePaths, workspacePathMatcher } from "./workspace-manifest.js";
-import { shouldExcludePath, excludePatternMatches, isRelativePathOrDescendant } from "./exclude-patterns.js";
+import { shouldExcludePath, excludePatternMatches, isRelativePathOrDescendant, isSandboxTransferScratchPath } from "./exclude-patterns.js";
 import { openDirectorySnapshot, type DirectorySnapshot } from "./workspace-restore-merge.js";
 
 export async function writeCheckpointBaseline(snapshot: DirectorySnapshot, filePath: string): Promise<void> {
@@ -20,6 +20,7 @@ async function checkpointMain(
   createHash: typeof import("node:crypto").createHash,
   createReadStream: typeof import("node:fs").createReadStream,
   shouldExcludePath: (relative: string, exclude: readonly string[]) => boolean,
+  isSandboxTransferScratchPath: (relative: string) => boolean,
 ) {
   const [rootArg, baselinePath, outputDir, exclusions] = process.argv.slice(2);
   const root = await fs.realpath(rootArg!);
@@ -89,7 +90,9 @@ async function checkpointMain(
         for (let p = name; p; p = p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "") {
           if (ignored.get(p)) { ignoredPath = true; break; }
         }
-        if (ignoredPath || shouldExcludePath(name, exclude)) continue;
+        // Provider transfer scratch is never exported, so capturing it makes
+        // every later validation fail (RC-50b).
+        if (ignoredPath || shouldExcludePath(name, exclude) || isSandboxTransferScratchPath(name)) continue;
         const before = await fs.lstat(path.join(root, name));
         scanned++;
         if (before.isFile()) {
@@ -114,7 +117,7 @@ async function checkpointMain(
 }
 
 export function workspaceCheckpointScript(): string {
-  return `import fs from 'node:fs/promises';\nimport path from 'node:path';\nimport { DatabaseSync } from 'node:sqlite';\nimport { createHash } from 'node:crypto';\nimport { createReadStream } from 'node:fs';\nconst __name = (fn) => fn;\n${isRelativePathOrDescendant.toString()}\nfunction pathContainsSegmentOrDescendant(relative, segment) { return relative === segment || relative.startsWith(segment + '/') || relative.endsWith('/' + segment) || relative.includes('/' + segment + '/'); }\n${excludePatternMatches.toString()}\n${shouldExcludePath.toString()}\nawait (${checkpointMain.toString()})(fs, path, DatabaseSync, createHash, createReadStream, shouldExcludePath);\n`;
+  return `import fs from 'node:fs/promises';\nimport path from 'node:path';\nimport { DatabaseSync } from 'node:sqlite';\nimport { createHash } from 'node:crypto';\nimport { createReadStream } from 'node:fs';\nconst __name = (fn) => fn;\n${isRelativePathOrDescendant.toString()}\nfunction pathContainsSegmentOrDescendant(relative, segment) { return relative === segment || relative.startsWith(segment + '/') || relative.endsWith('/' + segment) || relative.includes('/' + segment + '/'); }\n${excludePatternMatches.toString()}\n${shouldExcludePath.toString()}\n${isSandboxTransferScratchPath.toString()}\nawait (${checkpointMain.toString()})(fs, path, DatabaseSync, createHash, createReadStream, shouldExcludePath, isSandboxTransferScratchPath);\n`;
 }
 
 export function readCheckpointSnapshot(filePath: string, baseline: DirectorySnapshot): DirectorySnapshot {
@@ -129,6 +132,21 @@ export function readCheckpointSnapshot(filePath: string, baseline: DirectorySnap
   try { for (const _entry of snapshot.entries) {   } }
   catch (error) { (snapshot.entries as WorkspaceManifestMap<unknown>).close(); throw error; }
   return snapshot;
+}
+
+type CheckpointEntryLike = { kind: string; mode?: number; hash?: string; target?: string } | undefined;
+
+/** Names which entry disagreed and how, so a deterministic mismatch is diagnosable.
+ * Modes are octal permission bits; hashes are shortened. File contents never appear. */
+function checkpointPayloadMismatch(relative: string, recorded: CheckpointEntryLike, baseline: CheckpointEntryLike, received: CheckpointEntryLike) {
+  const describe = (entry: CheckpointEntryLike) => !entry ? "absent"
+    : entry.kind === "file" ? `file mode=${((entry.mode ?? 0) & 0o7777).toString(8)} sha256=${String(entry.hash).slice(0, 12)}`
+      : entry.kind === "symlink" ? "symlink" : entry.kind;
+  const shownPath = relative.length > 240 ? `${relative.slice(0, 240)}…` : relative;
+  return Object.assign(new Error(`Workspace checkpoint payload mismatch at ${JSON.stringify(shownPath)}: `
+    + `sandbox recorded ${describe(recorded)}; baseline ${describe(baseline)}; received ${describe(received)}`), {
+    checkpointMismatch: { path: relative, recorded, baseline, received },
+  });
 }
 
 export async function validateCheckpointPayload(input: { baseline: DirectorySnapshot; snapshot: DirectorySnapshot; payload: string }): Promise<WorkspaceCheckpointMetrics> {
@@ -156,7 +174,9 @@ export async function validateCheckpointPayload(input: { baseline: DirectorySnap
           throw Object.assign(new Error("Unsafe workspace checkpoint symlink"), { code: "WORKSPACE_RESTORE_UNSAFE_ARCHIVE" });
         }
       }
-      if (!equal(entry, input.baseline.entries.get(relative)) && !equal(entry, actual.entries.get(relative))) throw new Error("Workspace checkpoint payload mismatch");
+      if (!equal(entry, input.baseline.entries.get(relative)) && !equal(entry, actual.entries.get(relative))) {
+        throw checkpointPayloadMismatch(relative, entry, input.baseline.entries.get(relative), actual.entries.get(relative));
+      }
     }
     for (const [relative, entry] of actual.entries) {
       assertIncluded(relative);

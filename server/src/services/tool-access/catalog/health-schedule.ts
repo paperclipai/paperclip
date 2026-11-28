@@ -1,16 +1,22 @@
 import { logger } from "../../../middleware/logger.js";
-import { and, asc, eq, gt, ne, sql } from "drizzle-orm";
+import { and, asc, eq, gt, sql } from "drizzle-orm";
 import { toolApplications, toolConnections, type Db } from "@paperclipai/db";
 import { isConnectorFeatureEnabled } from "@paperclipai/shared";
 import { instanceSettingsService } from "../../instance-settings.js";
 import { connectionSetupApp } from "../connections/setup-policy.js";
-import type { ConnectionHealth } from "./health.js";
+import { healthSweepConnectionWhere, repairUnsupportedVoiceConnectionHealth, type ConnectionHealth } from "./health.js";
 
 export type ConnectionHealthDeadline = { id: string; companyId: string; applicationId: string; dueAt: number };
 const HEALTH_FRESHNESS_MS = 15 * 60_000;
 
 export function connectionHealthSchedule(db: Db, checkHealth: ConnectionHealth["checkConnectionHealth"]) {
+  let voiceHealthRepaired = false;
   async function load(companyId?: string, connectionId?: string, applicationId?: string, signal?: AbortSignal): Promise<ConnectionHealthDeadline[]> {
+    if (!voiceHealthRepaired && connectionId === undefined && applicationId === undefined) {
+      signal?.throwIfAborted();
+      await repairUnsupportedVoiceConnectionHealth(db, { companyId, signal });
+      voiceHealthRepaired = true;
+    }
     const deadlines: ConnectionHealthDeadline[] = [];
     let cursor: string | undefined;
     while (true) {
@@ -26,9 +32,7 @@ export function connectionHealthSchedule(db: Db, checkHealth: ConnectionHealth["
         eq(toolApplications.id, toolConnections.applicationId),
         eq(toolApplications.companyId, toolConnections.companyId),
       )).where(and(
-        eq(toolConnections.enabled, true), eq(toolConnections.status, "active"),
-        ne(toolConnections.transport, "chat_sdk"), ne(toolConnections.transport, "runtime_auth"),
-        ne(toolApplications.type, "paperclip_plugin"),
+        healthSweepConnectionWhere(),
         companyId === undefined ? undefined : eq(toolConnections.companyId, companyId),
         connectionId === undefined ? undefined : eq(toolConnections.id, connectionId),
         applicationId === undefined ? undefined : eq(toolConnections.applicationId, applicationId),

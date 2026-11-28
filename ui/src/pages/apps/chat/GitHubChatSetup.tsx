@@ -1,3 +1,4 @@
+import { useAuthorizationWindow } from "@/hooks/useAuthorizationWindow";
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
@@ -26,6 +27,8 @@ import { queryKeys } from "@/lib/queryKeys";
 import { GITHUB_APP_CREDENTIAL_FIELDS, GitHubAppRecovery } from "./GitHubConnectionRecovery";
 import type { GitHubConnectionCompleteLocationState } from "./GitHubConnectionComplete";
 import { describeError } from "@/api/errors";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 /** Restrict native manifest submission to GitHub registration endpoints. */
 export function gitHubAppManifestAction(
@@ -195,7 +198,7 @@ export function GitHubChatSetup() {
   }, [connected, bot, selectedAgent, state, queryClient, navigate]);
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Connectors", href: "/apps" },
+      { label: "Plugins", href: "/apps" },
       { label: "GitHub Code Review Bot" },
     ]);
     return () => setBreadcrumbs([]);
@@ -215,12 +218,14 @@ export function GitHubChatSetup() {
     bot?.setup?.github?.ownerLogin,
     bot?.setup?.github?.appName,
   ]);
+  const authorization = useAuthorizationWindow();
   async function run(action: () => Promise<void>) {
     setBusy(true);
     setError("");
     try {
       await action();
     } catch (error) {
+      authorization.cancel();
       setError(
         describeError(error).body,
       );
@@ -294,6 +299,7 @@ export function GitHubChatSetup() {
   if (connected) return null;
   return (
     <div className="mx-auto w-full max-w-3xl space-y-6 px-4 py-6 sm:px-6">
+      {authorization.fallback}
       {!identityOnly && (
         <SetupWizardNavigation
           labels={reconnect ? ["Reconnect GitHub"] : ["Choose agent", "Connect GitHub"]}
@@ -311,6 +317,7 @@ export function GitHubChatSetup() {
               ? "Connect your account"
               : reconnect && existing ? "Reconnect GitHub" : "Connect GitHub"}
       </h1>
+      <div className={cn("space-y-6", ANALYTICS_MASK_CLASS)}>
       {error ? (
         <p role="alert" className="text-sm text-destructive">
           {error}
@@ -418,7 +425,7 @@ export function GitHubChatSetup() {
           {identityOnly && identityLinked ? (
             <>
               <p role="status" className="text-sm">
-                GitHub account <strong>{legacyIdentity?.login}</strong>{" "}
+                GitHub account <strong className={ANALYTICS_MASK_CLASS}>{legacyIdentity?.login}</strong>{" "}
                 connected. You can now mention this bot on GitHub.
               </p>
               {footer()}
@@ -426,7 +433,7 @@ export function GitHubChatSetup() {
           ) : state?.identity ? (
             <>
               <p className="text-sm">
-                Connect GitHub account <strong>{state.identity.login}</strong>{" "}
+                Connect GitHub account <strong className={ANALYTICS_MASK_CLASS}>{state.identity.login}</strong>{" "}
                 to your Paperclip account.
               </p>
               {footer("Confirm my account", async () => {
@@ -450,7 +457,7 @@ export function GitHubChatSetup() {
                   </Label>
                   <select
                     id="github-personal-account"
-                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    className={cn("w-full rounded-md border border-input bg-background px-3 py-2 text-sm", ANALYTICS_MASK_CLASS)}
                     value={legacyAccount}
                     onChange={(event) => {
                       setLegacyAccount(event.target.value);
@@ -475,7 +482,7 @@ export function GitHubChatSetup() {
                   </select>
                   {legacyIdentity && (
                     <p className="text-sm">
-                      GitHub account: <strong>{legacyIdentity.login}</strong>
+                      GitHub account: <strong className={ANALYTICS_MASK_CLASS}>{legacyIdentity.login}</strong>
                     </p>
                   )}
                 </>
@@ -507,8 +514,9 @@ export function GitHubChatSetup() {
                       await refresh();
                     }
                   } else {
+                    authorization.reserve();
                     const result = await githubChatApi.startIdentity(bot.id);
-                    window.location.assign(result.authorizationUrl);
+                    await authorization.open(result.authorizationUrl);
                   }
                 },
                 existingIdentityMethod && !legacyAccount,
@@ -524,7 +532,7 @@ export function GitHubChatSetup() {
           {state.installationUrl && (
             <a
               className="inline-flex items-center gap-1 text-sm underline"
-              href={state.installationUrl}
+              href={state.installationUrl} target="_blank" rel="noopener noreferrer"
             >
               Continue installation on GitHub
               <ExternalLink className="size-3" />
@@ -539,6 +547,7 @@ export function GitHubChatSetup() {
             this instance.
           </p>
           {footer("Connect Paperclip Cloud", async () => {
+            authorization.reserve();
             const result = await toolsApi.startCloudConnectorEnrollment(
               selectedCompanyId!,
               undefined,
@@ -546,7 +555,7 @@ export function GitHubChatSetup() {
             );
             if (!result.verificationUrl)
               throw new Error("Cloud enrollment could not be started");
-            window.location.assign(result.verificationUrl);
+            await authorization.open(result.verificationUrl);
           })}
         </>
       ) : state?.state === "recovery" ? (
@@ -605,7 +614,7 @@ export function GitHubChatSetup() {
             <Label htmlFor="github-owner-type">GitHub account</Label>
             <select
               id="github-owner-type"
-              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              className={cn("w-full rounded-md border border-input bg-background px-3 py-2 text-sm", ANALYTICS_MASK_CLASS)}
               value={accountChoice}
               disabled={busy || !!state?.registration}
               onChange={(event) => {
@@ -675,6 +684,7 @@ export function GitHubChatSetup() {
           )}
         </>
       )}
+      </div>
     </div>
   );
 }

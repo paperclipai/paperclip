@@ -1,3 +1,4 @@
+import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { describeError } from "../api/errors";
 import { useWarmTaskDetailCode } from "@/hooks/useWarmTaskDetailCode";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -16,7 +17,6 @@ import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
-import { projectsApi } from "../api/projects";
 import {
   BLOCKED_GROUP_OPTIONS,
   BLOCKED_SORT_OPTIONS,
@@ -30,12 +30,13 @@ import { useSidebar } from "../context/SidebarContext";
 import { queryKeys } from "../lib/queryKeys";
 import { useDialogActions } from "../context/DialogContext";
 import { useIssueExternalObjectSummaries } from "../hooks/useIssueExternalObjects";
+import { useIssueUpdatedFilterNow } from "../hooks/useIssueUpdatedFilterNow";
 import {
   applyIssueFilters,
   countActiveIssueFilters,
   type IssueFilterState,
 } from "../lib/issue-filters";
-import { collectLiveIssueIds, collectSubtreeLiveCounts } from "../lib/liveIssueIds";
+import { collectLiveIssueIds, collectSubtreeLiveCounts, issueWaitingOf } from "../lib/liveIssueIds";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { buildCompanyUserLabelMap, buildCompanyUserProfileMap } from "../lib/company-members";
 import {
@@ -55,7 +56,7 @@ import {
 } from "../lib/keyboardShortcuts";
 import {
   resolveInboxIssueBlockerAttention,
-  resolveIssueLiveDescendantCount,
+  resolveIssueRunningDescendantCount,
 } from "../lib/inbox-live-descendants";
 import {
   beginLocalInboxArchive,
@@ -184,6 +185,7 @@ import {
   reconcileInboxOrderPin,
   type InboxOrderPin,
 } from "../lib/inboxOrderPin";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 const INBOX_HEARTBEAT_RUN_LIMIT = 200;
 const INBOX_ISSUE_LIST_LIMIT = 500;
@@ -753,8 +755,7 @@ export function Inbox() {
   });
 
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId!, { includeArchived: true }),
-    queryFn: () => projectsApi.list(selectedCompanyId!, { includeArchived: true }),
+    ...companyProjectsQuery(selectedCompanyId!, { includeArchived: true }),
     enabled: !!selectedCompanyId,
   });
   const { data: labels } = useQuery({
@@ -1030,13 +1031,15 @@ export function Inbox() {
     externalObjectSummaryByIssueId,
     externalObjectSummariesReady: externalObjectSummariesReady && !externalObjectSummariesLoading,
   }), [externalObjectSummariesLoading, externalObjectSummariesReady, externalObjectSummaryByIssueId]);
+  const mineUpdatedNow = useIssueUpdatedFilterNow(mineIssues, issueFilters.updatedWithin);
+  const touchedUpdatedNow = useIssueUpdatedFilterNow(touchedIssues, issueFilters.updatedWithin);
   const visibleMineIssues = useMemo(
-    () => applyIssueFilters(mineIssues, issueFilters, currentUserId, false, liveIssueIds, issueFilterContext),
-    [mineIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext],
+    () => applyIssueFilters(mineIssues, issueFilters, currentUserId, false, liveIssueIds, issueFilterContext, mineUpdatedNow),
+    [mineIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext, mineUpdatedNow],
   );
   const visibleTouchedIssues = useMemo(
-    () => applyIssueFilters(touchedIssues, issueFilters, currentUserId, false, liveIssueIds, issueFilterContext),
-    [touchedIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext],
+    () => applyIssueFilters(touchedIssues, issueFilters, currentUserId, false, liveIssueIds, issueFilterContext, touchedUpdatedNow),
+    [touchedIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext, touchedUpdatedNow],
   );
   const unreadTouchedIssues = useMemo(
     () => visibleTouchedIssues.filter((issue) => issue.isUnreadForMe),
@@ -1538,7 +1541,7 @@ export function Inbox() {
   flatNavItemsRef.current = flatNavItems;
   // Roll live descendant runs up to their ancestors across the loaded inbox tree
   // so a parent that is not itself live can still surface "n live below".
-  const subtreeLiveCounts = useMemo(() => {
+  const subtreeCounts = useMemo(() => {
     const nodes: { id: string; parentId: string | null }[] = [];
     const seen = new Set<string>();
     const pushIssue = (issue: Issue) => {
@@ -1554,8 +1557,12 @@ export function Inbox() {
         for (const child of children) pushIssue(child);
       }
     }
-    return collectSubtreeLiveCounts(nodes, liveIssueIds);
+    return {
+      live: collectSubtreeLiveCounts(nodes, liveIssueIds),
+      running: collectSubtreeLiveCounts(nodes, liveIssueIds, { startedOnly: true }),
+    };
   }, [groupedSections, liveIssueIds]);
+  const subtreeLiveCounts = subtreeCounts.live;
   const topFlatIndex = useMemo(() => {
     const map = new Map<string, number>();
     flatNavItems.forEach((entry, index) => {
@@ -2187,7 +2194,7 @@ export function Inbox() {
             const pathId = issue.identifier ?? issue.id;
             const detailState = armIssueDetailInboxQuickArchive(withIssueDetailHeaderSeed(issueLinkState, issue));
             rememberIssueDetailLocationState(pathId, detailState);
-            void prefetchIssueDetailForNavigation(queryClient, pathId, { issue });
+            void prefetchIssueDetailForNavigation(queryClient, pathId, { issue, history: true });
             act.navigate(createIssueDetailPath(pathId), { state: detailState });
           } else if (item) {
             if (item.kind === "issue") {
@@ -2196,7 +2203,7 @@ export function Inbox() {
                 withIssueDetailHeaderSeed(issueLinkState, item.issue),
               );
               rememberIssueDetailLocationState(pathId, detailState);
-              void prefetchIssueDetailForNavigation(queryClient, pathId, { issue: item.issue });
+              void prefetchIssueDetailForNavigation(queryClient, pathId, { issue: item.issue, history: true });
               act.navigate(createIssueDetailPath(pathId), { state: detailState });
             } else if (item.kind === "approval") {
               act.navigate(`/approvals/${item.approval.id}`);
@@ -2235,7 +2242,7 @@ export function Inbox() {
   useWarmTaskDetailCode(Boolean(selectedCompanyId) && allLoaded && tab !== "blocked" && totalVisibleWorkItems > 0);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={InboxIcon} message="Select a company to view inbox." />;
+    return <EmptyState placement="upper" icon={InboxIcon} message="Select a company to view inbox." />;
   }
 
   const hasRunFailures = failedRuns.length > 0;
@@ -2311,6 +2318,8 @@ export function Inbox() {
         <div className="flex flex-wrap items-center justify-between gap-2">
         <Tabs value={tab} onValueChange={(value) => navigate(`/inbox/${value}`)}>
           <PageTabBar
+            value={tab}
+            onValueChange={(value) => navigate(`/inbox/${value}`)}
             items={[
               {
                 value: "mine",
@@ -2450,7 +2459,7 @@ export function Inbox() {
                 type="button"
                 variant="outline"
                 size="icon"
-                className={cn("hidden h-8 w-8 shrink-0 sm:inline-flex", nestingEnabled && "bg-accent")}
+                className={cn("inline-flex h-8 w-8 shrink-0", nestingEnabled && "bg-accent")}
                 onClick={toggleNesting}
                 title={nestingEnabled ? "Disable parent-child nesting" : "Enable parent-child nesting"}
               >
@@ -2627,7 +2636,7 @@ export function Inbox() {
       )}
 
       {tab !== "blocked" && allLoaded && visibleSections.length === 0 && (
-        <EmptyState
+        <EmptyState placement="upper"
           icon={searchQuery.trim() ? Search : InboxIcon}
           message={
             searchQuery.trim()
@@ -2686,7 +2695,7 @@ export function Inbox() {
                     originatingActor?.kind === "user" ? originatingActor.viaAgentId ?? null : null;
                   const isLive = liveIssueIds.has(issue.id);
                   const loadedSubtreeLiveCount = subtreeLiveCounts.get(issue.id) ?? 0;
-                  const liveDescendantCount = resolveIssueLiveDescendantCount(issue, loadedSubtreeLiveCount);
+                  const runningDescendantCount = resolveIssueRunningDescendantCount(issue, subtreeCounts.running.get(issue.id) ?? 0);
                   const blockerAttention = resolveInboxIssueBlockerAttention(issue, {
                     isLive,
                     loadedSubtreeLiveCount,
@@ -2698,7 +2707,7 @@ export function Inbox() {
                     && blockerAttention?.state === "covered"
                   );
                   const rowStatusIcon = (
-                    <StatusIcon status={issue.status} displayStatus={issue.displayStatus} externalConversationState={issue.externalConversationState} blockerAttention={blockerAttention} size="md" />
+                    <StatusIcon {...taskStatusIconProps(issue)} blockerAttention={blockerAttention} size="md" />
                   );
                   return (
                     <IssueRow
@@ -2719,7 +2728,8 @@ export function Inbox() {
                               <button
                                 type="button"
                                 data-slot="icon-button"
-                                className="hidden w-4 shrink-0 items-center justify-center sm:inline-flex"
+                                className="inline-flex w-4 shrink-0 items-center justify-center"
+                                aria-label={isExpanded ? "Collapse sub-tasks" : "Expand sub-tasks"}
                                 onClick={(event) => {
                                   event.preventDefault();
                                   event.stopPropagation();
@@ -2734,13 +2744,14 @@ export function Inbox() {
                               // collapse chevron. (The unread mark-read dot has
                               // its own reserved leading slot in IssueRow, to the
                               // left of this spacer.)
-                              <span className="hidden w-4 shrink-0 sm:block" />
+                              <span className="block w-4 shrink-0" />
                             )
                           ) : null}
                           <InboxIssueMetaLeading
                             issue={issue}
                             isLive={isLive}
-                            subtreeLiveCount={liveDescendantCount}
+                            waiting={issueWaitingOf(liveIssueIds, issue.id)}
+                            subtreeLiveCount={runningDescendantCount}
                             showSubtreeLiveChip={showSubtreeLiveChip}
                             showStatus={showStatus}
                             showIdentifier={visibleIssueColumnSet.has("id") && availableIssueColumnSet.has("id")}
@@ -2768,10 +2779,11 @@ export function Inbox() {
                             <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
                           </button>
                         ) : (
-                          <StatusIcon status={issue.status} displayStatus={issue.displayStatus} externalConversationState={issue.externalConversationState} blockerAttention={blockerAttention} size="md" />
+                          <StatusIcon {...taskStatusIconProps(issue)} blockerAttention={blockerAttention} size="md" />
                         )
                       }
                       unreadState={isUnread ? "visible" : isFading ? "fading" : "hidden"}
+                      showUnreadIndicator={false}
                       onMarkRead={() => markReadMutation.mutate(issue.id)}
                       onArchive={allowArchive ? () => archiveIssueMutation.mutate(issue.id) : undefined}
                       archiveDisabled={isArchiving}

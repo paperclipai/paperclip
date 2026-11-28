@@ -1,9 +1,11 @@
+import { hasCommittedNativeControllerContainment } from "../native-runtime/native-failed-run-owner-release.js";
+import { nativeEffectiveRunTerminalStateSql } from "../native-runtime/native-accepted-outcome.js";
 import { and, eq, sql } from "drizzle-orm";
 import { agentWakeupRequests, environmentLeases, heartbeatRuns, issueRecoveryActions, nativeRunFinalizations, nativeRunResults, issues, type Db } from "@paperclipai/db";
 import { buildExecutionContinuation } from "../execution-continuation.js";
 import { readTaskRetryIntent } from "../task-retry.js";
 import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession, recordedLocalExecutionStopped } from "../native-local-process-stop.js";
-import { hasRemoteTerminationReceipt } from "../remote-execution-termination.js";
+import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt } from "../remote-execution-termination.js";
 import { adapterExecutionControls } from "../adapter-execution-control.js";
 import { getExecutionBlocker, hasPendingRunCleanup } from "../execution-blocker.js";
 import { readSystemRecovery } from "../system-recovery-state.js";
@@ -67,15 +69,18 @@ async function taskChatRetryExecutionContained(db: Db, run: typeof heartbeatRuns
       eq(nativeRunResults.companyId, run.companyId), eq(nativeRunResults.runId, run.id),
       eq(nativeRunResults.issueId, run.nativeIssueId!), eq(nativeRunResults.id, coordinator.resultId),
       eq(nativeRunResults.schemaStatus, "accepted"), eq(nativeRunResults.completionContractId, run.completionContractId),
-      sql`${nativeRunResults.resultJson}#>>'{terminal,runTerminalState}' = 'failed'`,
+      sql`${nativeEffectiveRunTerminalStateSql(nativeRunResults.resultJson)} = 'failed'`,
     )).limit(1);
     if (!failedResult) return false;
   }
   const leases = await db.select().from(environmentLeases).where(and(
     eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
   )).for("share", { noWait: true });
-  if (leases.some(lease => lease.provider !== "local")) return leases.every(hasRemoteTerminationReceipt);
-  return await recordedLocalExecutionStopped(db, run) ||
+  if (leases.some(lease => lease.provider !== "local")) {
+    return leases.every(lease => hasRemoteTerminationReceipt(lease) || hasRecoveredCleanupStopReceipt(lease));
+  }
+  return await hasCommittedNativeControllerContainment(db, run, run.nativeIssueId ?? "") ||
+    await recordedLocalExecutionStopped(db, run) ||
     await hasNativeLocalProcessStop(db, run.companyId, run.id) ||
     await hasHistoricalSuspendedNativeSession(db, run);
 }

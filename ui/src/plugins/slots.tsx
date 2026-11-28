@@ -43,6 +43,7 @@ import { authApi } from "@/api/auth";
 import { describeError, isTransientError } from "@/api/errors";
 import { queryViewKind } from "@/components/QueryView";
 import { queryKeys } from "@/lib/queryKeys";
+import { rememberPluginModuleUrl } from "@/lib/plugin-module-origins";
 import { cn } from "@/lib/utils";
 import {
   PluginBridgeContext,
@@ -425,9 +426,10 @@ function rewriteBareSpecifiers(source: string): string {
  * Fetch, rewrite, and import a plugin UI module.
  *
  * @param url - The URL to the plugin's UI entry module
+ * @param pluginKey - The plugin's key, recorded for error attribution
  * @returns The module's exports
  */
-async function importPluginModule(url: string): Promise<Record<string, unknown>> {
+async function importPluginModule(url: string, pluginKey: string): Promise<Record<string, unknown>> {
   // Check if the bridge registry is available. If not, fall back to direct
   // import (which will fail on bare specifiers but won't crash the loader).
   if (!globalThis.__paperclipPluginBridge__) {
@@ -449,6 +451,9 @@ async function importPluginModule(url: string): Promise<Record<string, unknown>>
   // Create a blob URL from the rewritten source and import it
   const blob = new Blob([rewritten], { type: "application/javascript" });
   const blobUrl = URL.createObjectURL(blob);
+  // Stack frames from this module name only the blob URL. Keep its plugin
+  // key so an error report from the module can say which plugin raised it.
+  rememberPluginModuleUrl(blobUrl, pluginKey);
 
   try {
     const mod = await import(/* @vite-ignore */ blobUrl);
@@ -508,7 +513,7 @@ async function loadPluginModule(contribution: PluginUiContribution): Promise<voi
     try {
       // Dynamic ESM import of the plugin's UI entry module with
       // bare-specifier rewriting for host-provided dependencies.
-      const mod: Record<string, unknown> = await importPluginModule(url);
+      const mod: Record<string, unknown> = await importPluginModule(url, pluginKey);
 
       // Collect the set of export names declared across all UI contributions so
       // we only register what the manifest advertises (ignore extra exports).

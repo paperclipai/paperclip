@@ -3,6 +3,7 @@ import {
   createTenantSessionRecoveryCoordinator,
   tenantSessionRecovery,
 } from "@/lib/tenant-session-recovery";
+import { isIntentionalAbortReason } from "@/lib/intentional-abort";
 import { api, detachInflightGet } from "./client";
 import { toolsApi } from "./tools";
 import { museInvitationsApi } from "./museInvitations";
@@ -277,6 +278,25 @@ describe("per-caller abort semantics", () => {
     const fresh = api.get("/abort-b");
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(await fresh).toEqual({ value: "fresh" });
+  });
+
+  it("marks the shared fetch's cancellation, whether every caller aborted or timed out", async () => {
+    vi.useFakeTimers();
+    fetchMock.mockReturnValue(deferred<Response>().promise);
+    const controller = new AbortController();
+    const aborted = api.get("/intentional-abort", { signal: controller.signal });
+    const timed = api.get("/intentional-timeout", { timeoutMs: 100 }).catch(error => error);
+    const [abortedSignal, timedSignal] = fetchMock.mock.calls.map(([, init]) => init.signal as AbortSignal);
+
+    controller.abort();
+    await expect(aborted).rejects.toMatchObject({ name: "AbortError" });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await timed).toMatchObject({ status: 408 });
+
+    expect(abortedSignal.reason).toMatchObject({ name: "AbortError" });
+    expect(isIntentionalAbortReason(abortedSignal.reason)).toBe(true);
+    expect(isIntentionalAbortReason(timedSignal.reason)).toBe(true);
+    expect(isIntentionalAbortReason(controller.signal.reason)).toBe(false);
   });
 
   it("rejects immediately if the caller signal is already aborted", async () => {

@@ -840,7 +840,7 @@ deterministic evidence are mapped separately after the comparison.
 
 | Shared capability | User-visible surface | Inspectable implementation / deterministic evidence |
 | --- | --- | --- |
-| Text, tools and child activity | Task transcript; bounded activity details preserve provider/session/tool attribution | `src/drivers/acpx/codex-runtime-adapter.test.ts`, `runner/crates/runner-core/tests/acpx_rich_events.rs`, `ui/src/components/task-chat/TaskChatProtocolActivityRow.test.tsx` |
+| Text, tools and child activity | Task transcript; bounded activity details preserve provider/session/tool attribution | `src/drivers/acpx/acpx-runtime-adapter.test.ts`, `runner/crates/runner-core/tests/acpx_rich_events.rs`, `ui/src/components/task-chat/TaskChatProtocolActivityRow.test.tsx` |
 | Native questions and permissions | Existing question/confirmation cards; only offered decisions can be submitted | `src/protocol/permission-request.test.ts`, `src/drivers/acpx/acp-permission-adapter.test.ts`, `server/src/services/native-runtime/native-question-bridge.test.ts`, `ui/src/components/task-chat/TaskChatProtocolCard.test.tsx` |
 | Native plan decisions | Full plan description followed by a revision-bound decision; no implicit plan acceptance | Cursor provider fixtures; `ui/storybook/fixtures/evidence/rich-acp-browser-proof.darwin-arm64.json` records the real renderer with a canonical fixture |
 | Active steering and queued follow-up | Existing active-turn control where a bound method is negotiated; no native Pi queue selector yet | `src/drivers/acpx/turn-controls.test.ts`; provider reports state which wire method is absent or not surfaced |
@@ -902,9 +902,26 @@ configuration defaults to full auto; it never overrides read-only task policy.
 Cursor pins `2026.09.26-dd393fe`; Copilot pins `1.0.88`; Pi pins wrapper `0.0.33`,
 runtime `1.0.0` (Pi profile v13), portable Node and its full npm lock. Native distribution hashes
 cover macOS ARM64, macOS x64 and Linux x64. Source-owned closure pins remain
-separate from profile declaration digests. Native admission reads held files,
-verifies every admitted byte, creates a private immutable snapshot and retains
-the existing process guardian. A manifest cannot supply its own trusted pin.
+separate from profile declaration digests. Native admission reads held files and
+verifies every admitted byte once per closure into a sealed, runner-owned
+verified store (`$PAPERCLIP_ACPX_NATIVE_STORE_ROOT`, default
+`$TMPDIR/paperclip-verified-native-<uid>`). A configured root that is not a
+private directory of the runner user refuses the launch; an unsafe default root
+falls back, with a warning, to a process-private store removed with its last
+launch. A process leases a closure before reading its store, and pruning of
+superseded closures excludes those leases through per-closure prune markers.
+Later launches bind the store by the
+kernel identity (device, inode, size, mtime, ctime) recorded when its bytes were
+hashed, re-hash only a changed installed source, and get a small private launch
+directory. The store also holds the closure's module guard beside its
+entrypoints (Pi's pinned entry hands it to its child) and compares it byte for
+byte on each launch. A failed store check retires the store and rebuilds it from
+a fresh full verification. The recorded identities are not trusted for code
+that runs, because a process with the runner's uid can rewrite a file and its
+record together: the launcher streams the exact executable descriptor it spawns
+through SHA-256 against the pinned digest, and the module guard hashes every
+Node module at load. The existing process guardian is retained. A manifest cannot
+supply its own trusted pin.
 
 Candidate credentials are only read from explicitly bound run environments:
 Cursor `CURSOR_API_KEY`/`CURSOR_AUTH_TOKEN`, Copilot `COPILOT_GITHUB_TOKEN`, Pi

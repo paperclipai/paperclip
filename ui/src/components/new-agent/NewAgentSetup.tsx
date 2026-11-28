@@ -1,4 +1,4 @@
-import { ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS } from "@/lib/native-model-catalog";
+import { ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS, antigravityModelGroup } from "@/lib/native-model-catalog";
 import { PAPERCLIP_RUNNER_ACPX_PROFILES } from "@paperclipai/adapter-utils";
 import { ExternalAgentInviteDialog } from "./ExternalAgentInviteDialog";
 import { useConnectionModels } from "../ai-connections/useConnectionModels";
@@ -7,7 +7,6 @@ import { useAgentAppearanceDraft } from "../../hooks/useAgentAppearanceDraft";
 import { AiConnectionField, aiProviderForAdapter } from "../ai-connections/AiConnectionField";
 import type { AiConnectionBinding } from "@paperclipai/shared";
 import type { AgentRunner, AgentRunnerChoice } from "@paperclipai/shared";
-import { AgentRunnerSelect } from "../AgentRunnerSelect";
 import { SelectPopover } from "../ui/select";
 import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
 import {
@@ -20,8 +19,9 @@ import { testAgentSetup } from "@/lib/test-agent-setup";
 import { needsClaudeSetupQualification, qualifyClaudeSetup } from "@/lib/qualify-claude-setup";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { isNewAgentAdapterAllowed } from "@/lib/new-agent-adapters";
+import { useCloudHarnessPolicy } from "@/hooks/useCloudHarnessPolicy";
 import { pendingAgentSetupChoice } from "@/lib/agent-setup-choice";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { hashKey, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion, MotionConfig } from "motion/react";
 import { ArrowLeft, ArrowRight, Check, Settings2 } from "lucide-react";
@@ -30,7 +30,7 @@ import type {
   Agent,
   EnvBinding,
 } from "@paperclipai/shared";
-import { ADAPTER_AUTH_MISSING_CHECK_CODE, isAgentStatusInvokable, paperclipRunnerProfileForHarness } from "@paperclipai/shared";
+import { ADAPTER_AUTH_MISSING_CHECK_CODE, isAgentStatusInvokable, paperclipRunnerCreationLifecycle, paperclipRunnerProfileForHarness } from "@paperclipai/shared";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { agentsApi } from "@/api/agents";
 import { ApiError } from "@/api/client";
@@ -91,13 +91,15 @@ export function NewAgentSetup() {
   const { selectedCompanyId } = useCompany();
   const [params] = useSearchParams();
   const navigate = useNavigate();
+  const cloud = Boolean(useCloudInstance());
+  const harnessPolicy = useCloudHarnessPolicy();
   if (!selectedCompanyId)
     return (
       <p className="text-sm text-muted-foreground">
         Select an organization to create an agent.
       </p>
     );
-  if (params.get("adapterType") === "muse" || params.get("runnerProvider") === "muse") return <ExternalAgentInviteDialog companyId={selectedCompanyId} initialPreset="muse" initialMuseName={params.get("name") ?? ""} onClose={() => navigate("/agents/all")} onBack={() => navigate("/agents/all")} />;
+  if ((!cloud || harnessPolicy.isCloudRunnerProviderAllowed("muse")) && (params.get("adapterType") === "muse" || params.get("runnerProvider") === "muse")) return <ExternalAgentInviteDialog companyId={selectedCompanyId} initialPreset="muse" initialMuseName={params.get("name") ?? ""} onClose={() => navigate("/agents/all")} onBack={() => navigate("/agents/all")} />;
   return (
     <Setup
       key={`${selectedCompanyId}:${params.get("name")}:${params.get("adapterType")}:${params.get("runnerProvider") ?? "codex"}:${params.get("runner") ?? "auto"}`}
@@ -187,8 +189,6 @@ function Setup({
   const [runtimeAiBinding, setRuntimeAiBinding] = useState<AiConnectionBinding | undefined>(() =>
     brandType === "copilot_runtime"
       ? { provider: "github", method: "api_key", mode: "responsible_user" }
-      : brandType === "opencode_local"
-      ? { provider: "openrouter", method: "api_key", mode: "responsible_user" }
       : undefined,
   );
   const [connection, setConnection] = useState<ProviderConnection | null>(null);
@@ -228,13 +228,6 @@ function Setup({
   const runtimeReady = Boolean(created && isAgentStatusInvokable(created.status)
     && (!created.lifecycleState || created.lifecycleState === "ready"));
   const finishingSetup = !isDot && ["preparing", "verifying", "resuming", "pausing"].includes(created?.lifecycleState ?? "");
-  useEffect(() => {
-    if (brandType !== "pi_local" || created?.adapterType !== "paperclip_runner"
-      || created.runtimeConfig.aiConnection) return;
-    const env = (created.adapterConfig.env ?? {}) as Record<string, unknown>;
-    if (Object.values(PROVIDER_ENV_KEYS).some(key => env[key] !== undefined)) return;
-    setRuntimeAiBinding(current => current ?? { provider: "openrouter", method: "api_key", mode: "responsible_user" });
-  }, [brandType, created?.id, created?.adapterType]);
   const savedNativeMultiProvider = multiProvider && (Boolean(setupAgentId) || runner === "legacy")
     && created?.adapterType === "paperclip_runner";
   const requestAdapterType = savedNativeMultiProvider || (preserveNativeHarness && runner === "paperclip")
@@ -335,10 +328,13 @@ function Setup({
       describeError(cause).body;
   }
   const accountBoundCatalog = brandType === "copilot_runtime" || brandType === "antigravity_runtime";
-  const accountCatalogAvailable = brandType === "copilot_runtime" || (brandType === "antigravity_runtime" && aiBinding?.method === "subscription");
+  // Google sign-in reads the account's catalog; a Gemini API key gets the
+  // catalog generated from the pinned runtime, on any environment.
+  const accountCatalogAvailable = brandType === "copilot_runtime" || (brandType === "antigravity_runtime" && (aiBinding?.method === "subscription" || aiBinding?.method === "api_key"));
   const requestAccountModels = accountCatalogAvailable && showModel && !connectionModels && Boolean(aiBinding)
     && envs.isSuccess && settings.isSuccess && experimental.isSuccess && general.isSuccess && !environmentError;
   const accountModelScope = JSON.stringify([companyId, environmentId, aiBinding]);
+  const antigravityPickerGroup = useMemo(() => antigravityModelGroup(aiBinding?.method), [aiBinding?.method]);
   const models = useQuery({
     queryKey: queryKeys.agents.adapterModels(companyId, brandType, environmentId, accountBoundCatalog ? JSON.stringify(aiBinding ?? null) : aiBinding?.provider),
     queryFn: () => agentsApi.adapterModels(companyId, isKimi || accountBoundCatalog ? "paperclip_runner" : brandType, isKimi
@@ -409,11 +405,13 @@ function Setup({
   const usingKimiApi =
     adapterType === "kimi_local" && Boolean(apiKey.trim() || selectedBinding);
   const cloud = Boolean(useCloudInstance());
+  const harnessPolicy = useCloudHarnessPolicy();
   const available =
     (!nativeCursorCloud || experimental.data?.enableNativeRunner === true) &&
     (!cloud || adapterType !== "cursor_cloud" || nativeCursorCloud) &&
     isNewAgentAdapterAllowed(adapterType, {
       cloud,
+      harnessPolicy,
       nativeRunnerEnabled: experimental.data?.enableNativeRunner === true,
       openAiDotEnabled: experimental.data?.enableOpenAiDot === true,
       runnerProvider,
@@ -426,7 +424,7 @@ function Setup({
         !adapter.disabled &&
         !getAdapterDisplay(adapterType).comingSoon,
     ) && (requestAdapterType !== "paperclip_runner" || adapterType === "paperclip_runner" || adapterInventory.data?.some(adapter => adapter.type === "paperclip_runner" && adapter.loaded && !adapter.disabled));
-  const configurationAvailable = available || (pendingAntigravity && adapterInventory.data?.some(
+  const configurationAvailable = available || ((!cloud || harnessPolicy.isCloudRunnerProviderAllowed("antigravity")) && pendingAntigravity && adapterInventory.data?.some(
     adapter => adapter.type === "paperclip_runner" && adapter.loaded && !adapter.disabled,
   ));
   const connectionSettingsReady = Boolean(
@@ -495,7 +493,7 @@ function Setup({
     const config = getUIAdapter(preserveNativeHarness && runner === "paperclip" && brandType !== "pi_local" ? "paperclip_runner" : adapterType).buildAdapterConfig(preserveNativeHarness && runner === "paperclip" ? { ...values, adapterSchemaValues: nativeSchema } : values,
       antigravityCandidate ? { candidateHarnesses: [antigravityCandidate] } : undefined);
     if (preserveNativeHarness && runner === "paperclip" && profile) {
-      Object.assign(config, nativeSchema, profile.provider === "opencode" ? { opencodePermissionMode: "allow" } : profile.provider === "codex" ? { codexPermissionMode: "never" } : {}, { lifecycleMode: "per_turn" });
+      Object.assign(config, nativeSchema, profile.provider === "opencode" ? { opencodePermissionMode: "allow" } : profile.provider === "codex" ? { codexPermissionMode: "never" } : {}, paperclipRunnerCreationLifecycle(profile));
     }
     if (isRunner)
       Object.assign(config, {
@@ -658,6 +656,7 @@ function Setup({
     if (pendingAntigravity) return;
     if (!created || completed) return;
     const binding = runtimeAiBinding ?? nextConnection?.aiConnection;
+    const { aiConnection: _previousBinding, ...runtimeConfig } = created.runtimeConfig;
     const config = testedConfig ?? buildConfig(nextConnection);
     const staged: Array<{ remove: () => Promise<unknown> }> = [];
     let submitted = false;
@@ -677,7 +676,7 @@ function Setup({
       const agent = await agentsApi.update(created.id, {
         adapterType: requestAdapterType, runner, adapterConfig: config,
         defaultEnvironmentId: nativeCursorCloud ? null : selectedEnvironment || (forced.forced || managedOnly ? environmentId : null),
-        runtimeConfig: { ...created.runtimeConfig, ...(binding ? { aiConnection: binding } : {}) },
+        runtimeConfig: { ...runtimeConfig, ...(binding ? { aiConnection: binding } : {}) },
         ...(antigravityCandidate ? { metadata: { ...created.metadata, setupAdapterPending: false, setupAdapterChoice: undefined } } : {}),
         ...(nextConnection?.applyStoredClaudeLogin ? { applyStoredClaudeLogin: true } : {}),
       }, companyId);
@@ -740,6 +739,12 @@ function Setup({
         cache.setQueryData(queryKeys.adapters.availability(companyId, environmentId), qualified.adapters);
       }
       const config = preparedConfig(nextConnection, qualified?.runner);
+      // A saved setup draft would otherwise supply its old managed binding to
+      // the probe when this request intentionally uses harness authentication.
+      if (created?.runtimeConfig.aiConnection && !runtimeAiBinding && !nextConnection?.aiConnection) {
+        await saveDraft(nextConnection, false, config);
+        if (run !== generation.current || setupEnvironmentRef.current !== setupEnvironment) return null;
+      }
       const tested = await testAgentSetup({
         companyId,
         agentId: created?.id,
@@ -759,7 +764,7 @@ function Setup({
         (tested.checks.some(check => check.code === "environment_agent_approval_required") || !connectionAdapter ||
           tested.checks.some((check) =>
             check.code.endsWith("hello_probe_passed") || check.code === "ai_connection_api_key_reverified"
-            || (brandType === "antigravity_runtime" && check.code === "antigravity_metadata_verified"),
+            || (brandType === "antigravity_runtime" && (check.code === "antigravity_metadata_verified" || check.code === "antigravity_remote_runtime_ready")),
           ))
       ) ? config : null;
     } catch (cause) {
@@ -889,6 +894,12 @@ function Setup({
         }}
       />
     );
+  if (cloud && !(adapterType === "paperclip_runner"
+    ? harnessPolicy.isCloudRunnerProviderAllowed(runnerProvider)
+    : harnessPolicy.isCloudHarnessAllowed(adapterType))) return <div className="space-y-4">
+    <p role="alert">This adapter is unavailable. Choose an enabled adapter.</p>
+    <Button onClick={() => setChoosingAdapter(true)}>Change adapter</Button>
+  </div>;
   if (!created && connectionSettingsReady && !pendingAntigravity) return <div className="space-y-4">
     <p role={error ? "alert" : "status"}>{error ?? "Creating your agent…"}</p>
     {error && <Button onClick={() => setCreationAttempt(value => value + 1)}>Retry</Button>}
@@ -1118,14 +1129,6 @@ function Setup({
                         }).catch(cause => setError(cause instanceof Error ? cause.message : "Could not save agent setup."));
                       }}
                     /></fieldset> : <p role="status" className="text-sm text-muted-foreground">Loading connection settings…</p>}
-                    {["codex_local", "claude_local", "opencode_local", "pi_local"].includes(adapterType) && <details className="mt-5 space-y-3">
-                      <summary className="cursor-pointer text-sm text-muted-foreground">Advanced</summary>
-                      <AgentRunnerSelect value={runner} disabled={busy}
-                        pending={adapters.isFetching} error={adapters.error ? describeError(adapters.error).body : undefined} onRetry={() => { void adapters.refetch(); }}
-                        defaultRunner={adapters.data?.find(item => item.type === adapterType)?.defaultRunner}
-                        supportedRunners={adapters.data?.find(item => item.type === adapterType)?.supportedRunners}
-                        onChange={value => { setRunner(value); resetTest(); }} />
-                    </details>}
                   </OnboardingCard>
                 ) : screen === "saved" && created ? (
                   <div className="space-y-6">
@@ -1194,12 +1197,12 @@ function Setup({
                       <section className="space-y-5">
                         {isDot && <>
                           <p className="text-sm text-muted-foreground">Create this agent, then copy its pairing prompt to your Dot.</p>
-                          {experimental.data?.enablePublicMcp !== true && <p className="text-sm text-muted-foreground">Enable Assistant connections (MCP) in Experimental settings before pairing.</p>}
                           <ToggleField label="Allow externally billed provider" hint="Dot does not report token usage or cost. Paperclip cannot enforce a provider spend ceiling; known company and agent budget limits still apply."
                             checked={allowUnmeteredProvider} onChange={value => { setAllowUnmeteredProvider(value); resetTest(); }} />
                         </>}
                         {!connectionAdapter && aiProviderForAdapter(brandType) && (
                           <AiConnectionField companyId={companyId} agentName={name} adapterType={brandType} model={model} environmentId={environmentId ?? undefined} value={aiBinding}
+                            onUseHarnessAuth={multiProvider ? () => { setRuntimeAiBinding(undefined); setConnection(null); resetTest(); } : undefined}
                             onChange={binding => { binding.mode !== "router" && setRuntimeAiBinding(binding); resetTest();
                               if (accountCatalogAvailable && hashKey([aiBinding ?? null]) === hashKey([binding ?? null])) void refreshAccountModels();
                             }} />
@@ -1210,7 +1213,7 @@ function Setup({
                           <div className="grid items-start gap-5 sm:grid-cols-2">
                             {showModel && !usingKimiApi && (
                               <ModelDropdown
-                                presentation={brandType === "codex_local" ? "searchable" : "native"}
+                                presentation={brandType === "codex_local" || multiProvider || connectionModels ? "searchable" : "native"}
                                 models={connectionModels?.models ?? models.data ?? []}
                                 loadingModels={connectionModels?.isLoading ?? models.isLoading}
                                 onRefreshModels={connectionModels?.refreshModels ?? (accountCatalogAvailable ? async () => { await models.refetch(); } : undefined)}
@@ -1243,7 +1246,8 @@ function Setup({
                                 required={isKimi || multiProvider || accountBoundCatalog || nativeCursorCloud}
                                 creatable={brandType !== "copilot_runtime"}
                                 groupByProvider={multiProvider && !connectionModels}
-                                preserveOrder={Boolean(connectionModels) || adapterCuratesModelOrder(brandType)}
+                                preserveOrder={Boolean(connectionModels) || adapterCuratesModelOrder(brandType) || brandType === "antigravity_runtime"}
+                                groupModel={brandType === "antigravity_runtime" && !connectionModels ? antigravityPickerGroup : undefined}
                               />
                             )}
                             {efforts.length > 0 && (
@@ -1478,14 +1482,6 @@ function Setup({
                           </div>
                           </>
                         )}
-                        {["codex_local", "claude_local", "opencode_local", "pi_local", "cursor_cloud"].includes(adapterType) && <details className="space-y-3">
-                          <summary className="cursor-pointer text-sm text-muted-foreground">Advanced</summary>
-                          <AgentRunnerSelect value={runner} disabled={busy}
-                            pending={adapters.isFetching} error={adapters.error ? describeError(adapters.error).body : undefined} onRetry={() => { void adapters.refetch(); }}
-                            defaultRunner={adapters.data?.find(item => item.type === adapterType)?.defaultRunner}
-                            supportedRunners={adapters.data?.find(item => item.type === adapterType)?.supportedRunners}
-                            onChange={value => { setRunner(value); resetTest(); }} />
-                        </details>}
                       </section>
                       {adapterType !== "hermes_gateway" && adapterType !== "cursor_cloud" && (
                         <section className="space-y-5">

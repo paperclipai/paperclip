@@ -70,9 +70,9 @@ desktop, mobile, and Classic document views with real uploaded images and saved
 document revisions. It covers keyboard/button navigation, image URLs and reload,
 focus return, focus containment, scroll locking, dismissal, and revision links.
 
-[Exact revision panel](../../ui/src/components/task-side-panel/TaskDocumentPanel.test.tsx)
-checks pinned content and missing-revision behavior; this component test does not
-prove end-to-end conversation scrolling. Open a resolved receipt after making a
+Mocked `TaskDocumentPanel` component tests for pinned content and missing-revision
+behavior were removed (verify pinned revisions manually alongside the browser
+gallery suite above). Open a resolved receipt after making a
 new revision and verify the earlier body plus matching interaction in the browser.
 
 Manual: Edit a paragraph, save, reload, and compare revisions. Add an annotation to a specific selection and inspect it after another edit. Resolve it through the supported action. Restore a disposable revision and confirm the new current document and history agree.
@@ -91,7 +91,7 @@ Test an inaccessible user/company and explicit missing workspace-only resources.
 
 ### `artifact-library`
 
-Automated: [artifact page](../../ui/src/pages/Artifacts.test.tsx) covers grouping, search requests, and pagination using mocks.
+Automated: none for mocked UI (`Artifacts` page component tests were removed; verify grouping, search, and pagination manually).
 
 Manual: Find the task’s output through search and grouping, open its stack, page through results, and reload a direct stack link. Confirm the same file/content appears as from the task.
 
@@ -110,7 +110,7 @@ Capability ID: `documents-artifacts/documents`.
 Scope: ui
 Storybook: Writable/read-only document, save pending/failure/conflict, revision history/historical preview and restore confirmation.
 Production: Persist edited body and reload; append-only restore creates new revision; reject stale writes and inaccessible company/task.
-Sources: Source: [IssueDocumentsSection.tsx](../../ui/src/components/IssueDocumentsSection.tsx), [TaskDocumentPanel.tsx](../../ui/src/components/task-side-panel/TaskDocumentPanel.tsx), [documents.ts](../../server/src/services/documents.ts). Tests: [IssueDocumentsSection.test.tsx](../../ui/src/components/IssueDocumentsSection.test.tsx), [document-revisions.test.ts](../../ui/src/lib/document-revisions.test.ts), [documents-service.test.ts](../../server/src/__tests__/documents-service.test.ts), [issue-document-restore-routes.test.ts](../../server/src/__tests__/issue-document-restore-routes.test.ts)
+Sources: Source: [IssueDocumentsSection.tsx](../../ui/src/components/IssueDocumentsSection.tsx), [TaskDocumentPanel.tsx](../../ui/src/components/task-side-panel/TaskDocumentPanel.tsx), [documents.ts](../../server/src/services/documents.ts). Tests: [document-revisions.test.ts](../../ui/src/lib/document-revisions.test.ts), [documents-service.test.ts](../../server/src/__tests__/documents-service.test.ts), [issue-document-restore-routes.test.ts](../../server/src/__tests__/issue-document-restore-routes.test.ts)
 
 ### Documentation scope: Artifacts and work products
 

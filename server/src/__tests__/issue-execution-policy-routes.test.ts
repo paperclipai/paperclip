@@ -1,5 +1,7 @@
 import express from "express";
 import request from "supertest";
+import { getTableName, type SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.ts";
 
@@ -15,6 +17,7 @@ const mockIssueService = vi.hoisted(() => ({
   getRelationSummaries: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
+  getCurrentScheduledRetry: vi.fn(async (): Promise<{ status: string } | null> => null),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -23,7 +26,10 @@ const mockHeartbeatService = vi.hoisted(() => ({
   reportRunActivity: vi.fn(async () => undefined),
   getRun: vi.fn(async () => null),
   getActiveRunForAgent: vi.fn(async () => null),
+  getQueuedAssignmentRunForIssue: vi.fn(async () => null),
   cancelRun: vi.fn(async () => null),
+  retryScheduledRetryNow: vi.fn(async (): Promise<{ outcome: string; message: string; scheduledRetry: null }> =>
+    ({ outcome: "promoted", message: "Scheduled retry was promoted to the queued run pool", scheduledRetry: null })),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -51,7 +57,7 @@ const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
       permissions: null,
     }]).then(onFulfilled, onRejected),
 })));
-const mockDbSelectFrom = vi.hoisted(() => vi.fn(() => ({ where: mockDbSelectWhere })));
+const mockDbSelectFrom = vi.hoisted(() => vi.fn((_table: unknown): { where: (...args: never[]) => unknown } => ({ where: mockDbSelectWhere })));
 const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })));
 const mockDb = vi.hoisted(() => ({
   select: mockDbSelect,
@@ -221,7 +227,24 @@ describe("issue execution policy routes", () => {
     mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByComment.mockResolvedValue([]);
     mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([]);
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
-    mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
+    mockDbSelectFrom.mockImplementation((table) => {
+      const name = getTableName(table as Parameters<typeof getTableName>[0]);
+      if (name !== "issues" && name !== "agents") return { where: mockDbSelectWhere };
+      return { where: (condition: SQL) => {
+        const ids = [...new Set(new PgDialect().sqlToQuery(condition).params
+          .filter((value): value is string => typeof value === "string" && value !== "company-1"))];
+        const rows = async () => name === "issues"
+          ? (await Promise.all(ids.map(id => mockIssueService.getById(id)))).filter(row => row && ids.includes(row.id))
+          : ids.map(id => ({ id, companyId: "company-1", permissions: null }));
+        const query = {
+          orderBy: () => query,
+          for: () => query,
+          then: (resolve: (rows: unknown[]) => unknown, reject?: (reason: unknown) => unknown) =>
+            rows().then(resolve, reject),
+        };
+        return query;
+      } };
+    });
     mockDbSelectWhere.mockImplementation(() => ({
       for: () => ({
         then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
@@ -1192,6 +1215,34 @@ describe("issue execution policy routes", () => {
         agentId: null,
       }),
     );
+  });
+
+  it("checks a waiting usage retry now when the task has no monitor", async () => {
+    // A todo task whose run waits for provider usage: no issue monitor, one scheduled retry.
+    mockIssueService.getById.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: "company-1", status: "todo", monitorNextCheckAt: null,
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333", assigneeUserId: null, executionPolicy: null, executionState: null,
+    });
+    mockIssueService.getCurrentScheduledRetry.mockResolvedValueOnce({ status: "scheduled_retry" });
+    mockHeartbeatService.triggerIssueMonitor.mockClear();
+    const res = await request(await createApp())
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/monitor/check-now").send({});
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ ok: true, outcome: "promoted" });
+    expect(mockHeartbeatService.retryScheduledRetryNow).toHaveBeenCalledWith(expect.objectContaining({
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }));
+    expect(mockHeartbeatService.triggerIssueMonitor).not.toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "issue.scheduled_retry_retry_now", details: expect.objectContaining({ source: "monitor_check_now" }) }));
+
+    // A check that cannot start says why, in plain words.
+    mockIssueService.getCurrentScheduledRetry.mockResolvedValueOnce({ status: "scheduled_retry" });
+    mockHeartbeatService.retryScheduledRetryNow.mockResolvedValueOnce({ outcome: "gate_suppressed",
+      message: "Scheduled retry suppressed because the agent no longer exists", scheduledRetry: null });
+    const refused = await request(await createApp())
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/monitor/check-now").send({});
+    expect(refused.status).toBe(409);
+    expect(refused.body.error).toBe("The check could not start because the task changed. Refresh the task to see its current state.");
   });
 
   it.each(["execution_reconciliation_required", "monitor_dispatch_deferred", "monitor_replaced"])("does not claim success for a skipped monitor check: %s", async (reason) => {

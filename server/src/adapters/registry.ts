@@ -1,7 +1,8 @@
-import { probePluginRunnerEnvironment } from "../services/native-runtime/plugin-runner-probe.js";
+import { pluginRunnerAiConnectionRequiredTestResult } from "../services/plugin-runner-ai-connection.js";
 import { HttpError } from "../errors.js";
 import type { AdapterRuntimeCommandSpec, ServerAdapterModule } from "./types.js";
 import { parseAdapterModelsEnv } from "../services/adapter-models-env.js";
+import { isAiKeyVerificationFailureCode } from "../services/ai-api-key-failures.js";
 import { validateAiApiKey } from "../services/ai-api-key-test.js";
 import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
 import { stampClaudeAgentIdHeader } from "./claude-agent-id-header.js";
@@ -169,9 +170,10 @@ async function verifyNativeAcpxApiKey(
   } catch (error) {
     const details = error && typeof error === "object" && "details" in error
       ? error.details as { code?: string } | undefined : undefined;
+    const code = isAiKeyVerificationFailureCode(details?.code) ? details.code : "ai_connection_verification_failed";
+    const reason = code !== "ai_connection_verification_failed" && error instanceof Error ? error.message : "Check the connection and try again.";
     return { ...result, status: "fail", checks: [...result.checks, {
-      code: details?.code === "ai_connection_api_key_rejected" ? details.code : "ai_connection_verification_failed",
-      level: "error", message: `Could not verify the ${account.name} API key. Check the connection and try again.`,
+      code, level: "error", message: `Could not verify the ${account.name} API key. ${reason}`,
     }] };
   }
 }
@@ -440,7 +442,9 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
       };
     }
     if (profile.provider !== "cursor_cloud" && context.executionTarget?.kind === "remote" && context.executionTarget.transport === "sandbox" && context.executionTarget.runnerTask) {
-      return probePluginRunnerEnvironment(context);
+      // Managed connections probe through testManagedEnvironment. This path has
+      // none, which a plugin Runner-task environment never runs.
+      return pluginRunnerAiConnectionRequiredTestResult("paperclip_runner");
     }
     if (profile.provider === "cursor_cloud") {
       const failure = (code: string, message: string) => ({ adapterType: "paperclip_runner", status: "fail" as const, testedAt: new Date().toISOString(), checks: [{ code, level: "error" as const, message }] });
@@ -640,9 +644,9 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
           "opencode",
           `opencode-ai@${QUALIFIED_OPENCODE_RUNNER_VERSION}`,
         )
-      : buildNpmRuntimeCommandSpec(config, "codex", "@openai/codex@0.160.0"),
+      : buildNpmRuntimeCommandSpec(config, "codex", "@openai/codex@0.170.0"),
   agentConfigurationDoc:
-    "# Paperclip Runner\n\nAdapter: paperclip_runner\n\nRuns Codex, OpenCode, Claude Managed, AWS AgentCore, or ACPX Claude/Grok Build/Cursor/Pi through the Rust Paperclip runner and authenticated PRP transport. Pi accepts an explicit provider/model ID and uses the company credentials bound to the agent environment. GitHub Copilot requires a saved GitHub token and an explicitly selected available model. Managed providers use company-scoped qualified profiles, explicit retention acknowledgement, and spend limits.\n",
+    "# Paperclip Runner\n\nAdapter: paperclip_runner\n\nRuns Codex, OpenCode, Claude Managed, AWS AgentCore, or ACPX Claude/Grok Build/Cursor/Pi through the Rust Paperclip runner and authenticated PRP transport. Pi accepts an explicit provider/model ID and uses the company credentials bound to the agent environment. GitHub Copilot requires a saved GitHub token and an explicitly selected available model. Managed providers use company-scoped qualified profiles, explicit retention acknowledgement, and spend limits. A board operator creates each Claude Managed (Anthropic managed agent) profile through POST /api/companies/{companyId}/managed-agent-profiles; agent credentials cannot create, qualify or list one.\n",
   getConfigSchema: () => ({
     fields: [
       {

@@ -1,3 +1,4 @@
+import { isDashboardActivity } from "./responsibility-privacy.js";
 import { notifyActiveRunSilence } from "./live-run-recovery-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { beginRunPhase } from "./execution-preparation-timing.js";
@@ -152,22 +153,29 @@ export async function resolveResponsibleUserIdForActivity(db: Db, input: LogActi
 export function publishActivity(publication: ActivityPublication) {
   const finish = beginRunPhase("execution.realtime");
   try {
-  publishLiveEvent({
-    companyId: publication.companyId,
-    type: "activity.logged",
-    payload: publication.payload,
-  });
-  if (publication.pluginEvent) publishPluginDomainEvent(publication.pluginEvent);
-  } catch (error) {
-    finish(true);
-    throw error;
+    if (isDashboardActivity(publication.payload.entityType)) {
+      // The company bus carries only an invalidation. Each viewer fetches their own data.
+      publishLiveEvent({
+        companyId: publication.companyId,
+        type: "activity.logged",
+        payload: { action: "responsibility.dashboard_changed", entityType: "responsibility" },
+      });
+      return;
+    }
+    publishLiveEvent({
+      companyId: publication.companyId,
+      type: "activity.logged",
+      payload: publication.payload,
+    });
+    if (publication.pluginEvent) publishPluginDomainEvent(publication.pluginEvent);
   } finally { finish(); }
 }
 
-export async function persistActivity(db: Db, input: LogActivityInput) {
+export async function persistActivity(db: Db, input: LogActivityInput, receipt?: { id: string }) {
   const redactedDetails = await redactActivityDetails(db, input.authorization ? { ...input.details, permissionDecision: input.authorization, ...(input.agentApiKeyId ? { agentApiKeyId: input.agentApiKeyId } : {}) } : input.details ?? null);
   const responsibleUserId = await resolveResponsibleUserIdForActivity(db, input);
   const insert = (runner: Db) => runner.insert(activityLog).values({
+    ...(receipt ? { id: receipt.id } : {}),
     companyId: input.companyId,
     actorType: input.actorType,
     actorId: input.actorId,
