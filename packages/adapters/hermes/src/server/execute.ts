@@ -30,6 +30,7 @@ import type {
 import {
   runChildProcess,
   buildPaperclipEnv,
+  applyPaperclipWorkspaceEnv,
   buildRuntimeToolsEnv,
   renderTemplate,
   ensureAbsoluteDirectory,
@@ -515,6 +516,26 @@ export async function execute(
     }),
   ]);
 
+  // Mirror the sibling local adapters: project the run's workspace context
+  // onto the child env. Without this, AGENT_HOME (and the PAPERCLIP_WORKSPACE_*
+  // values) never reach a Hermes run, even though the server puts them in
+  // ctx.context.paperclipWorkspace for every adapter.
+  const paperclipWorkspace = ctx.context?.paperclipWorkspace;
+  if (paperclipWorkspace && typeof paperclipWorkspace === "object") {
+    const ws = paperclipWorkspace as Record<string, unknown>;
+    applyPaperclipWorkspaceEnv(env, {
+      workspaceCwd: cfgString(ws.cwd),
+      workspaceSource: cfgString(ws.source),
+      workspaceStrategy: cfgString(ws.strategy),
+      workspaceId: cfgString(ws.workspaceId),
+      workspaceRepoUrl: cfgString(ws.repoUrl),
+      workspaceRepoRef: cfgString(ws.repoRef),
+      workspaceBranch: cfgString(ws.branchName),
+      workspaceWorktreePath: cfgString(ws.worktreePath),
+      agentHome: cfgString(ws.agentHome),
+    });
+  }
+
   if (ctx.runId) env.PAPERCLIP_RUN_ID = ctx.runId;
 
   // PAPERCLIP_API_KEY is never accepted from config — the harness-minted run
@@ -544,6 +565,13 @@ export async function execute(
     await ensureAbsoluteDirectory(cwd);
   } catch {
     // Non-fatal
+  }
+  if (
+    cfgBoolean(config.startInWorkspace) !== false &&
+    path.isAbsolute(cwd) &&
+    !args.includes("--in")
+  ) {
+    args.splice(3, 0, "--in", cwd);
   }
 
   // ── Log start ──────────────────────────────────────────────────────────
