@@ -123,6 +123,18 @@ export function AiProviderSetup({
     reconnect?.routing?.auth ?? "bearer",
   );
   const [baseUrl, setBaseUrl] = useState(reconnect?.routing?.baseUrl ?? "");
+  const requiresPrivateHttpOptIn = (() => {
+    try {
+      const url = new URL(baseUrl.trim());
+      return url.protocol === "http:" &&
+        !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+    } catch {
+      return false;
+    }
+  })();
+  const [allowPrivateHttp, setAllowPrivateHttp] = useState(
+    reconnect?.routing?.allowPrivateHttp ?? false,
+  );
   const [region, setRegion] = useState(
     reconnect?.routing?.region ?? "us-east-1",
   );
@@ -192,7 +204,7 @@ export function AiProviderSetup({
           ...(provider === "bedrock"
             ? { region }
             : provider === "gateway" || provider === "local"
-              ? { baseUrl }
+              ? { baseUrl, allowPrivateHttp }
               : {}),
           models: models
             .split(",")
@@ -356,6 +368,22 @@ export function AiProviderSetup({
                   disabled={Boolean(reconnect)}
                 />
               </label>
+              {requiresPrivateHttpOptIn && (
+                <label className="flex items-start gap-2 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={allowPrivateHttp}
+                    onChange={(e) => setAllowPrivateHttp(e.target.checked)}
+                    disabled={Boolean(reconnect)}
+                    className="mt-0.5"
+                  />
+                  <span>
+                    Allow HTTP to a private-network model server.
+                    Traffic, including prompts, responses, and API keys, is not encrypted.
+                    Enable only for a trusted network.
+                  </span>
+                </label>
+              )}  
               <label className="block space-y-2 text-xs text-muted-foreground">
                 API format
                 <Select
@@ -446,13 +474,31 @@ export function AiProviderSetup({
             Test the connection with your chosen model in the agent’s execution
             environment after connecting.
           </p>
-          {save.error && (
-            <p role="alert" className="text-sm text-destructive">
-              {save.error instanceof Error && save.error.name === "ZodError"
-                ? "Check the URL, API format, and authentication fields."
-                : describeError(save.error).body}
-            </p>
-          )}
+
+          {(provider === "local" || provider === "gateway") &&
+            requiresPrivateHttpOptIn &&
+            !allowPrivateHttp && (
+              <p role="alert" className="text-sm text-destructive">
+                HTTP connection blocked. Enable "Allow HTTP to a
+                private-network model server" to connect without
+                encryption, or use HTTPS.
+              </p>
+            )}
+
+          {save.error &&
+            !(
+              (provider === "local" || provider === "gateway") &&
+              requiresPrivateHttpOptIn &&
+              !allowPrivateHttp &&
+              save.error instanceof Error &&
+              save.error.name === "ZodError"
+            ) && (
+              <p role="alert" className="text-sm text-destructive">
+                {save.error instanceof Error && save.error.name === "ZodError"
+                  ? "Check the URL, API format, and authentication fields."
+                  : describeError(save.error).body}
+              </p>
+            )}
           {accessDefaults}
           <div className="flex items-center justify-between gap-3">
             <Button
