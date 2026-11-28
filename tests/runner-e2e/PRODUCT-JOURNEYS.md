@@ -583,3 +583,12 @@ or a 408, 429, 502, 503 or 504 response, inside the caller's original timeout. I
 honors a `Retry-After` of up to five seconds. It never repeats a write or a binary
 download (`bytes`). The observed reader opts out, so its own retry loop records
 every transient failure in `observation-read-failures.json`.
+
+
+The shared Skill Studio edit story reports a closed `skill_studio_<step>_failed`
+code when a browser or saved-file read step fails. The code identifies opening
+the card, reading its preview, opening Studio, loading or editing the file,
+saving, saved-content verification, reload, returning to the task, or reopening
+the card. Raw browser errors, URLs and skill contents are excluded. Both classic
+and Cloud callers use this helper. These codes locate a failed step; they do
+not establish a product cause or change the failed grade.

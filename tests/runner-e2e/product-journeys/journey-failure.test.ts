@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ConnectionFailure } from "../connection-config.js";
+import { editCreatedSkillThroughStudio } from "../skill-studio-flow.js";
 import { journeyFailure } from "./launch.js";
 
 describe("journeyFailure", () => {
@@ -17,6 +18,15 @@ describe("journeyFailure", () => {
   it("matches a connection failure loaded from another module instance by its class name", () => {
     class ConnectionFailure extends Error {}
     expect(journeyFailure(new ConnectionFailure("api_status_502"))).toEqual({ outcome: "failed", code: "api_status_502" });
+  });
+
+  it("keeps the Studio step through final journey grading without browser details", async () => {
+    const page = { getByRole() { throw new Error("https://private.example/?token=secret skill-body"); } };
+    const error = await editCreatedSkillThroughStudio({ page: page as never, skillId: "owned", skillName: "owned",
+      marker: "marker", deadlineAt: Date.now() + 1000, read: async () => ({}) }).catch(error => error);
+    expect(journeyFailure(error)).toEqual({ outcome: "failed", code: "skill_studio_open_card_failed" });
+    expect(JSON.stringify(error)).not.toMatch(/private|token|secret|skill-body/);
+    expect(error.cause).toBeUndefined();
   });
 
   it("never retains free-form messages", () => {
