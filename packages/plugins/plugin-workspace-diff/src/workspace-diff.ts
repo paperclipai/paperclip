@@ -15,6 +15,7 @@ import type {
   WorkspaceDiffWarning,
   WorkspaceDiffWarningCode,
 } from "./contracts.js";
+import { diffTargetPaths, parseNumstat, selectFilePatch } from "./git-diff-selection.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -39,6 +40,7 @@ type DiffScope = "staged" | "unstaged" | "head";
 
 interface MutableWorkspaceDiffFile extends WorkspaceDiffFile {
   patchScopes: DiffScope[];
+  renameSourceByScope: Partial<Record<DiffScope, string>>;
 }
 
 interface PatchBudget {
@@ -210,6 +212,7 @@ function parseNameStatus(output: string): GitStatusEntry[] {
 async function readDiffNameStatus(cwd: string, scopeArgs: string[], paths: string[]) {
   const result = await runGit(cwd, [
     "diff",
+    "--relative",
     "--name-status",
     "-z",
     "--no-ext-diff",
@@ -257,6 +260,7 @@ function ensureFile(
     patches: [],
     warnings: [],
     patchScopes: [],
+    renameSourceByScope: {},
   };
   files.set(filePath, file);
   return file;
@@ -271,39 +275,36 @@ function addStatusEntries(
     const file = ensureFile(files, entry.path, entry.status, entry.oldPath);
     if (scope === "staged") file.staged = true;
     else if (scope === "unstaged") file.unstaged = true;
+    if (entry.status === "renamed" && entry.oldPath) {
+      file.renameSourceByScope[scope] = entry.oldPath;
+    }
     if (!file.patchScopes.includes(scope)) file.patchScopes.push(scope);
   }
 }
 
-function parseNumstat(output: string) {
-  const line = output.split(/\r?\n/).find(Boolean);
-  if (!line) return { additions: 0, deletions: 0, binary: false };
-  const [additionsRaw, deletionsRaw] = line.split(/\t/);
-  if (additionsRaw === "-" || deletionsRaw === "-") {
-    return { additions: 0, deletions: 0, binary: true };
-  }
-  return {
-    additions: Number.parseInt(additionsRaw ?? "0", 10) || 0,
-    deletions: Number.parseInt(deletionsRaw ?? "0", 10) || 0,
-    binary: false,
-  };
-}
-
-async function readNumstat(cwd: string, scopeArgs: string[], filePath: string) {
+async function readNumstat(
+  cwd: string,
+  scopeArgs: string[],
+  targetPaths: string[],
+  filePath: string,
+  oldPath?: string | null,
+) {
   const result = await runGit(cwd, [
     "diff",
+    "--relative",
     "--numstat",
+    "-z",
     "--no-ext-diff",
     "--find-renames",
     ...scopeArgs,
     "--",
-    filePath,
+    ...targetPaths,
   ], 128 * 1024);
-  return parseNumstat(result.stdout);
+  return parseNumstat(result.stdout, filePath, oldPath);
 }
 
-async function statWorkspaceFile(repoRoot: string, filePath: string) {
-  const resolved = await resolveWorkspaceFilePath(repoRoot, filePath);
+async function statWorkspaceFile(workspaceRoot: string, filePath: string) {
+  const resolved = await resolveWorkspaceFilePath(workspaceRoot, filePath);
   if (resolved.status !== "ok") return null;
   let handle: Awaited<ReturnType<typeof fs.open>>;
   try {
@@ -321,16 +322,16 @@ async function statWorkspaceFile(repoRoot: string, filePath: string) {
   }
 }
 
-async function resolveWorkspaceFilePath(repoRoot: string, filePath: string): Promise<
+async function resolveWorkspaceFilePath(workspaceRoot: string, filePath: string): Promise<
   | { status: "ok"; realPath: string }
   | { status: "missing" }
   | { status: "outside_workspace" }
 > {
-  const target = path.resolve(repoRoot, filePath);
-  if (!isWithinDirectory(target, repoRoot)) return { status: "outside_workspace" };
+  const target = path.resolve(workspaceRoot, filePath);
+  if (!isWithinDirectory(target, workspaceRoot)) return { status: "outside_workspace" };
   try {
     const realPath = await fs.realpath(target);
-    if (!isWithinDirectory(realPath, repoRoot)) return { status: "outside_workspace" };
+    if (!isWithinDirectory(realPath, workspaceRoot)) return { status: "outside_workspace" };
     return { status: "ok", realPath };
   } catch {
     return { status: "missing" };
@@ -383,15 +384,17 @@ function reservePatchBytes(
 
 async function buildTrackedPatch(input: {
   cwd: string;
-  repoRoot: string;
   filePath: string;
+  oldPath?: string | null;
+  scopePaths: readonly string[];
   kind: WorkspaceDiffPatchKind;
   scopeArgs: string[];
   budget: PatchBudget;
 }): Promise<WorkspaceDiffFilePatch> {
   const warnings: WorkspaceDiffWarning[] = [];
-  const numstat = await readNumstat(input.cwd, input.scopeArgs, input.filePath);
-  const sizeBytes = await statWorkspaceFile(input.repoRoot, input.filePath);
+  const targetPaths = diffTargetPaths(input.filePath, input.oldPath, input.scopePaths);
+  const numstat = await readNumstat(input.cwd, input.scopeArgs, targetPaths, input.filePath, input.oldPath);
+  const sizeBytes = await statWorkspaceFile(input.cwd, input.filePath);
 
   if (numstat.binary) {
     warnings.push(warning("binary_file", "Binary files are summarized without a text patch.", input.filePath));
@@ -423,12 +426,15 @@ async function buildTrackedPatch(input: {
 
   const patchOutput = await readPatchOutput(input.cwd, [
     "diff",
+    "--relative",
+    "--src-prefix=a/",
+    "--dst-prefix=b/",
     "--no-ext-diff",
     "--find-renames",
     "--unified=3",
     ...input.scopeArgs,
     "--",
-    input.filePath,
+    ...targetPaths,
   ]);
   if (!patchOutput) {
     warnings.push(warning("patch_truncated", "File patch exceeded the per-file diff cap.", input.filePath));
@@ -444,7 +450,8 @@ async function buildTrackedPatch(input: {
     };
   }
 
-  const patch = reservePatchBytes(patchOutput.stdout, input.budget, input.filePath, warnings);
+  const selectedPatch = selectFilePatch(patchOutput.stdout, input.filePath, input.oldPath);
+  const patch = reservePatchBytes(selectedPatch, input.budget, input.filePath, warnings);
   return {
     kind: input.kind,
     patch,
@@ -482,12 +489,12 @@ function buildUntrackedPatch(filePath: string, content: string) {
 }
 
 async function buildUntrackedFilePatch(input: {
-  repoRoot: string;
+  workspaceRoot: string;
   filePath: string;
   budget: PatchBudget;
 }): Promise<WorkspaceDiffFilePatch> {
   const warnings: WorkspaceDiffWarning[] = [];
-  const resolved = await resolveWorkspaceFilePath(input.repoRoot, input.filePath);
+  const resolved = await resolveWorkspaceFilePath(input.workspaceRoot, input.filePath);
   if (resolved.status === "outside_workspace") {
     warnings.push(warning(
       "symlink_target_outside_workspace",
@@ -755,7 +762,7 @@ async function collectFiles(input: {
 export function workspaceDiffService() {
   return {
     async getDiff(workspace: WorkspaceDiffTarget, query: WorkspaceDiffQueryOptions): Promise<WorkspaceDiffResponse> {
-      const { cwd, repoRoot } = await resolveWorkspacePaths(workspace);
+      const { cwd } = await resolveWorkspacePaths(workspace);
       const defaultBaseRef = await resolveDefaultDiffBaseRef(cwd, workspace);
       const workspaceWithDefaultBaseRef = { ...workspace, baseRef: defaultBaseRef };
       const paths = normalizePathFilters(query.paths);
@@ -775,54 +782,63 @@ export function workspaceDiffService() {
         ));
       }
 
+      const scopePathsByScope: Record<DiffScope, string[]> = {
+        head: allFiles.map((entry) => entry.path),
+        staged: allFiles.filter((entry) => entry.staged).map((entry) => entry.path),
+        unstaged: allFiles.filter((entry) => entry.unstaged).map((entry) => entry.path),
+      };
+
       const patchBudget: PatchBudget = { totalPatchBytes: 0 };
       for (const file of cappedFiles) {
         if (query.view === "head") {
           const patch = await buildTrackedPatch({
             cwd,
-            repoRoot,
             filePath: file.path,
+            oldPath: file.renameSourceByScope.head,
+            scopePaths: scopePathsByScope.head,
             kind: "head",
             scopeArgs: [`${baseRef}...HEAD`],
             budget: patchBudget,
           });
-          applyPatchToFile(file, patch, await statWorkspaceFile(repoRoot, file.path));
+          applyPatchToFile(file, patch, await statWorkspaceFile(cwd, file.path));
           continue;
         }
 
         if (file.staged) {
           const patch = await buildTrackedPatch({
             cwd,
-            repoRoot,
             filePath: file.path,
+            oldPath: file.renameSourceByScope.staged,
+            scopePaths: scopePathsByScope.staged,
             kind: "staged",
             scopeArgs: ["--cached"],
             budget: patchBudget,
           });
-          applyPatchToFile(file, patch, await statWorkspaceFile(repoRoot, file.path));
+          applyPatchToFile(file, patch, await statWorkspaceFile(cwd, file.path));
         }
         if (file.unstaged) {
           const patch = await buildTrackedPatch({
             cwd,
-            repoRoot,
             filePath: file.path,
+            oldPath: file.renameSourceByScope.unstaged,
+            scopePaths: scopePathsByScope.unstaged,
             kind: "unstaged",
             scopeArgs: [],
             budget: patchBudget,
           });
-          applyPatchToFile(file, patch, await statWorkspaceFile(repoRoot, file.path));
+          applyPatchToFile(file, patch, await statWorkspaceFile(cwd, file.path));
         }
         if (file.untracked) {
           const patch = await buildUntrackedFilePatch({
-            repoRoot,
+            workspaceRoot: cwd,
             filePath: file.path,
             budget: patchBudget,
           });
-          applyPatchToFile(file, patch, await statWorkspaceFile(repoRoot, file.path));
+          applyPatchToFile(file, patch, await statWorkspaceFile(cwd, file.path));
         }
       }
 
-      const files = cappedFiles.map(({ patchScopes: _patchScopes, ...file }) => file);
+      const files = cappedFiles.map(({ patchScopes: _patchScopes, renameSourceByScope: _renameSourceByScope, ...file }) => file);
       const patchWarnings = files.flatMap((file) => file.warnings);
       return {
         workspaceId: workspace.id,
