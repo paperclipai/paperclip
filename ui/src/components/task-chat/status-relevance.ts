@@ -2,6 +2,7 @@ import type { ExecutionProjection, IssueRecoveryAction } from "@paperclipai/shar
 import type { IssueChatComment } from "@/lib/issue-chat-messages";
 import { isTerminalIssueStatus } from "@/lib/liveIssueIds";
 import type { TaskChatItem } from "./task-chat-model";
+import { isStatusNotice } from "./status-notice-presentation";
 
 interface StatusRun {
   id: string;
@@ -96,6 +97,9 @@ export function withoutHistoricalRunStatus(items: readonly TaskChatItem[]): Task
     if (item.kind === "message") return item.author !== "system";
     if (item.kind !== "protocol") return true;
     if (item.surface === "run_terminal" || item.surface === "run_result") return false;
+    // Harness status chips (compaction, fallback, retries, a fatal provider
+    // error) explain what happened in that turn, so they stay in history.
+    if (item.surface === "provider_activity" && isStatusNotice(item)) return true;
     return item.surface !== "provider_activity"
       || !["terminal", "wait", "provider_notice"].includes(item.family);
   });

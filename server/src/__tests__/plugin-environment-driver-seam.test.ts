@@ -7,12 +7,17 @@ import {
   isJsonRpcSuccessResponse,
   parseMessage,
   serializeMessage,
+  type JsonRpcResponse,
 } from "../../../packages/plugins/sdk/src/protocol.js";
 import type { PluginEnvironmentTaskParams } from "../../../packages/plugins/sdk/src/environment-tasks.js";
 import { definePlugin } from "../../../packages/plugins/sdk/src/define-plugin.js";
 import { startWorkerRpcHost } from "../../../packages/plugins/sdk/src/worker-rpc-host.js";
 import { pluginManifestV1Schema, type PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { pluginCapabilityValidator } from "../services/plugin-capability-validator.js";
+
+// The worker host writes only responses in these tests, and each test reads
+// the result fields of the method it called.
+type WorkerResponse = JsonRpcResponse<{ supportedMethods: string[]; detections: unknown[] }>;
 
 const baseManifest: PaperclipPluginManifestV1 = {
   id: "test.environment-driver",
@@ -107,9 +112,9 @@ describe("plugin environment driver seam", () => {
     const stdin = new PassThrough();
     const stdout = new PassThrough();
     const host = startWorkerRpcHost({ plugin, stdin, stdout });
-    const responses: unknown[] = [];
+    const responses: WorkerResponse[] = [];
     stdout.on("data", chunk => {
-      for (const line of String(chunk).split("\n").filter(Boolean)) responses.push(parseMessage(line));
+      for (const line of String(chunk).split("\n").filter(Boolean)) responses.push(parseMessage(line) as WorkerResponse);
     });
     try {
       const manifest = { ...baseManifest, environmentDrivers: [{ ...baseManifest.environmentDrivers![0], supportsTasks: true }] };
@@ -172,11 +177,11 @@ describe("plugin environment driver seam", () => {
     const stdin = new PassThrough();
     const stdout = new PassThrough();
     const host = startWorkerRpcHost({ plugin, stdin, stdout });
-    const responses: unknown[] = [];
+    const responses: WorkerResponse[] = [];
     stdout.on("data", (chunk) => {
       const lines = String(chunk).split("\n").filter(Boolean);
       for (const line of lines) {
-        responses.push(parseMessage(line));
+        responses.push(parseMessage(line) as WorkerResponse);
       }
     });
 
@@ -357,11 +362,11 @@ describe("plugin external object provider seam", () => {
     const stdin = new PassThrough();
     const stdout = new PassThrough();
     const host = startWorkerRpcHost({ plugin, stdin, stdout });
-    const responses: unknown[] = [];
+    const responses: WorkerResponse[] = [];
     stdout.on("data", (chunk) => {
       const lines = String(chunk).split("\n").filter(Boolean);
       for (const line of lines) {
-        responses.push(parseMessage(line));
+        responses.push(parseMessage(line) as WorkerResponse);
       }
     });
 

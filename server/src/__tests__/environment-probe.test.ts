@@ -25,6 +25,8 @@ vi.mock("../services/plugin-environment-driver.js", () => ({
   probePluginEnvironmentDriver: mockProbePluginEnvironmentDriver,
   probePluginSandboxProviderDriver: mockProbePluginSandboxProviderDriver,
   resolvePluginSandboxProviderDriverByKey: mockResolvePluginSandboxProviderDriverByKey,
+  resolvePluginSandboxProviderConfigSchema: async (input: { db: unknown; driverKey: string }) =>
+    (await mockResolvePluginSandboxProviderDriverByKey(input))?.driver?.configSchema ?? null,
 }));
 
 vi.mock("../services/environment-runtime.js", () => ({
@@ -56,9 +58,9 @@ describe("probeEnvironment", () => {
     vi.spyOn(configRuntime, "resolveEnvironmentDriverConfigForRuntime").mockResolvedValue({ driver: "sandbox", config: environment.config });
     mockRuntimeAcquireRunLease.mockResolvedValue({ lease: { id: "lease", provider: "daytona", metadata: { snapshot: "managed-snapshot", snapshotIdentity: identity } } });
     mockRuntimeExecute.mockResolvedValue({ exitCode: 0, stdout: "Linux\nx86_64\nglibc\nglibc 2.39\n" });
-    const result = await probeEnvironment({} as any, environment, { companyId: "company", acquireSandboxRuntimeLease: true });
+    const result = await probeEnvironment({} as any, environment, { companyId: "company", acquireSandboxRuntimeLease: true, assertCompanyBinding: true });
     expect(result.details?.platformQualificationRecorded).toBe(true);
-    expect(mockRuntimeAcquireRunLease).toHaveBeenCalledWith(expect.objectContaining({ resolveSnapshotIdentity: true }));
+    expect(mockRuntimeAcquireRunLease).toHaveBeenCalledWith(expect.objectContaining({ resolveSnapshotIdentity: true, assertCompanyBinding: true }));
     const proof = mockRecordPlatformProbe.mock.calls[1]![0].proof;
     expect(proof).toMatchObject({ v: 2, snapshotIdentity: identity });
     environment.metadata = { [SANDBOX_PLATFORM_PROBE_METADATA_KEY]: { company: proof } };
@@ -177,7 +179,7 @@ describe("probeEnvironment", () => {
   it("reports local environments as immediately available", async () => {
     const result = await probeEnvironment({} as any, {
       id: "env-1",
-      companyId: "company-1",
+      envVars: {},
       name: "Local",
       description: null,
       driver: "local",
@@ -201,7 +203,7 @@ describe("probeEnvironment", () => {
 
     const result = await probeEnvironment({} as any, {
       id: "env-ssh",
-      companyId: "company-1",
+      envVars: {},
       name: "SSH Fixture",
       description: null,
       driver: "ssh",
@@ -239,7 +241,7 @@ describe("probeEnvironment", () => {
   it("reports fake sandbox environments as ready without external calls", async () => {
     const result = await probeEnvironment({} as any, {
       id: "env-sandbox",
-      companyId: "company-1",
+      envVars: {},
       name: "Fake Sandbox",
       description: null,
       driver: "sandbox",
@@ -281,7 +283,7 @@ describe("probeEnvironment", () => {
 
     const result = await probeEnvironment({} as any, {
       id: "env-sandbox-plugin",
-      companyId: "company-1",
+      envVars: {},
       name: "Fake Plugin Sandbox",
       description: null,
       driver: "sandbox",
@@ -347,7 +349,7 @@ describe("probeEnvironment", () => {
 
     const environment = {
       id: "env-sandbox-plugin",
-      companyId: "company-1",
+      envVars: {},
       name: "Daytona",
       description: null,
       driver: "sandbox" as const,
@@ -409,7 +411,7 @@ describe("probeEnvironment", () => {
 
     const result = await probeEnvironment({} as any, {
       id: "env-plugin",
-      companyId: "company-1",
+      envVars: {},
       name: "Plugin Sandbox",
       description: null,
       driver: "plugin",
@@ -449,7 +451,7 @@ describe("probeEnvironment", () => {
 
     const result = await probeEnvironment({} as any, {
       id: "env-ssh",
-      companyId: "company-1",
+      envVars: {},
       name: "SSH Fixture",
       description: null,
       driver: "ssh",
