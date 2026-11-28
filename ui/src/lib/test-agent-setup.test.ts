@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { testAgentSetup } from "./test-agent-setup";
+import { describeSetupFailure, testAgentSetup } from "./test-agent-setup";
 import { adaptersApi } from "../api/adapters";
 import { api } from "../api/client";
 import { queryKeys } from "./queryKeys";
@@ -116,6 +116,67 @@ it("preserves runtime warnings after a successful provider request", async () =>
     .mockResolvedValueOnce({ ...ready, status: "warn" })
     .mockResolvedValueOnce(ready);
   expect((await testAgentSetup(input)).status).toBe("warn");
+});
+it("appends the adapter's detail to a failed probe", () => {
+  expect(
+    describeSetupFailure([
+      { code: "runtime", level: "info", message: "Ready" },
+      {
+        code: "codex_hello_probe_failed",
+        level: "error",
+        message: "Codex hello probe failed.",
+        detail: "Upgrade Codex to use this model.",
+      },
+    ]),
+  ).toBe("Codex hello probe failed. Upgrade Codex to use this model.");
+});
+it("uses plain-text detail and falls back to the message without one", () => {
+  expect(
+    describeSetupFailure([
+      {
+        code: "claude_hello_probe_auth_required",
+        level: "warn",
+        message: "Claude is not signed in.",
+        detail: "Run claude auth login.",
+      },
+    ]),
+  ).toBe("Claude is not signed in. Run claude auth login.");
+  expect(
+    describeSetupFailure([
+      { code: "codex_hello_probe_failed", level: "error", message: "Failed." },
+    ]),
+  ).toBe("Failed.");
+  expect(describeSetupFailure([])).toBeUndefined();
+});
+it("describes environment-agent warnings like hello-probe warnings", () => {
+  expect(
+    describeSetupFailure([
+      { code: "runtime", level: "info", message: "Ready" },
+      {
+        code: "environment_agent_unreachable",
+        level: "warn",
+        message: "The agent environment is not reachable yet.",
+        detail: "Retry once the environment finishes provisioning.",
+      },
+    ]),
+  ).toBe("The agent environment is not reachable yet. Retry once the environment finishes provisioning.");
+});
+it("truncates long details", () => {
+  const message = describeSetupFailure([
+    { code: "x_hello_probe_failed", level: "error", message: "Failed.", detail: "a".repeat(500) },
+  ]);
+  expect(message).toBe(`Failed. ${"a".repeat(300)}…`);
+});
+it("redacts credential material in probe details", () => {
+  const message = describeSetupFailure([
+    {
+      code: "codex_hello_probe_failed",
+      level: "error",
+      message: "Failed.",
+      detail: "request failed: Authorization: Bearer sk-fixture-secret-value-1234567890",
+    },
+  ]);
+  expect(message).not.toContain("sk-fixture-secret-value-1234567890");
 });
 
 it("keeps the resolved native identity and explicitly bounds the supplementary Codex CLI probe to legacy", async () => {
