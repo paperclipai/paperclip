@@ -82,6 +82,44 @@ describe("OpenCode local skill injection", () => {
     expect(prompt).not.toContain("Create child issues");
   });
 
+  it("marks the completed final reply in resultJson only when the run succeeds", async () => {
+    const commandPath = path.join(configHome, "fake-opencode-final");
+    await fs.writeFile(commandPath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const event = (type: string, part: Record<string, unknown>) => JSON.stringify({ type, sessionID: "final-session", part });
+    const stdout = [
+      event("text", { messageID: "msg_1", text: "I'll check the task list." }),
+      event("step_finish", { messageID: "msg_1", reason: "tool-calls" }),
+      event("text", { messageID: "msg_2", text: "All tasks are up to date." }),
+      event("step_finish", { messageID: "msg_2", reason: "stop" }),
+    ].join("\n");
+    const run = () => execute({
+      runId: "final-run",
+      agent: { id: "agent-1", companyId: "company-1", name: "OpenCode", adapterType: "opencode_local", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { command: commandPath, cwd: configHome, model: "openai/gpt-5", env: { OPENCODE_ALLOW_ALL_MODELS: "1" } },
+      context: {},
+      onLog: async () => {},
+    });
+
+    runProcessMock.mockReset();
+    runProcessMock.mockResolvedValue(probeResult({ stdout }));
+    const succeeded = await run();
+    expect(succeeded.summary).toBe("I'll check the task list.\n\nAll tasks are up to date.");
+    expect(succeeded.resultJson?.finalResponse).toEqual({ disposition: "final", text: "All tasks are up to date." });
+
+    runProcessMock.mockReset();
+    runProcessMock.mockResolvedValue(probeResult({ stdout, exitCode: 1 }));
+    const failed = await run();
+    expect(failed.exitCode).toBe(1);
+    expect(failed.resultJson?.finalResponse).toBeUndefined();
+
+    runProcessMock.mockReset();
+    runProcessMock.mockResolvedValue(probeResult({ stdout, exitCode: null, signal: "SIGTERM" }));
+    const signalled = await run();
+    expect(signalled.signal).toBe("SIGTERM");
+    expect(signalled.resultJson?.finalResponse).toBeUndefined();
+  });
+
   it("delivers assignment context on an ordinary task turn and rebuilds it after resume fallback", async () => {
     const commandPath = path.join(configHome, "fake-opencode-context");
     await fs.writeFile(commandPath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });

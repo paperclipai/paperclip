@@ -795,6 +795,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             adapterExecutionTimeout,
             stdout: attempt.proc.stdout,
             stderr: attempt.proc.stderr,
+            ...(synthesizedExitCode === 0 && !attempt.proc.signal && attempt.parsed.finalResponseText
+              ? { finalResponse: { disposition: "final", text: attempt.parsed.finalResponseText } }
+              : {}),
           },
           summary: attempt.parsed.summary,
           clearSession: Boolean(clearSessionOnMissingSession && !attempt.parsed.sessionId),

@@ -27,6 +27,9 @@ export function parseOpenCodeJsonl(stdout: string) {
 export function createOpenCodeJsonlParser() {
   let sessionId: string | null = null;
   const messages: string[] = [];
+  const textByMessageId = new Map<string, string[]>();
+  let lastStepReason: string | null = null;
+  let lastStepMessageId: string | null = null;
   const errors: string[] = [];
   const toolErrors: string[] = [];
   const usage = {
@@ -55,12 +58,18 @@ export function createOpenCodeJsonlParser() {
       if (type === "text") {
         const part = parseObject(event.part);
         const text = asString(part.text, "").trim();
-        if (text) messages.push(text);
+        if (text) {
+          messages.push(text);
+          const messageId = asString(part.messageID, "").trim();
+          if (messageId) textByMessageId.set(messageId, [...(textByMessageId.get(messageId) ?? []), text]);
+        }
         continue;
       }
 
       if (type === "step_finish") {
         const part = parseObject(event.part);
+        lastStepReason = asString(part.reason, "").trim();
+        lastStepMessageId = asString(part.messageID, "").trim();
         const tokens = parseObject(part.tokens);
         const cache = parseObject(tokens.cache);
         const counts = [tokens.input, tokens.output, cache.read === undefined ? 0 : cache.read, cache.write === undefined ? 0 : cache.write, tokens.reasoning === undefined ? 0 : tokens.reasoning];
@@ -96,6 +105,9 @@ export function createOpenCodeJsonlParser() {
     return {
       sessionId,
       summary: messages.join("\n\n").trim(),
+      finalResponseText: lastStepReason === "stop" && lastStepMessageId
+        ? textByMessageId.get(lastStepMessageId)?.join("\n\n") ?? null
+        : null,
       usage: { ...usage },
       usageReported,
       usageComplete: usageReported && !missingUsage,
