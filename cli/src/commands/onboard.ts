@@ -30,6 +30,7 @@ import {
 } from "../config/schema.js";
 import { ensureAgentJwtSecret, ensureToolActionSigningSecret, resolveAgentJwtEnvFile } from "../config/env.js";
 import { ensureLocalSecretsKeyFile } from "../config/secrets-key.js";
+import { requestClaudeKeyCheck } from "../checks/llm-check.js";
 import { promptDatabase } from "../prompts/database.js";
 import { promptLlm } from "../prompts/llm.js";
 import { promptLogging } from "../prompts/logging.js";
@@ -603,19 +604,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
       s.start("Validating API key...");
       try {
         if (llm.provider === "claude") {
-          const res = await fetch("https://api.anthropic.com/v1/messages", {
-            method: "POST",
-            headers: {
-              "x-api-key": llm.apiKey,
-              "anthropic-version": "2023-06-01",
-              "content-type": "application/json",
-            },
-            body: JSON.stringify({
-              model: "claude-sonnet-4-5-20250929",
-              max_tokens: 1,
-              messages: [{ role: "user", content: "hi" }],
-            }),
-          });
+          const res = await requestClaudeKeyCheck(llm.apiKey);
           if (res.ok || res.status === 400) {
             s.stop("API key is valid");
           } else if (res.status === 401) {

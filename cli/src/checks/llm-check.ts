@@ -1,6 +1,26 @@
 import type { PaperclipConfig } from "../config/schema.js";
 import type { CheckResult } from "./index.js";
 
+const CLAUDE_KEY_CHECK_MODEL = "claude-sonnet-5-5";
+
+export function requestClaudeKeyCheck(apiKey: string): Promise<Response> {
+  return fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      model: CLAUDE_KEY_CHECK_MODEL,
+      max_tokens: 1,
+      thinking: { type: "between_tools" },
+      output_config: { effort: "low" },
+      messages: [{ role: "user", content: "hi" }],
+    }),
+  });
+}
+
 export async function llmCheck(config: PaperclipConfig): Promise<CheckResult> {
   if (!config.llm) {
     return {
@@ -20,19 +40,7 @@ export async function llmCheck(config: PaperclipConfig): Promise<CheckResult> {
 
   try {
     if (config.llm.provider === "claude") {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "x-api-key": config.llm.apiKey,
-          "anthropic-version": "2023-06-01",
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-5-20250929",
-          max_tokens: 1,
-          messages: [{ role: "user", content: "hi" }],
-        }),
-      });
+      const res = await requestClaudeKeyCheck(config.llm.apiKey);
       if (res.ok || res.status === 400) {
         return { name: "LLM provider", status: "pass", message: "Claude API key is valid" };
       }
