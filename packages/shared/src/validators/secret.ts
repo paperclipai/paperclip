@@ -12,6 +12,39 @@ const secretKeySchema = z.string().trim().min(1).max(120).regex(/^[a-zA-Z0-9_.-]
 const secretVersionSelectorSchema = z.union([z.literal("latest"), z.number().int().positive()]);
 const creatableSecretStatusSchema = z.enum(["active", "disabled", "archived"]);
 
+export const ENV_VAR_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+const CREDENTIAL_TOKEN_PATTERNS: readonly RegExp[] = [
+  /^gh[pousr]_[A-Za-z0-9_]{16,}$/,
+  /^github_pat_[A-Za-z0-9_]{16,}$/,
+  /^sk-(?:ant-|proj-|live-|test-)?[A-Za-z0-9_-]{12,}$/,
+  /^(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}$/,
+  /^xox[baprs]-[A-Za-z0-9-]{10,}$/,
+  /^(?:AKIA|ASIA)[0-9A-Z]{16}$/,
+  /^AIza[0-9A-Za-z\-_]{20,}$/,
+  /^glpat-[A-Za-z0-9_-]{16,}$/,
+  /^npm_[A-Za-z0-9]{20,}$/,
+  /^hf_[A-Za-z0-9]{20,}$/,
+  /^lin_api_[A-Za-z0-9]{20,}$/,
+  /^sbp_[A-Za-z0-9]{20,}$/,
+  /^SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}$/,
+  /^eyJ[A-Za-z0-9-_]{8,}\.[A-Za-z0-9-_]{8,}\.[A-Za-z0-9-_]{8,}$/,
+  /-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----/,
+  /^Bearer\s+\S+/i,
+];
+
+export function looksLikeCredentialToken(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  return CREDENTIAL_TOKEN_PATTERNS.some((pattern) => pattern.test(trimmed));
+}
+
+export const SECRET_SHAPED_ENV_NAME_ERROR =
+  "Environment variable name looks like a secret or API token. Put the variable name (for example GH_TOKEN) in Name and store the token in Value as a secret.";
+
+export const SECRET_SHAPED_ACCESS_ALIAS_ERROR =
+  "Secret access alias looks like a secret or API token. Put an alias name (for example GH_TOKEN) in Alias, not the token itself.";
+
 export const envBindingPlainSchema = z.object({
   type: z.literal("plain"),
   value: z.string(),

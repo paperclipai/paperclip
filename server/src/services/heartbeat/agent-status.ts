@@ -1,7 +1,11 @@
+import { notifyStrandedAgentStatus } from "../live-run-recovery-notifications.js";
+import { notifyAttentionRetentionWork } from "../retention-work-notifications.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { agents, heartbeatRuns, type Db } from "@paperclipai/db";
 import { and, asc, desc, eq, lte, sql } from "drizzle-orm";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../../telemetry.js";
+import { resolveTelemetryPerson, withTelemetryActor } from "../../telemetry-company-scope.js";
 import { logActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
 import { publishLiveEvent } from "../live-events.js";
 import { finishedIdleRun, finishedIdleWake, finishedFailedIdleLease } from "../idle-work-proof.js";
@@ -72,6 +76,14 @@ export function settledAgentWorkCondition(liveRunIds: ReadonlySet<string>, now: 
           OR c.receipt ? 'baseline' OR c.receipt->>'cleanupPending' = 'true'))`;
 }
 
+/** The heartbeat a write records when it settles an agent after its runs end
+ * without finalizeAgentStatus: the settlement time, so the changed-rows agent
+ * rule does not re-check the agent's backlog, but never a first heartbeat for
+ * an agent that has none (that stays the first real one). */
+export function settledHeartbeat(now: Date) {
+  return sql`case when ${agents.lastHeartbeatAt} is null then null else ${now.toISOString()}::timestamptz end`;
+}
+
 export function createHeartbeatAgentStatus(db: Db) {
   async function finalizeAgentStatus(
     agentId: string,
@@ -90,6 +102,9 @@ export function createHeartbeatAgentStatus(db: Db) {
       )).limit(1);
       const nextStatus = running ? "running" : settledStatus(outcome, options?.keepIdleOnFailure);
       const now = new Date();
+      await notifyStrandedAgentStatus(tx, { companyId: existing.companyId, agentId });
+      await notifyAttentionRetentionWork(tx, { companyId: existing.companyId, sourceKind: "agent_error_alert" });
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
       const [updated] = await tx.update(agents).set({
         status: nextStatus,
         errorReason: nextStatus === "error" ? errorReason(failureReason) : null,
@@ -102,18 +117,21 @@ export function createHeartbeatAgentStatus(db: Db) {
     if (!result?.updated) return;
     if (result.isFirstHeartbeat) {
       const client = getTelemetryClient();
-      if (client) trackAgentFirstHeartbeat(client, { agentRole: result.updated.role, agentId: result.updated.id });
+      const person = resolveTelemetryPerson({ runOwnerUserId: result.updated.createdByUserId });
+      if (client) withTelemetryActor({ companyId: result.updated.companyId, person }, () => trackAgentFirstHeartbeat(client, { agentRole: result.updated.role, agentId: result.updated.id }));
     }
     publishStatus(result.updated, outcome);
   }
 
-  async function reconcileStrandedAgentStatuses(liveRunIds: () => ReadonlySet<string>) {
+  async function reconcileStrandedAgentStatuses(liveRunIds: () => ReadonlySet<string>, scope: { companyId?: string; agentId?: string; onDeferredDeadline?: (at: number) => void } = {}) {
     const now = new Date();
     const cutoff = new Date(now.getTime() - RECONCILIATION_GRACE_MS);
     const candidates = await db.transaction(async tx => {
       await tx.execute(sql`SET LOCAL statement_timeout = '2s'`);
       return tx.select({ id: agents.id, companyId: agents.companyId }).from(agents)
       .where(and(eq(agents.status, "running"), eq(agents.lifecycleState, "ready"),
+        scope.companyId ? eq(agents.companyId, scope.companyId) : undefined,
+        scope.agentId ? eq(agents.id, scope.agentId) : undefined,
         lte(agents.updatedAt, cutoff), settledAgentWorkCondition(liveRunIds(), now)))
       .orderBy(asc(agents.updatedAt), asc(agents.id)).limit(RECONCILIATION_BATCH_SIZE);
     });
@@ -126,7 +144,13 @@ export function createHeartbeatAgentStatus(db: Db) {
         const [locked] = await tx.select({ id: agents.id }).from(agents).where(and(
           eq(agents.id, candidate.id), eq(agents.companyId, candidate.companyId),
         )).for("update", { skipLocked: true });
-        if (!locked) return null;
+        if (!locked) {
+          const [pending] = await tx.select({ id: agents.id }).from(agents).where(and(
+            eq(agents.id, candidate.id), eq(agents.companyId, candidate.companyId),
+          ));
+          if (pending) scope.onDeferredDeadline?.(Date.now() + 30_000);
+          return null;
+        }
         const [current] = await tx.select().from(agents).where(and(
           eq(agents.id, candidate.id), eq(agents.companyId, candidate.companyId),
           eq(agents.status, "running"), eq(agents.lifecycleState, "ready"),
@@ -138,8 +162,11 @@ export function createHeartbeatAgentStatus(db: Db) {
             eq(heartbeatRuns.agentId, candidate.id)))
           .orderBy(desc(heartbeatRuns.finishedAt), desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
         const nextStatus = settledStatus(lastRun?.status);
+        await notifyAttentionRetentionWork(tx, { companyId: candidate.companyId, sourceKind: "agent_error_alert" });
+        // Settling the agent's runs records a heartbeat, as finalizeAgentStatus
+        // does; see the agent rule in recovery/changed-tasks.ts.
         const [agent] = await tx.update(agents).set({ status: nextStatus,
-          errorReason: nextStatus === "error" ? errorReason(lastRun?.error) : null, updatedAt: now,
+          errorReason: nextStatus === "error" ? errorReason(lastRun?.error) : null, lastHeartbeatAt: settledHeartbeat(now), updatedAt: now,
         }).where(and(eq(agents.id, candidate.id), eq(agents.companyId, candidate.companyId),
           eq(agents.status, "running"), eq(agents.lifecycleState, "ready"))).returning();
         await logActivity(tx as unknown as Db, {
@@ -153,6 +180,21 @@ export function createHeartbeatAgentStatus(db: Db) {
       reconciled.push(updated.id);
       for (const publication of publications) publishActivity(publication);
       publishStatus(updated, "reconciled");
+    }
+    if (scope.companyId && scope.agentId && reconciled.length === 0 && scope.onDeferredDeadline) {
+      const rows = await db.execute(sql`select min(deadline) as deadline from (
+        select r.controller_lease_expires_at as deadline from heartbeat_runs r
+          where r.company_id = ${scope.companyId} and r.agent_id = ${scope.agentId}
+        union all
+        select f.lease_expires_at as deadline from native_run_finalizations f
+          inner join heartbeat_runs r on r.id = f.run_id and r.company_id = f.company_id
+          where r.company_id = ${scope.companyId} and r.agent_id = ${scope.agentId}
+      ) authority where deadline > ${now.toISOString()}::timestamptz`);
+      const deadline = rows[0]?.deadline;
+      if (deadline) {
+        const at = deadline instanceof Date ? deadline.getTime() : Date.parse(String(deadline));
+        if (Number.isFinite(at) && at > Date.now()) scope.onDeferredDeadline(at);
+      }
     }
     return reconciled;
   }

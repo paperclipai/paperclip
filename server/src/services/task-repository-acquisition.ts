@@ -19,6 +19,10 @@ export const taskRepositoryRunColumns = {
 };
 type TaskRepositoryRunIdentity = Pick<typeof heartbeatRuns.$inferSelect, "nativeIssueId" | "issueId" | "contextSnapshot">;
 
+export function taskRepositoryResponsibleUserMatches(actorUserId: string | null | undefined, runUserId: string | null) {
+  return (actorUserId ?? null) === runUserId || (runUserId === "local-board" && actorUserId == null);
+}
+
 // A wake for another task can coalesce into a running run and replace its context
 // task after admission. The immutable task binding still identifies the admitted work.
 export function runRetainsIssueIdentity(run: TaskRepositoryRunIdentity, issueId: string) {
@@ -85,8 +89,7 @@ export async function assertSelectedWorkspaceTrust(db: Db | DbTransaction, input
   if (selected.kind !== "low_trust_review" || current.kind !== "low_trust_review"
     || !isDeepStrictEqual(selected.boundary, current.boundary)) throw incompatible();
   if (creation) {
-    const sponsor = run!.responsibleUserId === "local-board" ? null : run!.responsibleUserId;
-    if ((input.actor.onBehalfOfUserId ?? null) !== sponsor) throw incompatible();
+    if (!taskRepositoryResponsibleUserMatches(input.actor.onBehalfOfUserId, run!.responsibleUserId)) throw incompatible();
     let parentId = creation.parentIssueId;
     const ancestors: Array<typeof issues.$inferSelect> = [];
     for (let depth = 0; parentId && depth < LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH; depth++) {

@@ -1,7 +1,7 @@
 import type { Issue } from "@paperclipai/shared";
 
 export const taskListViews = [
-  { value: "inbox", label: "Inbox" },
+  { value: "inbox", label: "Mine" },
   { value: "unread", label: "Unread" },
   { value: "blocked", label: "Needs attention" },
   { value: "all", label: "All tasks" },
@@ -33,12 +33,12 @@ function browserStorage(): ViewStorage | null {
   }
 }
 
-export function loadTaskListView(key: string, storage: ViewStorage | null = browserStorage()): TaskListView {
+export function loadTaskListView(key: string, storage: ViewStorage | null = browserStorage(), defaultView: TaskListView = "all"): TaskListView {
   try {
     const value = storage?.getItem(key);
-    return taskListViews.find(option => option.value === value)?.value ?? "all";
+    return taskListViews.find(option => option.value === value)?.value ?? defaultView;
   } catch {
-    return "all";
+    return defaultView;
   }
 }
 

@@ -72,7 +72,6 @@ export function CompanySettingsSidebar() {
       }
     },
     enabled: !!selectedCompanyId,
-    retry: false,
     refetchInterval: 15_000,
   });
   const { data: plugins } = useQuery({
@@ -177,7 +176,7 @@ export function CompanySettingsSidebar() {
           {showPlugins && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/plugins`}
-              label="Plugins"
+              label="System plugins"
               icon={Puzzle}
             />
           )}

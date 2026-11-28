@@ -15,6 +15,7 @@ import { NOOP_PLUGIN_TRACER } from "@paperclipai/plugin-sdk";
 import { startEmbeddedPostgresTestDatabase } from "../src/__tests__/helpers/embedded-postgres.js";
 import { readSystemRecovery } from "../src/services/system-recovery-state.js";
 import { recoverRetainedWorkspace } from "../src/services/workspace-recovery.js";
+import { classifyEnvironmentCapabilities, environmentRuntimeService } from "../src/services/environment-runtime.js";
 import { attachPreservedWorkspaceSnapshots } from "../src/services/workspace-recovery-snapshot.js";
 import { performSyncOut } from "../../packages/plugins/sandbox-providers/daytona/src/file-sync.js";
 
@@ -68,7 +69,11 @@ it.skipIf(!live || !worker)("provider controller", async () => {
         },
         syncOut: operations => performSyncOut({ sandbox, operations, remoteDir: f.remoteCwd, timeoutSeconds: 120 }),
       } };
-    const environmentRuntime = {
+    const driver = {
+      driver: "sandbox",
+      acquireRunLease: async () => { throw new Error("Recovery must not acquire another sandbox"); },
+      releaseRunLease: async () => { throw new Error("Recovery must not destroy its retained source"); },
+      resolveCapabilities: async () => classifyEnvironmentCapabilities({ verifiedMethods: [] }),
       resumeRunLease: async () => {
         await sandbox.start(120); await sandbox.refreshData();
         if (sandbox.state !== "started") throw new Error("Provider did not confirm start");
@@ -80,6 +85,7 @@ it.skipIf(!live || !worker)("provider controller", async () => {
         return { providerLeaseId: sandbox.id, state: "stopped" };
       },
     };
+    const environmentRuntime = environmentRuntimeService(db, { drivers: [driver] });
     await recoverRetainedWorkspace({ db, ...f, environmentRuntime });
     const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId));
     const state = readSystemRecovery(action.evidence);
@@ -90,7 +96,9 @@ it.skipIf(!live || !worker)("provider controller", async () => {
 
 it.skipIf(!live || Boolean(worker))("preserves provider files across an interrupted export and controller restart without restarting the old agent", async () => {
   const image = process.env.PAPERCLIP_RECOVERY_IMAGE;
-  if (!image?.includes("@sha256:")) throw new Error("An immutable qualification image is required");
+  const snapshotId = process.env.PAPERCLIP_RECOVERY_SNAPSHOT_ID;
+  if (!image?.includes("@sha256:") && !/^[0-9a-f-]{36}$/i.test(snapshotId ?? ""))
+    throw new Error("An immutable qualification image or snapshot ID is required");
   const directory = await mkdtemp(path.join(os.tmpdir(), "paperclip-provider-recovery-"));
   const priorHome = process.env.PAPERCLIP_HOME;
   process.env.PAPERCLIP_HOME = path.join(directory, "home");
@@ -100,11 +108,16 @@ it.skipIf(!live || Boolean(worker))("preserves provider files across an interrup
   const db = createDb(database.connectionString);
   const daytona = await client();
   let sandbox;
-  const evidence = { image, interrupted: false, restored: false, oldAgentStarts: null, externalOperations: null,
+  const evidence = { image, snapshotId, interrupted: false, restored: false, oldAgentStarts: null, externalOperations: null,
     prematureCleanup: false, controllerProcesses: [], snapshotCount: 0 };
   try {
-    sandbox = await daytona.create({ image, autoStopInterval: 10, autoArchiveInterval: 60,
-      resources: { cpu: 2, memory: 4, disk: 10 }, labels: { purpose: "paperclip-recovery-qualification" } }, { timeout: 300 });
+    if (snapshotId) {
+      const snapshot = await daytona.snapshot.get(snapshotId);
+      expect(snapshot.id).toBe(snapshotId);
+      expect(snapshot.state).toBe("active");
+    }
+    sandbox = await daytona.create({ ...(snapshotId ? { snapshot: snapshotId } : { image, resources: { cpu: 2, memory: 4, disk: 10 } }),
+      autoStopInterval: 10, autoArchiveInterval: 60, labels: { purpose: "paperclip-recovery-qualification" } }, { timeout: 300 });
     const remoteCwd = "/tmp/paperclip-recovery-fixture";
     await sandbox.process.executeCommand(`mkdir -p ${remoteCwd}`, undefined, undefined, 30);
     await sandbox.process.createSession("old-agent");
@@ -124,7 +137,8 @@ it.skipIf(!live || Boolean(worker))("preserves provider files across an interrup
     const [lease] = await db.insert(environmentLeases).values({ companyId, issueId, heartbeatRunId: runId,
       environmentId: environment.id, provider: "daytona", providerLeaseId: sandbox.id,
       leasePolicy: "retain_on_failure", status: "released", releasedAt: new Date(),
-      metadata: { remoteCwd, driver: "sandbox", pluginId: randomUUID(), sandboxProviderPlugin: true } }).returning();
+      metadata: { remoteCwd, driver: "sandbox", pluginId: randomUUID(), sandboxProviderPlugin: true,
+        workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", runId } } }).returning();
     const recovery = { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [lease.id] };
     await db.update(heartbeatRuns).set({ resultJson: { workspaceRestoreRecovery: recovery, workspaceRestoreFailure: "restore_failed" } })
       .where(eq(heartbeatRuns.id, runId));

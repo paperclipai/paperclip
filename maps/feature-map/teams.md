@@ -41,7 +41,7 @@ Manual: List an entry, preview its proposed agents and resources, install it int
 
 ### `catalog-components`
 
-Automated: [catalog component](../../ui/src/pages/TeamCatalog.test.tsx) and [install hook](../../ui/src/pages/useInstallTeamCatalogEntry.test.tsx) cover preview and install UI logic with mocks.
+Automated: none for mocked UI (`TeamCatalog` and `useInstallTeamCatalogEntry` tests were removed; verify preview and install UI manually).
 
 Manual: When changing or mounting these components, exercise preview, manager/source options, cancellation, failed install, and success. Follow created agents in the actual company. Record whether this was a component harness or a real product entry point.
 
