@@ -56,6 +56,7 @@ export interface ExternalObjectDetector {
     companyId: string;
     urls: ExternalObjectCanonicalUrl[];
     sourceContext: ExternalObjectSourceContext;
+    db?: any;
   }): Promise<ExternalObjectDetection[]> | ExternalObjectDetection[];
 }
 
@@ -195,6 +196,7 @@ export function createExternalObjectDetectorRegistry(detectors: ExternalObjectDe
     companyId: string;
     urls: ExternalObjectCanonicalUrl[];
     sourceContext: ExternalObjectSourceContext;
+    db?: any;
   }) {
     const claimed = new Set<string>();
     const detections: ExternalObjectDetection[] = [];
@@ -265,7 +267,9 @@ function objectSnapshot(object: ExternalObjectRecord): PluginExternalObjectRecor
   };
 }
 
-async function readyObjectReferencePlugins(db: Db, companyId?: string) {
+type DbOrTx = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+async function readyObjectReferencePlugins(db: DbOrTx, companyId?: string) {
   return db
     .select({
       id: plugins.id,
@@ -292,7 +296,8 @@ function createPluginProviderDetector(
   return {
     key: "plugin-object-reference-providers",
     async detect(input) {
-      const providers = await readyObjectReferencePlugins(db, input.companyId);
+      const runner = input.db ?? db;
+      const providers = await readyObjectReferencePlugins(runner, input.companyId);
       const detections: ExternalObjectDetection[] = [];
 
       for (const provider of providers) {
@@ -391,7 +396,7 @@ export function externalObjectService(
     resolvers?: ExternalObjectResolver[];
     pluginWorkerManager?: PluginWorkerManager;
     github?: GitHubExternalObjectProviderOptions | false;
-    enabled?: boolean | (() => boolean | Promise<boolean>);
+    enabled?: boolean | ((dbOrTx?: any) => boolean | Promise<boolean>);
   } = {},
 ) {
   const githubProvider = opts.github === false ? null : createGitHubExternalObjectProvider(db, opts.github);
@@ -443,8 +448,8 @@ export function externalObjectService(
     )!;
   }
 
-  async function isEnabled() {
-    if (typeof opts.enabled === "function") return await opts.enabled();
+  async function isEnabled(dbOrTx?: any) {
+    if (typeof opts.enabled === "function") return await opts.enabled(dbOrTx);
     return opts.enabled ?? true;
   }
 
@@ -526,6 +531,7 @@ export function externalObjectService(
       companyId: input.companyId,
       urls,
       sourceContext: input,
+      db: dbOrTx,
     });
     if (detections.length === 0) return;
 
@@ -563,7 +569,7 @@ export function externalObjectService(
   }
 
   async function syncIssue(issueId: string, dbOrTx: any = db) {
-    if (!(await isEnabled())) return;
+    if (!(await isEnabled(dbOrTx))) return;
     const runSync = async (tx: any) => {
       const issue = await issueById(issueId, tx);
       if (!issue) throw notFound("Issue not found");
@@ -598,8 +604,8 @@ export function externalObjectService(
   }
 
   async function syncComment(commentId: string, dbOrTx: any = db) {
+    if (!(await isEnabled(dbOrTx))) return;
     const runSync = async (tx: any) => {
-      if (!(await isEnabled())) return;
       const comment = await tx
         .select({
           id: issueComments.id,
@@ -628,8 +634,8 @@ export function externalObjectService(
   }
 
   async function syncDocument(documentId: string, dbOrTx: any = db) {
+    if (!(await isEnabled(dbOrTx))) return;
     const runSync = async (tx: any) => {
-      if (!(await isEnabled())) return;
       const document = await tx
         .select({
           documentId: documents.id,
@@ -667,16 +673,16 @@ export function externalObjectService(
     }
   }
 
-  async function syncIssueSafely(issueId: string) {
-    await safeSync("issue", () => syncIssue(issueId));
+  async function syncIssueSafely(issueId: string, dbOrTx: any = db) {
+    await safeSync("issue", () => syncIssue(issueId, dbOrTx));
   }
 
   async function syncCommentSafely(commentId: string, dbOrTx: any = db) {
     await safeSync("comment", () => syncComment(commentId, dbOrTx));
   }
 
-  async function syncDocumentSafely(documentId: string) {
-    await safeSync("document", () => syncDocument(documentId));
+  async function syncDocumentSafely(documentId: string, dbOrTx: any = db) {
+    await safeSync("document", () => syncDocument(documentId, dbOrTx));
   }
 
   function toObjectPayload(object: ExternalObjectRecord, now = new Date()) {

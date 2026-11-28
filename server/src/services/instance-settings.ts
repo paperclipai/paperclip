@@ -620,8 +620,10 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
       return toExperimentalView(row?.experimental);
     },
 
-    getExperimental: async (): Promise<InstanceExperimentalSettingsWithManaged> => {
-      const row = await getCachedRow();
+    getExperimental: async (
+      readOptions?: { db?: InstanceSettingsWriteDb },
+    ): Promise<InstanceExperimentalSettingsWithManaged> => {
+      const row = await getCachedRow(readOptions?.db);
       return toExperimentalView(row.experimental);
     },
 
