@@ -1963,6 +1963,119 @@ export function normalizePaperclipWakePayload(
   };
 }
 
+// Byte budget for the serialized wake payload. Adapters embed it in the run
+// prompt, and some (e.g. hermes `chat -q <prompt>`) pass that prompt as a single
+// argv string. Linux `execve` caps each argv/env string at `MAX_ARG_STRLEN`
+// (128 KiB), so an oversized payload makes spawn fail with `spawn E2BIG` before
+// the agent starts. Bounding the payload keeps the prompt within that limit; the
+// full thread stays available from the API via `fallbackFetchNeeded`.
+export const MAX_WAKE_PAYLOAD_ENV_BYTES = 96 * 1024;
+const MIN_RETAINED_WAKE_COMMENTS = 2;
+const WAKE_COMMENT_BODY_BYTE_CAP = 4 * 1024;
+
+function utf8ByteLength(value: string): number {
+  return Buffer.byteLength(value, "utf8");
+}
+
+/** Keep the head of a string within a UTF-8 byte budget without splitting a codepoint. */
+function truncateBodyToByteCap(body: string, cap: number): string {
+  if (cap <= 0) return "";
+  if (utf8ByteLength(body) <= cap) return body;
+  const buffer = Buffer.from(body, "utf8");
+  let end = Math.min(buffer.length, cap);
+  while (end > 0 && (buffer[end]! & 0xc0) === 0x80) end -= 1;
+  return buffer.subarray(0, end).toString("utf8");
+}
+
+export function capPaperclipWakePayloadForEnv(
+  payload: PaperclipWakePayload,
+  budgetBytes: number = MAX_WAKE_PAYLOAD_ENV_BYTES,
+): { payload: PaperclipWakePayload; trimmed: boolean } {
+  if (utf8ByteLength(JSON.stringify(payload)) <= budgetBytes) {
+    return { payload, trimmed: false };
+  }
+
+  const working: PaperclipWakePayload = {
+    ...payload,
+    comments: [...payload.comments],
+    annotationDeltas: [...payload.annotationDeltas],
+  };
+  let droppedComments = 0;
+  const overBudget = () => utf8ByteLength(JSON.stringify(working)) > budgetBytes;
+
+  while (overBudget() && working.comments.length > MIN_RETAINED_WAKE_COMMENTS) {
+    working.comments.shift();
+    droppedComments += 1;
+  }
+
+  if (overBudget() && working.comments.length > 0) {
+    working.comments = working.comments.map((comment) => {
+      const body = truncateBodyToByteCap(comment.body, WAKE_COMMENT_BODY_BYTE_CAP);
+      return {
+        ...comment,
+        body,
+        bodyTruncated: comment.bodyTruncated || body.length < comment.body.length,
+      };
+    });
+  }
+
+  if (overBudget()) {
+    droppedComments += working.comments.length;
+    working.comments = [];
+    working.annotationDeltas = [];
+    working.planReviewContext = null;
+  }
+
+  if (overBudget() && working.commentIds.length > 0) {
+    for (const keep of [200, 50, 10, 0]) {
+      if (keep >= working.commentIds.length) continue;
+      working.commentIds =
+        keep === 0 ? [] : payload.commentIds.slice(payload.commentIds.length - keep);
+      if (!overBudget()) break;
+    }
+  }
+
+  if (overBudget()) {
+    working.commentIds = [];
+    working.continuationSummary = null;
+    working.livenessContinuation = null;
+    working.dispositionRepair = null;
+    working.taskWatchdog = null;
+    working.executionStage = null;
+    working.executionContinuation = null;
+    working.documentReviewContext = null;
+    working.planReviewContext = null;
+    working.recovery = null;
+    working.activeTreeHold = null;
+    working.githubReviewConfigurations = [];
+    working.childIssueSummaries = [];
+    working.unresolvedBlockerSummaries = [];
+  }
+
+  if (overBudget() && working.issue?.description) {
+    working.issue = {
+      ...working.issue,
+      description: truncateBodyToByteCap(working.issue.description, WAKE_COMMENT_BODY_BYTE_CAP),
+      descriptionTruncated: true,
+    };
+  }
+  if (overBudget() && working.issue?.description) {
+    working.issue = { ...working.issue, description: null, descriptionTruncated: true };
+  }
+
+  working.truncated = true;
+  working.fallbackFetchNeeded = true;
+  if (droppedComments > 0) {
+    working.includedCount = Math.max(0, working.includedCount - droppedComments);
+  }
+  working.missingCount = Math.max(
+    working.missingCount,
+    Math.max(0, working.requestedCount - working.includedCount),
+  );
+
+  return { payload: working, trimmed: true };
+}
+
 export function stringifyPaperclipWakePayload(
   value: unknown,
   options: {
@@ -1970,21 +2083,29 @@ export function stringifyPaperclipWakePayload(
     // section already carries the issue description. Other serialized copies
     // stay complete.
     omitIssueDescription?: boolean;
+    // Override the env byte budget. Defaults to MAX_WAKE_PAYLOAD_ENV_BYTES; tests
+    // pass a tiny budget to exercise the trimming stages.
+    budgetBytes?: number;
   } = {},
 ): string | null {
   const normalized = normalizePaperclipWakePayload(value);
   if (!normalized) return null;
-  if (options.omitIssueDescription === true && normalized.issue) {
-    return JSON.stringify({
-      ...normalized,
-      issue: {
-        ...normalized.issue,
-        description: null,
-        descriptionTruncated: false,
-      },
-    });
-  }
-  return JSON.stringify(normalized);
+  const base: PaperclipWakePayload =
+    options.omitIssueDescription === true && normalized.issue
+      ? {
+          ...normalized,
+          issue: {
+            ...normalized.issue,
+            description: null,
+            descriptionTruncated: false,
+          },
+        }
+      : normalized;
+  const { payload } = capPaperclipWakePayloadForEnv(
+    base,
+    options.budgetBytes ?? MAX_WAKE_PAYLOAD_ENV_BYTES,
+  );
+  return JSON.stringify(payload);
 }
 
 /** Source ownership only. Canonical task, plan, response and event data stay in their existing fields. */
