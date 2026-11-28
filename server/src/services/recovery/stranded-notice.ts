@@ -133,11 +133,44 @@ export function buildImmediateExecutionPathRecoveryNoticeSeed(input: {
   return buildNoRunningExecutionNoticeSeed(input);
 }
 
-export function buildWorkspaceValidationRecoveryNoticeSeed(): StrandedRecoveryNoticeSeed {
+const GENERIC_WORKSPACE_VALIDATION_NEXT_ACTION =
+  "The task's workspace could not be used, so the agent did not start. Press Retry to start it again.";
+
+/**
+ * The next action for a `workspace_validation_failed` run, chosen from the
+ * run's `resultJson.workspaceValidation` payload. A reason that Retry alone
+ * cannot fix says what to change first.
+ */
+export function workspaceValidationNextAction(payload: Record<string, unknown> | null | undefined): string {
+  const reason = readNonEmptyStringField(payload, "reason");
+  if (reason === "git_worktree_branch_incoherence") {
+    return "The task's workspace no longer matches its branch, so the agent did not start. Press Retry to start it again.";
+  }
+  if (reason === "git_worktree_base_materialization_failed") {
+    return "Paperclip could not copy the project's repository into the task's workspace. Restore access to the repository in the project settings, then press Retry.";
+  }
+  if (reason === "persisted_workspace_source_conflict") {
+    if (readNonEmptyStringField(payload, "reasonCode") === "source_repository_mismatch") {
+      return "The agent did not start: this task's workspace recorded a repository URL that no longer matches the "
+        + "project's repository URL or the git origin of the project's folder, so Paperclip could not confirm it is "
+        + "the same repository. Set the project's repository URL back to the URL this workspace recorded, or make the "
+        + "folder's git origin (`git remote get-url origin`) equal to it, then press Retry. To use a different "
+        + "repository instead, save any work in this workspace first, then choose another workspace for the task. "
+        + "Retrying without one of these changes fails the same way.";
+    }
+    return "The agent did not start: this task's workspace's original repository could not be found or verified. "
+      + "Check the project's workspace folder and repository URL in the project settings, then press Retry.";
+  }
+  return GENERIC_WORKSPACE_VALIDATION_NEXT_ACTION;
+}
+
+export function buildWorkspaceValidationRecoveryNoticeSeed(
+  payload?: Record<string, unknown> | null,
+): StrandedRecoveryNoticeSeed {
+  const nextAction = workspaceValidationNextAction(payload);
   return {
-    body:
-      "The task's workspace could not be used, so the agent did not start. " +
-      "Press Retry to start it again.",
+    body: nextAction,
+    nextAction,
     title: "Workspace validation failed",
     tone: "danger",
   };
