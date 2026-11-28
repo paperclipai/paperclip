@@ -190,6 +190,59 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     await prepared.cleanup();
   });
 
+  it("loads global instructions and skills from the source config so the prompt is the same in every run", async () => {
+    const configHome = await makeConfigHome({ instructions: ["/team/RULES.md"], skills: { paths: ["/team/skills"], urls: ["https://skills.example/"] } });
+    const sourceDir = path.join(configHome, "opencode");
+    await fs.writeFile(path.join(sourceDir, "AGENTS.md"), "Global rules\n", "utf8");
+    await fs.mkdir(path.join(sourceDir, "skills", "notes"), { recursive: true });
+    await fs.writeFile(path.join(sourceDir, "skills", "notes", "SKILL.md"), "---\nname: notes\n---\n", "utf8");
+
+    const runs = await Promise.all([1, 2].map(() => prepareOpenCodeRuntimeConfig({ env: { XDG_CONFIG_HOME: configHome }, config: {}, useSourceGlobalPaths: true })));
+    const configs = await Promise.all(runs.map(async (prepared) => {
+      cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+      const runtimeDir = path.join(prepared.env.XDG_CONFIG_HOME, "opencode");
+      await expect(fs.stat(path.join(runtimeDir, "AGENTS.md"))).rejects.toThrow();
+      await expect(fs.stat(path.join(runtimeDir, "skills"))).rejects.toThrow();
+      return JSON.parse(await fs.readFile(path.join(runtimeDir, "opencode.json"), "utf8"));
+    }));
+
+    expect(runs[0]!.env.XDG_CONFIG_HOME).not.toBe(runs[1]!.env.XDG_CONFIG_HOME);
+    expect(configs[0].instructions).toEqual([path.join(sourceDir, "AGENTS.md"), "/team/RULES.md"]);
+    expect(configs[0].skills).toEqual({ paths: ["/team/skills", path.join(sourceDir, "skills")], urls: ["https://skills.example/"] });
+    expect({ instructions: configs[1].instructions, skills: configs[1].skills })
+      .toEqual({ instructions: configs[0].instructions, skills: configs[0].skills });
+    expect(await fs.readFile(path.join(sourceDir, "AGENTS.md"), "utf8")).toBe("Global rules\n");
+    await Promise.all(runs.map((prepared) => prepared.cleanup()));
+  });
+
+  it("keeps copied global instructions and skills when source paths are not used, as for remote targets", async () => {
+    const configHome = await makeConfigHome({ instructions: ["/team/RULES.md"] });
+    const sourceDir = path.join(configHome, "opencode");
+    await fs.writeFile(path.join(sourceDir, "AGENTS.md"), "Global rules\n", "utf8");
+    await fs.mkdir(path.join(sourceDir, "skills", "notes"), { recursive: true });
+    await fs.writeFile(path.join(sourceDir, "skills", "notes", "SKILL.md"), "---\nname: notes\n---\n", "utf8");
+
+    const prepared = await prepareOpenCodeRuntimeConfig({ env: { XDG_CONFIG_HOME: configHome }, config: {} });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    const runtimeDir = path.join(prepared.env.XDG_CONFIG_HOME, "opencode");
+    expect(await fs.readFile(path.join(runtimeDir, "AGENTS.md"), "utf8")).toBe("Global rules\n");
+    await expect(fs.stat(path.join(runtimeDir, "skills", "notes", "SKILL.md"))).resolves.toBeTruthy();
+    const config = JSON.parse(await fs.readFile(path.join(runtimeDir, "opencode.json"), "utf8"));
+    expect(config.instructions).toEqual(["/team/RULES.md"]);
+    expect(config).not.toHaveProperty("skills");
+    await prepared.cleanup();
+  });
+
+  it("leaves instructions and skills unset when the source config has neither", async () => {
+    const configHome = await makeConfigHome({});
+    const prepared = await prepareOpenCodeRuntimeConfig({ env: { XDG_CONFIG_HOME: configHome }, config: {}, useSourceGlobalPaths: true });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    const config = JSON.parse(await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"));
+    expect(config).not.toHaveProperty("instructions");
+    expect(config).not.toHaveProperty("skills");
+    await prepared.cleanup();
+  });
+
   it("allows all tools and connected tools by default", async () => {
     const configHome = await makeConfigHome({
       permission: {

@@ -107,6 +107,12 @@ async function readJsonObject(filepath: string): Promise<Record<string, unknown>
 export async function prepareOpenCodeRuntimeConfig(input: {
   env: Record<string, string>;
   config: Record<string, unknown>;
+  /**
+   * Point OpenCode at the global AGENTS.md and skills in the source config dir
+   * instead of the per-run copy. Only valid when the run can read host paths;
+   * remote targets get the copied dir shipped instead.
+   */
+  useSourceGlobalPaths?: boolean;
   sandboxToolOomPreference?: boolean;
 }): Promise<PreparedOpenCodeRuntimeConfig> {
   const skipPermissions = asBoolean(input.config.dangerouslySkipPermissions, true);
@@ -130,6 +136,9 @@ export async function prepareOpenCodeRuntimeConfig(input: {
     }
   }
 
+  const sourcePaths = input.useSourceGlobalPaths
+    ? await detachSourcePathEntries(sourceConfigDir, runtimeConfigDir)
+    : { instructions: [], skills: [] };
   const existingConfig = await readJsonObject(runtimeConfigPath);
   const notes = [
     skipPermissions ? "Injected runtime OpenCode config with permission=allow for all tools and connections." : "Prepared isolated OpenCode provider configuration.",
@@ -188,6 +197,16 @@ export async function prepareOpenCodeRuntimeConfig(input: {
     ...existingConfig,
     ...(skipPermissions ? { permission: "allow" } : {}),
   };
+  if (sourcePaths.instructions.length > 0) {
+    nextConfig.instructions = uniqueStrings([...sourcePaths.instructions, ...stringList(existingConfig.instructions)]);
+  }
+  if (sourcePaths.skills.length > 0) {
+    const skills = isPlainObject(existingConfig.skills) ? existingConfig.skills : {};
+    nextConfig.skills = { ...skills, paths: uniqueStrings([...stringList(skills.paths), ...sourcePaths.skills]) };
+  }
+  if (sourcePaths.instructions.length > 0 || sourcePaths.skills.length > 0) {
+    notes.push("Loaded OpenCode global instructions and skills from their source paths, so the prompt does not change between runs.");
+  }
   const inlineContent = input.env.OPENCODE_CONFIG_CONTENT ?? process.env.OPENCODE_CONFIG_CONTENT;
   let inlineConfig: Record<string, unknown> | undefined;
   if (inlineContent) {
@@ -237,6 +256,35 @@ export async function prepareOpenCodeRuntimeConfig(input: {
       await fs.rm(runtimeConfigHome, { recursive: true, force: true });
     },
   };
+}
+
+async function detachSourcePathEntries(sourceDir: string, runtimeDir: string): Promise<{ instructions: string[]; skills: string[] }> {
+  const instructions: string[] = [];
+  const skills: string[] = [];
+  if (await isEntry(path.join(sourceDir, "AGENTS.md"), "file")) {
+    await fs.rm(path.join(runtimeDir, "AGENTS.md"), { force: true });
+    instructions.push(path.join(sourceDir, "AGENTS.md"));
+  }
+  for (const name of ["skill", "skills"]) {
+    if (await isEntry(path.join(sourceDir, name), "directory")) {
+      await fs.rm(path.join(runtimeDir, name), { recursive: true, force: true });
+      skills.push(path.join(sourceDir, name));
+    }
+  }
+  return { instructions, skills };
+}
+
+async function isEntry(target: string, kind: "file" | "directory"): Promise<boolean> {
+  const stat = await fs.stat(target).catch(() => null);
+  return kind === "file" ? Boolean(stat?.isFile()) : Boolean(stat?.isDirectory());
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values)];
 }
 
 /** Managed credentials must never leave host-only homes in a remote process. */
