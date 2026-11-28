@@ -494,6 +494,33 @@ describe("GET /api/assets/:assetId/content", () => {
     expect(res.headers["content-security-policy"]).toBe("sandbox; default-src 'none'");
   });
 
+  it("serves screenshots with Unicode filenames inline", async () => {
+    const bytes = Buffer.from("png-bytes");
+    const filename = "Screenshot 10.32.55\u202fPM.png";
+    const storage = createStorageService("image/png");
+    getAssetByIdMock.mockResolvedValue({
+      ...createAsset(),
+      originalFilename: filename,
+      byteSize: bytes.byteLength,
+    });
+    vi.mocked(storage.getObject).mockResolvedValue({
+      stream: Readable.from(bytes),
+      contentType: "image/png",
+      contentLength: bytes.byteLength,
+    });
+
+    const response = await requestApp(await createApp(storage), (baseUrl) =>
+      request(baseUrl).get("/api/assets/asset-1/content"),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers["content-type"]).toBe("image/png");
+    expect(response.headers["content-disposition"]).toBe(
+      `inline; filename="Screenshot 10.32.55?PM.png"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+    );
+    expect(response.body).toEqual(bytes);
+  });
+
   it("keeps curated image types inline", async () => {
     const image = Buffer.from("png-bytes");
     const storage = createStorageService("image/png");

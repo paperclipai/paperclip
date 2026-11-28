@@ -3400,6 +3400,8 @@ export function accessRoutes(
       logoHead.contentType ||
       object.contentType ||
       "application/octet-stream";
+    res.attachment(logoAsset.originalFilename || "company-logo");
+    res.setHeader("Content-Disposition", String(res.getHeader("Content-Disposition")).replace(/^attachment;/, "inline;"));
     res.setHeader("Content-Type", responseContentType);
     res.setHeader(
       "Content-Length",
@@ -3410,9 +3412,6 @@ export function accessRoutes(
     if (responseContentType === "image/svg+xml") {
       res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'");
     }
-    const filename = logoAsset.originalFilename ?? "company-logo";
-    res.setHeader("Content-Disposition", `inline; filename=\"${filename.replaceAll("\"", "")}\"`);
-
     object.stream.on("error", (err) => {
       next(err);
     });
