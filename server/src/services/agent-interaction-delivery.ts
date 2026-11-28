@@ -89,7 +89,7 @@ function requiresWakeOriginCheck(wake: Wake): boolean {
   return commentIds(payload).length === 0 && commentIds(context).length === 0;
 }
 
-async function recheckAssignmentWakes(db: Executor, run: Run, wakes: Wake[], issueId: string | null, hasComments: boolean) {
+async function recheckAssignmentWakes(db: Executor, run: Run, wakes: Wake[], issueId: string | null, hasComments: boolean, lock: boolean) {
   const reason = string(record(run.contextSnapshot).wakeReason);
   const runHasIndependentOrigin = Boolean(run.retryOfRunId || reason &&
     !["issue_commented", "issue_reopened_via_comment", "issue_comment_mentioned", "issue_execution_same_name"].includes(reason));
@@ -98,7 +98,7 @@ async function recheckAssignmentWakes(db: Executor, run: Run, wakes: Wake[], iss
   let denial: unknown;
   for (const wake of candidates) {
     const current = record(record(wake ? wake.payload : run.resultJson)[DENIALS_KEY]).assignment
-      ?? await assignmentDenial(db, run, wake, issueId);
+      ?? await assignmentDenial(db, run, wake, issueId, lock);
     if (!current) continue;
     denial ??= current;
     if (wake) await db.update(agentWakeupRequests).set({ status: "skipped", finishedAt: new Date(),
@@ -168,7 +168,7 @@ export async function filterQueuedInteractionComments(db: Executor, input: {
   return { allowedIds, denials };
 }
 
-async function assignmentDenial(db: Executor, run: Run, wake: Wake | undefined, issueId: string | null, depth = 0): Promise<DeliveryDenial | null> {
+async function assignmentDenial(db: Executor, run: Run, wake: Wake | undefined, issueId: string | null, lock: boolean, depth = 0): Promise<DeliveryDenial | null> {
   const origin = record(record(wake?.payload)[ORIGIN_KEY]);
   const reason = wake?.reason ?? string(record(run.contextSnapshot).wakeReason);
   let operation: "assign" | "comment" = origin.operation === "comment" ? "comment" : "assign";
@@ -218,7 +218,7 @@ async function assignmentDenial(db: Executor, run: Run, wake: Wake | undefined, 
     return agentInteractionDeliveryDenial(db, {
       companyId: run.companyId, actorAgentId: actorId, operation, targetAgentId: run.agentId,
       actorCompanyId: string(origin.actorCompanyId) ?? undefined,
-      issueId, texts, delivery: true, lock: true,
+      issueId, texts, delivery: true, lock,
     });
   }
   if (run.retryOfRunId && (actorType === "system" || !actorType)) {
@@ -229,7 +229,7 @@ async function assignmentDenial(db: Executor, run: Run, wake: Wake | undefined, 
       const [sourceWake] = source.wakeupRequestId ? await db.select().from(agentWakeupRequests)
         .where(and(eq(agentWakeupRequests.id, source.wakeupRequestId), eq(agentWakeupRequests.companyId, run.companyId))) : [];
       const savedDenial = record(record(source.resultJson)[DENIALS_KEY]).assignment;
-      return savedDenial as DeliveryDenial | undefined ?? assignmentDenial(db, source, sourceWake, issueId, depth + 1);
+      return savedDenial as DeliveryDenial | undefined ?? assignmentDenial(db, source, sourceWake, issueId, lock, depth + 1);
     }
   }
   if (actorType === "system" && wake?.requestedByActorId?.startsWith("native-status") && reason !== "issue_blockers_resolved") {
@@ -250,7 +250,7 @@ async function assignmentDenial(db: Executor, run: Run, wake: Wake | undefined, 
         .orderBy(desc(activityLog.createdAt), desc(activityLog.id)).limit(1);
       if (assignment?.actorType === "agent") return agentInteractionDeliveryDenial(db, {
         companyId: run.companyId, actorAgentId: assignment.actorId, operation: "assign",
-        targetAgentId: run.agentId, issueId, delivery: true, lock: true,
+        targetAgentId: run.agentId, issueId, delivery: true, lock,
       });
       if (assignment?.actorType === "user") return null;
     }
@@ -258,7 +258,7 @@ async function assignmentDenial(db: Executor, run: Run, wake: Wake | undefined, 
       .from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)));
     if (reason === "issue_created" && issue?.createdByAgentId) return agentInteractionDeliveryDenial(db, {
       companyId: run.companyId, actorAgentId: issue.createdByAgentId, operation: "assign",
-      targetAgentId: run.agentId, issueId, delivery: true, lock: true,
+      targetAgentId: run.agentId, issueId, delivery: true, lock,
     });
     if (reason === "issue_created" && issue?.createdByUserId) return null;
   }
@@ -302,7 +302,7 @@ export async function recheckQueuedRunInteractions(db: Db, run: Run): Promise<{
       Object.assign(denials, remaining.denials);
       for (const id of [...allowed]) if (!remaining.allowedIds.includes(id)) allowed.delete(id);
     }
-    const assignment = await recheckAssignmentWakes(tx, current, wakes, issueId, allIds.length > 0);
+    const assignment = await recheckAssignmentWakes(tx, current, wakes, issueId, allIds.length > 0, true);
     if (assignment) denials.assignment = assignment;
     if (!Object.keys(denials).length) return { run: current, denied: false, denials };
     if (!denials.assignment && allowed.size === allIds.length) return { run: current, denied: false, denials };
@@ -391,7 +391,7 @@ export async function preparedRunInteractionDeliveryDenied(db: Db, run: Run): Pr
     eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, run.agentId),
     or(eq(agentWakeupRequests.runId, run.id), run.wakeupRequestId ? eq(agentWakeupRequests.id, run.wakeupRequestId) : undefined),
   )).orderBy(asc(agentWakeupRequests.id));
-  const denial = await recheckAssignmentWakes(db, run, wakes, issueId, inputIds.length > 0);
+  const denial = await recheckAssignmentWakes(db, run, wakes, issueId, inputIds.length > 0, false);
   if (!denial && allowed.size === inputIds.length) return false;
   if (issueId && allowed.size) await db.transaction(tx => retainAllowedMessages(tx, run, issueId, [...allowed]));
   if (denial) await db.update(heartbeatRuns).set({

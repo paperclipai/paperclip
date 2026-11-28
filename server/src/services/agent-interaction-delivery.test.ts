@@ -302,6 +302,30 @@ describe.skipIf(!support.supported)("pending agent interaction delivery", () => 
     expect((retained[0]!.payload?._paperclipWakeContext as Record<string, unknown>).wakeCommentIds).toEqual([humanComment]);
   });
 
+  it("rechecks a prepared assignment without waiting behind an open agent row lock", async () => {
+    const f = await seed(); await wake(f);
+    let release!: () => void;
+    const released = new Promise<void>(resolve => { release = resolve; });
+    let locked!: () => void;
+    const holding = new Promise<void>(resolve => { locked = resolve; });
+    const holder = db.transaction(async tx => {
+      await tx.select({ id: agents.id }).from(agents).where(eq(agents.id, f.sender)).for("no key update");
+      locked();
+      await released;
+    });
+    await holding;
+    try {
+      const outcome = await Promise.race([
+        preparedRunInteractionDeliveryDenied(db, await readRun(f.run.id)),
+        new Promise(resolve => setTimeout(() => resolve("blocked"), 2_000)),
+      ]);
+      expect(outcome).toBe(false);
+    } finally {
+      release();
+      await holder;
+    }
+  });
+
   it("does not revoke recovery of an already accepted provider turn", async () => {
     const f = await seed(); await wake(f);
     await db.update(heartbeatRuns).set({ status: "running", startedAt: new Date() }).where(eq(heartbeatRuns.id, f.run.id));
