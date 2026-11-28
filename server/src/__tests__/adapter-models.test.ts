@@ -7,7 +7,12 @@ import { models as opencodeFallbackModels } from "@paperclipai/adapter-opencode-
 import { resetOpenCodeModelsCacheForTests } from "@paperclipai/adapter-opencode-local/server";
 import { listAdapterModels, listServerAdapters, refreshAdapterModels, registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
 import { resetCodexModelsCacheForTests } from "../adapters/codex-models.js";
+import { listCodexAppServerModels } from "../adapters/codex-app-server-models.js";
 import { resetCursorModelsCacheForTests, setCursorModelsRunnerForTests } from "../adapters/cursor-models.js";
+
+vi.mock("../adapters/codex-app-server-models.js", () => ({
+  listCodexAppServerModels: vi.fn(async () => []),
+}));
 
 vi.mock("acpx/runtime", () => ({
   createAcpRuntime: vi.fn(),
@@ -26,6 +31,7 @@ describe("adapter model listing", () => {
     delete process.env.PAPERCLIP_OPENCODE_COMMAND;
     resetClaudeModelsCacheForTests();
     resetCodexModelsCacheForTests();
+    vi.mocked(listCodexAppServerModels).mockReset().mockResolvedValue([]);
     resetCursorModelsCacheForTests();
     setCursorModelsRunnerForTests(null);
     resetOpenCodeModelsCacheForTests();
@@ -56,6 +62,28 @@ describe("adapter model listing", () => {
     expect(models.some((model) => model.id === "gpt-5.6-luna")).toBe(true);
     expect(models.some((model) => model.id === "gpt-5.3-codex-spark")).toBe(false);
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("offers native Codex coding models ahead of retained fallbacks", async () => {
+    vi.mocked(listCodexAppServerModels).mockResolvedValue([
+      { id: "gpt-6.2-sol", label: "GPT-6.2 Sol" },
+      { id: "gpt-6.1-sol", label: "GPT-6.1 Sol" },
+    ]);
+
+    const available = await listAdapterModels("codex_local");
+    expect(available[0]).toEqual({ id: "gpt-6.2-sol", label: "GPT-6.2 Sol" });
+    expect(available.filter((model) => model.id === "gpt-6.1-sol")).toHaveLength(1);
+    expect(available.some((model) => model.id === "gpt-5.6-sol")).toBe(true);
+    expect(listCodexAppServerModels).toHaveBeenCalledWith();
+  });
+
+  it("refreshes native Codex model discovery without changing configured agent models", async () => {
+    vi.mocked(listCodexAppServerModels).mockResolvedValue([
+      { id: "gpt-6.2-astra", label: "GPT-6.2 Astra" },
+    ]);
+    const models = await refreshAdapterModels("codex_local");
+    expect(models[0].id).toBe("gpt-6.2-astra");
+    expect(listCodexAppServerModels).toHaveBeenCalledWith({ refresh: true });
   });
 
   it("returns claude fallback models including the latest Opus alias when no Anthropic key is available", async () => {

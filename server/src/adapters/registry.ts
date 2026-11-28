@@ -126,6 +126,7 @@ import {
   models as openclawGatewayModels,
 } from "@paperclipai/adapter-openclaw-gateway";
 import { listCodexModels, refreshCodexModels } from "./codex-models.js";
+import { listCodexAppServerModels } from "./codex-app-server-models.js";
 import { listCursorModels } from "./cursor-models.js";
 import {
   execute as piExecute,
@@ -1210,10 +1211,15 @@ export async function listAdapterModels(type: string): Promise<{ id: string; lab
   if (declaredModels) return declaredModels;
   const adapter = findActiveServerAdapter(type);
   if (!adapter) return [];
-  // The built-in Codex adapter's OpenAI discovery includes image, audio, and
-  // embedding models that Codex cannot run. Use its curated list; declared
-  // models above and custom adapter discovery remain authoritative.
-  if (adapter === codexLocalAdapter) return adapter.models ?? [];
+  // Ask Codex itself which coding models the service account can run. The
+  // OpenAI /models endpoint is not equivalent: it also exposes non-code models.
+  // Keep curated fallbacks and the explicit operator override's precedence.
+  if (adapter === codexLocalAdapter) {
+    const discovered = await listCodexAppServerModels();
+    return [...discovered, ...(adapter.models ?? []).filter(
+      (fallback) => !discovered.some((model) => model.id === fallback.id),
+    )];
+  }
   if (adapter.listModels) {
     const discovered = await adapter.listModels();
     if (discovered.length > 0) return discovered;
@@ -1224,7 +1230,12 @@ export async function listAdapterModels(type: string): Promise<{ id: string; lab
 export async function refreshAdapterModels(type: string): Promise<{ id: string; label: string }[]> {
   const declaredModels = declaredModelsForAdapter(type);
   if (declaredModels) return declaredModels;
-  if (findActiveServerAdapter(type) === codexLocalAdapter) return listAdapterModels(type);
+  if (findActiveServerAdapter(type) === codexLocalAdapter) {
+    const discovered = await listCodexAppServerModels({ refresh: true });
+    return [...discovered, ...(codexLocalAdapter.models ?? []).filter(
+      (fallback) => !discovered.some((model) => model.id === fallback.id),
+    )];
+  }
   const adapter = findActiveServerAdapter(type);
   if (!adapter) return [];
   if (adapter.refreshModels) {
