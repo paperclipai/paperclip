@@ -16,7 +16,7 @@ Agent access: [companion](../agent-access-map/navigation-preferences.md).
 
 - `navigation`: `navigation-preferences/navigation` — use current sidebar links, favorites, recents, and available layout controls.
 - `preferences`: `navigation-preferences/preferences` — persist supported ordering/collapse choices for the intended user/company, and the personal experimental workspace choice.
-- `profile`: `navigation-preferences/profile` — edit personal identity and inspect public profile links.
+- `profile`: `navigation-preferences/profile` — edit personal identity, inspect public profile links, and choose desktop notification level.
 - `announcements`: `navigation-preferences/announcements` — inspect and dismiss an announcement with its intended instance-wide user scope.
 - `fallbacks`: `navigation-preferences/fallbacks` — handle missing resources and old deep links without presenting another resource as the target.
 - `command-palette`: `navigation-preferences/command-palette` — open quick search and creation actions with keyboard shortcuts, then carry query/filter intent into full search.
@@ -52,9 +52,9 @@ ordering are saved server-side. Local-trusted mode does not prove two-user isola
 
 ### `profile-announcements`
 
-Automated: [announcement hook](../../ui/src/hooks/useAnnouncement.test.tsx) and [announcement routes](../../server/src/__tests__/announcements-routes.test.ts) cover hook and server persistence layers (mocked `ProfileSettings` page tests were removed; verify profile UI manually).
+Automated: [desktop notifications](../../ui/src/components/DesktopNotificationsSettings.test.tsx), [announcement hook](../../ui/src/hooks/useAnnouncement.test.tsx), and [announcement routes](../../server/src/__tests__/announcements-routes.test.ts) cover separate UI/persistence layers (mocked `ProfileSettings` page tests were removed; verify profile UI manually).
 
-Manual: Change a disposable user’s display details, reload, and inspect an attributed profile link. Dismiss a fixture announcement, switch companies, and verify it remains dismissed for that user; check another user still has their own dismissal state.
+Manual: Change a disposable user’s display details, reload, and inspect an attributed profile link. Enable desktop notifications, hide the tab, and confirm a failed run shows a system banner. Dismiss a fixture announcement, switch companies, and verify it remains dismissed for that user; check another user still has their own dismissal state.
 
 ### `palette-shortcuts`
 

@@ -9,6 +9,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { mirrorPushedToast } from "@/lib/desktop-notifications";
 
 export type ToastTone = "info" | "success" | "warn" | "error";
 
@@ -165,6 +166,14 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         dismissToast(id);
       }, ttlMs);
       timersRef.current.set(id, timeout);
+      mirrorPushedToast({
+        id,
+        title: input.title,
+        body: input.body,
+        tone,
+        action: input.action,
+        dedupeKey,
+      });
       return id;
     },
     [clearTimer, dismissToast],
