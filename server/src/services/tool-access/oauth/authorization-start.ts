@@ -1,4 +1,5 @@
 import { notifyIssueReviewState } from "../../issue-review-state-notifications.js";
+import { connectionAuthorizationTargetKey } from "../../issue-thread-interactions.js";
 import { vercelConnectHttpError, vercelCredentialFor, vercelConnectResourcesFor } from "../vercel-credentials.js";
 import { credentialScope, managedConnectorProfile } from "./client-settings.js";
 import { assertOAuthClientBindingUnchanged, createOAuthClientRegistration } from "./client-registration.js";
@@ -641,7 +642,7 @@ export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies
         },
         target: {
           type: "custom" as const,
-          key: `connection:${connection.uid}:user:${authorizationSubjectUserId}`,
+          key: connectionAuthorizationTargetKey(connection.uid, authorizationSubjectUserId),
           revisionId: state,
           label: `Connect ${providerName}`,
           href: authorizationUrl.toString(),
