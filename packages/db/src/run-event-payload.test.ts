@@ -38,6 +38,34 @@ describe("run-event JSONB payload codec", () => {
     expect(decodeRunEventPayload(stored)).toEqual(payload);
   });
 
+  it("round-trips unpaired surrogates in nested strings, arrays and keys", () => {
+    const payload = {
+      prpEvent: {
+        sourceKind: "runner",
+        payload: { output: "deploy \ud83d", items: ["\ude80 done", "🧪"] },
+      },
+      "\ud800key": "a",
+    };
+    const encoded = encodeRunEventPayload(payload);
+    const stored = JSON.parse(encoded);
+    expect(stored.prpEvent.sourceKind).toBe("runner");
+    expect(stored.prpEvent.payload.output).toBe("deploy \\ud83d");
+    expect(stored.prpEvent.payload.items).toEqual(["\\ude80 done", "🧪"]);
+    const unpaired = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+    function assertPaired(value: unknown): void {
+      if (typeof value === "string") expect(value).not.toMatch(unpaired);
+      if (value !== null && typeof value === "object") {
+        for (const [key, entry] of Object.entries(value)) {
+          expect(key).not.toMatch(unpaired);
+          assertPaired(entry);
+        }
+      }
+    }
+    assertPaired(stored);
+    expect(decodeRunEventPayload(encoded)).toEqual(payload);
+    expect(decodeRunEventPayload(stored)).toEqual(payload);
+  });
+
   it("preserves caller-owned keys that collide with the storage marker", () => {
     for (const value of ["not JSON", '{"forged":true}', null, { nested: "\u0000" }]) {
       const payload = { $paperclipRunEventJsonV1: value, output: "original" };

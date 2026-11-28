@@ -9,7 +9,8 @@ the three data paths differ.
 This file does not list events or their payloads. Each event is defined where
 it is written: search for the event name as a quoted string under `server/src`
 and `packages` to find its producer and payload. Payload limits are defined in
-`server/src/services/heartbeat/run-log.ts`; the storage codec lives in
+`server/src/services/heartbeat/run-log.ts`; the storage codec, which stores
+payloads containing NUL or an unpaired UTF-16 surrogate losslessly, lives in
 `packages/db/src/run-event-payload.ts`. The server appends events through
 `appendRunEvent` in `server/src/services/heartbeat.ts`.
 
