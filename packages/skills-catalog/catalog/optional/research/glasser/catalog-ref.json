@@ -1,0 +1,41 @@
+{
+  "source": {
+    "type": "github",
+    "hostname": "github.com",
+    "owner": "glasser-ai",
+    "repo": "skills",
+    "ref": "v0.2.0",
+    "commit": "66331e70939d04d26ae66f33881c34ee2433dc19",
+    "path": "skills/glasser"
+  },
+  "files": [
+    "SKILL.md"
+  ],
+  "defaultInstall": false,
+  "recommendedForRoles": [
+    "researcher",
+    "marketer",
+    "sales",
+    "analyst",
+    "engineer",
+    "product-manager",
+    "founder"
+  ],
+  "requires": [
+    "node"
+  ],
+  "tags": [
+    "data",
+    "research",
+    "enrichment",
+    "people-search",
+    "company-data",
+    "web-search",
+    "seo",
+    "social-media",
+    "property-data",
+    "scraping",
+    "mcp",
+    "glasser"
+  ]
+}
