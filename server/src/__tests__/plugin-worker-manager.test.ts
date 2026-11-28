@@ -2629,3 +2629,173 @@ describe("plugin worker manager login pseudo-terminal pre-bind queue", () => {
     }
   });
 });
+
+describe("startWorker with a handle left mid-transition", () => {
+  const options = {
+    entrypointPath: DELAYED_WORKER_ENTRYPOINT,
+    manifest: TEST_MANIFEST,
+    config: {},
+    instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" },
+    apiVersion: 1,
+    hostHandlers: {},
+  };
+
+  it("replaces a handle that a bare restart left in starting", async () => {
+    const manager = createPluginWorkerManager();
+    try {
+      await manager.startWorker("test.plugin", options);
+      const stale = manager.getWorker("test.plugin")!;
+      const starting = new Promise<void>((resolve) => {
+        stale.on("status", ({ status }) => { if (status === "starting") resolve(); });
+      });
+      const restart = stale.restart().catch(() => undefined);
+      await starting;
+      expect(manager.getWorker("test.plugin")?.status).toBe("starting");
+
+      const replacement = await manager.startWorker("test.plugin", options);
+      await restart;
+
+      expect(replacement).not.toBe(stale);
+      expect(replacement.status).toBe("running");
+      expect(manager.getWorker("test.plugin")).toBe(replacement);
+      expect(stale.status === "stopped" || stale.status === "crashed").toBe(true);
+    } finally {
+      await manager.stopAll();
+    }
+  }, 20_000);
+
+  it("still refuses to start over a running worker", async () => {
+    const manager = createPluginWorkerManager();
+    try {
+      await manager.startWorker("test.plugin", options);
+      await expect(manager.startWorker("test.plugin", options)).rejects.toThrow(
+        'Worker already registered for plugin "test.plugin" (status: running)',
+      );
+    } finally {
+      await manager.stopAll();
+    }
+  }, 20_000);
+
+  const slowStopOptions = {
+    ...options,
+    entrypointPath: path.join(FIXTURES_DIR, "plugin-worker-slow-initialize.cjs"),
+    config: { shutdownDelayMs: 400 },
+  };
+
+  async function replacementInFlight(manager: ReturnType<typeof createPluginWorkerManager>) {
+    await manager.startWorker("test.plugin", slowStopOptions);
+    const stale = manager.getWorker("test.plugin")!;
+    const restart = stale.restart().then(() => "restarted", (error: Error) => error.message);
+    expect(stale.status).toBe("stopping");
+    const replacement = manager.startWorker("test.plugin", slowStopOptions)
+      .then(() => "replaced", (error: Error) => error.message);
+    return { stale, restart, replacement };
+  }
+
+  it("does not start the replacement when stopWorker arrives while the old handle stops", async () => {
+    const manager = createPluginWorkerManager();
+    try {
+      const { stale, restart, replacement } = await replacementInFlight(manager);
+
+      await manager.stopWorker("test.plugin");
+
+      expect(await replacement).toBe('Worker for plugin "test.plugin" was stopped before its replacement could start');
+      expect(await restart).toBe('Worker for plugin "test.plugin" was stopped before it could restart');
+      expect(stale.status).toBe("stopped");
+      expect(manager.getWorker("test.plugin")).toBeUndefined();
+      expect(manager.diagnostics()).toEqual([]);
+    } finally {
+      await manager.stopAll();
+    }
+  }, 20_000);
+
+  it("does not start the replacement when stopAll arrives while the old handle stops", async () => {
+    const manager = createPluginWorkerManager();
+    try {
+      const { stale, restart, replacement } = await replacementInFlight(manager);
+
+      await manager.stopAll();
+
+      expect(await replacement).toBe('Worker for plugin "test.plugin" was stopped before its replacement could start');
+      expect(await restart).toBe('Worker for plugin "test.plugin" was stopped before it could restart');
+      expect(stale.status).toBe("stopped");
+      expect(manager.getWorker("test.plugin")).toBeUndefined();
+      expect(manager.diagnostics()).toEqual([]);
+    } finally {
+      await manager.stopAll();
+    }
+  }, 20_000);
+});
+
+describe("a stop issued while a start is in flight", () => {
+  const SLOW_INITIALIZE_WORKER_ENTRYPOINT = path.join(FIXTURES_DIR, "plugin-worker-slow-initialize.cjs");
+
+  function slowHandle(config: { initializeDelayMs?: number; shutdownDelayMs?: number }, entrypointPath = SLOW_INITIALIZE_WORKER_ENTRYPOINT) {
+    return createPluginWorkerHandle("test.plugin", {
+      entrypointPath, manifest: TEST_MANIFEST, config,
+      instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" }, apiVersion: 1, hostHandlers: {},
+    });
+  }
+
+  function isAlive(pid: number): boolean {
+    try { process.kill(pid, 0); return true; } catch { return false; }
+  }
+
+  function recordStatuses(handle: ReturnType<typeof slowHandle>) {
+    const statuses: string[] = [];
+    const ready = vi.fn();
+    handle.on("status", ({ status }) => { statuses.push(status); });
+    handle.on("ready", ready);
+    return { statuses, ready };
+  }
+
+  it("ends stopped, without becoming ready, when initialize completes during the stop", async () => {
+    const handle = slowHandle({ initializeDelayMs: 100, shutdownDelayMs: 400 });
+    const { statuses, ready } = recordStatuses(handle);
+    const start = handle.start().then(() => "started", (error: Error) => error.message);
+    const pid = handle.diagnostics().pid!;
+    expect(handle.status).toBe("starting");
+
+    await handle.stop();
+    const outcome = await start;
+
+    expect(statuses).toEqual(["starting", "stopping", "stopped"]);
+    expect(ready).not.toHaveBeenCalled();
+    expect(handle.status).toBe("stopped");
+    expect(isAlive(pid)).toBe(false);
+    expect(outcome).toBe('Worker for plugin "test.plugin" was stopped while starting');
+  }, 20_000);
+
+  it("ends stopped, not crashed, when the stop ends the process before initialize answers", async () => {
+    const handle = slowHandle({ initializeDelayMs: 2_000, shutdownDelayMs: 0 });
+    const { ready } = recordStatuses(handle);
+    const start = handle.start().then(() => "started", (error: Error) => error.message);
+    const pid = handle.diagnostics().pid!;
+
+    await handle.stop();
+    const outcome = await start;
+
+    expect(handle.status).toBe("stopped");
+    expect(ready).not.toHaveBeenCalled();
+    expect(isAlive(pid)).toBe(false);
+    expect(outcome).toBe('Worker for plugin "test.plugin" was stopped while starting');
+  }, 20_000);
+
+  it("does not let a restart spawn a new process after a stop issued during its stop phase", async () => {
+    const handle = slowHandle({}, DELAYED_WORKER_ENTRYPOINT);
+    await handle.start();
+    const firstPid = handle.diagnostics().pid!;
+    const { statuses } = recordStatuses(handle);
+
+    const restart = handle.restart().then(() => "restarted", (error: Error) => error.message);
+    expect(handle.status).toBe("stopping");
+    await handle.stop();
+    const outcome = await restart;
+
+    expect(handle.status).toBe("stopped");
+    expect(handle.diagnostics().pid).toBeNull();
+    expect(statuses).toEqual(["stopping", "stopped"]);
+    expect(isAlive(firstPid)).toBe(false);
+    expect(outcome).toBe('Worker for plugin "test.plugin" was stopped before it could restart');
+  }, 20_000);
+});

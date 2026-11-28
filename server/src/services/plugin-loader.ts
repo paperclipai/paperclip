@@ -57,6 +57,7 @@ import type { DistributionPlugin } from "./distribution-plugin-catalog.js";
 import { resolveBundledCatalogRoot } from "./bundled-plugins.js";
 import { managedPluginWorkerEnvGrant } from "./managed-plugin-worker-env.js";
 import { createWorkScheduler } from "./work-scheduler.js";
+import { runDetachedWithPluginReloadLock } from "./plugin-reload-lock.js";
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1223,7 +1224,14 @@ export function pluginLoader(
   let shuttingDown = false;
 
   function trackActivationRecovery(work: () => Promise<unknown>, label: string, pluginId: string) {
-    const running = work().catch((err: unknown) => {
+    const lockOwner = runtimeServices?.workerManager;
+    const locked = lockOwner
+      ? () => runDetachedWithPluginReloadLock(lockOwner, pluginId, work, () => {
+        log.info({ pluginId },
+          "plugin-loader: activation-timeout recovery waiting for another reload of this plugin to finish");
+      })
+      : work;
+    const running = locked().catch((err: unknown) => {
       log.warn({ pluginId, err: err instanceof Error ? err.message : String(err) }, label);
     });
     activeActivationRecoveries.add(running);
@@ -2305,7 +2313,7 @@ export function pluginLoader(
 
     // 4. Stop the worker process
     try {
-      if (workerManager.isRunning(pluginId)) {
+      if (workerManager.getWorker(pluginId)) {
         await workerManager.stopWorker(pluginId);
       }
     } catch (err) {

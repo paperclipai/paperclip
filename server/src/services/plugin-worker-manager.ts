@@ -1129,6 +1129,8 @@ export function createPluginWorkerHandle(
 
   // Shutdown coordination
   let intentionalStop = false;
+  let stopRequests = 0;
+  let stopInFlight: Promise<void> | null = null;
 
   const rpcTimeoutMs = options.rpcTimeoutMs ?? DEFAULT_RPC_TIMEOUT_MS;
   const autoRestart = options.autoRestart ?? true;
@@ -3384,9 +3386,12 @@ export function createPluginWorkerHandle(
   // Start / Stop
   // -----------------------------------------------------------------------
 
-  async function startInternal(): Promise<void> {
+  async function startInternal(stopRequestsAtStart = stopRequests): Promise<void> {
     if (status === "running" || status === "starting") {
       throw new Error(`Worker for plugin "${pluginId}" is already ${status}`);
+    }
+    if (stopRequests !== stopRequestsAtStart) {
+      throw new Error(`Worker for plugin "${pluginId}" was stopped before it could restart`);
     }
 
     intentionalStop = false;
@@ -3419,6 +3424,7 @@ export function createPluginWorkerHandle(
       }
       supportedMethods = result.supportedMethods ?? [];
     } catch (err) {
+      if (stopRequests !== stopRequestsAtStart) await abortStartForStop(child);
       // Initialize failed — kill the process and propagate
       const msg = err instanceof Error ? err.message : String(err);
       log.error({ err: msg }, "worker initialize failed");
@@ -3427,6 +3433,8 @@ export function createPluginWorkerHandle(
       throw new Error(`Worker initialize failed for "${pluginId}": ${msg}`, { cause: err });
     }
 
+    if (stopRequests !== stopRequestsAtStart) await abortStartForStop(child);
+
     // Reset crash counter on successful start
     consecutiveCrashes = 0;
     setStatus("running");
@@ -3434,13 +3442,29 @@ export function createPluginWorkerHandle(
     log.info({ pid: child.pid }, "worker process started and initialized");
   }
 
-  async function stopInternal(): Promise<void> {
+  async function abortStartForStop(child: ChildProcess): Promise<never> {
+    if (stopInFlight) await stopInFlight;
+    if (childProcess === child) await killProcess();
+    if (childProcess === null || childProcess === child) setStatus("stopped");
+    log.info("worker start abandoned because a stop was requested while it was starting");
+    throw new Error(`Worker for plugin "${pluginId}" was stopped while starting`);
+  }
+
+  function stopInternal(): Promise<void> {
+    stopRequests++;
     cancelPendingRestart();
 
-    if (status === "stopped" || status === "stopping") {
-      return;
-    }
+    if (stopInFlight) return stopInFlight;
+    if (status === "stopped") return Promise.resolve();
 
+    const stopping = performStop().finally(() => {
+      if (stopInFlight === stopping) stopInFlight = null;
+    });
+    stopInFlight = stopping;
+    return stopping;
+  }
+
+  async function performStop(): Promise<void> {
     intentionalStop = true;
     setStatus("stopping");
 
@@ -3831,8 +3855,10 @@ export function createPluginWorkerHandle(
     },
 
     async restart() {
-      await stopInternal();
-      await startInternal();
+      const stopping = stopInternal();
+      const stopRequestsAfterOwnStop = stopRequests;
+      await stopping;
+      await startInternal(stopRequestsAfterOwnStop);
     },
     hasStartupWork() { return startupCalls.size > 0 || startupHostHandlers.size > 0 || startupRetirements.size > 0; },
     recoverStartupAcquisition(contextId: string, creationOperationId: string) {
@@ -4087,6 +4113,10 @@ export function createPluginWorkerManager(
   let activeInspections = 0;
   /** Per-plugin startup locks to prevent concurrent spawn races. */
   const startupLocks = new Map<string, Promise<PluginWorkerHandle>>();
+  const stopRequests = new Map<string, number>();
+  const noteStopRequest = (pluginId: string) => {
+    stopRequests.set(pluginId, (stopRequests.get(pluginId) ?? 0) + 1);
+  };
   // The one shared, process-scoped aggregate route-slot controller. The manager
   // injects it into every worker handle, so the duplex route ceiling counts every
   // concurrent route across the process, not one agent's setting.
@@ -4149,64 +4179,89 @@ export function createPluginWorkerManager(
       }
 
       const existing = workers.get(pluginId);
-      if (existing && existing.status !== "stopped") {
+      if (existing?.status === "running") {
         throw new Error(
           `Worker already registered for plugin "${pluginId}" (status: ${existing.status})`,
         );
       }
 
-      const handle = createPluginWorkerHandle(pluginId, {
-        // Inject the shared process-scoped route-slot controller, unless the
-        // caller already supplied its own (a test may inject its own).
-        duplexRouteSlots,
-        ...options,
-      }, () => pruneStartupWorker(handle));
-      idleWorkerManifests.set(handle, pluginIdleManifestGeneration(options.manifest));
-      if (existing) retainStartupWorker(existing);
-      workers.set(pluginId, handle);
-      handle.on("ready", (payload) => {
-        for (const listener of [...workerReady]) {
-          try { listener(payload.pluginId); }
-          catch (err) { log.warn({ err, pluginId: payload.pluginId }, "worker ready listener failed"); }
-        }
-      });
-
-      // Subscribe to crash/ready events for live event forwarding
-      if (managerOptions?.onWorkerEvent) {
-        const notify = managerOptions.onWorkerEvent;
-        handle.on("crash", (payload) => {
-          notify({
-            type: "plugin.worker.crashed",
-            pluginId: payload.pluginId,
-            code: payload.code,
-            signal: payload.signal,
-            willRestart: payload.willRestart,
-          });
-        });
-        handle.on("ready", (payload) => {
-          // Only emit restarted if this was a crash recovery (totalCrashes > 0)
-          const diag = handle.diagnostics();
-          if (diag.totalCrashes > 0) {
-            notify({
-              type: "plugin.worker.restarted",
-              pluginId: payload.pluginId,
-            });
+      let startPromise: Promise<PluginWorkerHandle>;
+      if (existing && existing.status !== "stopped") {
+        log.warn(
+          { pluginId, status: existing.status },
+          "replacing a plugin worker handle that was left mid-transition",
+        );
+        startPromise = (async () => {
+          const stopRequestsBefore = stopRequests.get(pluginId) ?? 0;
+          await trackIdleWork(existing.stop());
+          retainStartupWorker(existing);
+          if (workers.get(pluginId) === existing) workers.delete(pluginId);
+          if ((stopRequests.get(pluginId) ?? 0) !== stopRequestsBefore) {
+            log.info({ pluginId }, "worker replacement abandoned because a stop was requested while the previous handle was stopping");
+            throw new Error(`Worker for plugin "${pluginId}" was stopped before its replacement could start`);
           }
-        });
+          return spawnWorker(undefined);
+        })();
+      } else {
+        startPromise = spawnWorker(existing);
       }
 
-      log.info({ pluginId }, "starting plugin worker");
-
       // Set the lock before awaiting start() to prevent concurrent spawns
-      const startPromise = trackIdleWork(handle.start()).then(() => handle).finally(() => {
-        startupLocks.delete(pluginId);
+      const locked = startPromise.finally(() => {
+        if (startupLocks.get(pluginId) === locked) startupLocks.delete(pluginId);
       });
-      startupLocks.set(pluginId, startPromise);
+      startupLocks.set(pluginId, locked);
+      return locked;
 
-      return startPromise;
+      function spawnWorker(previous: PluginWorkerHandle | undefined): Promise<PluginWorkerHandle> {
+        const handle = createPluginWorkerHandle(pluginId, {
+          // Inject the shared process-scoped route-slot controller, unless the
+          // caller already supplied its own (a test may inject its own).
+          duplexRouteSlots,
+          ...options,
+        }, () => pruneStartupWorker(handle));
+        idleWorkerManifests.set(handle, pluginIdleManifestGeneration(options.manifest));
+        if (previous) retainStartupWorker(previous);
+        workers.set(pluginId, handle);
+        handle.on("ready", (payload) => {
+          for (const listener of [...workerReady]) {
+            try { listener(payload.pluginId); }
+            catch (err) { log.warn({ err, pluginId: payload.pluginId }, "worker ready listener failed"); }
+          }
+        });
+
+        // Subscribe to crash/ready events for live event forwarding
+        if (managerOptions?.onWorkerEvent) {
+          const notify = managerOptions.onWorkerEvent;
+          handle.on("crash", (payload) => {
+            notify({
+              type: "plugin.worker.crashed",
+              pluginId: payload.pluginId,
+              code: payload.code,
+              signal: payload.signal,
+              willRestart: payload.willRestart,
+            });
+          });
+          handle.on("ready", (payload) => {
+            // Only emit restarted if this was a crash recovery (totalCrashes > 0)
+            const diag = handle.diagnostics();
+            if (diag.totalCrashes > 0) {
+              notify({
+                type: "plugin.worker.restarted",
+                pluginId: payload.pluginId,
+              });
+            }
+          });
+        }
+
+        log.info({ pluginId }, "starting plugin worker");
+
+        return trackIdleWork(handle.start()).then(() => handle);
+      }
     },
 
     async stopWorker(pluginId: string): Promise<void> {
+      noteStopRequest(pluginId);
       const handle = workers.get(pluginId);
       if (!handle) {
         log.warn({ pluginId }, "no worker registered for plugin, nothing to stop");
@@ -4244,6 +4299,7 @@ export function createPluginWorkerManager(
     async stopAll(): Promise<void> {
       log.info({ count: workers.size }, "stopping all plugin workers");
       const promises = Array.from(workers.values()).map(async (handle) => {
+        noteStopRequest(handle.pluginId);
         try {
           await handle.stop();
         } catch (err) {

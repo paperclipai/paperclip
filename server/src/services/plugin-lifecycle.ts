@@ -46,6 +46,7 @@ import { pluginRegistryService } from "./plugin-registry.js";
 import { pluginLoader, type PluginLoader } from "./plugin-loader.js";
 import type { PluginWorkerManager, WorkerStartOptions } from "./plugin-worker-manager.js";
 import { badRequest, notFound } from "../errors.js";
+import { runWithPluginReloadLock } from "./plugin-reload-lock.js";
 import { logger } from "../middleware/logger.js";
 
 // ---------------------------------------------------------------------------
@@ -454,11 +455,25 @@ export function pluginLifecycleManager(
     await stopWorkerIfRunning(pluginId, pluginKey);
   }
 
+  const reloadLockOwner: object = workerManager ?? {};
+  function withReloadLock<T>(
+    pluginId: string,
+    operation: string,
+    run: () => Promise<T>,
+  ): Promise<T> {
+    return runWithPluginReloadLock(reloadLockOwner, pluginId, run, () => {
+      log.info(
+        { pluginId, operation },
+        "plugin lifecycle: waiting for another reload of this plugin to finish",
+      );
+    });
+  }
+
   // -----------------------------------------------------------------------
   // Public API
   // -----------------------------------------------------------------------
 
-  return {
+  const manager: PluginLifecycleManager = {
     // -- load -------------------------------------------------------------
     /**
      * load — Transitions a plugin to 'ready' status and starts its worker.
@@ -867,5 +882,19 @@ export function pluginLifecycleManager(
     once(event, listener) {
       emitter.once(event, listener);
     },
+  };
+
+  return {
+    ...manager,
+    load: (pluginId) => withReloadLock(pluginId, "load", () => manager.load(pluginId)),
+    enable: (pluginId) => withReloadLock(pluginId, "enable", () => manager.enable(pluginId)),
+    disable: (pluginId, reason) =>
+      withReloadLock(pluginId, "disable", () => manager.disable(pluginId, reason)),
+    unload: (pluginId, removeData) =>
+      withReloadLock(pluginId, "unload", () => manager.unload(pluginId, removeData)),
+    upgrade: (pluginId, version) =>
+      withReloadLock(pluginId, "upgrade", () => manager.upgrade(pluginId, version)),
+    restartWorker: (pluginId) =>
+      withReloadLock(pluginId, "restartWorker", () => manager.restartWorker(pluginId)),
   };
 }
