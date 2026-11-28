@@ -7,6 +7,7 @@ import { Readable } from "node:stream";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompanyPortabilityFileEntry } from "@paperclipai/shared";
 import { runnerApiResponseReservations } from "@paperclipai/db";
+import { REDACTED_EVENT_VALUE } from "../redaction.js";
 
 const runnerTarget = vi.hoisted(() => ({ driver: "local", platform: "linux", architecture: "x64" }));
 
@@ -633,6 +634,121 @@ describe("company portability", () => {
     expect(extension).not.toContain("budgetMonthlyCents: 0");
     expect(exported.warnings).toContain("Agent claudecoder command /Users/dotta/.local/bin/claude was omitted from export because it is system-dependent.");
     expect(exported.warnings).toContain("Agent claudecoder PATH override was omitted from export because it is system-dependent.");
+  });
+
+  it("excludes private identity material from exported manifests and files", async () => {
+    const agents = await agentSvc.list();
+    const privateMaterial = "synthetic-export-private-material";
+    agents[0].adapterConfig.devicePrivateKeyPem = privateMaterial;
+    agents[0].adapterConfig.nested = [{ signingPrivateKeyDer: privateMaterial, enabled: true }];
+    agentSvc.list.mockResolvedValue(agents);
+    const exported = await exportCompanyAndAgents(companyPortabilityService({} as any));
+    expect(JSON.stringify(exported)).not.toContain(privateMaterial);
+    expect(JSON.stringify(exported)).toContain("enabled");
+    expect(agents[0].adapterConfig.devicePrivateKeyPem).toBe(privateMaterial);
+  });
+
+  it("omits private key fields from exported configuration instead of writing a placeholder", async () => {
+    const agents = await agentSvc.list();
+    const pem = "-----BEGIN PRIVATE KEY-----\nsynthetic-export-pem-body\n-----END PRIVATE KEY-----";
+    agents[0].adapterConfig.devicePrivateKeyPem = pem;
+    agents[0].adapterConfig.nested = [{ signingPrivateKeyDer: "synthetic-der", enabled: true }, pem];
+    agents[0].adapterConfig.syntheticPemCarrier = pem;
+    agentSvc.list.mockResolvedValue(agents);
+    const exported = await exportCompanyAndAgents(companyPortabilityService({} as any));
+    const extension = asTextFile(exported.files[".paperclip.yaml"]);
+    const serialized = JSON.stringify(exported);
+    for (const text of [extension, serialized]) {
+      expect(text).not.toContain("devicePrivateKeyPem");
+      expect(text).not.toContain("signingPrivateKeyDer");
+      expect(text).not.toContain("syntheticPemCarrier");
+      expect(text).not.toContain("synthetic-export-pem-body");
+      expect(text).not.toContain("synthetic-der");
+      expect(text).not.toContain(REDACTED_EVENT_VALUE);
+    }
+    expect(extension).toContain("enabled: true");
+  });
+
+  it("imports an exported openclaw_gateway agent without a placeholder device key", async () => {
+    const source = await agentSvc.list();
+    const pem = "-----BEGIN PRIVATE KEY-----\nsynthetic-gateway-pem-body\n-----END PRIVATE KEY-----";
+    agentSvc.list.mockResolvedValue([{
+      ...source[0],
+      adapterType: "openclaw_gateway",
+      adapterConfig: { url: "wss://gateway.example.test", devicePrivateKeyPem: pem },
+    }]);
+    const portability = companyPortabilityService({} as any);
+    const include = { company: true, agents: true, projects: false, issues: false, skills: false };
+    const exported = await portability.exportBundle("company-1", { include });
+    const extension = asTextFile(exported.files[".paperclip.yaml"]);
+    expect(extension).toContain("openclaw_gateway");
+    expect(extension).not.toContain("devicePrivateKeyPem");
+
+    agentSvc.list.mockResolvedValue([]);
+    agentSvc.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({ ...input, id: `imported-${input.name}` }));
+    await portability.importBundle({ source: { type: "inline", files: exported.files, rootPath: exported.rootPath }, include,
+      target: { mode: "new_company", newCompanyName: "Imported gateway" }, collisionStrategy: "rename", agents: "all" }, "user-1");
+    expect(agentSvc.create).toHaveBeenCalled();
+    for (const [, input] of agentSvc.create.mock.calls) {
+      expect(input.adapterType).toBe("openclaw_gateway");
+      expect(input.adapterConfig).not.toHaveProperty("devicePrivateKeyPem");
+      expect(JSON.stringify(input)).not.toContain("synthetic-gateway-pem-body");
+    }
+  });
+
+  it("does not persist a redaction placeholder from an older export as an imported device key", async () => {
+    const source = await agentSvc.list();
+    agentSvc.list.mockResolvedValue([{
+      ...source[0],
+      adapterType: "openclaw_gateway",
+      adapterConfig: { url: "wss://gateway.example.test" },
+    }]);
+    const portability = companyPortabilityService({} as any);
+    const include = { company: true, agents: true, projects: false, issues: false, skills: false };
+    const exported = await portability.exportBundle("company-1", { include });
+    const extensionText = asTextFile(exported.files[".paperclip.yaml"]);
+    exported.files[".paperclip.yaml"] = extensionText.replace(/^(\s*)url:.*$/m,
+      match => `${match}\n${match.match(/^\s*/)?.[0]}devicePrivateKeyPem: "${REDACTED_EVENT_VALUE}"`);
+    expect(asTextFile(exported.files[".paperclip.yaml"])).toContain(REDACTED_EVENT_VALUE);
+
+    agentSvc.list.mockResolvedValue([]);
+    agentSvc.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({ ...input, id: `imported-${input.name}` }));
+    await portability.importBundle({ source: { type: "inline", files: exported.files, rootPath: exported.rootPath }, include,
+      target: { mode: "new_company", newCompanyName: "Imported legacy gateway" }, collisionStrategy: "rename", agents: "all" }, "user-1");
+    expect(agentSvc.create).toHaveBeenCalled();
+    for (const [, input] of agentSvc.create.mock.calls) {
+      expect(input.adapterConfig).toMatchObject({ url: "wss://gateway.example.test" });
+      expect(input.adapterConfig).not.toHaveProperty("devicePrivateKeyPem");
+    }
+  });
+
+  it("exports env values with private key names or PEM content as empty secret inputs", async () => {
+    const pem = "-----BEGIN EC PRIVATE KEY-----\nsynthetic-env-pem-body\n-----END EC PRIVATE KEY-----";
+    const source = await agentSvc.list();
+    agentSvc.list.mockResolvedValue([{
+      ...source[0],
+      adapterConfig: {
+        env: {
+          SIGNING_KEY_PEM: { type: "plain", value: pem },
+          DEVICE_PRIVATEKEY_DER: { type: "plain", value: "synthetic-env-der-value" },
+          GENERIC_BLOB: { type: "plain", value: pem },
+          LEGACY_BLOB: pem,
+          NODE_ENV: { type: "plain", value: "development" },
+        },
+      },
+    }]);
+    const exported = await exportCompanyAndAgents(companyPortabilityService({} as any));
+    const extension = asTextFile(exported.files[".paperclip.yaml"]);
+    const serialized = JSON.stringify(exported);
+    for (const text of [extension, serialized]) {
+      expect(text).not.toContain("synthetic-env-pem-body");
+      expect(text).not.toContain("synthetic-env-der-value");
+      expect(text).not.toContain("PRIVATE KEY-----");
+    }
+    for (const key of ["SIGNING_KEY_PEM", "DEVICE_PRIVATEKEY_DER", "GENERIC_BLOB", "LEGACY_BLOB"]) {
+      expect(exported.manifest.envInputs).toContainEqual(expect.objectContaining({ key, kind: "secret", defaultValue: "" }));
+    }
+    expect(exported.manifest.envInputs).toContainEqual(expect.objectContaining({ key: "NODE_ENV", kind: "plain", defaultValue: "development" }));
   });
 
   it("does not load or emit skills when agents are included but skills are disabled", async () => {

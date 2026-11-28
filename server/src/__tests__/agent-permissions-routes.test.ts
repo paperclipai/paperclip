@@ -2466,6 +2466,34 @@ describe("agent permission routes", () => {
   });
 
   describe("agent configuration read gate", () => {
+    it.each(["agent", "board", "admin"])("never exposes private keys to %s readers", async (principal) => {
+      const privateMaterial = "synthetic-device-private-material";
+      const adapterConfig = { devicePrivateKeyPem: privateMaterial, nested: [{ signingPrivateKeyDer: privateMaterial }], command: "agent" };
+      const agent = { ...baseAgent, adapterConfig };
+      const revisionId = "55555555-5555-4555-8555-555555555555";
+      const revision = { id: revisionId, beforeConfig: { adapterConfig }, afterConfig: { adapterConfig } };
+      mockAgentService.getById.mockResolvedValue(agent);
+      mockAgentService.list.mockResolvedValue([agent]);
+      mockAgentService.listConfigRevisions.mockResolvedValue([revision]);
+      mockAgentService.getConfigRevision.mockResolvedValue(revision);
+      mockAccessService.decide.mockResolvedValue({ allowed: true, reason: "allow_self", explanation: "Synthetic configuration reader" });
+      const app = await createApp(principal === "agent"
+        ? { type: "agent", agentId, companyId, source: "agent_key" }
+        : { type: "board", userId: "board-user", source: "session", isInstanceAdmin: principal === "admin", companyIds: [companyId] });
+      const paths = [
+        `/api/agents/${agentId}`, `/api/companies/${companyId}/agents`,
+        `/api/agents/${agentId}/configuration`, `/api/agents/${agentId}/config-revisions`,
+        `/api/agents/${agentId}/config-revisions/${revisionId}`,
+        ...(principal === "agent" ? ["/api/agents/me"] : []),
+      ];
+      for (const path of paths) {
+        const response = await requestApp(app, (baseUrl) => request(baseUrl).get(path));
+        expect(response.status, path).toBe(200);
+        expect(JSON.stringify(response.body), path).not.toContain(privateMaterial);
+      }
+      expect(agent.adapterConfig.devicePrivateKeyPem).toBe(privateMaterial);
+    });
+
     it.each(["configuration", "config-revisions", "config-revisions/55555555-5555-4555-8555-555555555555"])("allows self %s reads without peer configuration grants", async (suffix) => {
       const plaintext = "self-config-value-must-not-leak";
       const adapterConfig = { env: { GENERIC_NAME: { type: "plain", value: plaintext } } };
