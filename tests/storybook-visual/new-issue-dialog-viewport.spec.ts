@@ -1,5 +1,9 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
+// Phones have a device pixel ratio of 2-3. Floating UI adds will-change: transform to
+// the popper wrapper only at 1.5 or more, and that changes how fixed sheets lay out.
+test.use({ deviceScaleFactor: 3 });
+
 const STORY_ID = "product-dialogs-modals--new-issue-prefilled";
 
 type ViewportCase = {
@@ -10,6 +14,8 @@ type ViewportCase = {
   offsetTop: number;
 };
 
+// iOS Safari lays out fixed elements against the visual viewport, so the dialog and pickers
+// must ignore visualViewport.offsetTop. A nonzero offsetTop here checks that they do.
 const VIEWPORT_CASES: ViewportCase[] = [
   { name: "mobile", width: 390, layoutHeight: 844, visualHeight: 408, offsetTop: 120 },
   { name: "tablet", width: 820, layoutHeight: 1180, visualHeight: 780, offsetTop: 120 },
@@ -67,10 +73,7 @@ test("does not collapse the new-task dialog during a transient zero-height visua
   await expect.poll(async () => dialog.evaluate((element) => {
     const rect = element.getBoundingClientRect();
     return { top: rect.top, bottom: rect.bottom };
-  })).toEqual({
-    top: viewport.offsetTop + 16,
-    bottom: viewport.offsetTop + viewport.visualHeight - 16,
-  });
+  })).toEqual({ top: 16, bottom: viewport.visualHeight - 16 });
 
   await page.evaluate(() => {
     const visualViewport = window.visualViewport as VisualViewport & {
@@ -84,10 +87,7 @@ test("does not collapse the new-task dialog during a transient zero-height visua
   await expect.poll(async () => dialog.evaluate((element) => {
     const rect = element.getBoundingClientRect();
     return { top: rect.top, bottom: rect.bottom };
-  })).toEqual({
-    top: viewport.offsetTop + 16,
-    bottom: viewport.offsetTop + viewport.visualHeight - 16,
-  });
+  })).toEqual({ top: 16, bottom: viewport.visualHeight - 16 });
 });
 
 for (const { pickerName, triggerName, query, selectionName } of [
@@ -120,6 +120,8 @@ for (const { pickerName, triggerName, query, selectionName } of [
       const inputRect = element.querySelector("input")!.getBoundingClientRect();
       const dialogElement = document.querySelector('[data-slot="dialog-content"]');
       return {
+        pickerLeft: pickerRect.left,
+        pickerRight: pickerRect.right,
         pickerTop: pickerRect.top,
         pickerBottom: pickerRect.bottom,
         inputTop: inputRect.top,
@@ -127,13 +129,17 @@ for (const { pickerName, triggerName, query, selectionName } of [
         portalledOutsideDialog: !dialogElement?.contains(element),
       };
     });
-    const visibleTop = viewport.offsetTop;
-    const visibleBottom = viewport.offsetTop + viewport.visualHeight;
+    const visibleTop = 0;
+    const visibleBottom = viewport.visualHeight;
     expect(geometry.pickerTop).toBeGreaterThanOrEqual(visibleTop);
     expect(geometry.pickerBottom).toBeLessThanOrEqual(visibleBottom);
     expect(geometry.inputTop).toBeGreaterThanOrEqual(visibleTop);
     expect(geometry.inputBottom).toBeLessThanOrEqual(visibleBottom);
     expect(geometry.portalledOutsideDialog).toBe(true);
+    // The sheet spans the viewport minus its 16px side gutters. A containing block on the
+    // popper wrapper (transform or will-change) collapses it to a sliver instead.
+    expect(Math.abs(geometry.pickerLeft - 16)).toBeLessThanOrEqual(1);
+    expect(Math.abs(geometry.pickerRight - (viewport.width - 16))).toBeLessThanOrEqual(1);
 
     const searchInput = picker.locator("input");
     await searchInput.fill(query);
@@ -182,15 +188,12 @@ for (const viewport of VIEWPORT_CASES) {
 
     await constrainVisualViewport(page, viewport);
 
-    const visibleTop = viewport.offsetTop;
-    const visibleBottom = viewport.offsetTop + viewport.visualHeight;
+    const visibleTop = 0;
+    const visibleBottom = viewport.visualHeight;
     await expect.poll(async () => dialog.evaluate((element) => {
       const rect = element.getBoundingClientRect();
       return { top: rect.top, bottom: rect.bottom };
-    })).toEqual({
-      top: viewport.offsetTop + 16,
-      bottom: viewport.offsetTop + viewport.visualHeight - 16,
-    });
+    })).toEqual({ top: 16, bottom: viewport.visualHeight - 16 });
 
     const dialogGeometry = await dialog.evaluate((element) => {
       const style = getComputedStyle(element);
