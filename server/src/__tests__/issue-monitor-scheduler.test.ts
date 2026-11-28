@@ -21,6 +21,7 @@ import {
   issueRecoveryActions,
   issueDocuments,
   issues,
+  nativeRunFinalizations,
   workspaceRuntimeServices,
 } from "@paperclipai/db";
 import {
@@ -132,6 +133,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     await db.delete(activityLog);
     await db.delete(environmentLeases);
     await db.delete(workspaceRuntimeServices);
+    await db.delete(nativeRunFinalizations);
     await db.delete(issues);
     await db.delete(costEvents);
     await db.delete(heartbeatRuns);
@@ -328,6 +330,56 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     const [triggered] = await db.select().from(issues).where(eq(issues.id, issueId));
     expect(triggered.monitorNextCheckAt).toBeNull();
     expect(triggered.monitorAttemptCount).toBe(1);
+    expect((await db.select().from(agentWakeupRequests)).filter(wake => wake.reason === "issue_monitor_due")).toHaveLength(1);
+  });
+
+  it("dispatches a due monitor once a Retry run has succeeded a failed run that was waiting to retry itself", async () => {
+    const { companyId, issueId, agentId } = await seedFixture();
+    const failedRunId = randomUUID();
+    const failedAt = new Date("2026-04-11T12:00:00.000Z");
+    await db.insert(heartbeatRuns).values({ id: failedRunId, companyId, agentId, nativeIssueId: issueId, runtimeMode: "native",
+      status: "failed", nativePhase: "retryable_failure", startedAt: new Date("2026-04-11T11:50:00.000Z"), finishedAt: failedAt,
+      contextSnapshot: { issueId } });
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId, runId: failedRunId, phase: "retryable_failure" });
+    const heartbeat = heartbeatService(db);
+    // While the failed run still waits for its own retry, the monitor waits too.
+    expect((await heartbeat.tickTimers(new Date("2026-04-11T12:31:00.000Z"))).enqueued).toBe(0);
+
+    // The person pressed Retry instead, and that new run succeeded.
+    const retryRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: retryRunId, companyId, agentId, nativeIssueId: issueId, runtimeMode: "native",
+      status: "succeeded", nativePhase: "committed", startedAt: new Date("2026-04-11T12:10:00.000Z"),
+      finishedAt: new Date("2026-04-11T12:20:00.000Z"),
+      contextSnapshot: { issueId, previousRunId: failedRunId, taskRetryRequestId: randomUUID() } });
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId, runId: retryRunId, phase: "committed" });
+
+    expect((await heartbeat.tickTimers(new Date("2026-04-11T12:32:00.000Z"))).enqueued).toBe(1);
+    const [triggered] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(triggered.monitorNextCheckAt).toBeNull();
+    expect((await db.select().from(agentWakeupRequests)).filter(wake => wake.reason === "issue_monitor_due")).toHaveLength(1);
+  });
+
+  it("dispatches a due monitor once a later Retry succeeds after an earlier Retry also failed", async () => {
+    const { companyId, issueId, agentId } = await seedFixture();
+    const failedRun = async (id: string, startedAt: string, finishedAt: string, previousRunId?: string) => {
+      await db.insert(heartbeatRuns).values({ id, companyId, agentId, nativeIssueId: issueId, runtimeMode: "native",
+        status: "failed", nativePhase: "retryable_failure", startedAt: new Date(startedAt), finishedAt: new Date(finishedAt),
+        contextSnapshot: previousRunId ? { issueId, previousRunId, taskRetryRequestId: randomUUID() } : { issueId } });
+      await db.insert(nativeRunFinalizations).values({ companyId, issueId, runId: id, phase: "retryable_failure" });
+    };
+    const firstRunId = randomUUID(), firstRetryId = randomUUID();
+    await failedRun(firstRunId, "2026-04-11T11:00:00.000Z", "2026-04-11T11:10:00.000Z");
+    await failedRun(firstRetryId, "2026-04-11T11:20:00.000Z", "2026-04-11T11:30:00.000Z", firstRunId);
+    const heartbeat = heartbeatService(db);
+    expect((await heartbeat.tickTimers(new Date("2026-04-11T12:31:00.000Z"))).enqueued).toBe(0);
+
+    // The second Retry names only the first Retry, and succeeds.
+    await db.insert(heartbeatRuns).values({ id: randomUUID(), companyId, agentId, nativeIssueId: issueId, runtimeMode: "native",
+      status: "succeeded", nativePhase: "committed", startedAt: new Date("2026-04-11T11:40:00.000Z"),
+      finishedAt: new Date("2026-04-11T11:50:00.000Z"),
+      contextSnapshot: { issueId, previousRunId: firstRetryId, taskRetryRequestId: randomUUID() } });
+
+    expect((await heartbeat.tickTimers(new Date("2026-04-11T12:32:00.000Z"))).enqueued).toBe(1);
     expect((await db.select().from(agentWakeupRequests)).filter(wake => wake.reason === "issue_monitor_due")).toHaveLength(1);
   });
 

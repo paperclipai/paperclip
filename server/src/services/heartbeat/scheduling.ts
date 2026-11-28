@@ -970,6 +970,15 @@ export function createHeartbeatScheduling(
     }
   }
 
+  /** How many failed Retry runs back a succeeded Retry still releases the monitor. */
+  const MAX_REPLACED_RETRY_CHAIN = 20;
+
+  // A native run that is still executing, or whose finalization is unsettled,
+  // holds the task's monitor. One exception: a failed run waiting to retry
+  // itself (`retryable_failure`) no longer holds it once a Retry has replaced
+  // it and succeeded. Each Retry run names the run it replaces in
+  // `previousRunId`, and a Retry can itself fail and be retried, so the check
+  // follows that chain back from the succeeded Retry through failed Retry runs.
   function noActiveNativeMonitorRun() {
     return sql`not exists (select 1 from ${heartbeatRuns} monitor_run
       where monitor_run.company_id = ${issues.companyId}
@@ -979,7 +988,31 @@ export function createHeartbeatScheduling(
           or exists (select 1 from ${nativeRunFinalizations} monitor_finalization
             where monitor_finalization.company_id = monitor_run.company_id
               and monitor_finalization.run_id = monitor_run.id
-              and monitor_finalization.phase not in ('committed', 'terminal_failure'))))`;
+              and monitor_finalization.phase not in ('committed', 'terminal_failure')
+              and not (monitor_finalization.phase = 'retryable_failure'
+                and monitor_run.status = 'failed'
+                and exists (
+                  with recursive replaced_run(run_id, depth) as (
+                    select retry_run.context_snapshot->>'previousRunId', 1
+                    from ${heartbeatRuns} retry_run
+                    where retry_run.company_id = monitor_run.company_id
+                      and retry_run.native_issue_id = monitor_run.native_issue_id
+                      and retry_run.runtime_mode = 'native'
+                      and retry_run.status = 'succeeded'
+                      and retry_run.native_phase = 'committed'
+                      and nullif(retry_run.context_snapshot->>'taskRetryRequestId', '') is not null
+                    union all
+                    select failed_retry.context_snapshot->>'previousRunId', replaced_run.depth + 1
+                    from replaced_run
+                    join ${heartbeatRuns} failed_retry on failed_retry.id::text = replaced_run.run_id
+                    where replaced_run.depth < ${MAX_REPLACED_RETRY_CHAIN}
+                      and failed_retry.company_id = monitor_run.company_id
+                      and failed_retry.native_issue_id = monitor_run.native_issue_id
+                      and failed_retry.runtime_mode = 'native'
+                      and failed_retry.status = 'failed'
+                      and nullif(failed_retry.context_snapshot->>'taskRetryRequestId', '') is not null
+                  )
+                  select 1 from replaced_run where replaced_run.run_id = monitor_run.id::text)))))`;
   }
 
   async function triggerIssueMonitor(
