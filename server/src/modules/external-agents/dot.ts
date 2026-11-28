@@ -134,7 +134,7 @@ function createBroker(db: Db) {
       return db.transaction(tx => withExternalAdmissionGuard(tx, candidate.companyId, candidate.agentId, async () => {
         const [b] = await tx.select().from(bindings).where(and(eq(bindings.pairingCodeHash, hash(code)),
           eq(bindings.companyId, principal.grant.companyId), eq(bindings.operatorId, principal.grant.userId), isNull(bindings.revokedAt))).for("update");
-        if (!b || !await enabled(b.providerKind) || b.status !== "pairing" || !b.pairingExpiresAt || b.pairingExpiresAt <= new Date()) throw fail("Pairing code expired or was consumed.");
+        if (!b || !await externalBotEnabled(db, b.providerKind, tx) || b.status !== "pairing" || !b.pairingExpiresAt || b.pairingExpiresAt <= new Date()) throw fail("Pairing code expired or was consumed.");
         if (b.providerKind === "grok_bot") await authorizeExternalBotOperator(tx as unknown as Db, b.companyId, b.operatorId);
         const [agent] = await tx.select().from(agents).where(and(eq(agents.id, b.agentId), eq(agents.companyId, b.companyId))).for("update");
         const [grant] = await tx.select().from(mcpOauthGrants).where(and(eq(mcpOauthGrants.id, principal.grant.id), isNull(mcpOauthGrants.revokedAt))).for("update");

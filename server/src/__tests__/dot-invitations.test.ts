@@ -11,7 +11,7 @@ import express from "express";
 import request from "supertest";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
-import { createDb, agents, approvals, principalPermissionGrants, authUsers, companies, companyMemberships, dotAgentBindings, activityLog } from "@paperclipai/db";
+import { createDb, agents, approvals, principalPermissionGrants, authUsers, companies, companyMemberships, dotAgentBindings, activityLog, mcpOauthClients, mcpOauthGrants } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { dotInvitationService } from "../services/dot-invitations.js";
 import { dotRunnerBroker } from "../services/dot-runner-broker.js";
@@ -38,6 +38,33 @@ async function fixture(requireApproval = false) {
   await db.insert(principalPermissionGrants).values({ companyId: company!.id, principalType: "user", principalId: userId, permissionKey: "agents:create" });
   return { userId, companyId: company!.id };
 }
+it.each(["openai_dot", "grok_bot"] as const)("pairs %s with a single pooled connection", async provider => {
+  const f = await fixture();
+  await instanceSettingsService(db).updateExperimental({ enableGrokBot: true, enableNativeRunner: true });
+  const [agent] = await db.insert(agents).values({ companyId: f.companyId, name: "External agent", adapterType: "paperclip_runner",
+    status: "active", adapterConfig: { provider } }).returning();
+  const clientId = randomUUID();
+  await db.insert(mcpOauthClients).values({ id: clientId, name: "External agent", redirectUris: ["https://example.test/callback"] });
+  const [grant] = await db.insert(mcpOauthGrants).values({ companyId: f.companyId, userId: f.userId, clientId,
+    resource: "https://example.test/mcp/runner", purpose: "agent", scopes: ["paperclip:agent"] }).returning();
+  const pairing = await dotRunnerBroker(db).createPairing({ companyId: f.companyId, agentId: agent!.id, operatorId: f.userId, provider });
+  const single = createDb(temporary.connectionString, { maxConnections: 1 });
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const result = await Promise.race([
+      dotRunnerBroker(single).pair({ grant: grant!, actor: { type: "none" },
+        company: { id: f.companyId, name: "Dot invitation", issuePrefix: "DI", status: "active" } }, pairing.pairingCode),
+      new Promise<never>((_resolve, reject) => { deadline = setTimeout(() => reject(new Error("Pairing did not finish with one connection")), 1000); }),
+    ]);
+    expect(result).toMatchObject({ companyId: f.companyId, agentId: agent!.id, bindingId: pairing.bindingId });
+    const [binding] = await db.select().from(dotAgentBindings).where(eq(dotAgentBindings.id, pairing.bindingId));
+    expect(binding).toMatchObject({ status: "connected", grantId: grant!.id, pairingCodeHash: null });
+  } finally {
+    clearTimeout(deadline);
+    await single.$client.end({ timeout: 1 });
+    await instanceSettingsService(db).updateExperimental({ enableGrokBot: false, enableNativeRunner: false });
+  }
+});
 it("atomically resumes one pending invite across retries and never persists a pairing secret", async () => {
   const f = await fixture();
   const service = dotInvitationService(db);
