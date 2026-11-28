@@ -151,8 +151,12 @@ impl CredentialObserver {
                 let name = provider["agent"].as_str().expect("matched agent");
                 crate::acpx_provider_backend::secure_directory(Path::new(root), "ACPX runtime")
                     .map_err(|_| observer_error("runtime home is unavailable"))?;
-                let root = fs::canonicalize(root)
-                    .map_err(|_| observer_error("runtime home is unavailable"))?;
+                let root = match provider["harnessStateDirectory"].as_str() {
+                    Some(directory) => fs::canonicalize(directory)
+                        .map_err(|_| observer_error("harness state home is unavailable"))?,
+                    None => fs::canonicalize(root)
+                        .map_err(|_| observer_error("runtime home is unavailable"))?,
+                };
                 let path = root
                     .join("acpx")
                     .join(acpx_session_directory(session))
@@ -745,6 +749,32 @@ mod tests {
             observer.activate().unwrap();
             assert!(observer.pending().is_none());
         }
+    }
+
+    #[test]
+    fn acpx_observers_watch_the_home_in_the_harness_state_directory() {
+        let f = Fixture::new("codex", &codex("seed"));
+        let state_dir = f.root.join("observer");
+        fs::create_dir(&state_dir).unwrap();
+        fs::set_permissions(&state_dir, fs::Permissions::from_mode(0o700)).unwrap();
+        let harness = f.root.join("harness-state");
+        fs::create_dir(&harness).unwrap();
+        let mut observer = CredentialObserver::new(&state_dir, "session");
+        observer
+            .configure(&json!({"observeCredentials":true,"provider":{
+                "kind":"acpx", "agent":"codex", "runtimeDirectory":state_dir.join("runtime"),
+                "harnessStateDirectory":harness, "normalizedSessionId":"session"
+            }}))
+            .unwrap();
+        assert_eq!(
+            observer.state.as_ref().unwrap().path,
+            fs::canonicalize(&harness)
+                .unwrap()
+                .join("acpx")
+                .join(acpx_session_directory("session"))
+                .join("codex-home")
+                .join("auth.json")
+        );
     }
 
     #[test]

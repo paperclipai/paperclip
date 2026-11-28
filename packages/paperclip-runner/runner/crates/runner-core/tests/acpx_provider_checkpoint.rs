@@ -48,6 +48,7 @@ fn config(directory: &std::path::Path) -> AcpxProviderSessionConfig {
         run_id: "run-1".to_owned(),
         catalog_revision: 7,
         runtime_directory: directory.to_owned(),
+        harness_state_directory: None,
         normalized_session_id: "session-1".to_owned(),
         working_directory: directory.to_owned(),
         permission_mode: AcpxPermissionMode::ApproveReads,

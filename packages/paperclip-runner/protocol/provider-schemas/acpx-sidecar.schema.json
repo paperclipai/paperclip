@@ -139,6 +139,7 @@
       "type": "object",
       "properties": {
         "runtimeDirectory": true,
+        "harnessStateDirectory": true,
         "normalizedSessionId": true,
         "workingDirectory": true,
         "agent": true,

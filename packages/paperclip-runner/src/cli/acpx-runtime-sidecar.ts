@@ -358,6 +358,7 @@ async function dispatch(
       {
         candidateAdmission: params.candidateAdmission,
         runtimeDirectory: params.runtimeDirectory,
+        ...(params.harnessStateDirectory === undefined ? {} : { harnessStateDirectory: params.harnessStateDirectory }),
         normalizedSessionId: params.normalizedSessionId,
         workingDirectory: params.workingDirectory,
         agent: params.agent,
@@ -1716,6 +1717,9 @@ function parseOpenParams(
   return {
     ...(candidateAdmission ? { candidateAdmission } : {}),
     runtimeDirectory: requiredText(value.runtimeDirectory, "runtimeDirectory"),
+    ...(value.harnessStateDirectory === undefined
+      ? {}
+      : { harnessStateDirectory: requiredText(value.harnessStateDirectory, "harnessStateDirectory") }),
     normalizedSessionId: boundedIdentity(
       value.normalizedSessionId,
       "normalizedSessionId",

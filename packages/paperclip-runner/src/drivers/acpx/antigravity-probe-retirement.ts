@@ -1,16 +1,19 @@
 import { lstat } from "node:fs/promises";
 import { join } from "node:path";
 import { acquireAcpxProviderLifetimeLease, type AcpxProviderLifetimeLease } from "./codex-credentials.js";
-import { resolveAcpxRuntimeRoot } from "./recovery-identity.js";
+import { resolveAcpxHarnessStateRoot, resolveAcpxRuntimeRoot } from "./recovery-identity.js";
 
 /** After all original startup work and the sidecar have retired, acquiring the
  * same kernel quorum proves the guarded native lifetime no longer owns this
  * credential home. No token bytes are read, changed, or used for authentication.
  */
-export async function confirmAntigravityProbeNativeRetirement(runtimeDirectory: string, normalizedSessionId: string): Promise<void> {
+export async function confirmAntigravityProbeNativeRetirement(runtimeDirectory: string, normalizedSessionId: string, harnessStateDirectory?: string): Promise<void> {
   let directory: string;
   try {
-    directory = join(await resolveAcpxRuntimeRoot(runtimeDirectory, normalizedSessionId), "antigravity-home", "antigravity-acp");
+    const root = harnessStateDirectory === undefined
+      ? await resolveAcpxRuntimeRoot(runtimeDirectory, normalizedSessionId)
+      : await resolveAcpxHarnessStateRoot(harnessStateDirectory, normalizedSessionId);
+    directory = join(root, "antigravity-home", "antigravity-acp");
     await lstat(directory);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return;

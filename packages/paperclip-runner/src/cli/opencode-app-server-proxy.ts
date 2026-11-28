@@ -124,6 +124,9 @@ async function open(
     commandFd: launchBinding.commandFd,
     commandLifecycle: launchBinding.commandLifecycle,
     runtimeDirectory: runtimeDirectory(),
+    ...(process.env.PAPERCLIP_RUNNER_HARNESS_STATE_DIR
+      ? { harnessStateDirectory: process.env.PAPERCLIP_RUNNER_HARNESS_STATE_DIR }
+      : {}),
     environment: withoutAmbientOpenCodeCommand(process.env),
     runnerInstanceId:
       process.env.PAPERCLIP_RUNNER_INSTANCE_ID ?? "paperclip-runnerd-opencode",

@@ -1762,6 +1762,7 @@ export interface CapabilityRunnerdCodexTransportOptions extends RunnerExecutionD
   /** Digest of the build-owned provider-pack manifest that authorized remote artifacts. */
   providerPackAuthorityDigest?: string;
   acpxRuntimeDirectory?: string;
+  harnessStateDirectory?: string;
   managedProfile?: {
     profileId: string;
     anthropicAgentId: string;
@@ -3942,6 +3943,9 @@ function createCapabilityRunnerdProviderEnvironmentBase(input: {
       PAPERCLIP_OPENCODE_RUNTIME_DIR:
         input.options.opencodeRuntimeDirectory ??
         resolve(input.options.stateDirectory ?? tmpdir(), "opencode"),
+      ...(input.options.harnessStateDirectory === undefined
+        ? {}
+        : { PAPERCLIP_RUNNER_HARNESS_STATE_DIR: input.options.harnessStateDirectory }),
       ...commonIdentity,
     };
   }
@@ -5702,7 +5706,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       await awaitProbeProof(() => pids.every(maintenanceProcessAbsent), deadline, "confirming recorded process absence");
       if (this.options.provider === "acpx" && this.options.acpxAgent === "antigravity") {
         const sessionId = this.#eventIdentity?.normalizedSessionId ?? this.options.prpIdentity?.normalizedSessionId;
-        if (sessionId) await awaitProbeCleanup(confirmAntigravityProbeNativeRetirement(this.options.acpxRuntimeDirectory ?? resolve(this.#root, "acpx"), sessionId), deadline, "confirming the original Google owner retirement");
+        if (sessionId) await awaitProbeCleanup(confirmAntigravityProbeNativeRetirement(this.options.acpxRuntimeDirectory ?? resolve(this.#root, "acpx"), sessionId, this.options.harnessStateDirectory), deadline, "confirming the original Google owner retirement");
         else if (handle?.child.pid !== undefined) throw new Error("Native probe credential lifetime is unidentified");
       }
     })();

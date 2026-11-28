@@ -13,11 +13,9 @@ import {
   lstatSync,
   realpathSync,
   type BigIntStats,
-  type Stats,
 } from "node:fs";
 import {
   lstat,
-  mkdir,
   open,
   readFile,
   realpath,
@@ -31,7 +29,6 @@ import {
   dirname,
   isAbsolute,
   join,
-  relative,
   resolve,
 } from "node:path";
 
@@ -43,8 +40,8 @@ import {
   resolveAcpxRuntimeRoot,
   type AcpxRecoveryBinding,
 } from "./recovery-identity.js";
+import { ensurePrivateDirectory, isInside, prepareHarnessStateSessionRoot, syncDirectory } from "../harness-state-directory.js";
 
-const PRIVATE_DIRECTORY_MODE = 0o700;
 const PRIVATE_FILE_MODE = 0o600;
 const MAX_SANDBOX_ENVIRONMENT_BYTES = 512 * 1024;
 const MAX_WORKSPACE_RECORD_BYTES = 64 * 1024;
@@ -64,6 +61,7 @@ export interface AcpxRuntimeSandbox {
   persistedEnvironment: Readonly<NodeJS.ProcessEnv>;
   /** The host sandbox must protect these runtime/config paths from tools. */
   protectedPaths: readonly string[];
+  harnessStateRoot?: string;
 }
 
 /** A recovered workspace pinned until the provider process is admitted. */
@@ -373,9 +371,12 @@ export async function prepareAcpxRuntimeSandbox(input: {
     expectedRoot,
     physicalAcpxDirectory,
   );
+  const harnessState = await prepareAcpxHarnessStateRoot(input.binding);
+  const stateRoot = harnessState?.root ?? root;
+  const runtimeProtectedPaths = [physicalRuntimeDirectory, ...(harnessState ? [harnessState.directory] : [])];
   const stateDirectory = await ensurePrivateDirectory(
-    join(root, "acpx-state"),
-    root,
+    join(stateRoot, "acpx-state"),
+    stateRoot,
   );
   if (usesPreconfiguredHome(input.environment)) {
     if (input.agent !== "claude" && input.agent !== "codex") throw new Error("preconfigured_home_unsupported_provider");
@@ -398,7 +399,8 @@ export async function prepareAcpxRuntimeSandbox(input: {
       agentHomeDirectory: input.agent === "claude"
         ? homes.CLAUDE_CONFIG_DIR ?? join(homes.HOME, ".claude")
         : homes.CODEX_HOME ?? join(homes.HOME, ".codex"),
-      protectedPaths: Object.freeze([physicalRuntimeDirectory, ...policy.protectedPaths]),
+      protectedPaths: Object.freeze([...runtimeProtectedPaths, ...policy.protectedPaths]),
+      ...(harnessState ? { harnessStateRoot: harnessState.root } : {}),
       launchEnvironment: Object.freeze(launchEnvironment),
       persistedEnvironment: Object.freeze({ ...homes, PAPERCLIP_RUNNER_HOME_MODE: "preconfigured" }),
     };
@@ -410,16 +412,16 @@ export async function prepareAcpxRuntimeSandbox(input: {
     join(root, "config"),
     root,
   );
-  const dataDirectory = await ensurePrivateDirectory(join(root, "data"), root);
+  const dataDirectory = await ensurePrivateDirectory(join(stateRoot, "data"), stateRoot);
   const cacheDirectory = await ensurePrivateDirectory(
     join(root, "cache"),
     root,
   );
   const agentHomeDirectory = preparedHome ?? await ensurePrivateDirectory(
-    join(root, `${input.agent}-home`),
-    root,
+    join(stateRoot, `${input.agent}-home`),
+    stateRoot,
   );
-  const protectedPaths = Object.freeze([...new Set([physicalRuntimeDirectory, ...(preparedHome ? [preparedHome] : []), ...policy.protectedPaths])]);
+  const protectedPaths = Object.freeze([...new Set([...runtimeProtectedPaths, ...(preparedHome ? [preparedHome] : []), ...policy.protectedPaths])]);
   const workspaceRecordPath = join(root, "workspace");
   await writePrivateFile(
     workspaceRecordPath,
@@ -611,11 +613,30 @@ export async function prepareAcpxRuntimeSandbox(input: {
     cacheDirectory,
     agentHomeDirectory,
     workspaceRecordPath,
+    ...(harnessState ? { harnessStateRoot: harnessState.root } : {}),
     ...(initializeOwnedConfiguration ? { initializeOwnedConfiguration } : {}),
     protectedPaths,
     launchEnvironment: Object.freeze({ ...launchEnvironment }),
     persistedEnvironment: Object.freeze(persistedEnvironment),
   };
+}
+
+async function prepareAcpxHarnessStateRoot(
+  binding: AcpxRecoveryBinding,
+): Promise<{ directory: string; root: string } | null> {
+  const expected = binding.harnessStateRoot;
+  if (expected === undefined) return null;
+  if (resolve(expected) !== expected || basename(dirname(expected)) !== "acpx") {
+    throw new Error("ACPX harness state root is outside its expected namespace");
+  }
+  const directory = dirname(dirname(expected));
+  if (directory === binding.workspacePath || isInside(directory, binding.workspacePath)
+    || isInside(binding.workspacePath, directory)) {
+    throw new Error("Harness state directory must not overlap the ACPX workspace");
+  }
+  const prepared = await prepareHarnessStateSessionRoot(directory, "acpx", basename(expected));
+  if (prepared.root !== expected) throw new Error("ACPX harness state root changed during preparation");
+  return prepared;
 }
 
 async function validateProviderPolicy(policy: AcpxProviderRuntimePolicy | undefined, agent: QualifiedAcpxAgent): Promise<{
@@ -639,60 +660,6 @@ async function validateProviderPolicy(policy: AcpxProviderRuntimePolicy | undefi
     protectedPaths: await paths(policy?.protectedPaths, false),
     systemInstructions,
   };
-}
-
-async function ensurePrivateDirectory(
-  directory: string,
-  physicalParent: string,
-): Promise<string> {
-  try {
-    await mkdir(directory, { mode: PRIVATE_DIRECTORY_MODE });
-  } catch (error) {
-    if (errorCode(error) !== "EEXIST") throw error;
-  }
-  let handle: FileHandle;
-  try {
-    handle = await open(
-      directory,
-      constants.O_RDONLY |
-        (constants.O_DIRECTORY ?? 0) |
-        (constants.O_NOFOLLOW ?? 0),
-    );
-  } catch {
-    throw new Error("ACPX sandbox path must be a real directory");
-  }
-  let physical: string;
-  try {
-    const opened = await handle.stat();
-    const entry = await lstat(directory);
-    if (
-      !opened.isDirectory() ||
-      entry.isSymbolicLink() ||
-      !entry.isDirectory() ||
-      !sameFile(entry, opened)
-    ) {
-      throw new Error("ACPX sandbox path must be a real directory");
-    }
-    // Apply permissions to the inode that was opened without following links.
-    // A directory-entry swap can therefore never redirect chmod to its target.
-    await handle.chmod(PRIVATE_DIRECTORY_MODE);
-    physical = await realpath(directory);
-    const verifiedEntry = await lstat(directory);
-    if (!sameFile(verifiedEntry, opened)) {
-      throw new Error("ACPX sandbox directory changed during preparation");
-    }
-    if (!isInside(physicalParent, physical)) {
-      throw new Error("ACPX sandbox directory escaped its private parent");
-    }
-    // Persist the child inode before the directory entry that names it.
-    if (process.platform !== "win32") await handle.sync();
-  } finally {
-    await handle.close();
-  }
-  // Sync the parent even during recovery: an earlier process may have created
-  // the entry and crashed before making that mkdir durable.
-  await syncDirectory(physicalParent);
-  return physical;
 }
 
 /** Call only while the host owns the provider lifetime lease, before launch. */
@@ -749,19 +716,6 @@ async function writePrivateFile(
   }
 }
 
-async function syncDirectory(directory: string): Promise<void> {
-  if (process.platform === "win32") return;
-  const handle = await open(
-    directory,
-    constants.O_RDONLY | (constants.O_DIRECTORY ?? 0),
-  );
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-}
-
 function validateEnvironmentSize(environment: NodeJS.ProcessEnv): void {
   const bytes = Object.entries(environment).reduce(
     (total, [name, value]) =>
@@ -788,24 +742,4 @@ function isPersistableEnvironmentName(name: string): boolean {
       name,
     )
   );
-}
-
-function isInside(parent: string, child: string): boolean {
-  const childPath = relative(parent, child);
-  return (
-    childPath.length > 0 &&
-    childPath !== ".." &&
-    !childPath.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) &&
-    !isAbsolute(childPath)
-  );
-}
-
-function sameFile(left: Stats, right: Stats): boolean {
-  return left.dev === right.dev && left.ino === right.ino;
-}
-
-function errorCode(error: unknown): string | null {
-  return typeof error === "object" && error !== null && "code" in error
-    ? String((error as { code?: unknown }).code)
-    : null;
 }

@@ -105,6 +105,7 @@ pub struct AcpxProviderSessionConfig {
     pub run_id: String,
     pub catalog_revision: u64,
     pub runtime_directory: PathBuf,
+    pub harness_state_directory: Option<PathBuf>,
     pub normalized_session_id: String,
     pub working_directory: PathBuf,
     pub permission_mode: AcpxPermissionMode,
@@ -192,7 +193,13 @@ impl AcpxProviderSessionConfig {
         for (path, label) in [
             (&self.runtime_directory, "runtime directory"),
             (&self.working_directory, "working directory"),
-        ] {
+        ]
+        .into_iter()
+        .chain(
+            self.harness_state_directory
+                .iter()
+                .map(|path| (path, "harness state directory")),
+        ) {
             if !path.is_absolute() {
                 return Err(LocalRunnerError::invalid(format!(
                     "ACPX {label} must be an existing absolute directory"
@@ -1805,6 +1812,9 @@ fn session_open_params(config: &AcpxProviderSessionConfig, sidecar_tools: &[Valu
     if let Some(mode) = config.mode.as_deref() {
         params["mode"] = json!(mode);
     }
+    if let Some(directory) = &config.harness_state_directory {
+        params["harnessStateDirectory"] = json!(directory);
+    }
     params
 }
 
@@ -2376,6 +2386,7 @@ mod mode_tests {
             run_id: "run-1".to_owned(),
             catalog_revision: 1,
             runtime_directory: std::env::temp_dir(),
+            harness_state_directory: None,
             normalized_session_id: "session-1".to_owned(),
             working_directory: std::env::temp_dir(),
             permission_mode: AcpxPermissionMode::ApproveReads,

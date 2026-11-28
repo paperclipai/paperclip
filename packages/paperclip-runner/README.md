@@ -1050,6 +1050,32 @@ with the current launch settings. History remains in the account directory.
 Task control files remain in the session runtime directory. Separate directories
 under one OS user are not a credential isolation boundary.
 
+## Harness state directory
+
+By default each ACPX and OpenCode session keeps its whole tree in the harness's
+runtime directory. A host that keeps that directory on storage that does not
+outlive the session can name a separate harness state directory with
+`harnessStateDirectory` (native backend factory, runnerd transport, and
+`createRunnerProviderLaunch` options). The Runner then keeps only the state a
+later process needs to continue a session there, using the same namespacing:
+
+| Location | Contents |
+| --- | --- |
+| `<dir>/acpx/<session>/acpx-state` | ACPX session records |
+| `<dir>/acpx/<session>/<agent>-home` | The agent's configuration directory, including its conversation history |
+| `<dir>/acpx/<session>/data` | The agent's XDG data directory (Cursor's data directory) |
+| `<dir>/opencode/<session>/data` | OpenCode's XDG data directory, including its session store |
+| `<dir>/opencode/<session>/workspace` | The session's workspace record, read when OpenCode reopens the session |
+
+Caches, rewritten configuration, per-launch homes, the ACPX workspace record and
+the turn dispatch journal stay in the runtime directory. The directory must already
+exist and be named by an absolute, normalized path with no symbolic link on it;
+it must not overlap the task workspace. The Runner creates private (`0700`)
+children below it and protects it from tools like the runtime directory. The
+OpenCode proxy reads it from `PAPERCLIP_RUNNER_HARNESS_STATE_DIR`, which a host
+that launches runnerd itself sets in the Runner's environment. Changing the
+directory for an existing session is refused as a changed provider contract.
+
 ## Preconfigured home
 
 Set `homeMode: "preconfigured"` in a `paperclip_runner` agent's adapter config

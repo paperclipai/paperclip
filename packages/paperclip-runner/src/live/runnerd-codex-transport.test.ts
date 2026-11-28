@@ -2964,6 +2964,7 @@ it("preserves OpenCode runtime bindings when a durable runner is respawned", () 
       },
       opencodeCommand: "/provider-pack/opencode",
       opencodeRuntimeDirectory: "/isolated/session/opencode",
+      harnessStateDirectory: "/durable/harness-state",
     },
     identity: {
       runnerInstanceId: "runner-1",
@@ -2980,6 +2981,7 @@ it("preserves OpenCode runtime bindings when a durable runner is respawned", () 
   expect(environment).toMatchObject({
     PAPERCLIP_OPENCODE_PERMISSION_MODE: "deny",
     PAPERCLIP_OPENCODE_RUNTIME_DIR: "/isolated/session/opencode",
+    PAPERCLIP_RUNNER_HARNESS_STATE_DIR: "/durable/harness-state",
     PAPERCLIP_RUNNER_INSTANCE_ID: "runner-1",
     PAPERCLIP_RUN_ID: "run-1",
     PAPERCLIP_NORMALIZED_SESSION_ID: "session-1",
@@ -3019,6 +3021,7 @@ it("preserves OpenCode runtime bindings when a durable runner is respawned", () 
   expect(defaultPermissionEnvironment.PAPERCLIP_OPENCODE_PERMISSION_MODE).toBe(
     "allow",
   );
+  expect(defaultPermissionEnvironment).not.toHaveProperty("PAPERCLIP_RUNNER_HARNESS_STATE_DIR");
 });
 
 it("passes the configured Codex API key only through the provider process environment", () => {
