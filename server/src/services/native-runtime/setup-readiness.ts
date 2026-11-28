@@ -9,6 +9,7 @@ import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
 import { NativeEnvironmentProbeCleanupError, probeNativeRunnerEnvironment, resolveSourceCodexHome } from "../../vendor/paperclip-runner/index.js";
 import { resolvePaperclipRunnerBinary, resolveRemotePaperclipRunnerBinary } from "./native-codex-runner.js";
 import { readLocalAiCredentialFile } from "../local-ai-credential-file.js";
+import { readRemoteUserHome } from "./remote-user-home.js";
 import { createNativeSshCommandRunner } from "./native-ssh-command-runner.js";
 import { resolvePaperclipRunnerTransport } from "@paperclipai/adapter-utils/runner-connectivity";
 import { createNativeRunnerExecutionDriver } from "./native-runner-execution-driver.js";
@@ -97,6 +98,12 @@ async function probeRemoteNativeCodex(options: {
   const { createRemoteNativeArtifactPreparation, createRemoteRunnerProcessLauncher, stageRemoteRunnerFile, readRemoteRunnerState } = await import("./native-session-executor.js");
   const runner = target.transport === "ssh" ? createNativeSshCommandRunner({ spec: target.spec, defaultCwd: target.remoteCwd }) : target.runner;
   if (!runner) throw new Error("runner_transport_ineligible: remote process runner is unavailable");
+  const preconfigured = target.transport === "ssh" && options.context.config.homeMode === "preconfigured";
+  const environment = { ...options.environment };
+  if (preconfigured) {
+    delete environment.CODEX_HOME;
+    environment.HOME = await readRemoteUserHome(runner);
+  }
   const id = crypto.randomUUID();
   const runnerInstanceId = `setup-${id}`;
   const ingress = target.transport === "sandbox" && target.effectiveCapabilities?.runnerWebSocketIngress === true;
@@ -122,14 +129,15 @@ async function probeRemoteNativeCodex(options: {
   };
   const runtimeDirectory = await realpath(await mkdtemp(join(tmpdir(), "paperclip-native-setup-")));
   return probePreparedNativeRuntime(runtimeDirectory, async () => {
-    const sourceCodexHome = await prepareProbeCodexSource(runtimeDirectory, options.sourceCodexHome, options.sourceAuthJson);
+    const sourceCodexHome = preconfigured ? "" : await prepareProbeCodexSource(runtimeDirectory, options.sourceCodexHome, options.sourceAuthJson);
     let remoteDirectoryCreated = false;
     let signalSpawned!: () => void;
     const spawned = new Promise<void>(resolve => { signalSpawned = resolve; });
     return { runtimeDirectory: runtimeDirectory, provider: "codex", model: options.model, reasoningEffort: options.reasoningEffort,
-      workingDirectory: remoteWorkspace, environment: options.environment, timeoutMs: options.timeoutMs,
+      workingDirectory: remoteWorkspace, environment, timeoutMs: options.timeoutMs,
       transportOptions: {
         externallySandboxed: target.transport === "sandbox",
+        ...(preconfigured ? { homeMode: "preconfigured" as const } : {}),
         runnerBinary: controllerRunnerBinary, codexCommand: remoteCodexBinary, sourceCodexHome,
         runnerFilesystemRoot: remoteFilesystemRoot,
         prpIdentity: { runnerInstanceId, runId: id, environmentLeaseId: `setup-${id}`, normalizedSessionId: `setup-${id}`, turnId: `turn-${id}`, itemId: `item-${id}` },
@@ -157,6 +165,7 @@ async function probeRemoteNativeCodex(options: {
             runnerProcessLauncher: createRemoteRunnerProcessLauncher({ target, runner, remoteBinary, stateDirectory: remoteStateDirectory,
               onRunnerProcessSpawned: signalSpawned, processIdentityPath: posix.join(remoteStateDirectory, "runner-process.identity"), diagnosticsDirectory: posix.join(remoteRoot, "diagnostics"), runnerInstanceId,
               ensureArtifact: async () => {
+                if (preconfigured) return;
                 for (const name of ["auth.json", "config.toml"] as const) {
                   const sourcePath = join(runtimeDirectory, "codex-home", name);
                   try { await stat(sourcePath); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
@@ -205,7 +214,7 @@ export async function testNativeRunnerAuthentication(context: AdapterEnvironment
   let runtimeDirectory: string | undefined;
   let sourceAuthJson: string | undefined;
   try {
-    if (provider === "codex") {
+    if (provider === "codex" && !(context.executionTarget?.kind === "remote" && context.executionTarget.transport === "ssh" && context.config.homeMode === "preconfigured")) {
       const { buildNativeProviderEnvironment } = await import("./native-session-executor.js");
       sourceCodexHome = context.managedAiCredentialHome ?? resolveSourceCodexHome(buildNativeProviderEnvironment(environment));
     }
@@ -217,7 +226,7 @@ export async function testNativeRunnerAuthentication(context: AdapterEnvironment
         linked = (await lstat(authPath)).isSymbolicLink();
         if (linked && !context.managedAiCredentialHome?.trim()) {
           const field = environment.CODEX_HOME?.trim() ? "env.CODEX_HOME" : "operator CODEX_HOME";
-          throw new Error(`${field} uses a linked auth.json that Paperclip Runner tasks cannot read. Choose Legacy runner in Advanced or use a managed Codex Connection.`);
+          throw new Error(`${field} uses a linked auth.json that Paperclip Runner tasks cannot read. Use a managed Codex Connection.`);
         }
         const resolvedAuthPath = await realpath(authPath);
         const source = await stat(resolvedAuthPath);
@@ -260,7 +269,7 @@ export async function testNativeRunnerAuthentication(context: AdapterEnvironment
     const rejectedModel = provider === "codex" ? CODEX_CHATGPT_MODEL_REJECTION_RE.exec(message)?.[1] : undefined;
     const retirementHint = rejectedModel ? codexChatGptRetirementHint(rejectedModel) : null;
     return { adapterType: "paperclip_runner", status: "fail", testedAt: new Date().toISOString(), checks: [{ code: `${provider}_hello_probe_${authentication ? "auth_required" : /timed out/i.test(message) ? "timeout" : "failed"}`, level: "error", message,
-      hint: retirementHint ?? "Check the selected account, model access, and native runtime prerequisites, then retry. Legacy runner is available explicitly in Advanced." },
+      hint: retirementHint ?? "Check the selected account, model access, and native runtime prerequisites, then retry." },
       ...(authentication && provider === "codex" ? [{ code: ADAPTER_AUTH_MISSING_CHECK_CODE, level: "error" as const,
         message: "The selected Codex account needs authentication.",
         hint: "Sign in to Codex or choose an authenticated account, then test again." }] : [])] };

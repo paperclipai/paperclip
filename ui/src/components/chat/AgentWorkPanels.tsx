@@ -4,7 +4,6 @@ import { ArrowUpDown, File, FileText, Image, Search, Video } from "lucide-react"
 import type { CompanyArtifact, Issue } from "@paperclipai/shared";
 import { artifactsApi } from "@/api/artifacts";
 import { issuesApi } from "@/api/issues";
-import { projectsApi } from "@/api/projects";
 import { IssueFiltersPopover } from "@/components/IssueFiltersPopover";
 import { StatusIcon } from "@/components/StatusIcon";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
@@ -21,6 +20,11 @@ import {
 import { queryKeys } from "@/lib/queryKeys";
 import { Link } from "@/lib/router";
 import { cn, formatDate, relativeTime } from "@/lib/utils";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
+import { companyProjectsQuery } from "@/lib/company-projects-query";
+import { useIssueUpdatedFilterNow } from "@/hooks/useIssueUpdatedFilterNow";
+
+const EMPTY_AGENT_TASKS: Issue[] = [];
 
 /**
  * The agent-scoped side panels shown beside an agent chat: every task the
@@ -86,8 +90,7 @@ export function AgentTaskCard({ task }: { task: Issue }) {
     >
       <div className="flex min-w-0 items-start gap-2">
         <StatusIcon
-          status={task.status}
-          blockerAttention={task.blockerAttention}
+          {...taskStatusIconProps(task)}
           className="mt-0.5 shrink-0"
         />
         <span className="min-w-0 flex-1 line-clamp-2 text-sm font-medium text-foreground">
@@ -131,20 +134,21 @@ export function AgentTasksPanel({
   });
   const tasksView = useQueryView(tasksQuery);
   const projectsQuery = useQuery({
-    queryKey: queryKeys.projects.list(companyId),
-    queryFn: () => projectsApi.list(companyId),
+    ...companyProjectsQuery(companyId),
   });
 
+  const agentTasks = tasksQuery.data ?? EMPTY_AGENT_TASKS;
+  const updatedFilterNow = useIssueUpdatedFilterNow(agentTasks, filters.updatedWithin);
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    const scoped = (tasksQuery.data ?? []).filter((task) => {
+    const scoped = agentTasks.filter((task) => {
       if (task.id === excludeIssueId) return false;
       if (!needle) return true;
       return task.title.toLowerCase().includes(needle)
         || (task.identifier ?? "").toLowerCase().includes(needle);
     });
-    return sortAgentTasks(applyIssueFilters(scoped, filters), sortField, sortDir);
-  }, [tasksQuery.data, excludeIssueId, query, filters, sortField, sortDir]);
+    return sortAgentTasks(applyIssueFilters(scoped, filters, null, false, undefined, {}, updatedFilterNow), sortField, sortDir);
+  }, [agentTasks, excludeIssueId, query, filters, sortField, sortDir, updatedFilterNow]);
 
   const activeFilterCount = countActiveIssueFilters(filters);
   const total = (tasksQuery.data ?? []).filter((task) => task.id !== excludeIssueId).length;

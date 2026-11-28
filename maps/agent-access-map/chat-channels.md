@@ -70,7 +70,7 @@ Gaps: This individual operation has source review but no recorded HTTP verificat
 
 API: `present` — `POST /api/chat-endpoints/{endpointId}/slack/managed/provision`; JSON REST.
 Agent access: `available` — agent REST and default native `search_api` / `call_api`.
-Policy: `tools:manage_connections`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Policy: `tools:manage_connections`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked. The request body's grantId resolves from the Slack manager-grant registry; its company and owner must match the endpoint and current responsible user. A tool-connection grant does not authorize Slack provisioning.
 Evidence: `source-only` — [route](../../server/src/routes/chat-channels.ts); reviewed in the working tree based on the source commit above.
 Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
 Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
@@ -133,7 +133,7 @@ Gaps: Provider fixtures do not qualify live provider setup or availability.
 
 API: `present` — `PUT /api/chat-endpoints/{endpointId}/github/configuration`; JSON REST.
 Agent access: `available` — agent REST and default native `search_api` / `call_api`.
-Policy: `tools:manage_connections`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Policy: `tools:manage_connections`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user. Sponsor and responsible-member selection is limited to self, unless the responsible user is a company owner/admin or instance admin; targets must be active non-viewer members of this company.
 Evidence: `verified` — [route](../../server/src/routes/chat-channels.ts); reviewed in the working tree based on the source commit above. [Authenticated fixtures](../../server/src/__tests__/connection-management.integration.test.ts) passed with database persistence and actual bearer/session middleware.
 Verification: `passed` — deterministic provider fixtures / local assembled server; no live provider qualification.
 Gaps: Provider fixtures do not qualify live provider setup or availability.
@@ -216,8 +216,8 @@ Gaps: This individual operation has source review but no recorded HTTP verificat
 API: `present` — `POST /api/chat-endpoints/{endpointId}/github/app`; JSON REST.
 Agent access: `available` — agent REST and default native `search_api` / `call_api` return a saved human credential-entry handoff; agents may send an empty body.
 Policy: `tools:manage_connections`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). A human session imports the App credentials and signing key. Delegated service import is rejected, and agent requests persist no caller-chosen key.
-Evidence: `verified` — [route](../../server/src/routes/chat-channels.ts), [provider service](../../server/src/services/chat-channels/github/app-setup.ts), and [actual-auth fixture](../../server/src/__tests__/connection-management.integration.test.ts). Agent key/JWT handoffs leave vault refs unchanged. Fresh drafts open the saved import form without the reconnect flag; its component test submits App import with the required webhook secret. Human import persists credentials, then agent repository discovery and verification continue.
-Verification: `passed` — deterministic provider fixtures, assembled server and [saved-screen tests](../../ui/src/pages/apps/chat/GitHubChatSetup.test.tsx).
+Evidence: `verified` — [route](../../server/src/routes/chat-channels.ts), [provider service](../../server/src/services/chat-channels/github/app-setup.ts), and [actual-auth fixture](../../server/src/__tests__/connection-management.integration.test.ts). Agent key/JWT handoffs leave vault refs unchanged. Fresh drafts open the saved import form without the reconnect flag; browser E2E submits App import with the required webhook secret. Human import persists credentials, then agent repository discovery and verification continue.
+Verification: `passed` — deterministic provider fixtures, assembled server, and [browser chat-provider E2E](../../tests/e2e/chat-adapters-ui-providers-catalog.spec.ts).
 Gaps: Human credential entry is intentional; no live provider qualification.
 
 ### `post-chat-endpoints-github-repositories-refresh`
@@ -678,8 +678,7 @@ two. Every endpoint keeps the live task, company, agent and linked-user checks;
 403 denials omit only that endpoint. Preparation waits for both active checks
 before it returns an ordered result or propagates an error. Tool authority reads
 the current bot token without resolving unrelated webhook credentials. See the
-[real-database preparation controls](../../server/src/__tests__/slack-tool-preparation.test.ts)
-and [batch failure controls](../../server/src/services/connectors/slack-endpoint-preparation.test.ts).
+[batch failure controls](../../server/src/services/connectors/slack-endpoint-preparation.test.ts).
 These local controls do not establish live Slack latency or provider access.
 
 Native tool gateways use the durable run task binding for discovery and policy
@@ -692,8 +691,8 @@ Endpoint settings, linked identity, tool profiles, and invocation policy still
 apply on each call. The native tool contract rotates older provider sessions so
 an empty retained catalog is not reused. PostgreSQL fixtures cover discovery,
 review publication, Slack reads, and revocation in
-[channel integration](../../server/src/__tests__/chat-channels.integration.test.ts)
-and [provenance controls](../../server/src/services/chat-channels/run-origin.test.ts).
+[GitHub review workflow](../../server/src/__tests__/chat-channels/github-review-workflow.integration.test.ts)
+and [Slack interactions and files](../../server/src/__tests__/chat-channels/slack-interactions-and-files.integration.test.ts).
 The [voice gateway fixture](../../server/src/__tests__/voice-session-store.integration.test.ts)
 also verifies durable task binding for a later personal callback invocation.
 Failure replies cannot replace final answers inherited from an earlier run.
@@ -1028,9 +1027,25 @@ receipt preserves the original skipped receipt and older failed native result.
 Current access and normal native stop/cleanup guards still govern execution;
 board wake metadata alone cannot manufacture chat authority or replay old work.
 
+After a successful connected run, board Retry can resume a newer deferred inbound
+receipt through the original chat owner. It rechecks the board's current task
+permission and the saved source's current authority, and waits for prior cleanup.
+It grants no permission to replay the successful result or manufacture a chat
+request. Concurrent clicks share the canonical retry receipt; completed tasks
+and superseding execution retire unadmitted retry intent.
+
 Deferred chat Retry excludes independent board queues from its pinned batch.
 An explicit board Retry can restore a historical mixed batch only with exact
 never-started evidence, current source authority, unchanged board comments and
 no prior delivery or allocation. The server records the restoration in activity;
 failed runs and original skipped receipts remain history. This grants no new
 agent retry capability and does not weaken execution-time source validation.
+
+GitHub finding category contract (2026-10-31): manual and automatic review
+instructions list the repository policy categories. `begin_review` returns the
+assessment snapshot's `findingCategories`; later settings do not change that
+snapshot. Submit an unknown category and confirm rejection before publication,
+then submit a listed custom category and inspect the saved assessment and
+processed publication. The channel integration fixture covers real PostgreSQL
+and the service path with simulated GitHub HTTP; live model behavior remains
+unverified.

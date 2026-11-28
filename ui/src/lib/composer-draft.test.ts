@@ -202,3 +202,19 @@ describe("replayable comment requests", () => {
     expect(replayableRequest(loadDraftSubmission(key), "user-1")).toBeUndefined();
   });
 });
+
+describe("a pending /swarm request survives a reload", () => {
+  const key = "paperclip:issue-comment-draft:swarm-task";
+  const attemptId = "6f1c1b0e-5a52-4b0a-9a51-0d6c9c3b2f11";
+  beforeEach(() => { localStorage.clear(); sessionStorage.clear(); });
+  it("keeps the structured swarm request and its request id for a safe resend", () => {
+    saveDraftSubmission(key, { attemptId, reviewed: false, request: { body: "two helpers write a.txt", nativeCommand: "swarm" } });
+    const restored = loadDraftSubmission(key);
+    expect(restored?.attemptId).toBe(attemptId);
+    expect(restored?.request).toEqual({ body: "two helpers write a.txt", nativeCommand: "swarm" });
+  });
+  it("rejects any other native command value", () => {
+    saveDraftSubmission(key, { attemptId, reviewed: false, request: { body: "x", nativeCommand: "plan" as never } });
+    expect(loadDraftSubmission(key)?.request).toBeUndefined();
+  });
+});

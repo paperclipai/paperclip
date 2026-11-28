@@ -8,7 +8,7 @@ import { createOAuthClientProtocol, storedOAuthTokenEndpointAuthMethod } from ".
 import { normalizeOAuthProviderError, oauthProviderErrorMessage } from "./provider-errors.js";
 import { oauthConfig, normalizeOauthScopes, resolveGrantedOauthScopes } from "./metadata.js";
 import { connectionMethodForConnection } from "../connection-methods.js";
-import { googleWorkspaceEffectiveScopes, isGoogleWorkspaceScopeGrant } from "@paperclipai/shared";
+import { googleWorkspaceEffectiveScopes, googleWorkspaceSubmittedScopesIn, isGoogleWorkspaceScopeGrant } from "@paperclipai/shared";
 import { emitConnectionUpdated } from "../../connector-telemetry.js";
 import { and, eq, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -16,6 +16,7 @@ import { connectionGrants, companyMemberships, principalPermissionGrants, issueT
 import type { ConnectToolAppResult } from "@paperclipai/shared";
 import { getConnectableAppDefinition, recommendedDefaultsForApp } from "@paperclipai/shared";
 import { badRequest, forbidden, HttpError, unprocessable } from "../../../errors.js";
+import { lockConnectionForSignIn } from "../connections/first-sign-in.js";
 import { secretService } from "../../secrets.js";
 
 import type { OAuthStateStore } from "./state.js";
@@ -76,6 +77,11 @@ export function createDirectOAuthCallback(db: Db, dependencies: Dependencies) {
     // a refused request must not stay completable by a later code (PAP-17109).
     const stateRow = await consumeOAuthState(input.state, input.actor);
     if (input.error) {
+      // RFC 9207: an error from a server other than the one we sent the user to
+      // is neither acted on nor shown.
+      const errorConnection = await getConnectionRow(stateRow.connectionId, stateRow.companyId);
+      const savedIssuer = oauthConfig(errorConnection).issuer;
+      assertOAuthCallbackIssuer(errorConnection, { issuer: typeof savedIssuer === "string" ? savedIssuer : null }, input.iss);
       await rejectPendingOAuthInteraction(stateRow, input.actor);
       const providerError = normalizeOAuthProviderError(input.error);
       throw new HttpError(
@@ -129,6 +135,7 @@ export function createDirectOAuthCallback(db: Db, dependencies: Dependencies) {
     const client = await oauthClientForConnection(
       connection,
       endpoints.provider,
+      endpoints.tokenUrl,
       input.actor,
     );
     if (!client.clientId)
@@ -149,12 +156,9 @@ export function createDirectOAuthCallback(db: Db, dependencies: Dependencies) {
       code: input.code,
       resource: endpoints.resource,
     });
-    if (sourceTemplateKey === "google-workspace" && !isGoogleWorkspaceScopeGrant(normalizeOauthScopes(token.scope))) {
-      throw unprocessable("Google did not return a supported permission grant. Reconnect and choose the Google services you want to use.", { code: "oauth_scope_grant_invalid" });
-    }
     if (sourceTemplateKey === "google-workspace") {
-      token.scope = googleWorkspaceEffectiveScopes(authorizedScopes, normalizeOauthScopes(token.scope)).join(" ");
-      if (!token.scope) throw unprocessable("Google did not grant any selected service permissions", { code: "oauth_scope_grant_invalid" });
+      token.scope = googleWorkspaceEffectiveScopes(googleWorkspaceSubmittedScopesIn(authorizedScopes), googleWorkspaceSubmittedScopesIn(normalizeOauthScopes(token.scope))).join(" ");
+      if (!isGoogleWorkspaceScopeGrant(normalizeOauthScopes(token.scope))) throw unprocessable("Google did not grant any selected service permissions", { code: "oauth_scope_grant_invalid" });
     }
     const connectedAt = now();
     const expiresAt = token.expiresIn
@@ -204,9 +208,7 @@ export function createDirectOAuthCallback(db: Db, dependencies: Dependencies) {
         await tx.select({ id: toolApplications.id }).from(toolApplications)
           .where(and(eq(toolApplications.id, connection.applicationId), eq(toolApplications.companyId, connection.companyId)))
           .for("update");
-        await tx.select({ id: toolConnections.id }).from(toolConnections)
-          .where(and(eq(toolConnections.id, connection.id), eq(toolConnections.companyId, connection.companyId)))
-          .for("update");
+        await lockConnectionForSignIn(tx, connection);
         const subjectCredentialSecretRefs =
           existingUserGrant?.credentialSecretRefs ?? [];
         const accessRef = await createOrRotateOAuthSecret(
@@ -530,9 +532,7 @@ export function createDirectOAuthCallback(db: Db, dependencies: Dependencies) {
       await tx.select({ id: toolApplications.id }).from(toolApplications)
         .where(and(eq(toolApplications.id, connection.applicationId), eq(toolApplications.companyId, connection.companyId)))
         .for("update");
-      await tx.select({ id: toolConnections.id }).from(toolConnections)
-        .where(and(eq(toolConnections.id, connection.id), eq(toolConnections.companyId, connection.companyId)))
-        .for("update");
+      await lockConnectionForSignIn(tx, connection);
       const txSecrets = secretService(tx);
       const txSecretContext = { dbClient: tx, secretClient: txSecrets };
 

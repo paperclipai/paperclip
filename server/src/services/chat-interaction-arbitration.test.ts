@@ -91,12 +91,17 @@ describe("provider-owned interaction arbitration", () => {
     return { companyId, agentId, otherAgentId, issueId, runId, interactionId };
   }
 
-  it("does not suppress a chat final for a system or board completion review", async () => {
+  it("does not suppress a chat final for a system, board, or originating agent completion review", async () => {
     const binding = await seed();
     expect(await hasChatRunOwnedProviderInteraction(db, binding)).toBe(false);
     await db
       .update(issueThreadInteractions)
       .set({ createdByUserId: "board-user" })
+      .where(eq(issueThreadInteractions.id, binding.interactionId));
+    expect(await hasChatRunOwnedProviderInteraction(db, binding)).toBe(false);
+    await db
+      .update(issueThreadInteractions)
+      .set({ createdByUserId: null, createdByAgentId: binding.agentId })
       .where(eq(issueThreadInteractions.id, binding.interactionId));
     expect(await hasChatRunOwnedProviderInteraction(db, binding)).toBe(false);
   });
@@ -105,7 +110,7 @@ describe("provider-owned interaction arbitration", () => {
     const binding = await seed();
     await db
       .update(issueThreadInteractions)
-      .set({ createdByAgentId: binding.otherAgentId })
+      .set({ createdByAgentId: binding.otherAgentId, payload: { version: 1, prompt: "Confirm the requested action" } })
       .where(eq(issueThreadInteractions.id, binding.interactionId));
     expect(await hasChatRunOwnedProviderInteraction(db, binding)).toBe(false);
     await db

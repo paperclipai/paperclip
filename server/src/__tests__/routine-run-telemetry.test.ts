@@ -21,6 +21,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { scopedTelemetryCompanyId } from "../telemetry-company-scope.js";
 
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 const mockTrackRoutineRun = vi.hoisted(() => vi.fn());
@@ -149,6 +150,7 @@ describeEmbeddedPostgres("routine run telemetry", () => {
         status: "active",
         concurrencyPolicy: "coalesce_if_active",
         catchUpPolicy: "skip_missed",
+        variables: [],
       },
       {},
     );
@@ -166,5 +168,15 @@ describeEmbeddedPostgres("routine run telemetry", () => {
       source: "manual",
       status: "issue_created",
     });
+  });
+
+  it("tracks a routine run in the routine's company scope", async () => {
+    const { routine, svc } = await seedFixture();
+    const scopedCompanies: Array<string | undefined> = [];
+    mockTrackRoutineRun.mockImplementationOnce(() => scopedCompanies.push(scopedTelemetryCompanyId()));
+
+    await svc.runRoutine(routine.id, { source: "manual" });
+
+    expect(scopedCompanies).toEqual([routine.companyId]);
   });
 });

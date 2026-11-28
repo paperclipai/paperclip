@@ -31,64 +31,14 @@ test('multiple alias identities, foreign project and incomplete metadata stop be
   await assert.rejects(inspectChatMetadata(async () => ({ content: [], totalPages: 11, totalElements: 1100, number: 0 })), /catalog_incomplete/);
 });
 
-test('existing exact plan reuses case and plan without a write', async () => {
-  const result = await ensureChatPlan(async route => { assert.equal(route, '/api/testplan/8'); return plan; },
-    await inspectChatMetadata(inspectApi()), () => assert.fail('must not mark or write'));
-  assert.equal(result.case.id, 91);
-  assert.equal(result.plan.id, 8);
-  assert.equal(result.actualResult, null);
-});
-
-test('bootstrap creates only the missing exact plan after exclusive marker and reads back scope', async () => {
-  const calls = [];
-  const result = await ensureChatPlan(async (route, method, body) => {
-    calls.push({ route, method, body });
-    if (method === 'POST') { assert.equal(calls[0].route, 'MARK'); assert.deepEqual(body, { projectId: 1, name: planName, treeSelection: { inverted: false, leafsInclude: [91] } }); }
-    return plan;
-  }, { projectId: 1, cases: [caseRow], plans: [] }, async () => calls.push({ route: 'MARK' }));
-  assert.equal(calls.filter(row => row.method === 'POST').length, 1);
-  assert.equal(result.plan.count, 1);
-});
-
-test('empty project bootstrap links the genuinely created case into only the new plan', async () => {
-  const calls = [];
-  const createdCase = { ...caseRow, id: 92 };
-  const createdPlan = { ...plan, treeSelection: { inverted: false, leafsInclude: [92] } };
-  const result = await ensureChatPlan(async (route, method, body) => {
-    calls.push({ route, method, body });
-    assert.equal(calls[0].route, 'MARK');
-    if (route === '/api/testcase') {
-      assert.equal(body.projectId, 1); assert.equal(body.fullName, fullName); assert.equal(body.automated, true);
-      return createdCase;
-    }
-    if (route === '/api/testplan') {
-      assert.deepEqual(body, { projectId: 1, name: planName, treeSelection: { inverted: false, leafsInclude: [92] } });
-      return createdPlan;
-    }
-    assert.equal(route, '/api/testplan/8'); assert.equal(method, undefined); return createdPlan;
-  }, { projectId: 1, cases: [], plans: [] }, async () => calls.push({ route: 'MARK' }));
-  assert.equal(result.case.id, 92); assert.equal(result.plan.id, 8);
-  assert.deepEqual(calls.map(call => call.route), ['MARK', '/api/testcase', '/api/testplan', '/api/testplan/8']);
-});
-
-test('known conflicting plan stops before creating an otherwise missing case or marker', async () => {
-  await assert.rejects(ensureChatPlan(() => assert.fail('no API write or read needed'),
-    { projectId: 1, cases: [], plans: [plan] }, () => assert.fail('must not mark')), /plan_without_matching_case/);
-});
-
-test('new case is created only after alias reconciliation; an uncertain mutation is never resent', async () => {
-  let writes = 0, markers = 0;
-  await assert.rejects(ensureChatPlan(async (_route, method) => {
-    assert.equal(method, 'POST'); writes++; throw new Error('uncertain transport');
-  }, { projectId: 1, cases: [], plans: [] }, async () => { markers++; }), /uncertain/);
-  assert.equal(writes, 1); assert.equal(markers, 1);
-});
-
-test('existing broad or conflicting plan never expands or changes its scope', async () => {
-  for (const actual of [{ ...plan, testCasesCount: 2 }, { ...plan, treeSelection: { leafsInclude: [92] } },
-    { ...plan, treeSelection: { leafsInclude: [91], inverted: true } }, { ...plan, projectId: 2 }]) {
-    await assert.rejects(ensureChatPlan(async (_route, method) => { assert.equal(method, undefined); return actual; },
-      { projectId: 1, cases: [caseRow], plans: [plan] }, () => assert.fail('no writes')), /scope_mismatch/);
+test('retired singleton bootstrap cannot recreate an absent plan or mutate retained metadata', async () => {
+  for (const inspected of [
+    { projectId: 1, cases: [], plans: [] },
+    { projectId: 1, cases: [caseRow], plans: [] },
+    { projectId: 1, cases: [caseRow], plans: [plan] },
+  ]) {
+    await assert.rejects(ensureChatPlan(() => assert.fail('retired route must not call the API'), inspected,
+      () => assert.fail('retired route must not mark a mutation')), /testops_plan_retired/);
   }
 });
 
@@ -194,6 +144,22 @@ test('launch configures only the exact registered public job/plan then issues on
   assert.equal(markers, 1); assert.equal(server.requests(), 1); assert.equal(result.status, 'REQUESTED');
   assert.equal(result.launchId, 10); assert.equal(result.actualRunId, null); assert.equal(result.actualResult, null);
   assert.ok(!server.calls.some(row => /jobrun.*rerun|dispatches/.test(row.route)));
+});
+
+test('backlog launch preflight sends the typed UTF-8 name filter required by TestOps', async () => {
+  const server = launchServer();
+  const api = async (route, ...args) => {
+    if (route.startsWith('/api/launch?')) {
+      const wire = new URL(route, 'https://paperclip.testops.cloud').searchParams.get('search');
+      let filters;
+      try { filters = JSON.parse(Buffer.from(wire, 'base64').toString('utf8')); }
+      catch { throw new Error('TestOps HTTP 400: typed launch search required'); }
+      assert.deepEqual(filters, [{ id: 'name', type: 'string', value: `Chat feature evals · ${launchEnv.CHAT_TESTOPS_LAUNCH_NONCE}` }]);
+    }
+    return server.api(route, ...args);
+  };
+  await launchChatPlan(api, launchEnv, async () => {}, await fence());
+  assert.equal(server.requests(), 1);
 });
 
 test('observed launch nonce prevents a second run request across separate local entry attempts', async () => {
@@ -715,4 +681,144 @@ test('bootstrap unknown transport errors retain only source-owned request class 
       request: { class: 'JOB_RUN_GET', resourceId: 9, state: 'FAILED', httpStatus: null } });
     assert.ok(!JSON.stringify(projected).includes('PRIVATE')); return true;
   });
+});
+
+test('attachment readiness waits for a missed row to become complete without changing the final evidence predicate', async () => {
+  const { verifyChatUpload } = await import('./chat-feature-testops-api.mjs');
+  const base = uploadApi(); let pages = 0, waits = 0;
+  const result = await verifyChatUpload(async (...args) => {
+    const value = await base(...args);
+    if (args[0].startsWith('/api/testresult/attachment?')) {
+      pages++;
+      if (pages === 1) value.content[0].missed = true;
+    }
+    return value;
+  }, uploadContext, uploadSelection, uploadReceipt, { now: () => 0, wait: async ms => { assert.equal(ms, 5000); waits++; } });
+  assert.equal(result.verification, 'VERIFIED');
+  assert.equal(result.status, 'passed');
+  assert.deepEqual(result.attachments, uploadReceipt.attachmentMetadata);
+  assert.equal(pages, 2); assert.equal(waits, 1);
+  assert.deepEqual(result.attachmentReadiness.map(row => row.missedCount), [1, 0]);
+});
+
+test('permanently missed attachments fail at the original poll bound with closed, detached observations', async () => {
+  const { verifyChatUpload } = await import('./chat-feature-testops-api.mjs');
+  const base = uploadApi(); let pages = 0, waits = 0;
+  await assert.rejects(verifyChatUpload(async (...args) => {
+    const value = await base(...args);
+    if (args[0].startsWith('/api/testresult/attachment?')) {
+      pages++; value.content[0].missed = true; value.content[0].privateData = 'DO_NOT_RETAIN_ATTACHMENT_DATA';
+    }
+    return value;
+  }, uploadContext, uploadSelection, uploadReceipt, { now: () => 0, wait: async ms => { assert.equal(ms, 5000); waits++; } }), error => {
+    assert.equal(error.code, 'chat_testops_upload_unverified');
+    const projected = failureProjection(error, 'upload_verification');
+    assert.equal(projected.verification.phase, 'attachment_readiness');
+    assert.equal(projected.verification.firstFailedPredicate, 'attachments_not_missed');
+    assert.equal(projected.verification.attachmentReadiness.length, 12);
+    assert.ok(projected.verification.attachmentReadiness.every(row => row.missedCount === 1 && row.ready === false));
+    assert.ok(!JSON.stringify(projected).includes('DO_NOT_RETAIN'));
+    projected.verification.attachmentReadiness[0].missedCount = 999;
+    assert.equal(failureProjection(error, 'upload_verification').verification.attachmentReadiness[0].missedCount, 1);
+    return true;
+  });
+  assert.equal(pages, 12); assert.equal(waits, 11);
+});
+
+test('attachment readiness cannot extend the original 120 second observation deadline', async () => {
+  const { verifyChatUpload } = await import('./chat-feature-testops-api.mjs');
+  const base = uploadApi(); let clock = 0, calls = 0;
+  await assert.rejects(verifyChatUpload(async (...args) => {
+    calls++; const value = await base(...args);
+    if (args[0].startsWith('/api/testresult/attachment?')) value.content[0].missed = true;
+    return value;
+  }, uploadContext, uploadSelection, uploadReceipt, { now: () => clock, wait: async () => { clock = 120_000; } }), /upload_unverified/);
+  assert.equal(calls, 5);
+});
+
+test('malformed or inherited attachment rows still fail immediately even when an attachment is missed', async () => {
+  const { verifyChatUpload } = await import('./chat-feature-testops-api.mjs');
+  for (const change of [{ id: '1' }, { id: 0 }, { fromTestCase: true }]) {
+    const base = uploadApi(); let pages = 0;
+    await assert.rejects(verifyChatUpload(async (...args) => {
+      const value = await base(...args);
+      if (args[0].startsWith('/api/testresult/attachment?')) { pages++; Object.assign(value.content[0], change, { missed: true }); }
+      return value;
+    }, uploadContext, uploadSelection, uploadReceipt, { now: () => 0, wait: async () => assert.fail('invalid identity must not wait') }), error => {
+      assert.equal(error.code, 'chat_testops_upload_mismatch');
+      assert.equal(failureProjection(error, 'upload_verification').verification.phase, 'attachment_page'); return true;
+    });
+    assert.equal(pages, 1);
+  }
+});
+
+test('a completed attachment with the wrong byte count never satisfies the final evidence signature', async () => {
+  const { verifyChatUpload } = await import('./chat-feature-testops-api.mjs');
+  const base = uploadApi(); let pages = 0;
+  await assert.rejects(verifyChatUpload(async (...args) => {
+    const value = await base(...args);
+    if (args[0].startsWith('/api/testresult/attachment?')) { pages++; value.content[0].contentLength++; }
+    return value;
+  }, uploadContext, uploadSelection, uploadReceipt, { now: () => 0, wait: async () => {} }), error => {
+    assert.equal(error.code, 'chat_testops_upload_unverified');
+    const result = failureProjection(error, 'upload_verification');
+    assert.equal(result.verification.firstFailedPredicate, 'attachment_signatures_match'); return true;
+  });
+  assert.equal(pages, 12);
+});
+
+test('a null attachment row retains the controlled invalid-ID rejection', async () => {
+  const { verifyChatUpload } = await import('./chat-feature-testops-api.mjs');
+  const base = uploadApi();
+  await assert.rejects(verifyChatUpload(async (...args) => {
+    if (args[0].startsWith('/api/testresult/attachment?')) return { content: [null], totalElements: 1, totalPages: 1 };
+    return base(...args);
+  }, uploadContext, uploadSelection, uploadReceipt, { now: () => 0, wait: async () => assert.fail('malformed rows must not wait') }), error => {
+    assert.equal(error.code, 'chat_testops_upload_mismatch');
+    assert.equal(failureProjection(error, 'upload_verification').verification.firstFailedPredicate, 'ids_valid'); return true;
+  });
+});
+
+test('deadline crossing after a complete attachment GET keeps the exact readiness refusal', async () => {
+  const { verifyChatUpload } = await import('./chat-feature-testops-api.mjs');
+  const base = uploadApi(); let lastGet = false, reads = 0;
+  await assert.rejects(verifyChatUpload(async (...args) => {
+    const value = await base(...args);
+    if (args[0].startsWith('/api/testresult/attachment?')) lastGet = true;
+    return value;
+  }, uploadContext, uploadSelection, uploadReceipt, { now: () => lastGet && ++reads >= 2 ? 120_000 : 0,
+    wait: async () => assert.fail('expired observation must not wait') }), error => {
+    assert.equal(error.code, 'chat_testops_upload_unverified');
+    const projected = failureProjection(error, 'upload_verification');
+    assert.equal(projected.verification.firstFailedPredicate, 'attachments_ready');
+    assert.equal(projected.verification.attachmentReadiness[0].withinDeadline, false); return true;
+  });
+});
+
+test('existing-jobrun upload uses repeated literal file fields without JSON encoding or a lifecycle request', async () => {
+  const calls = [];
+  const api = await testopsClient('PRIVATE_KEY', async (url, options) => {
+    calls.push({ url, options });
+    return calls.length === 1 ? { ok: true, json: async () => ({ access_token: 'PRIVATE_BEARER' }) }
+      : { ok: true, status: 200, text: async () => '{"filesCount":3}' };
+  });
+  const data = new FormData();
+  for (const suffix of ['result', 'attachment', 'attachment']) data.append('file', new Blob(['{}'], { type: 'application/json' }), `${crypto.randomUUID()}-${suffix}.json`);
+  assert.deepEqual(await api('/api/jobrun/77/upload', 'POST', data), { filesCount: 3 });
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].url, `${endpoint}/api/jobrun/77/upload`);
+  assert.equal(calls[1].options.body, data);
+  assert.equal(calls[1].options.headers['Content-Type'], undefined);
+  assert.deepEqual([...calls[1].options.body.keys()], ['file', 'file', 'file']);
+  assert.equal(calls[1].options.body.getAll('file[]').length, 0);
+  assert.equal(calls[1].options.redirect, 'error');
+});
+
+test('multipart uploads cannot target another route or add undeclared parts', async () => {
+  let calls = 0;
+  const api = await testopsClient('PRIVATE_KEY', async () => { calls++; return { ok: true, json: async () => ({ access_token: 'PRIVATE_BEARER' }) }; });
+  const form = new FormData(); form.append('file[]', new Blob(['{}']), 'unknown.json');
+  await assert.rejects(api('/api/jobrun/77/upload', 'POST', form), /testops_route_invalid/);
+  await assert.rejects(api('/api/testcase', 'POST', form), /testops_route_invalid/);
+  assert.equal(calls, 1, 'only the existing authentication request');
 });

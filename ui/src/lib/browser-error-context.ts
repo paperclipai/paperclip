@@ -1,3 +1,5 @@
+import { errorStatus } from "@/api/errors";
+
 export interface BrowserErrorDetails {
   boundary: "app" | "route";
   componentStack?: string | null;
@@ -42,11 +44,23 @@ export function readBrowserErrorState() {
       if (state === "visible" || state === "hidden") browserState.visibility_state = state;
     } catch { /* diagnostic unavailable */ }
     try {
-      const classes = document.documentElement.classList;
-      browserState.translation_marker = classes.contains("translated-ltr") || classes.contains("translated-rtl");
+      browserState.translation_marker = readPageTranslationMarker();
     } catch { /* diagnostic unavailable */ }
   }
   return browserState;
+}
+
+function readPageTranslationMarker(): boolean {
+  const classes = document.documentElement.classList;
+  return classes.contains("translated-ltr") || classes.contains("translated-rtl");
+}
+
+export function hasPageTranslationMarker(): boolean {
+  try {
+    return typeof document !== "undefined" && readPageTranslationMarker();
+  } catch {
+    return false;
+  }
 }
 
 type PageTransition = "visible" | "hidden" | "pagehide" | "pageshow" | "freeze" | "resume";
@@ -165,6 +179,37 @@ export function __resetPageDiagnostics() {
   lastTransition = undefined;
   pagehideSeen = false;
   lastRejection = undefined;
+}
+
+const QUERY_KIND_PATTERN = /^[a-z]+(?:[-_][a-z]+)*$/;
+const MAX_QUERY_KIND_LENGTH = 64;
+
+/**
+ * The query key's static name, such as `issues`. Later key parts hold
+ * companies, refs and filters, and are never read. A head with a digit,
+ * uppercase letter or other character can be an ID or a typed value, so it
+ * becomes `other`.
+ */
+export function queryKindFor(queryKey: readonly unknown[]): string {
+  const head = queryKey[0];
+  return typeof head === "string" && head.length <= MAX_QUERY_KIND_LENGTH && QUERY_KIND_PATTERN.test(head)
+    ? head
+    : "other";
+}
+
+/**
+ * Every failed request throws from the same `ApiError` frames, so default
+ * grouping puts all of them in one Sentry issue. Group an HTTP failure by its
+ * status and query name instead, so each failing endpoint has its own issue.
+ */
+export function buildQueryErrorContext(error: unknown, queryKey: readonly unknown[]) {
+  const queryKind = queryKindFor(queryKey);
+  const status = errorStatus(error);
+  if (status === null) return { tags: { query_kind: queryKind } };
+  return {
+    tags: { query_kind: queryKind, api_status: String(status) },
+    fingerprint: ["api-error", String(status), queryKind],
+  };
 }
 
 /** A bounded snapshot, taken at the error rather than when the capture queue runs. */

@@ -64,7 +64,7 @@ export function ProjectsToolbar({ query, onQueryChange, sortField, sortDir, onSo
     <div className="design-toolbar-actions">
       <Button size="sm" variant="outline" data-toolbar-primary onClick={openNewProject}>
           <Plus className="h-4 w-4 mr-1" />
-          Add Project
+          Create project
       </Button>
     </div>
   </div>;

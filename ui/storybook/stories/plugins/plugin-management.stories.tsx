@@ -46,7 +46,7 @@ export const PermissionDenied: Story = {
 async function install() {
   const c = within(document.body);
   await userEvent.click(
-    await c.findByRole("button", { name: "Install Plugin" }),
+    await c.findByRole("button", { name: "Install system plugin" }),
   );
   await userEvent.type(
     await c.findByRole("textbox"),

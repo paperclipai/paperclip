@@ -65,3 +65,16 @@ describe("remote harness verification recovery", () => {
     expect(() => assertHarnessTestPassed(recovered)).not.toThrow();
   });
 });
+
+describe("Runner mismatch during verification", () => {
+  const context = { stage: "host" as const, phase: "verifying" as const, verificationFailures: 100 };
+  it("waits for the Runner update instead of parking verification", async () => {
+    const { runnerRevisionMismatchTestResult } = await import("../services/runner-revision-mismatch.js");
+    let error: unknown;
+    try { assertHarnessTestPassed(runnerRevisionMismatchTestResult("paperclip_runner")); } catch (caught) { error = caught; }
+    expect(error).toMatchObject({ code: "runner_revision_mismatch" });
+    expect(lifecycleVerificationNeedsRetry(context, error)).toBe(false);
+    expect(lifecycleFailureMessage(context, error)).toContain("will check again automatically");
+    expect(lifecycleFailureMessage(context, error)).not.toContain("Automatic verification is paused");
+  });
+});

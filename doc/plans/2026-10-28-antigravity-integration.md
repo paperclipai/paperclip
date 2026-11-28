@@ -472,3 +472,10 @@ restoration. The test drive continues to serve from its separate frozen mirror
 with the original isolated database and saved account, and reports ready/healthy.
 The final `.5` oracle and both browser journeys establish the requested local
 setup, task and follow-up outcome; broader release qualification remains pending.
+
+## 2026-11-22: superseded as the current ledger
+
+The current release contract and acceptance ledger for Google Antigravity is
+[2026-11-22-antigravity-qualification.md](2026-11-22-antigravity-qualification.md)
+(runtime 1.5.2, patch `1.5.2-paperclip.2`, macOS and Linux x64). This document
+is kept unchanged above as the history of the 1.4.3 macOS candidate.

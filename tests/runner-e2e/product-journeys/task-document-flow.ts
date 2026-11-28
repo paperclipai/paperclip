@@ -1,19 +1,10 @@
 import { expect } from "@playwright/test";
+import { openTaskPanelTab } from "./task-panel.js";
 import { taskDocumentHistoryPasses, taskDocumentMatches, type TaskDocumentExpectation, type TaskDocumentRevision, type TaskDocumentSnapshot } from "./task-document-evidence.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
 
-async function openDocumentAuthoring({ page }: JourneyContext) {
-  const create = page.getByRole("button", { name: "New document", exact: true });
-  if (await create.isVisible()) return;
-  const properties = page.getByRole("button", { name: /^(Show properties|Properties)$/ }).first();
-  if (await properties.isVisible()) await properties.click();
-  const artifacts = page.getByRole("tab", { name: /^Artifacts/ }).first();
-  if (await artifacts.isVisible()) await artifacts.click();
-  else {
-    await page.getByRole("button", { name: "Open a new tab", exact: true }).click();
-    await page.getByRole("option", { name: /^Artifacts/ }).click();
-  }
-  await expect(create).toBeVisible();
+export async function openDocumentAuthoring({ page }: JourneyContext) {
+  await openTaskPanelTab(page, "Artifacts", page.getByRole("button", { name: "New document", exact: true }));
 }
 
 export async function reopenTaskDocument(context: JourneyContext, issue: { title: string }) {

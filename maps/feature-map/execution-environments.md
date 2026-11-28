@@ -40,7 +40,7 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Use 
 
 ### `environment-settings`
 
-Automated: [environment UI](../../ui/src/pages/CompanyEnvironments.test.tsx), [driver configuration UI](../../ui/src/pages/CompanySettings.test.tsx), and [environment service](../../server/src/__tests__/environment-service.test.ts) cover configuration behavior.
+Automated: [environment service](../../server/src/__tests__/environment-service.test.ts) covers server configuration behavior (mocked `CompanyEnvironments` and `CompanySettings` UI tests were removed; verify settings UI via Storybook/manual checks).
 
 Manual: Save a disposable target, reload it, and run its available probe. Verify both success and missing-credential/reachability errors identify the target. Confirm unavailable providers are not offered as working run targets.
 
@@ -53,14 +53,9 @@ and its diagnostic in the probe result: connection success alone does not mean
 the image has native runtime qualification.
 
 Paperclip-managed Cloud images use the current platform-selected image without
-a saved qualification prerequisite. A missing, stale or revoked qualification
-does not block execution or pin an older snapshot. Runtime startup and the
-handshake detect real incompatibility. This exception excludes custom
-environments and active captured custom images.
-The active Cloud configuration must provision the sandbox provider. A stale
-managed marker alone keeps the normal qualification rules.
-An outdated captured image that execution ignores must not block discovery of
-the current managed image. A matching custom capture keeps qualification.
+a saved qualification prerequisite when the active Cloud configuration provisions
+the sandbox provider. Custom environments and active captured custom images
+retain qualification requirements.
 
 For other images, the measured record is server-owned, company-bound and tied to the effective
 configuration and active custom-image identity. Mutable tags, provider defaults
@@ -81,11 +76,6 @@ qualification is not reused. A mutable-image connection can succeed while
 qualification remains absent. Assert ordinary agent and non-admin board probe
 requests are denied, and environment create/PATCH payloads cannot supply
 qualification metadata.
-For a managed Cloud image, replace the platform-selected snapshot while an old
-qualification remains. Discovery must still offer Paperclip Runner, and Test
-must check the runtime directly. Verify execution selects the replacement image
-and still reports a real provider startup failure. Keep a custom-image control
-that requires its existing qualification.
 This recipe and its [probe controls](../../server/src/__tests__/environment-probe.test.ts)
 are not claims that a live provider or agent-access journey ran for this map update.
 
@@ -105,11 +95,9 @@ data transfer is outside task execution. See the
 The [fake-provider integration](../../server/src/__tests__/plugin-runner-task.integration.test.ts)
 checks acquisition, SDK dispatch, scope denial, stop proof and deletion recovery.
 Its WebSocket is mocked; it does not qualify a live provider or a real Runner handshake.
-Controller replacement reuses a surviving plugin task's active lease and exact
-Runner identity. The integration checks reconnect without prepare, submit, or
-stop. The [continuity recipe](../../doc/testing-native-remote-continuity.md#replacing-the-main-server)
-also covers real-process recovery after controller files are removed; deployed
-plugin and Daytona acceptance require their own evidence.
+Controller replacement reuses a surviving plugin task's active lease and Runner
+identity. Follow the [remote continuity recipe](../../doc/testing-native-remote-continuity.md#replacing-the-main-server)
+to verify recovery across main-server replacement.
 
 For a same-run retry on a replacement plugin task, verify that the retained
 checkpoint loads before provider startup. The prior execution must have a stop
@@ -142,10 +130,6 @@ uses the real Runner and a synthetic Codex provider through loopback PRP; TLS
 termination is replaced by the fixture. It does not qualify a live plugin provider.
 
 The plugin prepares execution-host resources and the provider descriptor. Core validates the result, then supplies task identity and PRP launch limits.
-For managed GitHub commands, verify the qualified executable remains canonical,
-controller-staged helper discovery survives task entry, and a task-supplied shell
-selector is rejected. A launch description or a healthy Runner alone is not proof
-of authenticated git/gh execution.
 
 ### Storybook verification
 
@@ -156,7 +140,7 @@ Capability ID: `execution-environments/configuration`.
 Scope: ui
 Storybook: Local/SSH/sandbox editors; unavailable providers, missing credentials, save pending/error and restricted operator.
 Production: Persist target configuration and enforce instance-admin/local-operator mutation boundary; target catalog is instance-scoped.
-Sources: Source: [CompanyEnvironments.tsx](../../ui/src/pages/CompanyEnvironments.tsx), [environments.ts](../../server/src/routes/environments.ts). Tests: [CompanyEnvironments.test.tsx](../../ui/src/pages/CompanyEnvironments.test.tsx), [environment-service.test.ts](../../server/src/__tests__/environment-service.test.ts)
+Sources: Source: [CompanyEnvironments.tsx](../../ui/src/pages/CompanyEnvironments.tsx), [environments.ts](../../server/src/routes/environments.ts). Tests: [environment-service.test.ts](../../server/src/__tests__/environment-service.test.ts)
 
 #### `capabilities`
 
@@ -174,7 +158,7 @@ Capability ID: `execution-environments/probe`.
 Scope: ui
 Storybook: Remote Test pending, success, reachability/auth failure and platform qualification absent/invalidated notice.
 Production: Probe actual owned target; verify selected saved immutable config/image/company qualification plus lease cleanup; local API probe proves host/cwd only and has no UI Test button.
-Sources: Source: [CompanyEnvironments.tsx](../../ui/src/pages/CompanyEnvironments.tsx), [environment-probe.ts](../../server/src/services/environment-probe.ts). Tests: [CompanyEnvironments.test.tsx](../../ui/src/pages/CompanyEnvironments.test.tsx), [environment-probe.test.ts](../../server/src/__tests__/environment-probe.test.ts), [environment-live-ssh.test.ts](../../server/src/__tests__/environment-live-ssh.test.ts)
+Sources: Source: [CompanyEnvironments.tsx](../../ui/src/pages/CompanyEnvironments.tsx), [environment-probe.ts](../../server/src/services/environment-probe.ts). Tests: [environment-probe.test.ts](../../server/src/__tests__/environment-probe.test.ts), [environment-live-ssh.test.ts](../../server/src/__tests__/environment-live-ssh.test.ts)
 
 #### `images`
 
@@ -183,17 +167,9 @@ Capability ID: `execution-environments/images`.
 Scope: ui
 Storybook: Custom-image setup/capture/progress, terminal connect/disconnect/failure, unsupported capability and active-image drift.
 Production: Execute owned provider setup/capture/probe/terminal transport with correct saved image identity, authority, cleanup and shutdown; terminal screenshot cannot prove operation.
-Sources: Source: [CompanyEnvironments.tsx](../../ui/src/pages/CompanyEnvironments.tsx), [environment-custom-images.ts](../../server/src/services/environment-custom-images.ts). Tests: [CompanyEnvironments.test.tsx](../../ui/src/pages/CompanyEnvironments.test.tsx), [environment-custom-images-service.test.ts](../../server/src/__tests__/environment-custom-images-service.test.ts)
+Sources: Source: [CompanyEnvironments.tsx](../../ui/src/pages/CompanyEnvironments.tsx), [environment-custom-images.ts](../../server/src/services/environment-custom-images.ts). Tests: [environment-custom-images-service.test.ts](../../server/src/__tests__/environment-custom-images-service.test.ts)
 
 Managed account transfer requires `projectAuthCheckVersion: 1` and a successful
 `check_project_auth` result for the exact prepared configuration, provider, and
 project set. New preparation removes old validation. Core checks the saved
 validation again in the dispatch update.
-
-Plugin task providers can advertise `githubCredentialBrokerVersion: 1` and receive
-a live-run capability during preparation. This adds no agent management API.
-Core resolves accepted identity, grants, company scope and trust at command time.
-The plugin owns the command implementation; no particular script is required.
-[Broker handoff coverage](../../server/src/services/native-runtime/plugin-runner-task.test.ts)
-checks capability changes across warm turns. This is contract coverage, not live
-authenticated push acceptance.

@@ -115,13 +115,9 @@ async function gotoApps(page: Page, prefix: string) {
 
 async function gotoConnect(page: Page, prefix: string) {
   await page.goto(`/${prefix}/apps`);
-  await expect(page.getByRole("heading", { name: "Connectors" })).toBeVisible({ timeout: 30_000 });
-  const customConnector = page
-    .getByRole("list", { name: "Connector list" })
-    .getByRole("listitem")
-    .filter({ hasText: "Connect your own tool" });
-  await customConnector.getByRole("button", { name: "Connect", exact: true }).click();
-  await customConnector.getByRole("button", { name: "Connect your own MCP server" }).click();
+  await expect(page.getByRole("heading", { name: "Plugins" })).toBeVisible({ timeout: 30_000 });
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+  await page.getByRole("menuitem", { name: /MCP server URL/ }).click();
 }
 
 async function gotoAdvanced(page: Page, prefix: string) {
@@ -173,6 +169,8 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
     // A successful generic probe commits discovered actions and the stated
     // access defaults transactionally, so the key check lands on success.
     await expect(page.getByRole("heading", { name: /is ready\.$/i })).toBeVisible({ timeout: 30_000 });
+    // The success screen restates who can use the connection and links to where that changes.
+    await expect(page.getByRole("button", { name: "Change", exact: true })).toBeVisible();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-05-success.png`, fullPage: true });
 
     // Verify the mock saw a tools/list call from the catalog refresh.
@@ -212,6 +210,30 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
     await expect(page.getByText("List widgets", { exact: true })).toBeVisible();
     await expect(page.getByText("Create widget", { exact: true })).toBeVisible();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-06-permissions.png`, fullPage: true });
+
+    // The plugin page shows the same actions as two blocks and saves a group change in one step.
+    await gotoApps(page, seed.prefix);
+    await page
+      .getByRole("list", { name: "Connector list" })
+      .getByRole("listitem")
+      .filter({ hasText: mockPort })
+      .getByRole("heading")
+      .getByRole("button")
+      .click();
+    const permissions = page.getByRole("region", { name: "Tool permissions" });
+    const reads = permissions.getByRole("button", { name: /^Reads\s*1$/ });
+    const writes = permissions.getByRole("button", { name: /^Writes\s*1$/ });
+    await expect(reads).toBeVisible({ timeout: 30_000 });
+    await expect(writes).toBeVisible();
+    await writes.click();
+    await expect(permissions.getByText("Create widget", { exact: true })).toBeVisible();
+    await permissions.getByRole("button", { name: /^All writes: / }).click();
+    await page.getByRole("menuitemradio", { name: "Off", exact: true }).click();
+    await expect(permissions.getByRole("button", { name: "All writes: Off" })).toBeVisible({ timeout: 15_000 });
+    await page.reload();
+    await expect(page.getByRole("region", { name: "Tool permissions" }).getByRole("button", { name: "All writes: Off" })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole("region", { name: "Tool permissions" }).getByRole("button", { name: /^All reads: Allowed$/ })).toBeVisible();
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-07-plugin-permissions.png`, fullPage: true });
   });
 
   test("Expired key → health sweep → Needs attention → reconnect → green", async ({ page, request }) => {
@@ -248,7 +270,7 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
 
       // Needs-attention page should surface this connection.
       await gotoNeedsAttention(page, seed.prefix);
-      await expect(page.getByRole("heading", { name: "Connectors" })).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByRole("heading", { name: "Plugins" })).toBeVisible({ timeout: 30_000 });
       await expect(page.getByText("Needs attention", { exact: true }).first()).toBeVisible({ timeout: 30_000 });
       await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-07-needs-attention.png`, fullPage: true });
 

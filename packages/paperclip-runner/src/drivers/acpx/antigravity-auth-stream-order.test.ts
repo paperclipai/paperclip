@@ -43,7 +43,7 @@ async function fixture(mode: Mode) {
     queueMicrotask(() => {
       if (request.method === "initialize") {
         stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { protocolVersion: 1,
-          agentInfo: { name: "antigravity-acp", version: "1.4.3" }, agentCapabilities: { _meta: { antigravity: { paperclipAdmission: 1 } } },
+          agentInfo: { name: "antigravity-acp", version: "1.5.2" }, agentCapabilities: { _meta: { antigravity: { paperclipAdmission: 1 } } },
           authMethods: [{ id: "oauth-personal" }] } }) + "\n");
       } else if (request.method === "authenticate") {
         const url = mode === "wrong-url" || mode === "late-wrong-url" ? "https://example.invalid/synthetic-private-marker" : authorizationUrl;
@@ -116,7 +116,7 @@ reader.on('line', line => {
  fs.writeFileSync(path.join(home,'requests.json'),JSON.stringify(requests));
  if(request.method==='initialize') {
   process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:request.id,result:{protocolVersion:1,
-   agentInfo:{name:'antigravity-acp',version:'1.4.3'},agentCapabilities:{_meta:{antigravity:{paperclipAdmission:1}}},
+   agentInfo:{name:'antigravity-acp',version:'1.5.2'},agentCapabilities:{_meta:{antigravity:{paperclipAdmission:1}}},
    authMethods:[{id:'oauth-personal'}]}})+'\\n');
  } else if(request.method==='authenticate') {
   fs.mkdirSync(path.join(home,'antigravity-acp'),{mode:0o700});
