@@ -64,6 +64,14 @@ export function startLocalBrowserLogin(provider: "anthropic" | "openai" | "googl
   const driver = {
     async start(_command: string, onData: (chunk: string) => void): Promise<{ exitCode: number | null }> {
       let executable = "claude";
+      if (provider === "anthropic") {
+        try {
+          await ensureCommandResolvable("claude", home, process.env);
+        } catch {
+          state.error = "Claude subscription sign-in requires the Claude CLI on this execution host. Install Claude on this execution host and ensure claude is on Paperclip's PATH, then start sign-in again.";
+          throw new Error("Browser login runtime unavailable");
+        }
+      }
       if (provider === "openai") {
         const legacyPlatform = !((process.platform === "linux" || process.platform === "darwin")
           && (process.arch === "x64" || process.arch === "arm64"));
