@@ -56,3 +56,31 @@ reconcile changes before retrying; preserve the skill's bounded-write retry rule
 If a write's status or receipt is unclear, GET the document to check the saved
 content and revision before retrying. If delivery cannot be confirmed, report
 that limitation instead of claiming the requested document was saved.
+
+## Reply to or resolve an annotation thread
+
+Use the issue ID and the saved document key. List the open threads and include
+their comments so you can read each conversation before replying:
+
+```text
+GET /api/issues/{issueId}/documents/{key}/annotations?includeComments=true
+```
+
+The list defaults to open threads. Use `status=resolved` for resolved threads or
+`status=all` for both. Use the thread's returned `id` as `threadId`.
+
+Send a reply on the thread with a JSON body such as `{"body":"I updated this section."}`:
+
+```text
+POST /api/issues/{issueId}/documents/{key}/annotations/{threadId}/comments
+```
+
+To resolve the thread, send `{"status":"resolved"}`. To reopen it, send
+`{"status":"open"}`:
+
+```text
+PATCH /api/issues/{issueId}/documents/{key}/annotations/{threadId}
+```
+
+Use the same bearer token and run ID as for document writes. Confirm the reply
+in the returned comment or the state change in the returned thread.
