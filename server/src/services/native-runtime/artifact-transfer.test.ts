@@ -40,10 +40,20 @@ describe.skipIf(process.platform !== "linux")("artifact filesystem installation"
     }
   });
 
-  it.each(["../escape", "/tmp/escape", "a/../escape", "a//escape", "a\\escape", ".paperclip/state", ".git/config", ".paperclip-artifact-owned"])("rejects destination %s before dispatch", async destination => {
+  it.each(["../escape", "/tmp/escape", "a/../escape", "a//escape", "a\\escape", ".paperclip/state", ".git/config", ".paperclip-artifact-owned", ".paperclip-inbound/section-removal.png", ".PAPERCLIP-INBOUND/run/file.png", "docs/.paperclip-inbound/file.png"])("rejects destination %s before dispatch", async destination => {
     const runner = { execute: vi.fn(execute) };
     await expect(createArtifactInstaller(root, runner)({ ...request(), destination })).rejects.toThrow("path_denied");
     expect(runner.execute).not.toHaveBeenCalled();
+  });
+
+  it("still verifies a saved download under the staging directory during recovery", async () => {
+    await mkdir(join(root, "docs", ".paperclip-inbound"), { recursive: true });
+    await writeFile(join(root, "docs", ".paperclip-inbound", "file.png"), bytes);
+    const runner = { execute: vi.fn(execute) };
+    const install = createArtifactInstaller(root, runner);
+    await expect(install({ ...request(), destination: "docs/.paperclip-inbound/file.png", verifyOnly: true })).resolves.toBeUndefined();
+    expect(runner.execute).toHaveBeenCalled();
+    await expect(install({ ...request(), destination: "docs/.paperclip-inbound/other.png" })).rejects.toThrow("path_denied");
   });
 
   it("rejects parent and destination symlinks and preserves their targets", async () => {

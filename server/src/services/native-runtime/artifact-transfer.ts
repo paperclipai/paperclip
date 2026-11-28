@@ -104,7 +104,8 @@ export function createArtifactInstaller(workspaceRoot: string, runner: Pick<Comm
   return async input => {
     if (!posix.isAbsolute(workspaceRoot) || workspaceRoot.split("/").some(part => part === ".." || part === ".") || /[\u0000-\u001f\u007f\\]/u.test(workspaceRoot)
       || posix.isAbsolute(input.destination) || /[\u0000-\u001f\u007f\\]/u.test(input.destination)
-      || input.destination.split("/").some(part => !part || part === "." || part === ".." || part.toLowerCase() === ".paperclip" || part === ".git" || part.startsWith(".paperclip-artifact-"))) throw new Error("artifact_install_path_denied");
+      || input.destination.split("/").some(part => !part || part === "." || part === ".." || part.toLowerCase() === ".paperclip" || part === ".git" || part.startsWith(".paperclip-artifact-"))
+      || (!input.verifyOnly && input.destination.split("/").some(part => part.toLowerCase() === ".paperclip-inbound"))) throw new Error("artifact_install_path_denied");
     if (input.bytes.length !== input.byteSize || createHash("sha256").update(input.bytes).digest("hex") !== input.sha256) throw new Error("artifact_install_identity_mismatch");
     const scratch = `.paperclip-artifact-${randomUUID()}`;
     const run = async (phase: string) => {
