@@ -4990,7 +4990,7 @@ export function secretService(db: Db | DbTransaction) {
         projectionClass?: SecretProjectionClass;
         projectionAllowlistKey?: string | null;
       }>,
-      options?: { replaceAll?: boolean },
+      options?: { replaceAll?: boolean; preserveConfigPathPrefixes?: readonly string[] },
     ) => {
       const normalizedRefs: Array<{
         secretId: string;
@@ -5027,6 +5027,7 @@ export function secretService(db: Db | DbTransaction) {
 
       await db.transaction(async (tx) => {
         if (options?.replaceAll) {
+          const preservePrefixes = (options.preserveConfigPathPrefixes ?? []).filter((prefix) => prefix.length > 0);
           await tx
             .delete(companySecretBindings)
             .where(
@@ -5034,6 +5035,7 @@ export function secretService(db: Db | DbTransaction) {
                 eq(companySecretBindings.companyId, companyId),
                 eq(companySecretBindings.targetType, target.targetType),
                 eq(companySecretBindings.targetId, target.targetId),
+                ...preservePrefixes.map((prefix) => notLike(companySecretBindings.configPath, `${prefix}%`)),
               ),
             );
         } else if (pathPrefixes.length > 0) {

@@ -50,6 +50,7 @@ import { budgetService } from "./budgets.js";
 import { issueApprovalService } from "./issue-approvals.js";
 import { approvalService } from "./approvals.js";
 import { getStorageService } from "../storage/index.js";
+import { MAX_ATTACHMENT_BYTES, normalizeUploadAttachmentContentType } from "../attachment-types.js";
 import { subscribeCompanyLiveEvents } from "./live-events.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import path from "node:path";
@@ -83,6 +84,7 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
 import { logger } from "../middleware/logger.js";
+import { HttpError } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { accessService } from "./access.js";
 import {
@@ -762,6 +764,30 @@ export function recordWorkerProviderSpan(
     }
   };
   try { visit(params, parent, 0); } catch {}
+}
+
+function sanitizePluginAttachmentFilename(filename: string): string {
+  const base = filename.split(/[/\\]/).pop() ?? "file";
+  const cleaned = base.replace(/[\u0000-\u001f]/g, "").trim().slice(0, 180);
+  return cleaned || "file";
+}
+
+function pluginAttachmentContentType(contentType: string, filename: string): string {
+  const normalized = normalizeUploadAttachmentContentType({
+    contentType,
+    originalFilename: filename,
+  });
+  const lowerName = filename.toLowerCase();
+  if (
+    normalized === "text/html"
+    || normalized === "image/svg+xml"
+    || lowerName.endsWith(".html")
+    || lowerName.endsWith(".htm")
+    || lowerName.endsWith(".svg")
+  ) {
+    return "application/octet-stream";
+  }
+  return normalized;
 }
 
 export function buildHostServices(
@@ -1808,6 +1834,32 @@ export function buildHostServices(
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         return secretsHandler.resolve({ ...params, companyId });
+      },
+      async store(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const stored = await secretsHandler.store({ ...params, companyId });
+        await logPluginActivity({
+          companyId,
+          action: "secret.created",
+          entityType: "secret",
+          entityId: stored.secretId,
+          details: { secretId: stored.secretId },
+        });
+        return stored;
+      },
+      async discard(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const secretId = typeof params.secretId === "string" ? params.secretId.trim() : "";
+        await secretsHandler.discard({ ...params, companyId });
+        await logPluginActivity({
+          companyId,
+          action: "secret.deleted",
+          entityType: "secret",
+          entityId: secretId,
+          details: { secretId },
+        });
       },
     },
 
@@ -2927,6 +2979,84 @@ export function buildHostServices(
           sha256: attachment.sha256,
           originalFilename: attachment.originalFilename ?? null,
           contentBase64: bytes.toString("base64"),
+        };
+      },
+      async createAttachment(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const issue = await issues.getById(params.issueId);
+        if (!inCompany(issue, companyId) || !(await pluginCanReadIssue(issue))) {
+          throw new Error("Issue not found");
+        }
+        const filename = sanitizePluginAttachmentFilename(params.filename);
+        const body = Buffer.from(params.contentBase64, "base64");
+        if (body.length === 0) throw new Error("Attachment is empty");
+        const cap = Math.min(4 * 1024 * 1024, MAX_ATTACHMENT_BYTES);
+        if (body.length > cap) throw new Error(`Attachment exceeds ${cap} bytes`);
+        const contentType = pluginAttachmentContentType(params.contentType, filename);
+        const stored = await getStorageService().putFile({
+          companyId,
+          namespace: `issues/${params.issueId}`,
+          originalFilename: filename,
+          contentType,
+          body,
+        });
+        let created: Awaited<ReturnType<typeof issues.createAttachment>>;
+        try {
+          created = await issues.createAttachment({
+            issueId: params.issueId,
+            provider: stored.provider,
+            objectKey: stored.objectKey,
+            contentType: stored.contentType,
+            byteSize: stored.byteSize,
+            sha256: stored.sha256,
+            originalFilename: stored.originalFilename,
+            createdByAgentId: null,
+            createdByUserId: null,
+          });
+        } catch (err) {
+          if (err instanceof HttpError && err.status >= 400 && err.status < 500) {
+            try {
+              await getStorageService().deleteObject(companyId, stored.objectKey);
+            } catch (cleanupErr) {
+              logger.warn(
+                { cleanupErr, companyId, issueId: params.issueId },
+                "failed to remove stored object after attachment registration was rejected",
+              );
+            }
+          }
+          throw err;
+        }
+        await logPluginActivity({
+          companyId,
+          action: "issue.attachment_added",
+          entityType: "issue",
+          entityId: params.issueId,
+          details: {
+            attachmentId: created.id,
+            originalFilename: created.originalFilename ?? filename,
+            contentType: created.contentType,
+            byteSize: created.byteSize,
+          },
+        });
+        const contentPath = `/api/attachments/${created.id}/content`;
+        return {
+          id: created.id,
+          companyId: created.companyId,
+          issueId: created.issueId,
+          issueCommentId: created.issueCommentId ?? null,
+          assetId: created.assetId,
+          provider: created.provider,
+          objectKey: created.objectKey,
+          contentType: created.contentType,
+          byteSize: created.byteSize,
+          sha256: created.sha256,
+          originalFilename: created.originalFilename ?? null,
+          createdByAgentId: created.createdByAgentId ?? null,
+          createdByUserId: created.createdByUserId ?? null,
+          createdAt: created.createdAt,
+          updatedAt: created.updatedAt,
+          contentPath,
         };
       },
     },

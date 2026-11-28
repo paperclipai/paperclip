@@ -751,6 +751,8 @@ export interface PluginSecretsClient {
     secretRef: string | EnvSecretRefBinding,
     options?: { companyId?: string; configPath?: string },
   ): Promise<string>;
+  store(input: { companyId: string; value: string }): Promise<{ secretId: string; configPath: string }>;
+  discard(input: { companyId: string; secretId: string }): Promise<void>;
 }
 
 /**
@@ -1546,6 +1548,7 @@ export interface PluginIssueAttachmentContent {
  * - `issue.interactions.read` for `listInteractions`
  * - `issue.interactions.respond` for `respondInteraction`
  * - `issue.attachments.read` for `listAttachments` and `getAttachmentContent`
+ * - `issue.attachments.write` for `createAttachment`
  * - `issue.documents.read` for `documents.list` and `documents.get`
  * - `issue.documents.write` for `documents.upsert` and `documents.delete`
  */
@@ -1744,6 +1747,13 @@ export interface PluginIssuesClient {
     companyId: string,
     options?: { maxBytes?: number | null },
   ): Promise<PluginIssueAttachmentContent | null>;
+  createAttachment(input: {
+    issueId: string;
+    companyId: string;
+    filename: string;
+    contentType: string;
+    contentBase64: string;
+  }): Promise<IssueAttachment>;
   /** Read and write issue documents. Requires `issue.documents.read` / `issue.documents.write`. */
   documents: PluginIssueDocumentsClient;
   /** Read and write blocker relationships. */

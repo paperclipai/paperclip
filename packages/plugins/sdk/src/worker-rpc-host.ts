@@ -14,6 +14,23 @@ import { environmentTaskErrorCodeData, environmentTaskErrorData } from "./enviro
 import { workspaceOperationErrorData } from "./workspace-operation-error.js";
 import { createInvocationTracer } from "./invocation-tracer.js";
 import { createPluginIdleDrain } from "./idle-drain.js";
+
+// The worker ALS lives inside `startWorkerRpcHost`. Long-lived plugin work
+// calls this so a finished host request is not stamped on later callbacks.
+let runOutsidePluginInvocationImpl = <T>(fn: () => T): T => fn();
+
+/**
+ * Run `fn` outside the active host invocation.
+ *
+ * Telegram connections and QR login outlive the request that started them.
+ * Reusing that request's invocation id makes the host reject the callback
+ * after it releases the invocation. Exiting the store leaves company scope
+ * to the host's proactive company list instead of pinning a connection-lifetime
+ * invocation, which would also block idle sleep.
+ */
+export function runOutsidePluginInvocation<T>(fn: () => T): T {
+  return runOutsidePluginInvocationImpl(fn);
+}
 /**
  * Worker-side RPC host — runs inside the child process spawned by the host.
  *
@@ -362,6 +379,8 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
   let configCompanyId: string | null = null;
   let databaseNamespace: string | null = null;
   const invocationContextStorage = new AsyncLocalStorage<PluginInvocationContext>();
+  const previousRunOutsidePluginInvocation = runOutsidePluginInvocationImpl;
+  runOutsidePluginInvocationImpl = (fn) => invocationContextStorage.exit(fn);
   const canRecordSpans = () => Boolean(invocationContextStorage.getStore()?.traceparent)
     && (manifest?.capabilities.includes("environment.drivers.register") === true
       || manifest?.capabilities.includes("workspaces.manage") === true);
@@ -678,6 +697,18 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             secretRef,
             companyId: options.companyId,
             configPath: options.configPath,
+          });
+        },
+        async store(input) {
+          return callHost("secrets.store", {
+            companyId: input.companyId,
+            value: input.value,
+          });
+        },
+        async discard(input) {
+          await callHost("secrets.discard", {
+            companyId: input.companyId,
+            secretId: input.secretId,
           });
         },
       },
@@ -1102,6 +1133,10 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             companyId,
             maxBytes: options?.maxBytes ?? null,
           });
+        },
+
+        async createAttachment(input) {
+          return callHost("issues.createAttachment", input);
         },
 
         documents: {
@@ -2515,6 +2550,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
   function cleanup(): void {
     running = false;
+    runOutsidePluginInvocationImpl = previousRunOutsidePluginInvocation;
     idleDrain.close();
 
     // Close readline
