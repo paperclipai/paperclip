@@ -1,3 +1,4 @@
+import { notifyRunDispatch } from "./run-dispatch-notifications.js";
 import { notifyIssueReviewState } from "./issue-review-state-notifications.js";
 import { notifyNativeResponsePresentation } from "./native-response-presentation-notifications.js";
 import { notifyChatResponseAvailability } from "./chat-response-availability.js";
@@ -11,13 +12,15 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 export type ChatRunMilestoneScope = { companyId: string; issueId?: string; runId?: string };
 
 export async function notifyChatRunMilestones(tx: object, scope: ChatRunMilestoneScope) {
+  // A company-wide change (a secret decision, configuration) can make waiting tasks eligible.
+  if (!scope.issueId && !scope.runId) await notifyRunDispatch(tx, { companyId: scope.companyId, everyTask: true });
   if (scope.issueId || scope.runId) {
     await notifyIssueReviewState(tx, { companyId: scope.companyId, issueId: scope.issueId,
       runId: scope.issueId ? undefined : scope.runId });
     await notifyNativeResponsePresentation(tx, { companyId: scope.companyId, issueId: scope.issueId,
       runId: scope.issueId ? undefined : scope.runId });
   }
-  await notifyDeliveryWork(tx, DELIVERY_QUEUES.chatGitHubReviewChecks, JSON.stringify({ companyId: scope.companyId }));
+  await notifyDeliveryWork(tx, DELIVERY_QUEUES.chatGitHubReviewChecks, JSON.stringify({ companyId: scope.companyId, issueId: scope.issueId }));
   await notifyDeliveryWork(tx, DELIVERY_QUEUES.chatGitHubTerminalResponses, JSON.stringify({ companyId: scope.companyId, issueId: scope.issueId }));
   await notifyDeliveryWork(tx, DELIVERY_QUEUES.chatRunMilestones, JSON.stringify({ companyId: scope.companyId, issueId: scope.issueId }));
   // Lifecycle and coarse native progress share lineage and authority. Extend

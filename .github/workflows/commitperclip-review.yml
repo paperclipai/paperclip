@@ -14,7 +14,10 @@ permissions:
 
 jobs:
   review:
-    runs-on: ubuntu-latest
+    # Community PR CI shares the GitHub-hosted queue. A CODEOWNER's own PR is
+    # reviewed from the reserved AWS metadata fleet so it never waits there.
+    # Same admission as ci-routing.yml; every other PR stays GitHub-hosted.
+    runs-on: ${{ vars.AWS_CI_SHORT_JOBS_ENABLED == 'true' && vars.AWS_CI_ENABLED == 'true' && vars.AWS_CI_ROUTING_USER_IDS_SOURCE != '' && vars.AWS_CI_TRUSTED_USER_IDS == vars.AWS_CI_ROUTING_USER_IDS_SOURCE && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.id == 1170821064 && contains(vars.AWS_CI_ROUTING_USER_IDS, format('|{0}|', github.event.pull_request.user.id)) && contains(vars.AWS_CI_ROUTING_USER_IDS, format('|{0}|', github.event.sender.id)) && 'runs-on/fleet=paperclip-ci-routing-x64/env=public-ci' || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - name: Checkout base branch (never PR code)

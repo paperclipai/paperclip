@@ -3,8 +3,10 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, Check, ChevronDown, Plus, RotateCcw, Search, X, Zap } from "lucide-react";
 import { aiRuntimeConnectionBindingSchema, agentHarnessType, type Agent, type IssueAssigneeAdapterOverrides } from "@paperclipai/shared";
 import { agentsApi, type AdapterModel } from "@/api/agents";
+import { useCloudInstance } from "@/hooks/useCloudInstance";
+import { useCloudHarnessPolicy } from "@/hooks/useCloudHarnessPolicy";
 import { queryKeys } from "@/lib/queryKeys";
-import { COPILOT_MODEL_DISCOVERY_QUERY_OPTIONS, copilotTaskModelCatalogOptions } from "@/lib/copilot-task-model-catalog";
+import { ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS, nativeTaskModelCatalogOptions } from "@/lib/native-model-catalog";
 import { cn } from "@/lib/utils";
 import { useMobileEntityPickerViewportStyle } from "@/hooks/useMobileEntityPickerViewportStyle";
 import { getLastComposerEffort, rememberComposerEffort } from "@/lib/recent-composer-effort";
@@ -106,7 +108,9 @@ export function ComposerRunSettingsPicker({
   const mobileViewportStyle = useMobileEntityPickerViewportStyle();
   const agentId = assigneeValue.startsWith("agent:") ? assigneeValue.slice(6) : "";
   const agent = agents.get(agentId);
-  const modelSupported = supportsComposerModel(agent);
+  const cloud = Boolean(useCloudInstance());
+  const harnessPolicy = useCloudHarnessPolicy();
+  const modelSupported = supportsComposerModel(agent) && (!cloud || Boolean(agent && harnessPolicy.isCloudHarnessAllowed(agent.adapterType, agent.adapterConfig)));
   const view = (requestedView === "models" && !modelSupported) || (requestedView === "agents" && !allowAssigneeChange)
     ? "settings"
     : requestedView;
@@ -117,23 +121,23 @@ export function ComposerRunSettingsPicker({
   }, [isMuseRunner, settings, onSettingsChange]);
   const binding = aiRuntimeConnectionBindingSchema.safeParse(agent?.runtimeConfig?.aiConnection).data;
   const poolId = binding?.mode === "router" ? binding.connectionId : undefined;
-  const copilotCatalog = copilotTaskModelCatalogOptions(agent);
+  const nativeCatalog = nativeTaskModelCatalogOptions(agent);
   const acpxAgent = agent?.adapterType === "paperclip_runner" && provider === "acpx" && typeof agent.adapterConfig.acpxAgent === "string" ? agent.adapterConfig.acpxAgent : undefined;
-  const copilotCatalogScope = JSON.stringify(copilotCatalog ?? null);
-  const requestCopilotModels = Boolean(copilotCatalog && open && view !== "agents" && !modelOptionsOverride);
+  const nativeCatalogScope = JSON.stringify(nativeCatalog ?? null);
+  const requestNativeModels = Boolean(nativeCatalog && open && view !== "agents" && !modelOptionsOverride);
   const { data: fetchedModels = [], isPending: modelsPending, refetch: refreshModels } = useQuery({
     queryKey: agent && modelSupported
-      ? [...queryKeys.agents.adapterModels(companyId, agent.adapterType, agent.defaultEnvironmentId ?? null, provider), poolId ?? null, copilotCatalog ?? null, acpxAgent ?? null]
+      ? [...queryKeys.agents.adapterModels(companyId, agent.adapterType, agent.defaultEnvironmentId ?? null, provider), poolId ?? null, nativeCatalog ?? null, acpxAgent ?? null]
       : ["agents", "composer-models", "none"],
     queryFn: () => agentsApi.adapterModels(companyId, agent!.adapterType, {
-      environmentId: agent!.defaultEnvironmentId ?? null, provider, poolId, acpxAgent, ...copilotCatalog,
+      environmentId: agent!.defaultEnvironmentId ?? null, provider, poolId, acpxAgent, ...nativeCatalog,
     }),
-    ...(copilotCatalog ? COPILOT_MODEL_DISCOVERY_QUERY_OPTIONS : {}),
-    enabled: Boolean(agent && modelSupported && !modelOptionsOverride && (!copilotCatalog || requestCopilotModels)),
+    ...(nativeCatalog ? ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS : {}),
+    enabled: Boolean(agent && modelSupported && !modelOptionsOverride && (!nativeCatalog || requestNativeModels)),
   });
   useEffect(() => {
-    if (requestCopilotModels) void refreshModels();
-  }, [requestCopilotModels, copilotCatalogScope, companyId, agent?.defaultEnvironmentId, refreshModels]);
+    if (requestNativeModels) void refreshModels();
+  }, [requestNativeModels, nativeCatalogScope, companyId, agent?.defaultEnvironmentId, refreshModels]);
   // The server resolves instance-declared models first and otherwise returns the
   // adapter's curated catalog. Do not replace a declared Codex list locally.
   const models: readonly (AdapterModel & { detail?: string })[] = modelOptionsOverride
@@ -209,7 +213,7 @@ export function ComposerRunSettingsPicker({
   const Trigger = mobile ? DialogTrigger : PopoverTrigger;
   const modelTrigger = <button ref={allowAssigneeChange ? undefined : triggerRef} type="button" disabled={disabled} aria-label="Select model and effort" aria-haspopup="dialog" aria-expanded={open && view !== "agents"} onClick={() => { setView("settings"); if (allowAssigneeChange) setOpen(true); }}
     className="flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-full px-2.5 text-muted-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50">
-    <span data-testid="task-chat-composer-model-label" className="min-w-0 truncate">{open ? "Select model" : modelName || "Default"}</span>
+    <span data-testid="task-chat-composer-model-label" className="min-w-0 truncate text-foreground/70">{open ? "Select model" : modelName || "Default"}</span>
     {!open && effort ? <span className="hidden shrink-0 sm:inline">{effortLabel}</span> : null}
     <ChevronDown className="size-3 shrink-0" aria-hidden />
   </button>;

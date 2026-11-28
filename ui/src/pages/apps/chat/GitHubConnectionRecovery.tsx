@@ -10,6 +10,8 @@ import { Label } from "@/components/ui/label";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Link } from "@/lib/router";
 import { gitHubAppSettingsUrl } from "./GitHubAppIdentity";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 export function GitHubConnectionRecoveryNotice({ endpoint }: { endpoint: ChatEndpoint }) {
   if (!["attention", "revoked"].includes(endpoint.status)) return null;
@@ -40,7 +42,7 @@ function CredentialLabel({ id, label, help }: { id: string; label: string; help:
     <Label htmlFor={id}>{label}</Label>
     <Tooltip><TooltipTrigger asChild><button type="button" aria-label={`Help with ${label}`} className="rounded-sm text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">
       <CircleHelp className="size-3.5" aria-hidden="true" />
-    </button></TooltipTrigger><TooltipContent className="max-w-xs">{help}</TooltipContent></Tooltip>
+    </button></TooltipTrigger><TooltipContent className={cn("max-w-xs", ANALYTICS_MASK_CLASS)}>{help}</TooltipContent></Tooltip>
   </div>;
 }
 

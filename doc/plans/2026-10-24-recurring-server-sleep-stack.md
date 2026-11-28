@@ -28,12 +28,12 @@ Do not mark an item done from a timer removal or a green check alone.
 | 10 | External-object refresh | Configuration changes, refresh deadlines, source events | Pending |
 | 11 | Status-card evaluation | Settings/card mutations and evaluation deadlines | Pending |
 | 12 | Plugin scheduled jobs | Registration/update/removal and actual job deadlines | #17518 published; see latest-head gate records below |
-| 13 | Routine, agent-timer and issue-monitor scheduling | Remove periodic wake backstops after complete producer coverage; routine execution-status reconciliation separately | Pending |
+| 13 | Routine, agent-timer and issue-monitor scheduling | Remove periodic wake backstops after complete producer coverage; routine execution-status reconciliation separately | Routine schedules implemented in slice 61; issue/agent timers still pending |
 | 14 | Skill-version retention and native-harness backup expiration | Separate retention owners and existing retention guarantees | Pending |
-| 15 | Automatic database backups | Shared scheduling, actual backup deadlines, existing checkpoint contract | Pending |
+| 15 | Automatic database backups | Shared scheduling, actual backup deadlines, existing checkpoint contract | Slice 60 implemented; remote acceptance pending; see `2026-10-26-database-backup-sleep-schedule.md` |
 | 16 | Aggregate maintenance tick | Retire enabled and disabled branches after all constituent owners migrate | Pending |
 | 17 | Grok routine dispatch | Committed reservations and feature changes; prepared-only recovery | [#17490](https://github.com/paperclipai/paperclip/pull/17490) merged after exact-head 5/5 reviews and passing CI |
-| 18 | Abandoned import transfer spools | Creation/completion events, existing retention deadline, startup recovery | Pending; explicitly retained from the remaining-blocker checklist |
+| 18 | Abandoned import transfer spools | Creation/completion events, existing retention deadline, startup recovery | [#17835](https://github.com/paperclipai/paperclip/pull/17835), implemented; remote acceptance pending |
 
 ## Stack and verification contract
 
@@ -3455,3 +3455,85 @@ awaiting provider cleanup inline. All 84 startup and 20 real-database environmen
 settlement cases pass, plus workspace typechecking and the full build. This
 changes only the last PR; earlier stack qualification and unresolved scope remain
 as recorded above. Fresh CI is required and nothing is merged.
+
+## Slice 59: import spool cleanup
+
+Branch `codex/sleep-59-import-spool-cleanup` follows slice 58 at
+`929c86e32e00d219b329741dd2c89c40b1a5f826`. Replace the hourly abandoned-upload
+scan with root/run-scoped filesystem hints, transaction-aware ledger changes,
+and saved 24-hour deadlines. Keep failed/applying files quiet and preserve the
+atomic cancellation claim. Database failures no longer count as missing rows
+that permit orphan deletion. No new table or external-wake exemption.
+
+The owning three complete suites pass 50 tests with real PostgreSQL and files;
+server typechecking passes. The initial outage regression reproduced deletion,
+and fixture failures during lifecycle testing are recorded in
+[the producer and lifecycle audit](2026-10-26-import-spool-cleanup-sleep.md).
+Workspace and remote checks remain separate acceptance gates. This is one
+remaining original duty, not a declaration that the inventory or stack is done.
+
+## Slice 60: automatic database backup scheduling
+
+The ordinary backup interval now registers its real deadline with the shared
+delivery coordinator. Backup execution, serialization, retention, manual calls,
+and the pre-sleep/restart-marker protocol remain with their existing owner.
+The coordinator prevents overlap, leaves passive drain/standby waits without
+SQL, and joins a scheduled backup during shutdown. Enabled backups still owe
+periodic work; this does not claim they become event-only or that Cloud persists
+this deadline. Existing host-sleep gates remain unchanged.
+
+Nine worker lifecycle cases and the complete affected six-suite set passed
+(152 cases), as did workspace typechecking and the full build. A real PostgreSQL
+backup/restore probe also passed after correcting two harness-only errors.
+Full local test:run and remote acceptance remain outstanding. See the dedicated
+[backup scheduling audit](2026-10-26-database-backup-sleep-schedule.md) for limits.
+Skill retention, native harness expiration, and the other original inventory
+duties remain open; this is not completion of the full stack request.
+
+
+## Slice 61: routine schedules
+
+Routine schedules now use their actual saved next-run timestamp and committed
+producer changes without the periodic heartbeat wake. The owner includes overdue
+catch-up debt, shares eligibility between dispatch and deadline reads, and stops
+between claimed trigger batches on drain/shutdown. Added producer coverage includes
+manual invocation of a schedule, company lifecycle and deletion, and budget-driven
+company pause/resume. Existing cron behavior and Cloud sleep proofs stay with their
+owners. Issue-monitor and legacy-agent-timer polling remain separate pending duties.
+
+Two original regressions and two budget-producer regressions failed before their
+fixes. Final acceptance passed 224 tests in eight complete suites, workspace
+typechecking, and the full build. Embedded PostgreSQL setup timed out, and the old
+external disposable cluster later lost a catalog file; a fresh isolated PostgreSQL
+cluster ran the same acceptance suites. No further IPC cleanup was performed.
+Remote checks/review and full-stack acceptance remain pending. See the
+[routine scheduling audit](2026-10-27-routine-schedule-sleep.md) for producer coverage,
+lifecycle evidence, harness corrections and the supported single-process writer model.
+
+
+## Slice 64 — skill-version cache retention (2026-10-27)
+
+The hourly cache scan now reconstructs once and wakes from cache changes,
+transaction-owned version/pin changes, and saved grace or terminal-controller
+lease deadlines. The existing prune service retains all deletion safety checks.
+One active company iterator prevents the 16-cursor cap from restarting a large
+multi-company backlog. Unknown pins and failed inspections retain scoped retries;
+permanent pins and fully settled history become quiet. This reason is separate
+from the still-pending native-harness backup retention duty. See
+[the slice audit](2026-10-27-skill-version-retention-sleep-audit.md) for the full
+writer inventory, module contracts, local acceptance, and limitations. Remote
+review and checks remain pending. The user's October 27 instruction now authorizes
+merging qualifying sleep PRs in dependency order after Greptile 5/5 and any
+present Ponytail review passes, with all required CI checks passing.
+
+## Slice 65 — archived runner evidence retention (2026-10-27)
+
+Split evidence retention from native-harness backup eligibility in their shared
+legacy service. Evidence now reconstructs once, wakes from the existing archive/
+quarantine publication signal, and uses saved retention timestamps. Busy or failed
+items retain recovery and bounded continuation. The backup timer selects only its
+own duty and remains for the next slice. See the
+[evidence audit](2026-10-27-runner-evidence-retention-sleep-audit.md) for producer,
+clock-boundary, interrupted-cursor, writer-model, and verification evidence.
+Local acceptance passes 158 cases plus server typechecking/build. Remote review
+and CI are pending; this is not a deployed sleep claim.

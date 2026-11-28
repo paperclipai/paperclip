@@ -1,3 +1,6 @@
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
+import { createHeartbeatQueue } from "../services/heartbeat/queue.js";
+import { createHeartbeatQueueTestDependencies } from "./helpers/heartbeat-queue.js";
 import { createHeartbeatScheduling, type HeartbeatSchedulingDependencies } from "../services/heartbeat/scheduling.js";
 import { createHeartbeatRunState } from "../services/heartbeat/run-state.js";
 import { createHeartbeatRunPreparation } from "../services/heartbeat/run-preparation.js";
@@ -9,7 +12,7 @@ import { createChatPublicationResolution } from "../services/chat-channels/publi
 import { createChatPublicationTaskControl } from "../services/chat-channels/publications/task-control.js";
 import { chatCredentialMutationLease } from "../services/chat-credential-mutation-lease.js";
 import { createHeartbeatLifecycle, type HeartbeatLifecycleDependencies } from "../services/heartbeat/run-lifecycle.js";
-import { createAdmissionTransactionScope, createPostgresWakeQueueAdapter, createWakeAdmissionWriter } from "../modules/wake-queue/adapters/postgres.js";
+import { createPostgresWakeQueueAdapter, createWakeAdmissionWriter } from "../modules/wake-queue/adapters/postgres.js";
 import { applyRunnerGoalPrpEvent } from "../services/runner-goals.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { setTimeout as delay } from "node:timers/promises";
@@ -30,7 +33,7 @@ import {
   activityLog, agents, agentWakeupRequests, approvals, chatConversations, chatEndpoints,
   chatMessageLinks, chatPublications, companies, createDb, heartbeatRuns, issueApprovals,
   issueComments, issueRelations, issueThreadInteractions, issues, nativeRunFinalizations,
-  toolApplications, toolConnections,
+  toolApplications, toolConnections, subscribeDatabaseWork, type Db,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { pendingExternalConversationSettlement, externalConversationSettlementCandidates, settleSlackConversation } from "../services/slack-conversation-lifecycle.js";
@@ -73,7 +76,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.insert(companies).values({ id: companyId, name: "Slack", issuePrefix: companyId.slice(0, 8) });
     await db.insert(agents).values({ id: agentId, companyId, name: "Carl", role: "general", adapterType: "codex_local" });
     await db.insert(issues).values({ id: issueId, companyId, title: "you there?", status: "in_progress", assigneeAgentId: agentId, originKind: "chat_channel" });
-    await db.insert(toolApplications).values({ id: applicationId, companyId, name: "Slack", type: "native" });
+    await db.insert(toolApplications).values({ id: applicationId, companyId, name: "Slack", type: "chat" });
     await db.insert(toolConnections).values({ id: connectionId, companyId, applicationId, name: "Slack", uid: connectionId, transport: "chat_sdk", connectionPurpose: "channel" });
     await db.insert(chatEndpoints).values({ id: endpointId, companyId, connectionId, provider: "slack", publicId: endpointId, assignedAgentId: agentId, status: "active" });
     await db.insert(chatConversations).values({ id: conversationId, companyId, endpointId, issueId, externalConversationId: "channel", externalThreadId: runId, externalLabel: "#test" });
@@ -111,9 +114,31 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       toAgentOrgRow: preparation.toAgentOrgRow, groupAgentOrgRowsByCompany: preparation.groupAgentOrgRowsByCompany,
       issuesSvc: issueService(db), enqueueWakeup,
       getSchedulingSuppression: async () => ({ suppressed: false }), getWorktreeExecutionCutoff: async () => null,
-      scheduleBoundedRetryForRun: vi.fn(), claimDueTimerHeartbeat: vi.fn(), parseHeartbeatPolicy: vi.fn(),
+      scheduleBoundedRetryForRun: vi.fn(), claimDueTimerHeartbeat: vi.fn(), parseHeartbeatPolicy: vi.fn(), nextTimerHeartbeatAt: vi.fn(),
     });
   }
+
+  it("notifies timer eligibility at outer commit when a published conversation becomes idle", async () => {
+    const f = await fixture();
+    const [agent] = await db.update(agents).set({ runtimeConfig: { heartbeat: {
+      enabled: true, intervalSec: 600, skipTimerWhenNoActionableWork: true,
+    } } }).where(eq(agents.id, f.agentId)).returning();
+    const queue = createHeartbeatQueue(db, createHeartbeatQueueTestDependencies(db));
+    expect(await queue.nextTimerHeartbeatAt(agent)).toBe(agent.createdAt.getTime() + 600_000);
+    const events: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.agentTimers, event => events.push(event));
+    try {
+      await db.transaction(async tx => {
+        expect(await settleSlackConversation(tx as unknown as Db, f.companyId, f.issueId)).toBe(true);
+        expect(events).toContain("intent");
+        expect(events).not.toContain("settled");
+        expect((await state(f)).status).toBe("in_progress");
+      });
+      expect(events).toContain("settled");
+      expect((await state(f)).status).toBe("in_review");
+      expect(await queue.nextTimerHeartbeatAt(agent)).toBeNull();
+    } finally { unsubscribe(); }
+  });
 
   it("keeps monitor recovery pending until its wake handoff finishes", async () => {
     const f = await fixture();
@@ -180,8 +205,8 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     const key = `issue-monitor-recovery:${f.issueId}:${issue!.monitorNextCheckAt!.toISOString()}`;
     await db.update(heartbeatRuns).set({ status: "running", finishedAt: null }).where(eq(heartbeatRuns.id, f.runId));
     await db.transaction(async tx => {
-      await createWakeAdmissionWriter().coalesceIntoActiveExecutionRun(createAdmissionTransactionScope(f.companyId, tx as unknown as typeof db), {
-        companyId: f.companyId, agentId: f.agentId, activeExecutionRunId: f.runId,
+      await createWakeAdmissionWriter(tx, f.companyId).coalesceIntoActiveExecutionRun({
+        companyId: f.companyId, agentId: f.agentId, activeExecutionRunId: f.runId, activeExecutionRunStatus: "running",
         mergedContextSnapshot: { issueId: f.issueId }, source: "automation", triggerDetail: "system",
         payload: { issueId: f.issueId }, requestedByActorType: "system", requestedByActorId: null,
         idempotencyKey: key,
@@ -385,8 +410,8 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
         withCredentialMutationLease: chatCredentialMutationLease(db),
         teamsTransferProtocol: vi.fn(() => { throw new Error("Slack does not use Teams file resolution"); }),
         commitTaskControlCompletion: createChatPublicationTaskControl(db).commitTaskControlCompletion,
-        processPendingPublications: vi.fn(async () => ({ attempted: 0 })),
-        processProviderEffect: vi.fn(async () => undefined),
+        processPendingPublications: vi.fn(async () => 0),
+        processProviderEffect: vi.fn(async () => "processed" as const),
       });
       const lifecycle = createHeartbeatLifecycle(db, { emitTerminalAgentTaskRun: vi.fn() } as unknown as HeartbeatLifecycleDependencies);
       const finishRun = () => lifecycle.setRunStatus(f.runId, "succeeded", { finishedAt: new Date() });
@@ -426,8 +451,8 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       let entered = false;
       await adapter.withIssueExecutionLock({ companyId: f.companyId, runId: f.runId, now: new Date() }, async (_locked, ports) => {
         entered = true;
-        if (operation === "cancel_wake") await ports.transaction.cancelDeferredWake({ companyId: f.companyId, wakeId, reason: "cancelled", now: new Date() });
-        if (operation === "fail_wake") await ports.transaction.failDeferredWake({ companyId: f.companyId, wakeId, now: new Date() });
+        if (operation === "cancel_wake") await ports.transaction.cancelDeferredWake({ companyId: f.companyId, wakeId, agentId: f.agentId, reason: "cancelled", now: new Date() });
+        if (operation === "fail_wake") await ports.transaction.failDeferredWake({ companyId: f.companyId, wakeId, agentId: f.agentId, now: new Date() });
         return { outcome: { kind: "released" as const }, postCommitEffects: [] };
       });
       expect(entered).toBe(true);
@@ -530,7 +555,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect((await issueService(db).getById(f.issueId))?.externalConversationState).toBe("waiting");
     expect(await issueService(db).list(f.companyId)).toHaveLength(0);
     expect((await dashboardService(db).summary(f.companyId)).tasks.open).toBe(0);
-    expect((await attentionService(db).list(f.companyId)).items.filter((item) => item.issueId === f.issueId)).toHaveLength(0);
+    expect((await attentionService(db).list(f.companyId)).items.filter((item) => item.subject.id === f.issueId || item.relatedIssue?.id === f.issueId)).toHaveLength(0);
     const results = await companySearchService(db).search(f.companyId, companySearchQuerySchema.parse({ q: "you there" }));
     expect(results.results.find((result) => result.issue?.id === f.issueId)?.issue?.externalConversationState).toBe("waiting");
     expect((await issueService(db).list(f.companyId, { q: "you there" }))[0]?.externalConversationState).toBe("waiting");

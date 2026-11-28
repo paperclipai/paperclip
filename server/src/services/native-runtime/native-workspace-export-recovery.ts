@@ -1,3 +1,4 @@
+import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
 import { alias } from "drizzle-orm/pg-core";
 import { notifyUnsafeWorkspaceExportRecovery, type UnsafeWorkspaceExportScope } from "../unsafe-workspace-export-notifications.js";
@@ -107,6 +108,7 @@ async function recoverCandidate(db: Db, candidate: { runId: string; companyId: s
           nativePhase: "result_accepted", nativePhaseUpdatedAt: now,
           resultJson: { ...run.resultJson, finalizationPhase: "result_accepted", failureCode: null, originalFailureCode: null, nextAttemptAt: null }, updatedAt: now,
         }).where(eq(heartbeatRuns.id, run.id)).returning();
+        await notifyStatusCardIssueChange(tx, run.companyId);
         await tx.update(issues).set({ executionRunId: run.id, updatedAt: now }).where(eq(issues.id, issue.id));
         await appendHeartbeatRunEvent(tx as unknown as Db, { companyId: run.companyId, agentId: run.agentId, runId: run.id,
           eventType: "workspace_export_omitted", stream: "system", level: "info",

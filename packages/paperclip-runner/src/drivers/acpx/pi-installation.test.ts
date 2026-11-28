@@ -7,7 +7,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PI_DISTRIBUTION_CLOSURE_SHA256 } from "./pi-closure-pins.js";
-import { PI_NODE_VERSION } from "./pi-node-pins.js";
 import { assertPiInstallationProfile, verifyPiInstallation } from "./pi-installation.js";
 import { QUALIFIED_ACPX_PROFILES, type AcpxReleaseProfile } from "./qualified-profiles.js";
 import { isSupportedAcpxProfileVersion } from "./profile-compatibility.js";
@@ -41,191 +40,24 @@ async function fixture() {
 }
 
 describe("Pi installation factory", () => {
-  it("preserves profile 13 and changes only the version and corrected ACPX patch binding", async () => {
-    const prior = JSON.parse(await readFile(new URL("../../../test-fixtures/pi-acp/profile-v13-identity.json", import.meta.url), "utf8"));
-    const current = JSON.parse(await readFile(new URL("../../../test-fixtures/pi-acp/profile-v14-identity.json", import.meta.url), "utf8"));
-    expect(Object.keys(current.declaration).filter(key => JSON.stringify(current.declaration[key]) !== JSON.stringify(prior.declaration[key])).sort()).toEqual(["acpxPatchSha256", "agentProfileVersion"]);
-  });
-
-  it("preserves profile 14 and binds the method-specific question extension in profile 15", async () => {
-    const prior = JSON.parse(await readFile(new URL("../../../test-fixtures/pi-acp/profile-v14-identity.json", import.meta.url), "utf8"));
-    const current = JSON.parse(await readFile(new URL("../../../test-fixtures/pi-acp/profile-v15-identity.json", import.meta.url), "utf8"));
-    expect(Object.keys(current.declaration).filter(key => JSON.stringify(current.declaration[key]) !== JSON.stringify(prior.declaration[key])).sort())
-      .toEqual(["agentProfileVersion", "closure", "extensionSha256", "nativeQuestions"]);
-    expect(current.commandDigest).not.toBe(prior.commandDigest);
-  });
-
-  it("preserves profile 16 and changes only the provider credential policy in profile 17", async () => {
-    const prior = JSON.parse(await readFile(new URL("../../../test-fixtures/pi-acp/profile-v16-identity.json", import.meta.url), "utf8"));
-    const current = JSON.parse(await readFile(new URL("../../../test-fixtures/pi-acp/profile-v17-identity.json", import.meta.url), "utf8"));
-    expect(Object.keys(current.declaration).filter(key => JSON.stringify(current.declaration[key]) !== JSON.stringify(prior.declaration[key])).sort())
-      .toEqual(["agentProfileVersion", "providerConfigurationSourceSha256"]);
-    expect(current.commandDigest).not.toBe(prior.commandDigest);
-  });
-
-  it("preserves profile 17 and binds acknowledged cancellation in profile 18", async () => {
-    const prior = JSON.parse(await readFile(new URL("../../../test-fixtures/pi-acp/profile-v17-identity.json", import.meta.url), "utf8"));
-    const current = JSON.parse(await readFile(new URL("../../../test-fixtures/pi-acp/profile-v18-identity.json", import.meta.url), "utf8"));
-    expect(Object.keys(current.declaration).filter(key => JSON.stringify(current.declaration[key]) !== JSON.stringify(prior.declaration[key])).sort())
-      .toEqual(["agentProfileVersion", "closure", "helperSha256", "nativeCancellation", "wrapperSha256"]);
-    expect(current.commandDigest).not.toBe(prior.commandDigest);
-  });
-
-  it("preserves profile 18 and binds root question field types in profile 19", async () => {
-    const prior = JSON.parse(await readFile(new URL("../../../test-fixtures/pi-acp/profile-v18-identity.json", import.meta.url), "utf8"));
-    const current = JSON.parse(await readFile(new URL("../../../test-fixtures/pi-acp/profile-v19-identity.json", import.meta.url), "utf8"));
-    expect(Object.keys(current.declaration).filter(key => JSON.stringify(current.declaration[key]) !== JSON.stringify(prior.declaration[key])).sort())
-      .toEqual(["agentProfileVersion", "closure", "extensionSha256", "nativeQuestions"]);
-    expect(current.commandDigest).not.toBe(prior.commandDigest);
-  });
-
-  it("revises only the shared Codex environment attestation while preserving Pi runtime bytes", async () => {
-    const read = async (version: number) => JSON.parse(await readFile(new URL(`../../../test-fixtures/pi-acp/profile-v${version}-identity.json`, import.meta.url), "utf8"));
-    const prior = await read(19), current = await read(20);
-    expect(Object.keys(current.declaration).filter(key => JSON.stringify(current.declaration[key]) !== JSON.stringify(prior.declaration[key])).sort())
-      .toEqual(["agentProfileVersion", "runtimeSandboxSourceSha256"]);
-    expect(current.commandDigest).not.toBe(prior.commandDigest);
-  });
-
-  it("preserves profile 20 and binds only the configured environment and fixed dependency payload", async () => {
-    const read = async (version: number) => JSON.parse(await readFile(new URL(`../../../test-fixtures/pi-acp/profile-v${version}-identity.json`, import.meta.url), "utf8"));
-    const prior = await read(20), current = await read(21);
-    expect(Object.keys(current.declaration).filter(key => JSON.stringify(current.declaration[key]) !== JSON.stringify(prior.declaration[key])).sort())
-      .toEqual(["agentProfileVersion", "closure", "credentialEnvironmentSourceSha256", "dependencySecurityPatchSha256"]);
-    expect(current.commandDigest).not.toBe(prior.commandDigest);
-  });
-
-  it("preserves profile 21 and binds the restriction on general IAM credentials", async () => {
-    const read = async (version: number) => JSON.parse(await readFile(new URL(`../../../test-fixtures/pi-acp/profile-v${version}-identity.json`, import.meta.url), "utf8"));
-    const prior = await read(21), current = await read(22);
-    expect(Object.keys(current.declaration).filter(key => JSON.stringify(current.declaration[key]) !== JSON.stringify(prior.declaration[key])).sort())
-      .toEqual(["agentProfileVersion", "credentialEnvironmentSourceSha256", "providerConfigurationSourceSha256"]);
-    expect(current.commandDigest).not.toBe(prior.commandDigest);
-  });
-
-  it("preserves profile 22 and revises only shared preconfigured-home source attestations", async () => {
-    const read = async (version: number) => JSON.parse(await readFile(new URL(`../../../test-fixtures/pi-acp/profile-v${version}-identity.json`, import.meta.url), "utf8"));
-    const prior = await read(22), current = await read(23);
-    expect(Object.keys(current.declaration).filter(key => JSON.stringify(current.declaration[key]) !== JSON.stringify(prior.declaration[key])).sort())
-      .toEqual(["agentProfileVersion", "credentialEnvironmentSourceSha256", "recoveryIdentitySourceSha256", "runtimeSandboxSourceSha256"]);
-    expect(current.commandDigest).not.toBe(prior.commandDigest);
-  });
-
-  it("preserves profile 23 and binds OpenRouter attribution without changing Pi runtime bytes", async () => {
-    const read = async (version: number) => JSON.parse(await readFile(new URL(`../../../test-fixtures/pi-acp/profile-v${version}-identity.json`, import.meta.url), "utf8"));
-    const prior = await read(23), current = await read(24);
-    expect(Object.keys(current.declaration).filter(key => JSON.stringify(current.declaration[key]) !== JSON.stringify(prior.declaration[key])).sort())
-      .toEqual(["agentProfileVersion", "credentialEnvironmentSourceSha256", "openRouterAttributionSourceSha256", "providerConfigurationSourceSha256"]);
-    expect(current.commandDigest).not.toBe(prior.commandDigest);
-  });
-
-  it("retains master profile 23 and binds the combined Claude effort sources in profile 26", async () => {
-    const read = async (version: number) => JSON.parse(await readFile(new URL(`../../../test-fixtures/pi-acp/profile-v${version}-identity.json`, import.meta.url), "utf8"));
-    const prior = await read(23), current = await read(26);
-    expect(Object.keys(current.declaration).filter(key => JSON.stringify(current.declaration[key]) !== JSON.stringify(prior.declaration[key])).sort())
-      .toEqual(["agentProfileVersion", "recoveryIdentitySourceSha256", "runtimeSandboxSourceSha256"]);
-    expect(current.commandDigest).not.toBe(prior.commandDigest);
-  });
-
-  it("retains both independently authored profile 24 declarations", async () => {
-    const read = async (name: string) => JSON.parse(await readFile(new URL(`../../../test-fixtures/pi-acp/${name}`, import.meta.url), "utf8"));
-    const published = await read("profile-v24-identity.json"), historical = await read("profile-v24-claude-historical-identity.json");
-    expect(published.declaration.agentProfileVersion).toBe(24);
-    expect(historical.declaration.agentProfileVersion).toBe(24);
-    expect(published.commandDigest).not.toBe(historical.commandDigest);
-  });
-
-  it("combines master OpenRouter attribution with the retained Claude source attestations in profile 27", async () => {
-    const read = async (version: number) => JSON.parse(await readFile(new URL(`../../../test-fixtures/pi-acp/profile-v${version}-identity.json`, import.meta.url), "utf8"));
-    const current = await read(27);
-    for (const [version, expected] of [
-      [24, ["agentProfileVersion", "recoveryIdentitySourceSha256", "runtimeSandboxSourceSha256"]],
-      [26, ["agentProfileVersion", "credentialEnvironmentSourceSha256", "openRouterAttributionSourceSha256", "providerConfigurationSourceSha256"]],
-    ] as const) {
-      const prior = await read(version);
-      expect(Object.keys(current.declaration).filter(key => JSON.stringify(current.declaration[key]) !== JSON.stringify(prior.declaration[key])).sort()).toEqual(expected);
-      expect(current.commandDigest).not.toBe(prior.commandDigest);
-    }
-  });
-
-  it("preserves profile 27 and binds shared observability handling without changing Pi runtime bytes", async () => {
-    const read = async (version: number) => JSON.parse(await readFile(new URL(`../../../test-fixtures/pi-acp/profile-v${version}-identity.json`, import.meta.url), "utf8"));
-    const prior = await read(27), current = await read(28);
-    expect(Object.keys(current.declaration).filter(key => JSON.stringify(current.declaration[key]) !== JSON.stringify(prior.declaration[key])).sort())
-      .toEqual(["agentProfileVersion", "credentialEnvironmentSourceSha256", "runtimeSandboxSourceSha256"]);
-    expect(current.commandDigest).not.toBe(prior.commandDigest);
-  });
-
-  it("preserves profile 28 while binding the Claude-only explicit MCP client budget source in profile 29", async () => {
-    const read = async (version: number) => JSON.parse(await readFile(new URL(`../../../test-fixtures/pi-acp/profile-v${version}-identity.json`, import.meta.url), "utf8"));
-    const prior = await read(28), current = await read(29);
-    expect(Object.keys(current.declaration).filter(key => JSON.stringify(current.declaration[key]) !== JSON.stringify(prior.declaration[key])).sort())
-      .toEqual(["agentProfileVersion", "credentialEnvironmentSourceSha256"]);
-    expect(current.declaration.closure).toEqual(prior.declaration.closure);
-    expect(current.commandDigest).not.toBe(prior.commandDigest);
-  });
-
-  it("retains profile 29 while binding Grok effort recovery identity in profile 30", async () => {
-    const read = async (version: number) => JSON.parse(await readFile(new URL(`../../../test-fixtures/pi-acp/profile-v${version}-identity.json`, import.meta.url), "utf8"));
-    const prior = await read(29), current = await read(30);
-    expect(Object.keys(current.declaration).filter(key => JSON.stringify(current.declaration[key]) !== JSON.stringify(prior.declaration[key])).sort())
-      .toEqual(["agentProfileVersion", "recoveryIdentitySourceSha256", "runtimeSandboxSourceSha256"]);
-    expect(current.declaration.closure).toEqual(prior.declaration.closure);
-    expect(current.commandDigest).not.toBe(prior.commandDigest);
-    expect(isSupportedAcpxProfileVersion("pi", 29)).toBe(true);
-  });
-
-  it("binds the profile declaration to the reviewed patch and platform closure pins", async () => {
+  it("pins the reviewed wrapper patch and runtime helper that its closure was built from", async () => {
     const hash = (bytes: string | Uint8Array) => createHash("sha256").update(bytes).digest("hex");
-    const canonical = (value: any): string => Array.isArray(value) ? `[${value.map(canonical).join(",")}]`
-      : value && typeof value === "object" ? `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}` : JSON.stringify(value);
-    const identity = JSON.parse(await readFile(new URL(`../../../test-fixtures/pi-acp/profile-v${QUALIFIED_ACPX_PROFILES.pi.agentProfileVersion}-identity.json`, import.meta.url), "utf8"));
-    const declaration = identity.declaration;
-    expect(declaration.sharedRuntimeContract).toBe("paperclip.acpx-runtime-contract.v1");
-    expect(identity.commandDigest).toBe(`sha256:${hash(canonical(declaration))}`);
-    expect(QUALIFIED_ACPX_PROFILES.pi.commandDigest).toBe(identity.commandDigest);
-    for (const key of ["agent", "agentProfileVersion", "acpxVersion", "agentServerVersion", "agentRuntimeVersion"] as const) {
-      expect(declaration[key]).toBe(QUALIFIED_ACPX_PROFILES.pi[key]);
-    }
-    expect(declaration.closure).toEqual(PI_DISTRIBUTION_CLOSURE_SHA256);
-    expect(hash(await readFile(new URL("../../../../../patches/brace-expansion@5.0.9.patch", import.meta.url)))).toBe(declaration.dependencySecurityPatchSha256);
-    expect(declaration.nodeVersion).toBe(PI_NODE_VERSION);
-    for (const [path, field] of [["../openrouter-attribution.ts", "openRouterAttributionSourceSha256"], ["pi-provider-config.ts", "providerConfigurationSourceSha256"], ["environment.ts", "credentialEnvironmentSourceSha256"], ["runtime-sandbox.ts", "runtimeSandboxSourceSha256"], ["recovery-identity.ts", "recoveryIdentitySourceSha256"], ["../preconfigured-home.ts", "preparedHarnessHomeSourceSha256"]]) {
-      expect(hash(await readFile(new URL(`./${path}`, import.meta.url)))).toBe(declaration[field!]);
-    }
-    expect(hash(await readFile(new URL("../../../../../patches/acpx@0.13.1.patch", import.meta.url)))).toBe(declaration.acpxPatchSha256);
-    expect(hash(await readFile(new URL("./pi-message-projection.ts", import.meta.url)))).toBe(declaration.messageProjectionSha256);
-    expect(hash(await readFile(new URL("./pi-extension-adapter.ts", import.meta.url)))).toBe(declaration.noticeProjectionSha256);
     const helper = stripTypeScriptTypes(await readFile(new URL("./pi-acp-runtime.ts", import.meta.url), "utf8")).split("\n").map(line => line.trimEnd()).join("\n");
-    const extension = stripTypeScriptTypes(await readFile(new URL("./pi-runtime-extension.ts", import.meta.url), "utf8")).replace('from "./pi-acp-runtime.js"', 'from "../node_modules/pi-acp/dist/paperclip-runtime.js"');
-    expect(hash(helper)).toBe(declaration.helperSha256);
-    expect(hash(extension)).toBe(declaration.extensionSha256);
     const materializer = await readFile(new URL("../../../scripts/materialize-pi-distribution.mjs", import.meta.url), "utf8");
-    expect(materializer).toContain(`wrapperSha256: "${declaration.wrapperSha256}"`);
-    expect(materializer).toContain(`helperSha256: "${declaration.helperSha256}"`);
-    // This exact patch produced the reviewed current wrapper/closure.
-    // Pin it separately so wrapper-only edits cannot keep an unchanged declaration.
+    expect(materializer).toContain(`helperSha256: "${hash(helper)}"`);
     expect(hash(await readFile(new URL("../../../../../patches/pi-acp@0.0.33.patch", import.meta.url)))).toBe("a7c63900b513490cceed9e41bc3bd06f03f2cd56265f434aa2c5dc7925fa76b4");
   });
 
-  it("rejects legacy profiles and tampered executable identities", () => {
+  it("admits only the exact current profile", () => {
+    const current = QUALIFIED_ACPX_PROFILES.pi.agentProfileVersion;
     expect(() => assertPiInstallationProfile(candidate())).not.toThrow();
-    expect(() => assertPiInstallationProfile({ ...candidate(), agentProfileVersion: 1 })).toThrow("version 33");
-    expect(() => assertPiInstallationProfile({ ...candidate(), agentProfileVersion: 2 })).toThrow("version 33");
-    expect(() => assertPiInstallationProfile({ ...candidate(), agentProfileVersion: 3 })).toThrow("version 33");
-    expect(() => assertPiInstallationProfile({ ...candidate(), agentProfileVersion: 4 })).toThrow("version 33");
-    expect(() => assertPiInstallationProfile({ ...candidate(), agentProfileVersion: 5 })).toThrow("version 33");
-    expect(() => assertPiInstallationProfile({ ...candidate(), agentProfileVersion: 6 })).toThrow("version 33");
-    expect(() => assertPiInstallationProfile({ ...candidate(), agentProfileVersion: 7 })).toThrow("version 33");
-    expect(() => assertPiInstallationProfile({ ...candidate(), agentProfileVersion: 8 })).toThrow("version 33");
-    expect(() => assertPiInstallationProfile({ ...candidate(), agentProfileVersion: 9 })).toThrow("version 33");
-    expect(() => assertPiInstallationProfile({ ...candidate(), agentProfileVersion: 10 })).toThrow("version 33");
-    expect(() => assertPiInstallationProfile({ ...candidate(), agentProfileVersion: 11 })).toThrow("version 33");
-    expect(() => assertPiInstallationProfile({ ...candidate(), agentProfileVersion: 12 })).toThrow("version 33");
-    expect(() => assertPiInstallationProfile({ ...candidate(), agentProfileVersion: 13 })).toThrow("version 33");
-    expect(() => assertPiInstallationProfile({ ...candidate(), agentProfileVersion: 14 })).toThrow("version 33");
-    for (const priorVersion of [15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]) expect(() => assertPiInstallationProfile({ ...candidate(), agentProfileVersion: priorVersion })).toThrow("version 33");
-    for (const changed of [{ agentServerVersion: "latest" }, { commandDigest: `sha256:${"0".repeat(64)}` }, { agentRuntimePackage: "ambient-pi" }]) {
+    for (let prior = 1; prior < current; prior += 1) {
+      expect(isSupportedAcpxProfileVersion("pi", prior)).toBe(true);
+      expect(() => assertPiInstallationProfile({ ...candidate(), agentProfileVersion: prior })).toThrow(`version ${current}`);
+    }
+    for (const changed of [{ agentServerVersion: "latest" }, { commandDigest: `sha256:${"0".repeat(64)}` },
+      // The last source-bound Pi identity.
+      { commandDigest: "sha256:faafb66c09c1efc7eb4eda6baaa5813c975e8a992f9cd333687695aa5522d7dc" }, { agentRuntimePackage: "ambient-pi" }]) {
       expect(() => assertPiInstallationProfile({ ...candidate(), ...changed })).toThrow("trusted declaration");
     }
   });

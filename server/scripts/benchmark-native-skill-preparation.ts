@@ -18,11 +18,20 @@ import { authUsers, companyMemberships, companySkillSources, heartbeatRuns, proj
 import type { CompanySkillVersionFileInventoryEntry } from "@paperclipai/shared";
 import { createRunPreparationTiming, withRunExecutionTiming } from "../src/services/execution-preparation-timing.js";
 import { repositorySkillProjection } from "../src/services/skill-repository-package.js";
+import { materializeSelectedSkills } from "../src/services/native-runtime/runtime-context.js";
+import { skillPackageStore } from "../src/services/skill-package-store.js";
+import { getStorageService } from "../src/storage/index.js";
 import { skillFileBytes, skillSnapshotHash } from "../src/services/skill-snapshot.js";
 
 const argument = (name: string) => process.argv.find(value => value.startsWith(`${name}=`))?.slice(name.length + 1);
 const exportOtlp = argument("--export-otlp") === "true";
 const authenticated = argument("--actor") === "agent";
+const warmRuns = Number(argument("--warm-runs") ?? 2);
+assert.ok(Number.isSafeInteger(warmRuns) && warmRuns >= 1 && warmRuns <= 100);
+const selectedSkillCount = Number(argument("--selected-skills") ?? 1);
+assert.ok(Number.isSafeInteger(selectedSkillCount) && selectedSkillCount >= 1 && selectedSkillCount <= 100);
+const nativeAssets = argument("--native-assets") === "true";
+const externalPackages = argument("--package-store") === "external";
 const stagingShape = argument("--staging-shape") === "true";
 // This standalone benchmark owns its tracer. Load the service graph with the
 // app-wide SDK disabled, then restore the operator's export configuration.
@@ -44,7 +53,9 @@ const sourceRevision = execFileSync("git", ["rev-parse", "HEAD"], {
 }).trim();
 const sourceHash = createHash("sha256");
 for (const file of [import.meta.url, new URL("../src/services/company-skills.ts", import.meta.url),
-  new URL("../src/services/skill-version-cache.ts", import.meta.url), new URL("../src/services/execution-preparation-timing.ts", import.meta.url)]) {
+  new URL("../src/services/skill-version-cache.ts", import.meta.url), new URL("../src/services/execution-preparation-timing.ts", import.meta.url),
+  ...["skill-package-store", "skill-package-runtime", "skill-package-files", "skill-package-cache", "file-manifest-cache",
+    "skill-package-recovery", "skill-package-work", "native-runtime/runtime-context", "native-runtime/skill-asset-cache", "native-runtime/runtime-asset-retention"].map(name => new URL(`../src/services/${name}.ts`, import.meta.url))]) {
   sourceHash.update(await fs.readFile(new URL(file)));
 }
 const sourceChangesHash = sourceHash.digest("hex");
@@ -55,6 +66,14 @@ const files: CompanySkillVersionFileInventoryEntry[] = snapshotFile
   ? JSON.parse(await fs.readFile(snapshotFile, "utf8"))
   : [{ path: entrypoint, kind: "skill", content: "---\nname: diagnostic\ndescription: Native preparation benchmark\n---\nReport the model ID.\n" },
     ...Array.from({ length: 207 }, (_, index) => ({ path: `assets/${index}.txt`, kind: "reference" as const, content: "x".repeat(52_000) }))];
+const entrypoints = [entrypoint];
+for (let i = 1; i < selectedSkillCount; i++) {
+  const source = files.find(file => file.path === entrypoint)!;
+  const next = `skills/diagnostic-${i}/SKILL.md`;
+  assert.ok(!files.some(file => file.path === next));
+  files.push({ ...source, path: next, content: source.content.replace("name: diagnostic", `name: diagnostic-${i}`) });
+  entrypoints.push(next);
+}
 const projected = repositorySkillProjection(files, entrypoint);
 const previous = { home: process.env.PAPERCLIP_HOME, instance: process.env.PAPERCLIP_INSTANCE_ID, endpoint: process.env.OTEL_EXPORTER_OTLP_ENDPOINT };
 const home = await fs.mkdtemp(path.join(os.tmpdir(), "native-skill-benchmark-"));
@@ -113,12 +132,15 @@ try {
     catch (error) { await cleanup(); throw error; }
     return { connectionString, cleanup };
   }
+  console.error("benchmark: starting isolated database");
   database = await startDatabase();
+  console.error("benchmark: seeding isolated fixture");
   const networkDelayMs = Number(argument("--network-delay-ms") ?? 0);
   assert.ok(Number.isFinite(networkDelayMs) && networkDelayMs >= 0 && networkDelayMs <= 100);
   const target = new URL(database.connectionString);
   const upstreamPort = Number(target.port);
-  proxy = networkDelayMs ? createServer(client => {
+  let sqlResponseBytes = 0;
+  proxy = createServer(client => {
     const upstream = connect({ host: "127.0.0.1", port: upstreamPort });
     for (const socket of [client, upstream]) {
       socket.setNoDelay(true);
@@ -126,6 +148,7 @@ try {
       socket.on("error", () => { client.destroy(); upstream.destroy(); });
       socket.on("close", () => { connections.delete(socket); });
     }
+    upstream.on("data", chunk => { sqlResponseBytes += chunk.length; });
     const relay = (source: Socket, destination: Socket) => {
       let pendingBytes = 0;
       source.on("data", chunk => {
@@ -142,7 +165,7 @@ try {
       source.on("end", () => setTimeout(() => destination.end(), networkDelayMs));
     };
     relay(client, upstream); relay(upstream, client);
-  }) : null;
+  });
   if (proxy) {
     const server = proxy;
     await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
@@ -154,8 +177,7 @@ try {
   const companyId = randomUUID();
   const agentId = randomUUID();
   const userId = randomUUID();
-  const skillId = randomUUID();
-  const key = `company/${companyId}/diagnostic`;
+  const selections = new Map<string, string>();
   const samples: unknown[] = [];
   let rootPoolQueries = 0;
   db.$client.options.debug = () => { rootPoolQueries++; };
@@ -188,27 +210,50 @@ try {
     })));
     await db.insert(companySkills).values({ companyId, key: "fixture/catalog", slug: "catalog", name: "Unselected catalog", sourceType: "catalog", markdown: "x".repeat(1_578) });
   }
-  await db.insert(companySkills).values({ id: skillId, companyId, key, slug: "diagnostic", name: "Diagnostic",
-    markdown: files.find(file => file.path === entrypoint)!.content, sourceType: "github",
-    sourceLocator: "https://example.invalid/immutable-fixture", metadata: { packageMode: "repository", snapshotHash: "fixture" } });
-  const [snapshot] = await db.insert(companySkillRepositorySnapshots).values({ companyId, contentHash: skillSnapshotHash(files), fileInventory: files }).returning();
-  const [version] = await db.insert(companySkillVersions).values({ companyId, companySkillId: skillId, revisionNumber: 1,
-    repositorySnapshotId: snapshot!.id, repositorySkillPath: entrypoint }).returning();
-  await db.update(companySkills).set({ currentVersionId: version!.id }).where(eq(companySkills.id, skillId));
+  const snapshotId = externalPackages ? await skillPackageStore(db).prepare(companyId, files)
+    : (await db.insert(companySkillRepositorySnapshots).values({ companyId, contentHash: skillSnapshotHash(files), fileInventory: files }).returning())[0]!.id;
+  let objectGets = 0, objectReadBytes = 0;
+  const backend = getStorageService();
+  const getObject = backend.getObject.bind(backend);
+  backend.getObject = async (...args) => {
+    const object = await getObject(...args);
+    objectGets++; objectReadBytes += object.contentLength ?? 0;
+    return object;
+  };
+  for (const [index, selectedPath] of entrypoints.entries()) {
+    const skillId = randomUUID();
+    const key = `company/${companyId}/diagnostic-${index}`;
+    await db.insert(companySkills).values({ id: skillId, companyId, key, slug: `diagnostic-${index}`, name: `Diagnostic ${index}`,
+      markdown: files.find(file => file.path === selectedPath)!.content, sourceType: "github",
+      sourceLocator: "https://example.invalid/immutable-fixture", metadata: { packageMode: "repository", snapshotHash: "fixture" } });
+    const [version] = await db.insert(companySkillVersions).values({ companyId, companySkillId: skillId, revisionNumber: 1,
+      repositorySnapshotId: snapshotId, repositorySkillPath: selectedPath }).returning();
+    await db.update(companySkills).set({ currentVersionId: version!.id }).where(eq(companySkills.id, skillId));
+    selections.set(key, version!.id);
+  }
   const benchmarkDb = db;
   const service = companySkillService(db);
-  for (const label of ["cold", "warm-1", "warm-2", "warm-new-service"]) {
+  console.error("benchmark: measuring preparations");
+  for (const label of ["cold", ...Array.from({ length: warmRuns }, (_, index) => `warm-${index + 1}`), "warm-new-service"]) {
     exporter.reset();
     rootPoolQueries = 0;
     const selected: ReturnType<typeof companySkillService> = label === "warm-new-service" ? companySkillService(db) : service;
     const runId = randomUUID();
     if (authenticated) await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", responsibleUserId: userId, contextSnapshot: { executionPolicy: {} } });
     rootPoolQueries = 0;
+    sqlResponseBytes = 0; objectGets = 0; objectReadBytes = 0;
+    let nativeAssetMs = 0;
+    const cpuStarted = process.cpuUsage();
     const measuredStarted = performance.now();
     const resolve = () => selected.withRuntimeSkillEntries(companyId, {
-      onlyKeys: new Set([key]), versionSelections: new Map([[key, version!.id]]), snapshotLatest: true,
+      onlyKeys: new Set(selections.keys()), versionSelections: selections, snapshotLatest: true,
     }, async entries => {
-      if (authenticated) await benchmarkDb.update(heartbeatRuns).set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ skillVersions: { [key]: version!.id }, skillSelectionSnapshot: true })}::jsonb` }).where(eq(heartbeatRuns.id, runId));
+      if (authenticated) await benchmarkDb.update(heartbeatRuns).set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ skillVersions: Object.fromEntries(selections), skillSelectionSnapshot: true })}::jsonb` }).where(eq(heartbeatRuns.id, runId));
+      if (nativeAssets) {
+        const started = performance.now();
+        await materializeSelectedSkills({ paperclipSkillSync: { desiredSkills: [...selections.keys()] } }, entries, true);
+        nativeAssetMs = performance.now() - started;
+      }
       return entries;
     });
     const entries: Awaited<ReturnType<typeof selected.listRuntimeSkillEntries>> = await withRunExecutionTiming(runId, () => createRunPreparationTiming(runId)("configuration_skills", () => authenticated
@@ -216,11 +261,15 @@ try {
       : resolve()));
     const elapsedMs = performance.now() - measuredStarted;
     const queryCount = rootPoolQueries;
-    assert.equal(entries.length, 1);
+    const cpu = process.cpuUsage(cpuStarted);
+    const measuredIo = { nativeAssetMs, sqlResponseBytes, objectGets, objectReadBytes, rssBytes: process.memoryUsage().rss,
+      cpuUserMs: cpu.user / 1000, cpuSystemMs: cpu.system / 1000, processPeakRssBytes: process.resourceUsage().maxRSS * 1024 };
+    assert.equal(entries.length, selectedSkillCount);
+    for (const entry of entries) assert.equal(entry.sourceStatus, "available", entry.missingDetail ?? "Skill unavailable");
     assert.equal(entries[0]!.sourceStatus, "available", entries[0]!.missingDetail ?? "Skill unavailable");
     // Verify the whole delivered repository, not just its authored SKILL.md.
     for (const file of projected) {
-      const location = path.join(entries[0]!.source, file.path);
+      const location = path.join(entries.find(entry => entry.key === selections.keys().next().value)!.source, file.path);
       assert.deepEqual(await fs.readFile(location), skillFileBytes(file));
       if (process.platform !== "win32") assert.equal(Boolean((await fs.stat(location)).mode & 0o111), Boolean(file.executable));
     }
@@ -230,17 +279,32 @@ try {
     assert.ok(spans.some(span => span.name === "skills.version.verify" && span.attributes["paperclip.execution.fileCount"] === projected.length));
     assert.equal(new Set(spans.map(span => span.spanContext().traceId)).size, 1);
     assert.ok(spans.every(span => Object.keys(span.attributes).every(key => ["paperclip.task.run.run_id", "paperclip.execution.fileCount", "paperclip.execution.bytes"].includes(key))));
-    samples.push({ label, elapsedMs, rootPoolQueries: queryCount, traceId: spans[0]!.spanContext().traceId,
+    samples.push({ label, elapsedMs, ...measuredIo, rootPoolQueries: queryCount, traceId: spans[0]!.spanContext().traceId,
       phases: spans.filter(span => span.name.startsWith("skills.")).map(span => ({ name: span.name,
         durationMs: span.duration[0] * 1000 + span.duration[1] / 1e6,
         spanId: span.spanContext().spanId, parentSpanId: span.parentSpanContext?.spanId,
         attributes: span.attributes })) });
-    console.error(JSON.stringify({ label, elapsedMs, rootPoolQueries: queryCount }));
+    console.error(JSON.stringify({ label, elapsedMs, ...measuredIo, rootPoolQueries: queryCount }));
   }
+  async function diskUsage(root: string): Promise<{ allocatedBytes: number; fileBytes: number; files: number }> {
+    const total = { allocatedBytes: 0, fileBytes: 0, files: 0 };
+    for (const item of await fs.readdir(root, { withFileTypes: true })) {
+      const target = path.join(root, item.name);
+      if (item.isDirectory()) {
+        const child = await diskUsage(target);
+        total.allocatedBytes += child.allocatedBytes; total.fileBytes += child.fileBytes; total.files += child.files;
+      } else if (item.isFile()) {
+        const stat = await fs.stat(target);
+        total.allocatedBytes += stat.blocks * 512; total.fileBytes += stat.size; total.files++;
+      }
+    }
+    return total;
+  }
+  const instanceDisk = await diskUsage(home);
   console.log(JSON.stringify({ schema: "paperclip.native-skill-preparation-benchmark.v1",
     sourceRevision, sourceChangesHash, exportedOtlp: exportOtlp,
     source: snapshotFile ? "supplied immutable snapshot" : "synthetic repository",
-    networkDelayMsPerDirection: networkDelayMs, authenticated, stagingShape,
+    networkDelayMsPerDirection: networkDelayMs, authenticated, stagingShape, externalPackages, nativeAssets, selectedSkillCount, instanceDisk,
     repositoryHash: skillSnapshotHash(files), repositoryFiles: files.length, runtimeFiles: projected.length,
     runtimeBytes: projected.reduce((sum, file) => sum + skillFileBytes(file).length, 0), samples }, null, 2));
 } finally {
@@ -256,5 +320,12 @@ try {
   for (const [name, value] of Object.entries({ PAPERCLIP_HOME: previous.home, PAPERCLIP_INSTANCE_ID: previous.instance, OTEL_EXPORTER_OTLP_ENDPOINT: previous.endpoint })) {
     if (value === undefined) delete process.env[name]; else process.env[name] = value;
   }
+  async function writableDirectories(root: string): Promise<void> {
+    const stat = await fs.lstat(root);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) return;
+    await fs.chmod(root, 0o700);
+    for (const child of await fs.readdir(root, { withFileTypes: true })) if (child.isDirectory()) await writableDirectories(path.join(root, child.name));
+  }
+  await writableDirectories(home);
   await fs.rm(home, { recursive: true, force: true });
 }
