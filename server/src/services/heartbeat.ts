@@ -1743,6 +1743,10 @@ export function heartbeatService(
     return recovery.sweepStaleIssueLocks(opts);
   }
 
+  async function repairOrphanedTerminalWakes() {
+    return recovery.repairOrphanedTerminalWakes();
+  }
+
   function issueIdFromRunContext(contextSnapshot: unknown) {
     const context = parseObject(contextSnapshot);
     return (
@@ -4841,6 +4845,8 @@ export function heartbeatService(
     resumeExecutionWaitComments,
 
     sweepStaleIssueLocks,
+
+    repairOrphanedTerminalWakes,
 
     reconcileResolvedDependencyWakes,
 
