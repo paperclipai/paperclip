@@ -1,10 +1,13 @@
-import { isDaytonaConnection } from "../../daytona.js";
+import { nativeProviderCatalogFor } from "../../native-provider-catalogs.js";
+import { restConnectorFor } from "../../connectors/rest-registry.js";
 import { isBrowserUseConnection } from "../../browser-use-client.js";
 import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { connectionGrantMembers, connectionGrantDelegations, connectionGrants, companyMemberships, toolApplications, toolConnectionInstalls, toolConnections } from "@paperclipai/db";
 import type { ConnectionTokenIssuanceOutcome, ConnectionTokenRequest, ConnectionTokenResponse } from "@paperclipai/shared";
-import { forbidden, HttpError, unprocessable } from "../../../errors.js";
+import { forbidden, HttpError, notFound, unprocessable } from "../../../errors.js";
+import { connectionSourceSlug } from "@paperclipai/shared";
+import { pluginAppCatalogFor } from "../../plugin-app-catalog.js";
 import { secretService } from "../../secrets.js";
 import { toolAccessPolicyService } from "../../tool-access-policy.js";
 import type { ToolAccessAudit } from "../audit.js";
@@ -58,8 +61,16 @@ export function createConnectionTokenBroker(db: Db, { now, secrets, policySvc, a
         input.connectionId,
         input.companyId,
       );
-      if (isDaytonaConnection(connection)) throw forbidden("Daytona credentials stay in the governed tool gateway and cannot be exported.");
+      // A plugin connector's connections reach no agent while its plugin is
+      // not ready or no longer provides it, token exchange included.
+      if (!(await pluginAppCatalogFor(db, [connection])).isAvailable(connectionSourceSlug(connection))) {
+        throw notFound("This connector is not available. Its plugin is disabled or no longer provides it.");
+      }
+      const nativeProvider = nativeProviderCatalogFor(connection);
+      if (nativeProvider) throw forbidden(`${nativeProvider.name} credentials stay in the governed tool gateway and cannot be exported.`);
+      if (restConnectorFor(connection)) throw forbidden("Deployment connection credentials stay in the governed tool gateway and cannot be exported.");
       if (isBrowserUseConnection(connection)) throw forbidden("Browser Use credentials stay in the governed tool gateway and cannot be exported.");
+      if (connection.transport === "plugin") throw forbidden("Plugin connector credentials stay in the governed tool gateway and cannot be exported.");
       if (connection.connectionPurpose === "ai") throw unprocessable("AI credentials are available only through the runtime resolver");
       const application = await getConnectionApplication(connection);
       const brokerEnabled = connectionTokenBrokerEnabled(connection);

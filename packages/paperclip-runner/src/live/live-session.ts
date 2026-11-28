@@ -1,3 +1,4 @@
+import { parseAcpxCandidateAdmission } from "../drivers/acpx/candidate-admission.js";
 import { ACPX_CAPABILITY_PROFILES } from "../drivers/acpx/capability-profiles.js";
 import { resolvePiThinkingLevel } from "../drivers/acpx/pi-thinking.js";
 import { normalizeProviderNotice } from "../drivers/provider-notices.js";
@@ -907,9 +908,13 @@ export class CapabilityLiveSessionService {
 
   async create(input: CreateCapabilityLiveSessionInput = {}): Promise<CapabilityLiveSession> {
     resolvePiThinkingLevel(input.provider === "acpx" ? input.acpxAgent ?? "codex" : "", input.piThinkingLevel);
+    if (this.#transportOptions.acpxCandidateAdmission) {
+      parseAcpxCandidateAdmission(this.#transportOptions.acpxCandidateAdmission, { companyId: input.companyId ?? "", agent: input.acpxAgent ?? "", model: input.requestedModel ?? "" });
+    }
     if (input.provider === "acpx" && input.acpxAgent !== undefined
       && ACPX_CAPABILITY_PROFILES[input.acpxAgent].qualification === "pending"
-      && this.#transportOptions.acpxCandidateProfile !== input.acpxAgent) {
+      && this.#transportOptions.acpxCandidateProfile !== input.acpxAgent
+      && !(input.acpxAgent === "antigravity" && this.#transportOptions.acpxCandidateAdmission)) {
       throw new Error("The candidate ACPX profile requires explicit evaluation opt-in");
     }
     if (input.provider === "claude_managed" && !input.managedProfile) {

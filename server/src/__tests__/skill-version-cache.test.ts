@@ -1,10 +1,12 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+import { applyPendingMigrations } from "@paperclipai/db";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, heartbeatRuns, issues, nativeRunFinalizations, environmentLeases, companies, companySkills, companySkillVersions, companySkillRepositorySnapshots, createDb } from "@paperclipai/db";
+import { agents, heartbeatRuns, heartbeatRunEvents, issues, issueRecoveryActions, nativeRunFinalizations, environmentLeases, companies, companySkills, companySkillVersions, companySkillRepositorySnapshots, createDb } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { companySkillService } from "../services/company-skills.js";
 import { skillVersionCachePaths, touchSkillVersionCache, withSkillVersionCacheLock } from "../services/skill-version-cache.js";
@@ -17,19 +19,21 @@ async function sweepSkillVersionCache(db: ReturnType<typeof createDb>, options: 
   return { ...result, evicted: result.removed };
 }
 
-const support = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_SKILL_CACHE_TEST_DATABASE_URL");
+const support = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
 if (!support.supported) console.warn(`Skill cache tests require Postgres: ${support.reason}`);
 
 describePostgres("immutable skill version cache", () => {
-  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: ReturnType<typeof createDb>;
   let home: string;
   const previousHome = process.env.PAPERCLIP_HOME;
 
   beforeAll(async () => {
-    database = await startEmbeddedPostgresTestDatabase("skill-version-cache-");
-    db = createDb(database.connectionString);
+    if (!external) database = await startEmbeddedPostgresTestDatabase("skill-version-cache-");
+    if (external) await applyPendingMigrations(external);
+    db = createDb(external ?? database!.connectionString);
     home = await fs.mkdtemp(path.join(os.tmpdir(), "skill-version-cache-"));
     process.env.PAPERCLIP_HOME = home;
   });
@@ -38,6 +42,7 @@ describePostgres("immutable skill version cache", () => {
     if (previousHome === undefined) delete process.env.PAPERCLIP_HOME;
     else process.env.PAPERCLIP_HOME = previousHome;
     if (home) await fs.rm(home, { recursive: true, force: true });
+    await db?.$client.end({ timeout: 1 });
     await database?.cleanup();
   });
 
@@ -182,6 +187,53 @@ describePostgres("immutable skill version cache", () => {
     return run!;
   }
 
+  it.each(["queued", "scheduled_retry"])("allows cache eviction and unused skill deletion before %s admission", async status => {
+    const f = await fixture();
+    await f.resolve(f.versions[0]!.id);
+    await touchSkillVersionCache(f.companyId, f.skillId, f.versions[0]!.id, Date.now() - 7_200_000);
+    const run = await activeRun(f.companyId, null);
+    await db.update(heartbeatRuns).set({ status }).where(eq(heartbeatRuns.id, run.id));
+
+    expect((await sweepSkillVersionCache(db, { companyId: f.companyId })).evicted).toBe(1);
+    await expect(companySkillService(db).deleteSkill(f.companyId, f.skillId)).resolves.toMatchObject({ id: f.skillId });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]).toMatchObject({
+      status, startedAt: null, contextSnapshot: null,
+    });
+  });
+
+  it.each([
+    { startedAt: new Date() },
+    { runtimeModeResolvedAt: new Date() },
+    { runnerInstanceId: randomUUID() },
+    { nativePhase: "preparing" },
+    { executionStage: "preparing" },
+    { runnerProfileJson: { nativeExecutionInput: {} } },
+    { contextSnapshot: { skillVersions: null } },
+    { contextSnapshot: { skillSelectionSnapshot: true } },
+  ])("preserves unknown skill selections for queued execution evidence %j", async evidence => {
+    const f = await fixture();
+    const run = await activeRun(f.companyId, null);
+    await db.update(heartbeatRuns).set({ status: "queued", ...evidence }).where(eq(heartbeatRuns.id, run.id));
+    await expect(companySkillService(db).deleteSkill(f.companyId, f.skillId)).rejects.toThrow("active or recovering run");
+    expect(await companySkillService(db).getById(f.companyId, f.skillId)).not.toBeNull();
+  });
+
+  it.each(["queued", "scheduled_retry"])("retains recorded skill selections before %s admission", async status => {
+    const f = await fixture();
+    const run = await activeRun(f.companyId, { skillVersions: { [f.key]: f.versions[0]!.id } });
+    await db.update(heartbeatRuns).set({ status }).where(eq(heartbeatRuns.id, run.id));
+    await expect(companySkillService(db).deleteSkill(f.companyId, f.skillId)).rejects.toThrow("active or recovering run");
+  });
+
+  it("preserves queued execution with a retained provider event", async () => {
+    const f = await fixture();
+    const run = await activeRun(f.companyId, null);
+    await db.update(heartbeatRuns).set({ status: "queued" }).where(eq(heartbeatRuns.id, run.id));
+    await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: run.id, agentId: run.agentId,
+      seq: 1, eventType: "session.started" });
+    await expect(companySkillService(db).deleteSkill(f.companyId, f.skillId)).rejects.toThrow("active or recovering run");
+  });
+
   it("retains pinned versions and skips companies with unrecorded active selections", async () => {
     const f = await fixture();
     await f.resolve(f.versions[0]!.id);
@@ -234,20 +286,87 @@ describePostgres("immutable skill version cache", () => {
       runnerProfileJson: { nativeExecutionInput: execution } }).where(eq(heartbeatRuns.id, run.id));
     await db.insert(nativeRunFinalizations).values({ companyId, issueId: issue!.id, runId: run.id,
       phase: "terminal_failure", recoveryState: "blocked" });
+    // Unresolved recovery: the same run is scheduled to resume from its saved input.
+    await resumeAction(companyId, issue!.id, run.id);
     return { run, execution };
   }
 
-  it.each([false, true])("uses the legacy native manifest without changing unresolved recovery (bundled skill: %s)", async bundled => {
+  async function resumeAction(companyId: string, issueId: string, runId: string) {
+    const [action] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId, kind: "active_run_watchdog",
+      cause: "native_session_interrupted", fingerprint: `resume:${runId}`, nextAction: "Resume the saved run.",
+      evidence: { runId }, wakePolicy: { kind: "resume_native_run", runId } }).returning();
+    return action!;
+  }
+
+  it("evicts and deletes a skill whose only pin is a blocked failed run that nothing will resume", async () => {
+    const f = await fixture();
+    await f.resolve(f.versions[0]!.id);
+    await touchSkillVersionCache(f.companyId, f.skillId, f.versions[0]!.id, Date.now() - 7_200_000);
+    const run = await activeRun(f.companyId, { skillVersions: { [f.key]: f.versions[0]!.id } });
+    const [issue] = await db.insert(issues).values({ companyId: f.companyId, title: "Failed journey" }).returning();
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: issue!.id, nativePhase: "terminal_failure",
+      status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, run.id));
+    await db.insert(nativeRunFinalizations).values({ companyId: f.companyId, issueId: issue!.id, runId: run.id,
+      phase: "terminal_failure", recoveryState: "blocked", failureCode: "native_continuation_requires_reconciliation" });
+    const action = await resumeAction(f.companyId, issue!.id, run.id);
+    await expect(companySkillService(db).deleteSkill(f.companyId, f.skillId)).rejects.toThrow("active or recovering run");
+    await db.update(issueRecoveryActions).set({ status: "resolved", wakePolicy: null }).where(eq(issueRecoveryActions.id, action.id));
+    await db.update(nativeRunFinalizations).set({ nextAttemptAt: new Date(Date.now() + 60_000) })
+      .where(eq(nativeRunFinalizations.runId, run.id));
+    await expect(companySkillService(db).deleteSkill(f.companyId, f.skillId)).rejects.toThrow("active or recovering run");
+    await db.update(nativeRunFinalizations).set({ nextAttemptAt: null, leaseOwner: "native-finalizer:other" })
+      .where(eq(nativeRunFinalizations.runId, run.id));
+    await expect(companySkillService(db).deleteSkill(f.companyId, f.skillId)).rejects.toThrow("active or recovering run");
+    expect((await sweepSkillVersionCache(db, { companyId: f.companyId })).skipped.protected_version).toBe(1);
+    await db.update(nativeRunFinalizations).set({ leaseOwner: null }).where(eq(nativeRunFinalizations.runId, run.id));
+    expect((await sweepSkillVersionCache(db, { companyId: f.companyId })).evicted).toBe(1);
+    await expect(companySkillService(db).deleteSkill(f.companyId, f.skillId)).resolves.toMatchObject({ id: f.skillId });
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id)))[0])
+      .toMatchObject({ phase: "terminal_failure", recoveryState: "blocked" });
+  });
+
+  it.each([false, true])("protects unknown legacy versions without changing unresolved recovery (bundled skill: %s)", async bundled => {
     const f = await fixture();
     const old = await f.resolve(f.versions[0]!.id);
     await touchSkillVersionCache(f.companyId, f.skillId, f.versions[0]!.id, Date.now() - 7_200_000);
     const { run } = await legacyNativeRun(f.companyId, bundled ? [{ key: "paperclipai/paperclip/slack", versionId: null }] : []);
-    expect((await sweepSkillVersionCache(db, { companyId: f.companyId })).evicted).toBe(1);
+    const result = await sweepSkillVersionCache(db, { companyId: f.companyId });
+    expect(result.evicted).toBe(bundled ? 0 : 1);
+    if (bundled) expect(result.skipped.unknown_run_pins).toBe(1);
     expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id)))[0])
       .toMatchObject({ phase: "terminal_failure", recoveryState: "blocked" });
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]!.contextSnapshot).toBeNull();
     vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new Error("Upstream unavailable"))));
     expect(await f.resolve(f.versions[0]!.id)).toMatchObject({ source: old.source });
+  });
+
+  it("deletes a later skill while keeping unknown legacy recovery versions protected", async () => {
+    const f = await fixture();
+    const { run } = await legacyNativeRun(f.companyId, [{ key: "paperclipai/paperclip/slack", versionId: null }]);
+    const [skill] = await db.select().from(companySkills).where(eq(companySkills.id, f.skillId));
+    await db.update(heartbeatRuns).set({ finishedAt: new Date(skill!.createdAt.getTime() - 1_000) })
+      .where(eq(heartbeatRuns.id, run.id));
+    await f.resolve(f.versions[0]!.id);
+    await touchSkillVersionCache(f.companyId, f.skillId, f.versions[0]!.id, Date.now() - 7_200_000);
+    expect((await sweepSkillVersionCache(db, { companyId: f.companyId })).skipped.unknown_run_pins).toBe(1);
+    await expect(companySkillService(db).deleteSkill(f.companyId, f.skillId)).resolves.toMatchObject({ id: f.skillId });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]).toMatchObject({ status: "failed" });
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id)))[0])
+      .toMatchObject({ phase: "terminal_failure", recoveryState: "blocked" });
+  });
+
+  it.each(["renamed", "running", "malformed"])("keeps uncertain legacy selections for %s execution", async mode => {
+    const f = await fixture();
+    const { run, execution } = await legacyNativeRun(f.companyId, [{ key: f.key, versionId: null }]);
+    const [skill] = await db.select().from(companySkills).where(eq(companySkills.id, f.skillId));
+    await db.update(heartbeatRuns).set({
+      finishedAt: new Date(skill!.createdAt.getTime() + (mode === "renamed" ? 1_000 : -1_000)),
+      ...(mode === "running" ? { status: "running" } : {}),
+      ...(mode === "malformed" ? { runnerProfileJson: { nativeExecutionInput: { ...execution, binding: { ...execution.binding, runId: randomUUID() } } } } : {}),
+    }).where(eq(heartbeatRuns.id, run.id));
+    if (mode === "renamed") await db.update(companySkills).set({ key: `company/${f.companyId}/renamed-skill` })
+      .where(eq(companySkills.id, f.skillId));
+    await expect(companySkillService(db).deleteSkill(f.companyId, f.skillId)).rejects.toThrow("active or recovering run");
   });
 
   it("preserves exact legacy manifest pins", async () => {
@@ -280,6 +399,7 @@ describePostgres("immutable skill version cache", () => {
     const f = await fixture();
     await f.resolve(f.versions[0]!.id);
     const run = await activeRun(f.companyId, null);
+    await db.update(heartbeatRuns).set({ status: "queued" }).where(eq(heartbeatRuns.id, run.id));
     const ready = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
     const preparing = companySkillService(db).withRuntimeSkillEntries(f.companyId, {
@@ -293,7 +413,7 @@ describePostgres("immutable skill version cache", () => {
         .where(eq(heartbeatRuns.id, run.id));
     });
     await ready.promise;
-    const other = createDb(database.connectionString);
+    const other = createDb(external ?? database!.connectionString);
     try {
       const cleaning = await sweepSkillVersionCache(other, { companyId: f.companyId });
       expect(cleaning.evicted).toBe(0);
@@ -312,7 +432,7 @@ describePostgres("immutable skill version cache", () => {
       expect(entries[0]!.sourceStatus).toBe("available");
       throw new Error("durable pin write failed");
     })).rejects.toThrow("durable pin write failed");
-    const other = createDb(database.connectionString);
+    const other = createDb(external ?? database!.connectionString);
     try {
       expect(await withSkillVersionCacheLock(other, f.companyId, async () => "released", true)).toBe("released");
     } finally { await other.$client.end({ timeout: 0 }); }
@@ -359,7 +479,7 @@ describePostgres("immutable skill version cache", () => {
     }) as typeof fs.lstat);
     const sweep = sweepSkillVersionCache(db, { companyId: f.companyId });
     await inspecting.promise;
-    const other = createDb(database.connectionString);
+    const other = createDb(external ?? database!.connectionString);
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const preparation = withSkillVersionCacheLock(other, f.companyId, async () => {
       await companySkillService(other).listRuntimeSkillEntries(f.companyId, {

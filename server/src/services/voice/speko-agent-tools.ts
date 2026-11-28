@@ -8,9 +8,29 @@ import { chatVoiceCallbacks, instanceUserRoles, companyMemberships } from "@pape
 import type { VoiceCaller } from "./voice-session-store.js";
 import { z } from "zod";
 import { instanceSettingsService } from "../instance-settings.js";
-const SPEKO_TOOLS = [{ name: "call_my_phone", description: "Call the responsible person's saved phone number to discuss this task with the assigned Paperclip agent. Requires that person's callback opt-in. Never chooses another recipient, cancels work or grants approvals. Do not redial an uncertain attempt.", inputSchema: { type: "object", properties: {}, additionalProperties: false }, risk: "write", scopes: [] }] as const;
+const SPEKO_TOOLS = [{
+  name: "call_my_phone",
+  description: "Call the responsible person's saved, opted-in phone number to tell them something or discuss this task with the assigned Paperclip agent. Pass message with the concise update or question to speak immediately when they answer. Requires that person's callback opt-in. Never chooses another recipient, cancels work or grants approvals. Do not redial an uncertain attempt.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      message: {
+        type: "string",
+        minLength: 1,
+        maxLength: 2000,
+        description: "Concise update, announcement, or question to tell the responsible person when they answer the phone.",
+      },
+    },
+    additionalProperties: false,
+  },
+  risk: "write",
+  scopes: [],
+}] as const;
+const callMyPhoneParametersSchema = z.object({
+  message: z.string().trim().min(1).max(2000).optional(),
+}).strict();
 type SpekoTaskSession = Pick<ToolGatewaySession, "companyId" | "agentId" | "runId" | "issueId" | "identityContextId">;
-interface Binding { companyId: string; endpointId: string; issueId: string; caller: VoiceCaller }
+interface Binding { companyId: string; endpointId: string; issueId: string; caller: VoiceCaller; openingMessage?: string }
 const runtimes = new WeakMap<Db, (binding: Binding, invocationId: string) => Promise<unknown>>();
 export function registerSpekoVoiceRuntime(db: Db, start: (binding: Binding, invocationId: string) => Promise<unknown>) {
   runtimes.set(db, start);
@@ -19,7 +39,7 @@ export function registerSpekoVoiceRuntime(db: Db, start: (binding: Binding, invo
 async function resolveAuthority(db: Db, session: SpekoTaskSession, endpointId: string) {
   if (!(await instanceSettingsService(db).getExperimental()).enableChatConnectors) throw forbidden("Voice connections are disabled");
   if (!runtimes.has(db) || !session.agentId || !session.runId || !session.issueId) throw forbidden("Speko tools require an active task run");
-  const { run, context } = await captureRunIdentity(db, { companyId: session.companyId, agentId: session.agentId, runId: session.runId });
+  const { run, context } = await captureRunIdentity(db, { companyId: session.companyId, agentId: session.agentId, runId: session.runId }, { readScope: "task_authorization" });
   if (boundRunIssueId(run) !== session.issueId || !run.responsibleUserId || session.identityContextId && session.identityContextId !== context?.id) throw forbidden("The accepted requester or task changed");
   const [endpoint] = await db.select().from(chatEndpoints).where(and(eq(chatEndpoints.companyId, session.companyId), eq(chatEndpoints.id, endpointId), eq(chatEndpoints.provider, "speko"), eq(chatEndpoints.assignedAgentId, session.agentId), eq(chatEndpoints.status, "active")));
   if (!endpoint) throw forbidden("This agent has no active Speko connection");
@@ -34,10 +54,27 @@ async function resolveAuthority(db: Db, session: SpekoTaskSession, endpointId: s
   return { endpoint, caller };
 }
 export async function executeSpekoVoiceTool(db: Db, session: SpekoTaskSession, endpointId: string, parameters: unknown, invocationId?: string) {
-  z.object({}).strict().parse(parameters);
   if (!invocationId || !z.string().uuid().safeParse(invocationId).success) throw forbidden("A durable invocation is required for phone calls");
   const authority = await resolveAuthority(db, session, endpointId);
-  return runtimes.get(db)!({ companyId: session.companyId, endpointId, issueId: session.issueId!, caller: authority.caller }, invocationId);
+  const [entry] = await db.select({ inputSchema: toolCatalogEntries.inputSchema })
+    .from(toolCatalogEntries)
+    .where(and(
+      eq(toolCatalogEntries.companyId, session.companyId),
+      eq(toolCatalogEntries.connectionId, authority.endpoint.connectionId),
+      eq(toolCatalogEntries.toolName, "call_my_phone"),
+      eq(toolCatalogEntries.status, "active"),
+      isNull(toolCatalogEntries.quarantinedAt),
+    ))
+    .limit(1);
+  if (!entry) throw forbidden("The call_my_phone tool is not active on this Speko connection");
+  const schemaProperties = entry.inputSchema && typeof entry.inputSchema === "object" && "properties" in entry.inputSchema
+    ? (entry.inputSchema as { properties?: Record<string, unknown> }).properties
+    : undefined;
+  const allowsMessage = Boolean(schemaProperties && typeof schemaProperties === "object" && "message" in schemaProperties);
+  const parsed = allowsMessage
+    ? callMyPhoneParametersSchema.parse(parameters ?? {})
+    : (z.object({}).strict().parse(parameters ?? {}) as { message?: undefined });
+  return runtimes.get(db)!({ companyId: session.companyId, endpointId, issueId: session.issueId!, caller: authority.caller, ...(parsed.message ? { openingMessage: parsed.message } : {}) }, invocationId);
 }
 import {
   chatEndpoints,

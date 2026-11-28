@@ -96,6 +96,7 @@ type Props = {
   preview?: ReactNode;
   webhookUrl?: string;
   signingMode: "app_webhook" | "fireflies_hmac" | "bearer" | "hmac_sha256" | "github_hmac" | "none";
+  /** `runs` and `overview` both show the routine page; `activity` opens its audit log. */
   state: "setup" | "credentials" | "configured" | "failure" | "overview" | "list" | "runs" | "activity";
 };
 
@@ -151,7 +152,7 @@ export function WebhookReview({ signingMode = "bearer", state = "configured", pr
     routinesApi.createTrigger = async (_id, input) => {
       const trigger: RoutineTrigger = {
         ...webhook(String(input.signingMode ?? "bearer"), routine.triggers.length + 1, webhookUrl), ...input,
-        lastFiredAt: null, lastResult: null,
+        lastFiredAt: null, lastResult: null, lastWebhookDelivery: null,
       };
       routine = { ...routine, triggers: [...routine.triggers, trigger] };
       return { trigger, secretMaterial: trigger.kind === "webhook" ? { webhookUrl, webhookSecret: demoSecret } : null };
@@ -173,6 +174,8 @@ export function WebhookReview({ signingMode = "bearer", state = "configured", pr
     window.fetch = async (input, init) => {
       const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, window.location.origin);
       const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+      // The instructions editor's "/" menu lists company skills; none in this fixture.
+      if (url.pathname === `/api/companies/${companyId}/skills`) return Response.json([]);
       // Keep unrelated page actions inside the review fixture as well.
       if (url.pathname.startsWith("/api/") && method !== "GET") {
         return Response.json({ error: "This action is outside the webhook review fixture." }, { status: 422 });
@@ -180,7 +183,11 @@ export function WebhookReview({ signingMode = "bearer", state = "configured", pr
       return previousFetch(input, init);
     };
     initialActions.current.setSelectedCompanyId(companyId);
-    initialActions.current.navigate(state === "list" ? "/PAP/routines" : `/PAP/routines/${routineId}/${["overview", "runs", "activity"].includes(state) ? state : "triggers"}`, { replace: true });
+    // The routine page is one page; only the audit log has its own address.
+    initialActions.current.navigate(
+      state === "list" ? "/PAP/routines" : state === "activity" ? `/PAP/routines/${routineId}/activity` : `/PAP/routines/${routineId}`,
+      { replace: true },
+    );
     setReady(true);
     return () => {
       Object.assign(routinesApi, originalApi);

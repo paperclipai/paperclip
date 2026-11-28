@@ -10,3 +10,7 @@ export function actorBinding(actor: ActorInfo | undefined) {
         : null,
   };
 }
+
+export function connectionActorUserId(actor?: ActorInfo): string | null {
+  return actor?.actorType === "user" ? actor.actorId ?? null : actor?.managementContext?.responsibleUserId ?? null;
+}

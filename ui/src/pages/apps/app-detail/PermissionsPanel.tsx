@@ -1,5 +1,5 @@
 import { AgentAvatar } from "@/components/AgentAvatar";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Ban, Check, FlaskConical, Loader2, RefreshCw, Search, ShieldQuestion } from "lucide-react";
 import type { Agent, ToolCatalogEntry, ToolConnectionCapabilities } from "@paperclipai/shared";
 import { useSearchParams } from "@/lib/router";
@@ -13,7 +13,18 @@ import { cn } from "@/lib/utils";
 import { type InstallState } from "@/lib/tool-installs";
 import { QuarantinedActionsReview } from "./SetupPanel";
 import { ActionTestDialog } from "./ActionTestDialog";
+import { ACTION_PAGE_SIZE } from "./constants";
+import { ProviderToolIcon } from "@/components/ProviderToolIcon";
+import { actionLabel } from "./action-permissions";
+
+/** Action rows without a provider icon show none, as before. */
+function NoIcon() {
+  return null;
+}
 import type { AccessDraft, AppDetailSectionProps } from "./types";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+
+const NOTE = "rounded-2xl bg-muted/50 px-4 py-3 text-sm text-muted-foreground";
 
 type ActionPermission = "off" | "ask" | "allowed";
 type ActionKindFilter = "all" | "read" | "write";
@@ -67,7 +78,7 @@ export function PermissionsPanel({
 }) {
   const [searchParams] = useSearchParams();
   return (
-    <div className="space-y-10">
+    <div className="flex flex-col gap-8">
       <AgentAccessSection
         agents={agents}
         access={access}
@@ -114,19 +125,21 @@ function AgentAccessSection({
   disabled: boolean;
   onSave: (next: AccessDraft) => void;
 }) {
-  const liveAgents = agents.filter((agent) => agent.status !== "terminated");
+  const liveAgents = useMemo(() => agents.filter((agent) => agent.status !== "terminated"), [agents]);
   const canManage = capabilities?.canConfigure ?? false;
   const editableAgentIds = capabilities?.editableAgentIds;
-  const selectableAgents = editableAgentIds
-    ? liveAgents.filter((agent) => editableAgentIds.includes(agent.id))
-    : liveAgents;
+  const selectableAgents = useMemo(() => {
+    if (!editableAgentIds) return liveAgents;
+    const editable = new Set(editableAgentIds);
+    return liveAgents.filter((agent) => editable.has(agent.id));
+  }, [editableAgentIds, liveAgents]);
   const selectedAgents = liveAgents.filter((agent) => access.agentIds.has(agent.id));
   const requiredAgentIds = install.agentIds;
 
   return (
-    <section className="space-y-4 border-t border-border pt-8">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold text-foreground">Which agents can use this connection?</h2>
+    <section className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3 px-4">
+        <h2 className="text-sm text-muted-foreground">Which agents can use this connection?</h2>
         {disabled ? <span className="text-xs text-muted-foreground">Saving…</span> : null}
       </div>
 
@@ -136,7 +149,7 @@ function AgentAccessSection({
             ariaLabel="Which agents can use this connection"
             value={access.mode}
             disabled={disabled}
-            className="sm:grid-cols-2"
+            className="*:rounded-2xl sm:grid-cols-2"
             onValueChange={(next) => {
               if (next === "all") onSave({ mode: "all", agentIds: new Set() });
               else onSave({
@@ -180,13 +193,13 @@ function AgentAccessSection({
           ) : null}
         </div>
       ) : access.mode === "all" ? (
-        <p className="text-sm text-muted-foreground">Any agent can use this connection.</p>
+        <p className={NOTE}>Any agent can use this connection.</p>
       ) : selectedAgents.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No agents can use this connection.</p>
+        <p className={NOTE}>No agents can use this connection.</p>
       ) : (
-        <div className="space-y-0.5">
+        <div className="flex flex-col divide-y divide-border overflow-hidden rounded-2xl bg-muted/50">
           {selectedAgents.map((agent) => (
-            <div key={agent.id} className="flex items-center gap-2 px-1.5 py-1 text-sm">
+            <div key={agent.id} className="flex min-h-11 items-center gap-2 px-4 py-2 text-sm">
               <AgentAvatar agent={agent} size={16} className="h-4 w-4 shrink-0 text-muted-foreground"/>
               <span className="min-w-0 flex-1 truncate text-foreground">{agent.name}</span>
             </div>
@@ -233,38 +246,33 @@ export function ActionsSection({
   const [query, setQuery] = useState("");
   const [kindFilter, setKindFilter] = useState<ActionKindFilter>("all");
   const [showPermissionChangeWarning, setShowPermissionChangeWarning] = useState(false);
-  const byName = (a: ToolCatalogEntry, b: ToolCatalogEntry) =>
-    (a.title ?? a.toolName).localeCompare(b.title ?? b.toolName);
   const sortedRead = useMemo(() => [...readOnly].sort(byName), [readOnly]);
   const sortedWrite = useMemo(() => [...canChange].sort(byName), [canChange]);
-  const matches = (entry: ToolCatalogEntry) => {
-    const needle = query.trim().toLowerCase();
-    if (!needle) return true;
-    return (entry.title ?? entry.toolName).toLowerCase().includes(needle)
-      || (entry.description ?? "").toLowerCase().includes(needle);
-  };
-  const visibleRead = kindFilter === "write" ? [] : sortedRead.filter(matches);
-  const visibleWrite = kindFilter === "read" ? [] : sortedWrite.filter(matches);
+  const needle = query.trim().toLowerCase();
+  const visibleRead = useMemo(() => kindFilter === "write" ? [] : sortedRead.filter(entry => matchesAction(entry, needle)), [kindFilter, needle, sortedRead]);
+  const visibleWrite = useMemo(() => kindFilter === "read" ? [] : sortedWrite.filter(entry => matchesAction(entry, needle)), [kindFilter, needle, sortedWrite]);
+  const setPermission = useCallback((ids: string[], next: ActionPermission) => {
+    setShowPermissionChangeWarning(true);
+    onSetPermission(ids, next);
+  }, [onSetPermission]);
   const visibleCount = visibleRead.length + visibleWrite.length;
 
   return (
-    <section className="space-y-6 border-t border-border pt-8">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-lg font-semibold text-foreground">Actions</h2>
+    <TooltipProvider>
+    <section className="flex flex-col gap-3">
+      <div className="flex min-h-8 flex-wrap items-center justify-between gap-2 px-4">
+        <h2 className="text-sm text-muted-foreground">Actions</h2>
         {canConfigure ? (
           <div className="flex items-center gap-2">
             {disabled ? <span className="text-xs text-muted-foreground">Saving…</span> : null}
             <Button
-              variant="outline"
+              variant="ghost"
               size="sm"
+              className="-mr-2 h-8 text-muted-foreground"
               onClick={onRefreshActions}
               disabled={refreshPending || disabled}
             >
-              {refreshPending ? (
-                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
-              )}
+              {refreshPending ? <Loader2 className="animate-spin" aria-hidden /> : <RefreshCw aria-hidden />}
               Refresh actions
             </Button>
           </div>
@@ -301,16 +309,19 @@ export function ActionsSection({
           <FilterChip label={`Read ${readOnly.length}`} active={kindFilter === "read"} onClick={() => setKindFilter("read")} />
           <FilterChip label={`Write ${canChange.length}`} active={kindFilter === "write"} onClick={() => setKindFilter("write")} />
         </div>
-        <p className="text-xs text-muted-foreground">{visibleCount} matches · sorted A–Z</p>
+        <p className="px-4 text-xs text-muted-foreground tabular-nums">{visibleCount} {visibleCount === 1 ? "match" : "matches"}, sorted A–Z</p>
       </div>
 
       {visibleCount === 0 ? (
-        <div className="py-6 text-center text-sm text-muted-foreground">
+        <div className={NOTE}>
           No actions match “{query}”. Clear the search to see them all.
         </div>
       ) : (
-        <div className="space-y-6">
+        <div className="flex flex-col gap-2">
           <ActionGroup
+            key={`read:${needle}:${kindFilter}`}
+            kind="read"
+            label="Read"
             title={`Read (${visibleRead.length})`}
             actions={visibleRead}
             connectionId={connectionId}
@@ -320,12 +331,12 @@ export function ActionsSection({
             disabled={disabled}
             focusId={focusId}
             canConfigure={canConfigure}
-            onSetPermission={(ids, next) => {
-              setShowPermissionChangeWarning(true);
-              onSetPermission(ids, next);
-            }}
+            onSetPermission={setPermission}
           />
           <ActionGroup
+            key={`write:${needle}:${kindFilter}`}
+            kind="write"
+            label="Write"
             title={`Write (${visibleWrite.length})`}
             actions={visibleWrite}
             connectionId={connectionId}
@@ -335,14 +346,12 @@ export function ActionsSection({
             disabled={disabled}
             focusId={focusId}
             canConfigure={canConfigure}
-            onSetPermission={(ids, next) => {
-              setShowPermissionChangeWarning(true);
-              onSetPermission(ids, next);
-            }}
+            onSetPermission={setPermission}
           />
         </div>
       )}
     </section>
+    </TooltipProvider>
   );
 }
 
@@ -353,10 +362,8 @@ function FilterChip({ label, active, onClick }: { label: string; active: boolean
       onClick={onClick}
       aria-pressed={active}
       className={cn(
-        "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
-        active
-          ? "border-primary bg-primary/10 text-primary"
-          : "border-border text-muted-foreground hover:bg-accent",
+        "inline-flex h-9 items-center rounded-lg px-3 text-sm tabular-nums outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        active ? "bg-muted font-medium text-foreground" : "text-muted-foreground hover:text-foreground",
       )}
     >
       {label}
@@ -364,7 +371,19 @@ function FilterChip({ label, active, onClick }: { label: string; active: boolean
   );
 }
 
+
+function byName(a: ToolCatalogEntry, b: ToolCatalogEntry) {
+  return actionLabel(a).localeCompare(actionLabel(b));
+}
+
+function matchesAction(entry: ToolCatalogEntry, needle: string) {
+  return !needle || actionLabel(entry).toLowerCase().includes(needle)
+    || (entry.description ?? "").toLowerCase().includes(needle);
+}
+
 function ActionGroup({
+  kind,
+  label,
   title,
   actions,
   connectionId,
@@ -376,6 +395,9 @@ function ActionGroup({
   canConfigure,
   onSetPermission,
 }: {
+  kind: "read" | "write";
+  /** The visible name; `title` keeps the count in the name assistive tech and tests read. */
+  label: string;
   title: string;
   actions: ToolCatalogEntry[];
   connectionId: string;
@@ -387,6 +409,10 @@ function ActionGroup({
   canConfigure: boolean;
   onSetPermission: (ids: string[], next: ActionPermission) => void;
 }) {
+  const [visibleLimit, setVisibleLimit] = useState(ACTION_PAGE_SIZE);
+  const visibleActions = actions.slice(0, visibleLimit);
+  const focusedAction = focusId ? actions.find(action => action.id === focusId) : undefined;
+  if (focusedAction && !visibleActions.includes(focusedAction)) visibleActions.push(focusedAction);
   if (actions.length === 0) return null;
   const groupValue = (() => {
     const first = actionPermission(actions[0]!.id, enabledIds, askFirstIds);
@@ -395,9 +421,12 @@ function ActionGroup({
       : "";
   })();
   return (
-    <div>
-      <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</h3>
+    <div className="overflow-hidden rounded-2xl bg-muted/50">
+      <div className="flex min-h-12 flex-wrap items-center justify-between gap-2 px-4">
+        <h3 aria-label={title} className="flex items-baseline gap-2 text-sm font-semibold text-foreground">
+          {label}
+          <span className="font-normal text-muted-foreground tabular-nums">{actions.length}</span>
+        </h3>
         {canConfigure ? (
           // PAP-659 C6b: set the whole group at once, so narrowing a fresh
           // connection's writes is one choice rather than one per action;
@@ -414,7 +443,7 @@ function ActionGroup({
                 // the last call overwrite the others.
                 onSetPermission(actions.map((action) => action.id), event.target.value as ActionPermission);
               }}
-              className="h-7 rounded-md border border-input bg-background px-2 text-xs text-foreground outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30"
+              className="h-8 rounded-lg bg-transparent px-2 text-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
             >
               {groupValue === "" ? <option value="">Mixed</option> : null}
               {PERMISSION_OPTIONS.map((option) => (
@@ -424,8 +453,8 @@ function ActionGroup({
           </label>
         ) : null}
       </div>
-      <div className="divide-y divide-border">
-        {actions.map((action) => (
+      <div className="divide-y divide-border border-t border-border">
+        {visibleActions.map((action) => (
           <ActionRow
             key={action.id}
             action={action}
@@ -439,6 +468,13 @@ function ActionGroup({
           />
         ))}
       </div>
+      {visibleLimit < actions.length ? (
+        <div className="border-t border-border px-2 py-2">
+          <Button type="button" variant="ghost" size="sm" className="text-muted-foreground" onClick={() => setVisibleLimit(limit => limit + ACTION_PAGE_SIZE)}>
+            Show more {kind} actions
+          </Button>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -454,7 +490,7 @@ const PERMISSION_OPTIONS: Array<{
   { value: "allowed", label: "Allowed", description: "Runs without approval.", icon: Check },
 ];
 
-function ActionRow({
+const ActionRow = memo(function ActionRow({
   action,
   connectionId,
   appName,
@@ -475,7 +511,7 @@ function ActionRow({
 }) {
   const rowRef = useRef<HTMLDivElement | null>(null);
   const [testOpen, setTestOpen] = useState(false);
-  const title = action.title ?? action.toolName;
+  const title = actionLabel(action);
 
   useEffect(() => {
     if (focused) rowRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -486,19 +522,22 @@ function ActionRow({
       <div
         ref={rowRef}
         className={cn(
-          "flex flex-col gap-3 py-3 sm:flex-row sm:items-center",
-          focused && "rounded-md bg-primary/5 ring-2 ring-primary/40",
+          "flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center",
+          focused && "bg-primary/5 ring-2 ring-primary/40 ring-inset",
         )}
         data-action-id={action.id}
       >
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
+            {action.icons?.length ? (
+              <ProviderToolIcon icons={action.icons} fallback={NoIcon} className="h-4 w-4 shrink-0" testId="app-action-icon" />
+            ) : null}
             <span className="text-sm font-medium text-foreground">{title}</span>
             {/* PAP-659 C7: the gate is only as good as the classifier, so say
                 what each action was classified as. A misfiled tool is then one
                 glance to spot and one click to move. */}
             <span
-              className="rounded-full border border-border px-1.5 py-px text-xs font-medium uppercase tracking-wide text-muted-foreground"
+              className="rounded-md bg-foreground/5 px-1.5 py-px text-xs text-muted-foreground"
               title={`Paperclip classified this action as ${action.riskLevel}`}
             >
               {action.riskLevel}
@@ -510,11 +549,10 @@ function ActionRow({
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {canConfigure ? (
-            <TooltipProvider>
               <div
                 role="radiogroup"
                 aria-label={`${title} permission`}
-                className="inline-flex rounded-md border border-border bg-muted/40 p-0.5"
+                className="inline-flex rounded-lg bg-foreground/5 p-0.5"
               >
               {PERMISSION_OPTIONS.map((option) => {
                 const Icon = option.icon;
@@ -530,7 +568,7 @@ function ActionRow({
                         disabled={disabled}
                         onClick={() => onSetPermission([action.id], option.value)}
                         className={cn(
-                          "flex h-8 w-8 items-center justify-center rounded-sm text-muted-foreground outline-none transition-colors",
+                          "flex size-8 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors",
                           "hover:bg-background hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
                           "disabled:cursor-not-allowed disabled:opacity-50",
                           selected && "bg-background text-foreground shadow-xs",
@@ -539,35 +577,34 @@ function ActionRow({
                         <Icon className="h-3.5 w-3.5" />
                       </button>
                     </TooltipTrigger>
-                    <TooltipContent side="top">
+                    <TooltipContent className={ANALYTICS_MASK_CLASS} side="top">
                       <span className="font-medium">{option.label}</span> — {option.description}
                     </TooltipContent>
                   </Tooltip>
                 );
               })}
               </div>
-            </TooltipProvider>
           ) : (
             <span className="text-sm text-muted-foreground">
               {PERMISSION_OPTIONS.find((option) => option.value === value)?.label}
             </span>
           )}
-          <Button type="button" size="sm" variant="outline" onClick={() => setTestOpen(true)}>
-            <FlaskConical className="mr-1.5 h-3.5 w-3.5" />
+          <Button type="button" size="sm" variant="ghost" className="text-muted-foreground" onClick={() => setTestOpen(true)}>
+            <FlaskConical aria-hidden />
             Test
           </Button>
         </div>
       </div>
-      <ActionTestDialog
+      {testOpen ? <ActionTestDialog
         connectionId={connectionId}
         appName={appName}
         entry={action}
         open={testOpen}
         onOpenChange={setTestOpen}
-      />
+      /> : null}
     </>
   );
-}
+});
 
 function actionPermission(
   id: string,

@@ -66,4 +66,4 @@ jobs:
         env:
           NODE_PATH: ${{ runner.temp }}/sentry-contract-sdk/node_modules
           PAPERCLIP_REQUIRE_SENTRY_TEST_SDK: "1"
-        run: pnpm --filter @paperclipai/server exec vitest run src/__tests__/run-failure-sentry-real-sdk.test.ts
+        run: pnpm --filter @paperclipai/server exec vitest run src/__tests__/run-failure-sentry-real-sdk.test.ts src/__tests__/sentry-dynamic-import-provenance.test.ts
