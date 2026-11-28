@@ -359,6 +359,13 @@ function loadSpecRoutes() {
 }
 
 describe("openapi routes", () => {
+  it("documents missingOnly as an optional boolean defaulting to false", () => {
+    const document = buildOpenApiSpec() as any;
+    const parameter = document.paths["/api/companies/{companyId}/skills/coverage"].get.parameters
+      .find((entry: { name: string; in: string }) => entry.name === "missingOnly" && entry.in === "query");
+    expect(parameter).toMatchObject({ required: false, schema: { type: "boolean", default: false } });
+  });
+
   it("describes cached link results with the lookup shape and shared batch bound", () => {
     const paths = buildOpenApiSpec().paths;
     const batch = paths["/api/companies/{companyId}/link-previews/cached"].get;
