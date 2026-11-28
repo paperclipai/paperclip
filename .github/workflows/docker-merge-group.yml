@@ -224,7 +224,12 @@ jobs:
           config.write_text(json.dumps(settings))
           PYTHON
           sudo systemctl restart docker
-          docker info --format '{{json .DriverStatus}}'
+          status="$(docker info --format '{{json .DriverStatus}}')"
+          echo "$status"
+          echo "$status" | grep -q 'containerd.snapshotter' || {
+            echo "Docker containerd image store failed to activate." >&2
+            exit 1
+          }
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
