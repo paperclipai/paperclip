@@ -1331,6 +1331,19 @@ describe("agent permission routes", () => {
     expect(mockAgentService.create).not.toHaveBeenCalled();
   });
 
+  it("rejects an agent-supplied sandbox executable on the adapter test route", async () => {
+    mockInstanceSettingsService.get.mockRejectedValue(new Error("Denied requests must not inspect execution targets"));
+    const app = createApp({ type: "agent", agentId, companyId, source: "agent_key" });
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/adapters/claude_local/test-environment`)
+      .send({ adapterConfig: { filesystemSandboxCommand: "untrusted-tool" } }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toContain("host-executed local adapter settings");
+    expect(mockInstanceSettingsService.get).not.toHaveBeenCalled();
+    expect(mockEnvironmentService.getById).not.toHaveBeenCalled();
+  });
+
   it.each(["agents", "agent-hires"])("requires instance admin for external instructions before resolving the runner via %s", async (route) => {
     mockInstanceSettingsService.get.mockRejectedValue(new Error("Denied requests must not inspect execution targets"));
     const app = createApp({ type: "board", userId: "member-user", source: "session", companyIds: [companyId], isInstanceAdmin: false });
