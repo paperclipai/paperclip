@@ -1,0 +1,270 @@
+import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { companies, createDb } from "@paperclipai/db";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "./helpers/embedded-postgres.js";
+import { withAccountingTransaction } from "../services/accounting-transaction.js";
+
+const publishedActivities: unknown[] = [];
+vi.mock("../services/activity-log.js", () => ({
+  publishActivity: (publication: unknown) => {
+    publishedActivities.push(publication);
+  },
+}));
+
+const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_BUDGETS_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalUrl ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+describeEmbeddedPostgres("withAccountingTransaction queue and isolation", () => {
+  let db!: ReturnType<typeof createDb>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    if (!externalUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-accounting-tx-");
+    db = createDb(externalUrl ?? tempDb!.connectionString);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(companies);
+    publishedActivities.length = 0;
+  });
+
+  afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
+    await tempDb?.cleanup();
+  });
+
+  it("serializes concurrent transactions for the same company in FIFO order", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Queue Co", issuePrefix: "QUE" });
+
+    const executionOrder: string[] = [];
+    let activeWorkers = 0;
+    let maxConcurrent = 0;
+
+    const runWorker = (name: string, delayMs: number) =>
+      withAccountingTransaction(db, companyId, async () => {
+        activeWorkers++;
+        if (activeWorkers > maxConcurrent) maxConcurrent = activeWorkers;
+        executionOrder.push(`${name}-start`);
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        executionOrder.push(`${name}-end`);
+        activeWorkers--;
+        return name;
+      });
+
+    const [r1, r2, r3] = await Promise.all([
+      runWorker("w1", 60),
+      runWorker("w2", 40),
+      runWorker("w3", 20),
+    ]);
+
+    expect(r1).toBe("w1");
+    expect(r2).toBe("w2");
+    expect(r3).toBe("w3");
+    expect(maxConcurrent).toBe(1);
+    expect(executionOrder).toEqual([
+      "w1-start",
+      "w1-end",
+      "w2-start",
+      "w2-end",
+      "w3-start",
+      "w3-end",
+    ]);
+  });
+
+  it("allows concurrent transactions for different companies without waiting", async () => {
+    const c1 = randomUUID();
+    const c2 = randomUUID();
+    await db.insert(companies).values([
+      { id: c1, name: "Co 1", issuePrefix: "CO1" },
+      { id: c2, name: "Co 2", issuePrefix: "CO2" },
+    ]);
+
+    const order: string[] = [];
+
+    const p1 = withAccountingTransaction(db, c1, async () => {
+      order.push("c1-start");
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      order.push("c1-end");
+      return "c1";
+    });
+
+    const p2 = withAccountingTransaction(db, c2, async () => {
+      order.push("c2-start");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      order.push("c2-end");
+      return "c2";
+    });
+
+    const [r1, r2] = await Promise.all([p1, p2]);
+    expect(r1).toBe("c1");
+    expect(r2).toBe("c2");
+    expect(order.indexOf("c2-end")).toBeLessThan(order.indexOf("c1-end"));
+  });
+
+  it("continues serving subsequent queued transactions if a previous transaction throws", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Fail Co", issuePrefix: "FAI" });
+
+    const p1 = withAccountingTransaction(db, companyId, async () => {
+      throw new Error("Controlled failure");
+    });
+
+    const p2 = withAccountingTransaction(db, companyId, async () => {
+      return "recovered";
+    });
+
+    await expect(p1).rejects.toThrow("Controlled failure");
+    const r2 = await p2;
+    expect(r2).toBe("recovered");
+  });
+
+  it("supports re-entrant nested withAccountingTransaction calls without deadlock", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Nested Co", issuePrefix: "NES" });
+
+    const result = await withAccountingTransaction(db, companyId, async () => {
+      const nested = await withAccountingTransaction(db, companyId, async () => {
+        return "nested-done";
+      });
+      return `outer-${nested}`;
+    });
+
+    expect(result).toBe("outer-nested-done");
+  });
+
+  it("bypasses queue when invoked with an existing transaction", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Tx Co", issuePrefix: "TXC" });
+
+    const result = await db.transaction(async (tx) => {
+      return await withAccountingTransaction(tx as unknown as typeof db, companyId, async () => {
+        return "tx-done";
+      });
+    });
+
+    expect(result).toBe("tx-done");
+  });
+
+  it("throws notFound when company does not exist and frees the queue", async () => {
+    const nonexistent = randomUUID();
+    await expect(
+      withAccountingTransaction(db, nonexistent, async () => "unreachable"),
+    ).rejects.toThrow("Company not found");
+
+    await expect(
+      withAccountingTransaction(db, nonexistent, async () => "unreachable-2"),
+    ).rejects.toThrow("Company not found");
+  });
+
+  it("does not publish activities from rolled-back nested savepoints when outer transaction commits", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Rollback Co", issuePrefix: "ROL" });
+
+    publishedActivities.length = 0;
+
+    await withAccountingTransaction(db, companyId, async (tx, outerPubs) => {
+      outerPubs.push({ companyId, payload: { id: "outer-1" } } as any);
+      try {
+        await withAccountingTransaction(tx, companyId, async (_nestedTx, innerPubs) => {
+          innerPubs.push({ companyId, payload: { id: "inner-rolled-back" } } as any);
+          throw new Error("rolled back savepoint");
+        });
+      } catch {}
+      outerPubs.push({ companyId, payload: { id: "outer-2" } } as any);
+    });
+
+    expect(publishedActivities).toHaveLength(2);
+    expect(publishedActivities).toEqual([
+      expect.objectContaining({ payload: { id: "outer-1" } }),
+      expect.objectContaining({ payload: { id: "outer-2" } }),
+    ]);
+  });
+
+  it("prevents connection pool starvation by allowing unrelated reads while writers are queued", async () => {
+    const poolDb = createDb(externalUrl ?? tempDb!.connectionString, { maxConnections: 3 });
+    const companyId = randomUUID();
+    await poolDb.insert(companies).values({ id: companyId, name: "Starve Co", issuePrefix: "STA" });
+
+    let releaseHolder!: () => void;
+    let holderStarted!: () => void;
+    const holderStartedPromise = new Promise<void>((resolve) => { holderStarted = resolve; });
+    const holderGate = new Promise<void>((resolve) => { releaseHolder = resolve; });
+
+    const holder = withAccountingTransaction(poolDb, companyId, async () => {
+      holderStarted();
+      await holderGate;
+      return "holder-done";
+    });
+
+    await holderStartedPromise;
+
+    const queuedWriters = Array.from({ length: 5 }, (_, i) =>
+      withAccountingTransaction(poolDb, companyId, async () => `writer-${i}-done`),
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    let readFinishedBeforeRelease = false;
+    const read = poolDb.select({ id: companies.id }).from(companies).where(eq(companies.id, companyId)).then((res) => {
+      readFinishedBeforeRelease = true;
+      return res;
+    });
+
+    const readResult = await read;
+    expect(readFinishedBeforeRelease).toBe(true);
+    expect(readResult).toHaveLength(1);
+
+    releaseHolder();
+    await holder;
+    const writerResults = await Promise.all(queuedWriters);
+    expect(writerResults).toHaveLength(5);
+
+    await poolDb.$client.end({ timeout: 1 });
+  });
+
+  it("does not release queue turn until the transaction promise has settled", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Settle Co", issuePrefix: "SET" });
+
+    let transactionSettled = false;
+    let nextWriterStartedBeforeSettle = false;
+
+    const originalTransaction = db.transaction.bind(db);
+    let delayCommit = true;
+    (db as any).transaction = async (cb: any, ...args: any[]) => {
+      const res = await originalTransaction(cb, ...args);
+      if (delayCommit) {
+        delayCommit = false;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        transactionSettled = true;
+      }
+      return res;
+    };
+
+    try {
+      const p1 = withAccountingTransaction(db, companyId, async () => {
+        return "w1";
+      });
+
+      const p2 = withAccountingTransaction(db, companyId, async () => {
+        if (!transactionSettled) {
+          nextWriterStartedBeforeSettle = true;
+        }
+        return "w2";
+      });
+
+      await Promise.all([p1, p2]);
+      expect(nextWriterStartedBeforeSettle).toBe(false);
+      expect(transactionSettled).toBe(true);
+    } finally {
+      (db as any).transaction = originalTransaction;
+    }
+  });
+});
