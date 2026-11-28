@@ -21,7 +21,7 @@ type Story = StoryObj<typeof meta>;
 export const Default: Story = {};
 export const Light: Story = { globals: { theme: "light" } };
 export const Dark: Story = { globals: { theme: "dark" } };
-export const Mobile: Story = { globals: { viewport: { value: "mobile1", isRotated: false } } };
+export const Mobile: Story = { args: { compact: true }, globals: { viewport: { value: "mobile1", isRotated: false } } };
 export const MissingImage: Story = { args: { imageSrc: "/missing-announcement-image.png" } };
 export const TextOnly: Story = { args: { announcement: { ...announcementPreview, image: undefined, secondaryLink: undefined } } };
 export const LongText: Story = {
@@ -30,5 +30,5 @@ export const LongText: Story = {
 
 export const Animated: Story = { args: { announcement: announcementAnimationPreview, animationSrc: announcementAnimationPreviewSrc } };
 export const AnimatedDark: Story = { ...Animated, globals: { theme: "dark" } };
-export const AnimatedMobile: Story = { ...Animated, globals: { viewport: { value: "mobile1", isRotated: false } } };
+export const AnimatedMobile: Story = { args: { ...Animated.args, compact: true }, globals: { viewport: { value: "mobile1", isRotated: false } } };
 export const MissingAnimation: Story = { args: { announcement: announcementAnimationPreview, animationSrc: "/missing-announcement-animation.html" } };

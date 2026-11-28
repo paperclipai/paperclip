@@ -2,12 +2,12 @@ import { useEffect, useState } from "react";
 import { ANNOUNCEMENT_ANIMATION_CSP, type Announcement } from "@paperclipai/shared";
 import { usePrefersReducedMotion } from "./usePrefersReducedMotion";
 
-export function useAnnouncementAnimation(announcement: Announcement, previewSrc?: string) {
+export function useAnnouncementAnimation(announcement: Announcement, previewSrc?: string, showHero = true) {
   const reducedMotion = usePrefersReducedMotion();
   const src = previewSrc ?? `/api/announcements/${encodeURIComponent(announcement.id)}/animation`;
   const key = `${src}:${announcement.animation?.path ?? ""}`;
   const [loaded, setLoaded] = useState<{ key: string; document: string } | null>(null);
-  const enabled = Boolean(announcement.animation) && !reducedMotion;
+  const enabled = showHero && Boolean(announcement.animation) && !reducedMotion;
 
   useEffect(() => {
     if (!enabled) return;

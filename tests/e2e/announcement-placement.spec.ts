@@ -1,5 +1,5 @@
-import { test, expect, type APIRequestContext, type APIResponse, type Locator, type Page } from "@playwright/test";
-import { seedReturningAnnouncementVisit } from "./helpers/announcement-visit";
+import { test, expect, type APIRequestContext, type APIResponse, type Locator } from "@playwright/test";
+import { CONNECTORS_ANNOUNCEMENT, serveConnectorsAnnouncement } from "./helpers/announcement-visit";
 
 /**
  * N-17: a new user's first task view must stay usable while the in-app
@@ -9,25 +9,6 @@ import { seedReturningAnnouncementVisit } from "./helpers/announcement-visit";
  * The announcement feed is remote, so this spec serves the live
  * `2026-09-14-connectors` announcement through the app's own announcement API.
  */
-
-const CONNECTORS_ANNOUNCEMENT = {
-  id: "2026-09-14-connectors",
-  eyebrow: "Introducing Connectors",
-  title: "Give your agents the access they need",
-  description:
-    "Connect Gmail, GitHub, Notion, and more. Choose which agents get access, which accounts they use, and which actions they can take.",
-  image: {
-    path: "assets/59dd6169b4f7a0e3af527801853abac554e80c59519f556c9d234385682a65ee.png",
-    alt: "Paperclip agents with their own sets of connected apps.",
-  },
-  primaryAction: { kind: "route", label: "Explore connectors", path: "/apps" },
-};
-
-// 1x1 PNG so the card renders its image band at full height.
-const PIXEL_PNG = Buffer.from(
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=",
-  "base64",
-);
 
 const VIEWPORTS = [
   { width: 1440, height: 900 },
@@ -52,19 +33,6 @@ async function box(locator: Locator, name: string): Promise<Box> {
   const value = await locator.boundingBox();
   expect(value, `${name} should have a layout box`).not.toBeNull();
   return value!;
-}
-
-async function serveConnectorsAnnouncement(page: Page, announcement: object = CONNECTORS_ANNOUNCEMENT) {
-  await seedReturningAnnouncementVisit(page);
-  await page.route("**/api/announcements/current", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(announcement) }),
-  );
-  await page.route(`**/api/announcements/${CONNECTORS_ANNOUNCEMENT.id}/image`, (route) =>
-    route.fulfill({ status: 200, contentType: "image/png", body: PIXEL_PNG }),
-  );
-  await page.route(`**/api/announcements/${CONNECTORS_ANNOUNCEMENT.id}/dismiss`, (route) =>
-    route.fulfill({ status: 204 }),
-  );
 }
 
 async function firstTask(request: APIRequestContext, name: string) {
@@ -126,6 +94,60 @@ test.describe("Announcement placement on a new company's first task", () => {
       await accountTrigger.click();
       await expect.soft(page.getByRole("dialog", { name: "Account" })).toBeVisible();
       await page.keyboard.press("Escape");
+    }
+  });
+
+  test("a long announcement stays scrollable on a small phone", async ({ baseURL, browser, page, request }) => {
+    const { company, issue } = await firstTask(request, "Mobile Announcement Long");
+    const long = {
+      ...CONNECTORS_ANNOUNCEMENT,
+      title: "Give your agents the access they need to work across your connected apps",
+      description: "Connect Gmail, GitHub, Notion, and more. ".repeat(10).slice(0, 400).trim(),
+      animation: { path: `assets/${"1".repeat(64)}.html`, alt: "Animated connected apps" },
+      secondaryLink: { kind: "route", label: "View tasks", path: "/issues" },
+    };
+    await serveConnectorsAnnouncement(page, long);
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    let animationRequests = 0;
+    await page.route(`**/api/announcements/${long.id}/animation`, (route) => {
+      animationRequests += 1;
+      return route.fulfill({ contentType: "text/html", body: "<p>Animated connected apps</p>" });
+    });
+    const viewport = { width: 320, height: 568 };
+    const taskPath = `/${company.issuePrefix}/issues/${issue.identifier}`;
+    await page.setViewportSize(viewport);
+    await page.goto(taskPath);
+
+    const announcement = page.getByRole("complementary", { name: "Paperclip announcements" });
+    await expect(announcement.getByRole("heading", { name: long.title })).toBeVisible();
+    await expect(announcement.getByText(long.description, { exact: true })).toHaveCount(1);
+    await expect(announcement.getByText(long.eyebrow, { exact: true })).toHaveCount(0);
+    await expect(announcement.locator("img, iframe")).toHaveCount(0);
+    expect((await box(announcement, "mobile announcement")).height).toBeLessThanOrEqual(viewport.height * 0.4 + 1);
+    expect(await announcement.evaluate(element => element.scrollHeight - element.clientHeight)).toBeGreaterThan(0);
+
+    for (const name of ["View tasks", "Explore connectors"]) {
+      const action = announcement.getByRole("link", { name, exact: true });
+      await action.scrollIntoViewIfNeeded();
+      await expect(action).toBeInViewport();
+      await action.click({ trial: true });
+    }
+    const dismiss = announcement.getByRole("button", { name: "Dismiss announcement" });
+    await dismiss.scrollIntoViewIfNeeded();
+    await dismiss.click();
+    await expect(announcement).toBeHidden();
+    expect(animationRequests).toBe(0);
+
+    const returningPage = await browser.newPage({ baseURL, viewport });
+    try {
+      await serveConnectorsAnnouncement(returningPage, long);
+      await returningPage.goto(taskPath);
+      const primary = returningPage.getByRole("complementary", { name: "Paperclip announcements" })
+        .getByRole("link", { name: "Explore connectors", exact: true });
+      await primary.click();
+      await expect(returningPage).toHaveURL(/\/apps(?:[/?#]|$)/);
+    } finally {
+      await returningPage.close();
     }
   });
 
