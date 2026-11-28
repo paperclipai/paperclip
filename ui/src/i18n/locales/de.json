@@ -4,6 +4,10 @@
       "title": "Erstellen Sie Ihr erstes Unternehmen",
       "description": "Beginnen Sie, indem Sie ein Unternehmen erstellen.",
       "newCompany": "Neues Unternehmen"
+    },
+    "language": {
+      "switchTo": "Switch language to {{language}}",
+      "description": "Change the interface language."
     }
   }
 }

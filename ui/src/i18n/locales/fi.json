@@ -4,6 +4,10 @@
       "title": "Luo ensimmäinen yrityksesi",
       "description": "Aloita luomalla yritys.",
       "newCompany": "Uusi yritys"
+    },
+    "language": {
+      "switchTo": "Switch language to {{language}}",
+      "description": "Change the interface language."
     }
   }
 }
