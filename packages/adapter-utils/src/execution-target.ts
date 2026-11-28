@@ -1410,9 +1410,20 @@ export function normalizeAdapterExecutionTargetSessionIdentity(value: unknown): 
   return null;
 }
 
+export interface AdapterExecutionTargetSessionMatchOptions {
+  /**
+   * Sandbox targets only: accept a session saved on a different lease of the
+   * same environment, provider and remote cwd. Set this only when the adapter
+   * carries the session's state (for example a transcript) into the new lease
+   * itself; a disposable lease otherwise starts without it.
+   */
+  ignoreSandboxLeaseId?: boolean;
+}
+
 export function adapterExecutionTargetSessionMatches(
   saved: unknown,
   target: AdapterExecutionTarget | null | undefined,
+  options: AdapterExecutionTargetSessionMatchOptions = {},
 ): boolean {
   if (!target || target.kind === "local") {
     return Object.keys(parseObject(saved)).length === 0;
@@ -1424,7 +1435,7 @@ export function adapterExecutionTargetSessionMatches(
     readStringMeta(parsedSaved, "transport") === current?.transport &&
     readStringMeta(parsedSaved, "providerKey") === current?.providerKey &&
     readStringMeta(parsedSaved, "environmentId") === current?.environmentId &&
-    readStringMeta(parsedSaved, "leaseId") === current?.leaseId &&
+    (options.ignoreSandboxLeaseId === true || readStringMeta(parsedSaved, "leaseId") === current?.leaseId) &&
     readStringMeta(parsedSaved, "remoteCwd") === current?.remoteCwd
   );
 }

@@ -10,6 +10,7 @@ import {
   prepareGitHubOperationLaunchers,
   adapterExecutionTargetUsesManagedHome,
   adapterExecutionTargetSessionIdentity,
+  adapterExecutionTargetSessionMatches,
   normalizeAdapterExecutionTargetSessionIdentity,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
   ensureAdapterExecutionTargetDirectory,
@@ -19,6 +20,7 @@ import {
   resolveAdapterExecutionTargetCwd,
   runAdapterExecutionTargetProcess,
   runAdapterExecutionTargetShellCommand,
+  type AdapterSandboxExecutionTarget,
   type AdapterSshExecutionTarget,
 } from "./execution-target.js";
 
@@ -504,5 +506,36 @@ describe("controller workspace preparation", () => {
       else await expect(prepare).rejects.toMatchObject({ code: "ENOTDIR" });
       expect(await readFile(mount, "utf8")).toBe("Not a controller directory");
     } finally { await rm(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("adapterExecutionTargetSessionMatches for sandbox targets", () => {
+  const target = (overrides: Partial<AdapterSandboxExecutionTarget> = {}): AdapterSandboxExecutionTarget => ({
+    kind: "remote",
+    transport: "sandbox",
+    providerKey: "kubernetes",
+    environmentId: "env-1",
+    leaseId: "lease-2",
+    remoteCwd: "/workspace/paperclip-workspace",
+    ...overrides,
+  });
+  const savedOnLease1 = adapterExecutionTargetSessionIdentity(target({ leaseId: "lease-1" }));
+
+  it("requires the same lease by default", () => {
+    expect(adapterExecutionTargetSessionMatches(savedOnLease1, target({ leaseId: "lease-1" }))).toBe(true);
+    expect(adapterExecutionTargetSessionMatches(savedOnLease1, target())).toBe(false);
+  });
+
+  it("accepts a session from an earlier lease when the adapter carries its state", () => {
+    expect(adapterExecutionTargetSessionMatches(savedOnLease1, target(), { ignoreSandboxLeaseId: true })).toBe(true);
+  });
+
+  it("still requires the same environment, provider and remote cwd across leases", () => {
+    const options = { ignoreSandboxLeaseId: true };
+    expect(adapterExecutionTargetSessionMatches(savedOnLease1, target({ environmentId: "env-2" }), options)).toBe(false);
+    expect(adapterExecutionTargetSessionMatches(savedOnLease1, target({ providerKey: "e2b" }), options)).toBe(false);
+    expect(adapterExecutionTargetSessionMatches(savedOnLease1, target({ remoteCwd: "/workspace/other" }), options)).toBe(false);
+    expect(adapterExecutionTargetSessionMatches({ transport: "ssh", remoteCwd: "/workspace/paperclip-workspace" }, target(), options))
+      .toBe(false);
   });
 });
