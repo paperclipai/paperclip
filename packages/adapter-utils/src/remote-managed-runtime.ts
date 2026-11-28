@@ -38,6 +38,10 @@ export interface RemoteManagedRuntimeAsset {
   localDir: string;
   followSymlinks?: boolean;
   exclude?: string[];
+  inPlaceSshPersistence?: {
+    scope: string;
+    directories: string[];
+  };
   restore?: (ctx: SandboxManagedRuntimeAssetRestoreContext) => Promise<void>;
 }
 
@@ -73,6 +77,10 @@ function asNumber(value: unknown): number {
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+function isSimplePathSegment(value: string): boolean {
+  return value.length > 0 && value !== "." && value !== ".." && !value.includes("/") && !value.includes("\\");
 }
 
 async function readRemoteFile(spec: SshRemoteExecutionSpec, remotePath: string): Promise<Buffer> {
@@ -152,12 +160,40 @@ export async function prepareRemoteManagedRuntime(input: {
         "workspace",
       )
     : baseWorkspaceRemoteDir;
-  let runtimeRootDir = path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
+  if (!isSimplePathSegment(input.runId)) {
+    throw new Error(`runId is not a simple path segment: ${input.runId}`);
+  }
+  const sharedRuntimeRootDir = syncWorkspace
+    ? path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey)
+    : path.posix.join(
+        workspaceRemoteDir,
+        ".paperclip-runtime",
+        "runs",
+        input.runId,
+        input.adapterKey,
+      );
+  let runtimeRootDir = sharedRuntimeRootDir;
   let privateRuntimeDir: string | null = null;
   const cleanupPrivateRuntime = async () => {
     if (!privateRuntimeDir) return;
     await runSshCommand(input.spec, `rm -rf -- ${shellQuote(privateRuntimeDir)}`, { timeoutMs: 15_000 });
     privateRuntimeDir = null;
+  };
+  const cleanupInPlaceRuntime = async () => {
+    if (syncWorkspace || input.privateRuntime) return;
+    await runSshCommand(input.spec, `rm -rf -- ${shellQuote(sharedRuntimeRootDir)}`, {
+      maxBuffer: 1024 * 1024,
+    });
+  };
+  const cleanupInPlaceRuntimeBestEffort = async () => {
+    try {
+      await cleanupInPlaceRuntime();
+    } catch (error) {
+      console.warn(
+        `[paperclip] Failed to remove the in-place SSH runtime for run ${input.runId}; ` +
+        `the run result is preserved and the exact runtime root needs later cleanup. ${String(error)}`,
+      );
+    }
   };
 
   const preparedWorkspace = syncWorkspace
@@ -204,6 +240,17 @@ export async function prepareRemoteManagedRuntime(input: {
       if (input.privateRuntime && !/^[A-Za-z0-9_-]+$/.test(asset.key)) throw new Error("Invalid SSH runtime asset key");
       const remoteDir = path.posix.join(runtimeRootDir, asset.key);
       assetDirs[asset.key] = remoteDir;
+      const persistence = !syncWorkspace ? asset.inPlaceSshPersistence : undefined;
+      if (persistence) {
+        if (!isSimplePathSegment(persistence.scope)) {
+          throw new Error(`in-place SSH persistence scope is not a simple path segment: ${persistence.scope}`);
+        }
+        for (const directory of persistence.directories) {
+          if (!isSimplePathSegment(directory)) {
+            throw new Error(`in-place SSH persistent directory is not a simple path segment: ${directory}`);
+          }
+        }
+      }
       await syncDirectoryToSsh({
         spec: input.spec,
         localDir: asset.localDir,
@@ -213,6 +260,28 @@ export async function prepareRemoteManagedRuntime(input: {
         onProgress: input.onProgress,
         progressLabel: asset.key,
       });
+      if (persistence) {
+        const { scope, directories } = persistence;
+        for (const directory of directories) {
+          const persistentDir = path.posix.join(
+            workspaceRemoteDir,
+            ".paperclip-runtime",
+            "persistent",
+            input.adapterKey,
+            scope,
+            asset.key,
+            directory,
+          );
+          const assetDir = path.posix.join(remoteDir, directory);
+          await runSshCommand(
+            input.spec,
+            `mkdir -p ${shellQuote(persistentDir)} && ` +
+            `rm -rf -- ${shellQuote(assetDir)} && ` +
+            `ln -s ${shellQuote(persistentDir)} ${shellQuote(assetDir)}`,
+            { maxBuffer: 1024 * 1024 },
+          );
+        }
+      }
     }
   } catch (error) {
     try {
@@ -225,7 +294,10 @@ export async function prepareRemoteManagedRuntime(input: {
         onProgress: input.onProgress,
         repositories: repositoryBaselines,
       });
-    } finally { await cleanupPrivateRuntime(); }
+    } finally {
+      await cleanupInPlaceRuntimeBestEffort();
+      await cleanupPrivateRuntime();
+    }
     throw error;
   }
 
@@ -298,6 +370,7 @@ export async function prepareRemoteManagedRuntime(input: {
     if (!input.retainRuntime) {
       try { await cleanupPrivateRuntime(); } catch (error) { failure ??= error; }
     }
+    await cleanupInPlaceRuntimeBestEffort();
     if (failure) throw failure;
   };
   let privateRestore: Promise<void> | undefined;
