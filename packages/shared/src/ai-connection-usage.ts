@@ -33,12 +33,27 @@ export interface AiConnectionUsageOverage {
   unit: string | null;
 }
 
+/**
+ * The last successful provider observation, kept while a later check failed.
+ * It is always stale: its limits describe the account at `checkedAt`, not now.
+ */
+export interface AiConnectionUsageLastGood {
+  stale: true;
+  /** When the provider returned this observation. */
+  checkedAt: string;
+  source: string | null;
+  planType: string | null;
+  limits: AiConnectionUsageLimit[];
+  overage: AiConnectionUsageOverage | null;
+}
+
 export interface AiConnectionUsage {
   connectionId: string;
   grantId: string;
   provider: AiProvider;
   method: AiAuthMethod;
   status: "ok" | "unsupported" | "unavailable" | "error";
+  /** When Paperclip last asked the provider. A cached result keeps its original time. */
   checkedAt: string;
   source: string | null;
   planType: string | null;
@@ -46,6 +61,17 @@ export interface AiConnectionUsage {
   overage: AiConnectionUsageOverage | null;
   errorCode?: "unsupported" | "connection_unavailable" | "authentication_required" | "permission_denied" | "rate_limited" | "provider_unavailable" | "invalid_response";
   message?: string;
+  /**
+   * Set on a failed check that is backed off: Paperclip sends no new provider
+   * check for this credential before this time and returns this result instead.
+   */
+  retryAt?: string;
+  /**
+   * Only on a failed check: the previous successful observation for the same
+   * credential. `limits` and `overage` of a failed result stay empty, so a
+   * failed check never reads as zero, fresh or exhausted usage.
+   */
+  lastGood?: AiConnectionUsageLastGood;
 }
 
 export function supportsAiConnectionUsage(provider: AiProvider, method: AiAuthMethod): boolean {
