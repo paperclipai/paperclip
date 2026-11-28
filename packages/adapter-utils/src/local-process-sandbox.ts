@@ -66,6 +66,10 @@ const SYSTEM_READ_PATHS = [
   "/etc/gitconfig",
 ] as const;
 
+// On merged-/usr hosts (Debian 12+, Ubuntu 22.04+, Fedora, Arch) these are symlinks into /usr; elsewhere
+// they are real directories. The sandbox mirrors whichever the host has (see resolveSystemPathAliases).
+const MERGED_USR_ALIAS_PATHS = ["/bin", "/sbin", "/lib", "/lib64"] as const;
+
 const PROXY_ENV_KEYS = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"] as const;
 const SANDBOX_PROXY_PORT = 31_337;
 const UNIX_SOCKET_PATH_MAX_BYTES = 107;
@@ -338,6 +342,25 @@ server.listen(${SANDBOX_PROXY_PORT}, "127.0.0.1", () => {
   return source.trimStart();
 }
 
+/**
+ * The host's top-level aliases into /usr, to recreate inside the fresh sandbox root.
+ *
+ * A path that is a symlink on the host (merged /usr) is recreated as the same symlink and must NOT
+ * also be bound: bwrap would follow the new symlink to a /usr path that is not mounted yet and fail
+ * with "Can't bind mount /oldroot/usr/bin on /newroot/bin". A path that is a real directory is left
+ * to the normal read-only bind instead of being shadowed by a symlink into /usr.
+ */
+export async function resolveSystemPathAliases(
+  readlink: (candidate: string) => Promise<string> = (candidate) => fs.readlink(candidate),
+): Promise<Array<{ path: string; target: string }>> {
+  const aliases: Array<{ path: string; target: string }> = [];
+  for (const aliasPath of MERGED_USR_ALIAS_PATHS) {
+    const target = await readlink(aliasPath).catch(() => null);
+    if (target) aliases.push({ path: aliasPath, target });
+  }
+  return aliases;
+}
+
 export async function buildLocalProcessSandboxSpawnTarget(input: {
   executable: string;
   args: string[];
@@ -386,14 +409,11 @@ export async function buildLocalProcessSandboxSpawnTarget(input: {
 
   if (filesystemScope === "workspace") {
     args.push("--tmpfs", "/", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp");
-    args.push(
-      "--symlink", "usr/bin", "/bin",
-      "--symlink", "usr/sbin", "/sbin",
-      "--symlink", "usr/lib", "/lib",
-      "--symlink", "usr/lib64", "/lib64",
-    );
-    const created = new Set<string>(["/", "/proc", "/dev", "/tmp"]);
-    const mounted = new Set<string>();
+    const systemAliases = await resolveSystemPathAliases();
+    for (const alias of systemAliases) args.push("--symlink", alias.target, alias.path);
+    const created = new Set<string>(["/", "/proc", "/dev", "/tmp", ...systemAliases.map((alias) => alias.path)]);
+    // An alias is already provided by its symlink (and its /usr target by the /usr bind): never bind it too.
+    const mounted = new Set<string>(systemAliases.map((alias) => alias.path));
     const mount = async (source: string, access: LocalProcessSandboxAccess) => {
       const normalized = normalizeAbsolutePath(source, "Sandbox path");
       if (mounted.has(normalized) || !(await pathExists(normalized))) return;

@@ -470,11 +470,14 @@ async function settle(): Promise<void> {
   }
 }
 
+// The mocks are registered before the route modules load. The cold route-graph compile was
+// measured near the suite's 30 s hookTimeout on a loaded host, so this hook takes a budget of
+// its own instead of leaving that cost to the first test's 15 s.
 beforeAll(async () => {
   vi.resetModules();
   registerModuleMocks();
   routeModules = await loadRouteModules();
-});
+}, 120_000);
 
 beforeEach(() => {
   vi.clearAllMocks();
