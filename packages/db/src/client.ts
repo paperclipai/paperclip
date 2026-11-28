@@ -923,6 +923,7 @@ const MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS = new Set([
   "0505_nice_rawhide_kid.sql",
   "0508_normal_riptide.sql",
   "0507_special_kang.sql",
+  "0511_fresh_loners.sql",
 ]);
 
 async function applyPendingMigrationsManually(
