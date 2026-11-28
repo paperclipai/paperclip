@@ -150,7 +150,7 @@ export function createSanitizedAcpxSpawnInput(
     ...credentialNames,
     ...(agent === "claude" ? CLAUDE_ROUTING_ENV_KEYS : []),
     // The environment owner supplies helper paths, not a replacement provider executable.
-    ...(agent === "claude" && environment !== undefined ? ["MCP_TOOL_TIMEOUT"] : []),
+    ...(agent === "claude" && environment !== undefined ? ["MCP_TOOL_TIMEOUT", "CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"] : []),
     ...(agent === "claude" && environment?.PAPERCLIP_GITHUB_LAUNCHER_DIR?.trim()
       ? ["BASH_ENV", "ZDOTDIR", "GH_CONFIG_DIR", "PAPERCLIP_GITHUB_LAUNCHER_DIR",
         "PAPERCLIP_GITHUB_BROKER_URL", "PAPERCLIP_GITHUB_BROKER_TOKEN", "PAPERCLIP_GITHUB_BRIDGE_TOKEN"] : []),

@@ -377,6 +377,7 @@ async function dispatch(
           // native Runner connection lease. Cancellation and Runner shutdown
           // still revoke the pending call; this is not a new authority lease.
           MCP_TOOL_TIMEOUT: String(60 * 60 * 1_000),
+          CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT: String(60 * 60 * 1_000),
         } : createAcpxSidecarHostEnvironment(process.env, params.agent, params.normalizedSessionId),
         expectedIdentity: params.expectedIdentity,
         assignedMcpTransport: "prp",
