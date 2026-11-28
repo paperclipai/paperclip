@@ -20,6 +20,7 @@ import {
   issueThreadInteractions,
   issueWorkProducts,
   issues,
+  companySecretProposals,
   joinRequests,
   projects,
   type Db,
@@ -255,6 +256,11 @@ export async function seedAttentionSummaryFixture(db: Db) {
   const joinRequestId = randomUUID();
   await db.insert(joinRequests).values({ id: joinRequestId, inviteId: invite!.id, companyId, requestType: "human",
     status: "pending_approval", requestIp: "127.0.0.1", requestEmailSnapshot: "new@example.test" });
+  // A pending secret proposal: board-only, no card (#22712).
+  const proposalRunId = await run({ agentId: visibility.readerAgentId, status: "succeeded", createdAt: at(2 * HOUR_MS) });
+  await db.insert(companySecretProposals).values({ companyId, kind: "secret", status: "pending",
+    proposedName: "infrastructure/summary/token", proposedKey: "summary-token", justification: "summary fixture",
+    proposedByAgentId: visibility.readerAgentId, originRunId: proposalRunId, expiresAt: new Date(now + 10 * DAY_MS) });
   const policies = await db.insert(budgetPolicies).values([
     { companyId, scopeType: "company", scopeId: companyId, metric: "billed_cents", windowKind: "calendar_month_utc", amount: 100 },
     { companyId, scopeType: "company", scopeId: companyId, metric: "billed_cents", windowKind: "lifetime", amount: 100 },

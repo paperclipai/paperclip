@@ -9,6 +9,7 @@ import {
   getDefaultProviderConfigId,
   getProviderConfigBlockReason,
   parseEnvAssignment,
+  secretsTabFromParam,
 } from "./Secrets";
 import type { SecretProviderHealthResponse } from "../api/secrets";
 
@@ -309,5 +310,16 @@ describe("parseEnvAssignment", () => {
     expect(parseEnvAssignment("1BAD=value")).toBeNull();
     expect(parseEnvAssignment("EMPTY=")).toBeNull();
     expect(parseEnvAssignment('EMPTY=""')).toBeNull();
+  });
+});
+
+describe("secretsTabFromParam", () => {
+  it("opens a named tab, e.g. ?tab=proposals from an inbox item", () => {
+    expect(secretsTabFromParam("proposals")).toBe("proposals");
+    expect(secretsTabFromParam("vaults")).toBe("vaults");
+  });
+  it("ignores a missing or unknown value", () => {
+    expect(secretsTabFromParam(null)).toBeNull();
+    expect(secretsTabFromParam("billing")).toBeNull();
   });
 });

@@ -58,6 +58,7 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   decision: { label: "Decision" },
   issue_thread_interaction: { label: "Decision requested" },
   join_request: { label: "Join request" },
+  secret_proposal: { label: "Secret proposal" },
   recovery_action: { label: "Recovery" },
   // Read compatibility for persisted decisions from the retired feature.
   productivity_review: { label: "Task" },

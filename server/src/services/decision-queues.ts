@@ -6,6 +6,7 @@ import {
   agents,
   approvals,
   budgetIncidents,
+  companySecretProposals,
   decisionQueueItems,
   decisionQueues,
   decisions,
@@ -287,6 +288,15 @@ async function sourceIssueId(
       const row = await db.select({ id: budgetIncidents.id })
         .from(budgetIncidents)
         .where(and(eq(budgetIncidents.companyId, companyId), eq(budgetIncidents.id, sourceId)))
+        .then((rows) => rows[0] ?? null);
+      return { exists: Boolean(row), issueId: null };
+    }
+    case "secret_proposal": {
+      // Board-only like join requests: issue readers (agents included) must not
+      // reach a secret proposal through its origin issue.
+      const row = await db.select({ id: companySecretProposals.id })
+        .from(companySecretProposals)
+        .where(and(eq(companySecretProposals.companyId, companyId), eq(companySecretProposals.id, sourceId)))
         .then((rows) => rows[0] ?? null);
       return { exists: Boolean(row), issueId: null };
     }

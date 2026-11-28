@@ -44,6 +44,7 @@ function coordinatorCardAsk(item: AttentionItem, taskTitle: string | null): stri
   // PAP-775 (UI1): approvals and join requests are answered on the card now.
   if (item.sourceKind === "approval" && title && !/^approve\b/i.test(title)) return `Approve “${title}”?`;
   if (item.sourceKind === "join_request" && title) return `Let ${title} join the company?`;
+  if (item.sourceKind === "secret_proposal" && title) return `Review the ${title.charAt(0).toLowerCase()}${title.slice(1)}`;
   return null;
 }
 
