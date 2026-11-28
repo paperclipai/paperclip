@@ -56,7 +56,7 @@ describe.skipIf(!enabled)("skills survive web-server replacement", () => {
       env: { ...process.env, DATABASE_URL: database.connectionString, PAPERCLIP_HOME: home, PAPERCLIP_INSTANCE_ID: "default",
         PAPERCLIP_STORAGE_PROVIDER: "s3", PAPERCLIP_STORAGE_S3_BUCKET: bucket,
         PAPERCLIP_STORAGE_S3_ENDPOINT: process.env.PAPERCLIP_TEST_S3_ENDPOINT, PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE: "true",
-        PAPERCLIP_SKILL_PACKAGE_STORAGE_ENABLED: "true", PAPERCLIP_LOG_LEVEL: "error", PAPERCLIP_TELEMETRY_ENABLED: "false" },
+        PAPERCLIP_SKILL_PACKAGE_STORAGE_ENABLED: "true", PAPERCLIP_LOG_LEVEL: "error", PAPERCLIP_TELEMETRY_DISABLED: "1" },
     });
     let logs = "";
     child.stdout?.on("data", data => { logs = (logs + data).slice(-5000); });

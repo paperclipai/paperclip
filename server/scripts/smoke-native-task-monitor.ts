@@ -14,7 +14,7 @@ if (!process.argv.includes("--run")) throw new Error("Pass --run to authorize th
 const root = await mkdtemp(join(tmpdir(), "paperclip-live-task-monitor-"));
 process.env.PAPERCLIP_HOME = join(root, "paperclip");
 process.env.PAPERCLIP_INSTANCE_ID = "monitor-smoke";
-process.env.PAPERCLIP_TELEMETRY_ENABLED = "false";
+process.env.PAPERCLIP_TELEMETRY_DISABLED = "1";
 const { createDb, companies, agents, authUsers, companyMemberships, issues, heartbeatRuns, agentWakeupRequests, nativeRunResults, statusDecisions } = await import("@paperclipai/db");
 const { startEmbeddedPostgresTestDatabase } = await import("../src/__tests__/helpers/embedded-postgres.js");
 const { createAgentLifecycle, startAgentLifecycle } = await import("../src/services/agent-lifecycle.js");
