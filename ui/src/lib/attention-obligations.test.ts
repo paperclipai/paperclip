@@ -3,6 +3,7 @@ import type { AttentionItem } from "@paperclipai/shared";
 import {
   attentionEvidenceLabel,
   attentionEvidenceText,
+  attentionEvidenceToShow,
   attentionObligationEvidence,
   foldAttentionObligations,
   inboxCardMatchesFilters,
@@ -113,3 +114,25 @@ describe("one card for each obligation (PAP-749 task 2d)", () => {
     });
   });
 });
+
+describe("attentionEvidenceToShow", () => {
+  const blocker = (id: string, subjectId: string, detail: Record<string, unknown>) => item(id, {
+    sourceKind: "blocker_attention",
+    subject: { kind: "issue", id: subjectId, companyId: "c1", title: "Task", identifier: null, status: null, href: null },
+    detail: { kind: "blocker", blockingIssue: null, images: [], ...detail },
+  } as Partial<AttentionItem>);
+
+  it("drops a stalled-chain card for the same task under a human unblock card", () => {
+    const lead = blocker("owner", "t1", { unblockAction: "Approve the plan" });
+    const sameTask = blocker("stall", "t1", { blockedTaskCount: 2 });
+    const otherTask = blocker("other", "t2", { blockedTaskCount: 1 });
+    expect(attentionEvidenceToShow(lead, [sameTask, otherTask]).map((entry) => entry.id)).toEqual(["other"]);
+  });
+
+  it("keeps all evidence under any other card", () => {
+    const lead = blocker("stall-lead", "t1", { blockedTaskCount: 2 });
+    const sameTask = blocker("stall", "t1", { blockedTaskCount: 2 });
+    expect(attentionEvidenceToShow(lead, [sameTask]).map((entry) => entry.id)).toEqual(["stall"]);
+  });
+});
+

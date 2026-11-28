@@ -49,12 +49,32 @@ function coordinatorCardAsk(item: AttentionItem, taskTitle: string | null): stri
 
 /** The context under a card's heading: what happened and what you can do about it. */
 export function coordinatorCardDetail(item: AttentionItem, detailLine: string | null): string | null {
+  // A human unblock card shows the ask in its own notice, so it needs no detail line.
+  if (item.sourceKind === "blocker_attention" && item.detail?.kind === "blocker" && item.detail.unblockAction) return null;
   if (item.sourceKind === "blocker_attention" && item.detail?.kind === "blocker" && !item.detail.blockingIssue) {
     const count = item.detail.blockedTaskCount ?? 0;
     const holding = count > 0 ? `It's holding up ${count} ${count === 1 ? "task" : "tasks"}, and no` : "No";
     return `${holding} one is working on it. Unblock it, reassign it, or nudge its owner.`;
   }
   return detailLine ?? item.whyNow;
+}
+/** Most held-up tasks a card names before it shows a count instead. */
+const HELD_UP_NAMED_MAX = 3;
+
+/**
+ * What a human unblock card says it holds up: up to three tasks by name, or
+ * two and "N more" past that, and how much other work waits behind them.
+ * The line stays one row however many tasks are held up.
+ */
+export function unblockHeldUp(detail: Pick<Extract<NonNullable<AttentionItem["detail"]>, { kind: "blocker" }>, "heldUpTasks" | "heldUpDirectCount" | "heldUpTotalCount">) {
+  const tasks = detail.heldUpTasks ?? [];
+  const direct = detail.heldUpDirectCount ?? tasks.length;
+  const named = direct <= HELD_UP_NAMED_MAX ? tasks.slice(0, HELD_UP_NAMED_MAX) : tasks.slice(0, HELD_UP_NAMED_MAX - 1);
+  return {
+    named,
+    moreCount: Math.max(0, direct - named.length),
+    behindCount: Math.max(0, (detail.heldUpTotalCount ?? direct) - direct),
+  };
 }
 export const coordinatorAttentionSummaryQueryKey = (companyId: string, userId: string | null) => [...queryKeys.attention(companyId), userId, "coordinator", "summary"] as const;
 export const coordinatorAttentionTasksQueryKey = (companyId: string, userId: string | null) => [...queryKeys.attention(companyId), userId, "coordinator", "tasks"] as const;

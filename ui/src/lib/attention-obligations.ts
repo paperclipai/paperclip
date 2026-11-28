@@ -101,3 +101,14 @@ export function attentionEvidenceText(evidence: AttentionItem): { title: string;
   const detail = attentionDetailLine(evidence) ?? evidence.whyNow;
   return { title, detail: detail && detail !== subject.title ? detail : null };
 }
+
+/**
+ * The evidence a card still needs to show. A human unblock card already says
+ * what its task holds up, so the stalled-chain card for that same task would
+ * only repeat it.
+ */
+export function attentionEvidenceToShow(lead: AttentionItem, evidence: readonly AttentionItem[]): readonly AttentionItem[] {
+  const leadIsHumanUnblock = lead.sourceKind === "blocker_attention" && lead.detail?.kind === "blocker" && Boolean(lead.detail.unblockAction);
+  if (!leadIsHumanUnblock) return evidence;
+  return evidence.filter((entry) => !(entry.sourceKind === "blocker_attention" && entry.subject.id === lead.subject.id));
+}

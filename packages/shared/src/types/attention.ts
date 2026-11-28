@@ -100,6 +100,14 @@ export interface AttentionFeedQuery {
   limit?: number;
 }
 
+/** A task held up behind a blocked task, as a blocker card names it. */
+export interface AttentionHeldUpTask {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: string;
+}
+
 export interface AttentionDetailImage {
   assetId: string;
   alt?: string | null;
@@ -164,12 +172,22 @@ export type AttentionItemDetail =
     }
   | {
       kind: "blocker";
+      /** An open task this one waits on. Done and cancelled blockers are never named. */
       blockingIssue: {
         id: string | null;
         identifier: string | null;
         title: string | null;
+        status?: string | null;
       } | null;
       blockedTaskCount?: number;
+      /** What the assignee asked a person to do, on a human-owned unblock card. */
+      unblockAction?: string | null;
+      /** Up to three open tasks this one blocks directly: highest priority, then longest waiting. */
+      heldUpTasks?: AttentionHeldUpTask[];
+      /** Open tasks this one blocks directly. */
+      heldUpDirectCount?: number;
+      /** Open work held behind this task: direct dependents, what they block, and their subtasks. */
+      heldUpTotalCount?: number;
       images: AttentionDetailImage[];
     }
   | {

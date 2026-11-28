@@ -59,6 +59,7 @@ export type {
   DecisionHistoryResultOutcome,
   DecisionHistoryAction,
   AttentionDetailImage,
+  AttentionHeldUpTask,
   AttentionFeed,
   AttentionSummary,
   AttentionTaskIndex,

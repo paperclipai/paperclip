@@ -2,11 +2,15 @@ import type { ReactNode } from "react";
 import { FileText, TriangleAlert } from "lucide-react";
 import type { Agent, AttentionItem } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
+import { cn } from "@/lib/utils";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 import { readIssueReviewPolicyMetadata } from "@/lib/review-policy";
 import { DecisionCardFooter } from "@/components/DecisionCardFooter";
 import { StalledReviewActions } from "@/components/StalledReviewActions";
 import { Button } from "@/components/ui/button";
+import { IssueReferencePill } from "@/components/IssueReferencePill";
 import { NeedsYouPanel, NeedsYouPanelNote, NeedsYouPanelRow } from "./NeedsYouCardKit";
+import { UnblockAskNotice } from "./UnblockAskNotice";
 
 /**
  * Bodies of the Needs You cards whose real action lives on the task (PAP-775,
@@ -72,12 +76,56 @@ export function ReviewTaskCardBody({ item, companyId, agentMap, userLabelMap, le
   </>;
 }
 
+const statusLabel = (status: string) => `${status[0]!.toUpperCase()}${status.slice(1).replaceAll("_", " ")}`;
+
+/**
+ * A blocked task whose assignee asked a person for something: the ask leads,
+ * and the main action opens the task where the reply goes. An open blocker is
+ * shown as what the task waits on, and then the action opens that blocker.
+ */
+function UnblockAskCardBody({ item, agentMap, userLabelMap, leading, footerContext, onOpen }: NeedsYouCardBodyProps) {
+  const detail = item.detail?.kind === "blocker" ? item.detail : null;
+  if (!detail) return null;
+  const blocking = detail.blockingIssue;
+  const prefix = (item.subject.href ?? "").match(/^\/[^/]+/)?.[0] ?? "";
+  const blockingHref = blocking?.identifier || blocking?.id ? `${prefix}/issues/${blocking.identifier ?? blocking.id}` : null;
+  const href = blockingHref ?? item.subject.href;
+  return <>
+    <UnblockAskNotice item={item} detail={detail} askedBy={assigneeName(item, agentMap, userLabelMap)} />
+    {blocking?.id ? (
+      <div data-unblock-waiting-on className={cn("flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-muted-foreground", ANALYTICS_MASK_CLASS)}>
+        <span>Waiting on</span>
+        <IssueReferencePill issue={{ id: blocking.id, identifier: blocking.identifier, title: blocking.title ?? blocking.identifier ?? "Task", status: blocking.status ?? undefined }} />
+        {blocking.title ? <span className="min-w-0 truncate text-foreground">{blocking.title}</span> : null}
+        {blocking.status ? <span>· {statusLabel(blocking.status)}</span> : null}
+      </div>
+    ) : null}
+    {footerContext}
+    <DecisionCardFooter leading={leading}>
+      {href ? (
+        <OpenButton href={href} onOpen={onOpen}>
+          {blockingHref ? "Open blocking task" : `Reply in ${item.subject.identifier ?? "task"}`}
+        </OpenButton>
+      ) : null}
+    </DecisionCardFooter>
+  </>;
+}
+
 /**
  * 13 "Unblock a task": the task that is in the way (the blocker, or the
  * stalled review itself) and what it blocks. A stalled review is answered here
  * with its review verbs; any other blocker opens the task that is in the way.
+ * When the assignee asked a person for something, that ask leads the card.
  */
-export function BlockedTaskCardBody({ item, companyId, agentMap, userLabelMap, leading, footerContext, onResolved, onOpen }: NeedsYouCardBodyProps) {
+export function BlockedTaskCardBody(props: NeedsYouCardBodyProps) {
+  const { item } = props;
+  if (item.sourceKind === "blocker_attention" && item.detail?.kind === "blocker" && item.detail.unblockAction) {
+    return <UnblockAskCardBody {...props} />;
+  }
+  return <StalledBlockerCardBody {...props} />;
+}
+
+function StalledBlockerCardBody({ item, companyId, agentMap, userLabelMap, leading, footerContext, onResolved, onOpen }: NeedsYouCardBodyProps) {
   const assignee = assigneeName(item, agentMap, userLabelMap);
   const stalledReview = item.sourceKind === "review";
   const blocking = item.detail?.kind === "blocker" ? item.detail.blockingIssue : null;

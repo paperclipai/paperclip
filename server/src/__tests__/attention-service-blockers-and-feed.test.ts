@@ -72,6 +72,128 @@ describeAttentionEmbeddedPostgres("attention service: blockers and feed", () => 
     expect(items[0]).toMatchObject({ sourceKind: "blocker_attention", whyNow: "Approve the exception" });
   });
 
+  it("leads a human unblock card with the ask, skips a finished blocker, and names the tasks it holds up", async () => {
+    const { companyId } = await seedCompany("ATH");
+    const transitionAt = new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() + 1);
+    const finishedBlockerId = await insertIssue({ companyId, identifier: "ATH-1", title: "Finished prep", status: "done" });
+    const blockedId = await insertIssue({
+      companyId,
+      identifier: "ATH-2",
+      title: "Second stage",
+      status: "blocked",
+      unblockDescriptor: { owner: "board", action: "Merge the prep branch, or say to build on it" },
+      blockedTransitionAt: transitionAt,
+    });
+    const lowId = await insertIssue({ companyId, identifier: "ATH-3", title: "Low follow-up", status: "blocked", priority: "low", createdAt: new Date("2026-07-01T00:00:00.000Z") });
+    const criticalId = await insertIssue({ companyId, identifier: "ATH-4", title: "Critical follow-up", status: "blocked", priority: "critical", createdAt: new Date("2026-07-03T00:00:00.000Z") });
+    const olderMediumId = await insertIssue({ companyId, identifier: "ATH-5", title: "Older medium follow-up", status: "todo", priority: "medium", createdAt: new Date("2026-07-02T00:00:00.000Z") });
+    const newerMediumId = await insertIssue({ companyId, identifier: "ATH-6", title: "Newer medium follow-up", status: "todo", priority: "medium", createdAt: new Date("2026-07-04T00:00:00.000Z") });
+    const doneDependentId = await insertIssue({ companyId, identifier: "ATH-7", title: "Already finished dependent", status: "done" });
+    await insertIssue({ companyId, identifier: "ATH-8", title: "Subtask behind the low follow-up", status: "todo", parentId: lowId });
+    const furtherId = await insertIssue({ companyId, identifier: "ATH-9", title: "Blocked by the critical follow-up", status: "blocked" });
+    await db.insert(issueRelations).values([
+      { companyId, issueId: finishedBlockerId, relatedIssueId: blockedId, type: "blocks" },
+      ...[lowId, criticalId, olderMediumId, newerMediumId, doneDependentId].map((relatedIssueId) => ({
+        companyId, issueId: blockedId, relatedIssueId, type: "blocks" as const,
+      })),
+      { companyId, issueId: criticalId, relatedIssueId: furtherId, type: "blocks" },
+    ]);
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const card = feed.items.find((item) => item.dedupKey === `blocked-owner:${blockedId}:${transitionAt.toISOString()}`);
+
+    expect(card?.detail).toMatchObject({
+      kind: "blocker",
+      // A finished blocker is not what the card waits on.
+      blockingIssue: null,
+      unblockAction: "Merge the prep branch, or say to build on it",
+      // Four open dependents directly; with the subtask and the further blocked task, six.
+      heldUpDirectCount: 4,
+      heldUpTotalCount: 6,
+    });
+    const heldUp = card?.detail?.kind === "blocker" ? card.detail.heldUpTasks : undefined;
+    // Highest priority first, then the longest waiting; at most three.
+    expect(heldUp?.map((task) => task.identifier)).toEqual(["ATH-4", "ATH-5", "ATH-6"]);
+    expect(heldUp?.[0]).toMatchObject({ id: criticalId, title: "Critical follow-up", status: "blocked" });
+  });
+
+  it("leaves private tasks the viewer cannot read out of what a human unblock card holds up", async () => {
+    const { companyId } = await seedCompany("ATX");
+    const transitionAt = new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() + 1);
+    const blockedId = await insertIssue({
+      companyId,
+      identifier: "ATX-1",
+      title: "Shared stage",
+      status: "blocked",
+      unblockDescriptor: { owner: "board", action: "Approve the plan" },
+      blockedTransitionAt: transitionAt,
+    });
+    const openId = await insertIssue({ companyId, identifier: "ATX-2", title: "Visible follow-up", status: "todo" });
+    const privateDependentId = randomUUID();
+    await insertIssue({
+      id: privateDependentId, companyId, identifier: "ATX-3", title: "Confidential follow-up", status: "todo",
+      visibility: "private", privacyRootIssueId: privateDependentId, responsibleUserId: "private-owner",
+    });
+    const privateSubtaskId = randomUUID();
+    await insertIssue({
+      id: privateSubtaskId, companyId, identifier: "ATX-4", title: "Confidential subtask", status: "todo", parentId: openId,
+      visibility: "private", privacyRootIssueId: privateSubtaskId, responsibleUserId: "private-owner",
+    });
+    await db.insert(issueRelations).values([openId, privateDependentId].map((relatedIssueId) => ({
+      companyId, issueId: blockedId, relatedIssueId, type: "blocks" as const,
+    })));
+
+    const actor = { type: "board" as const, source: "session" as const, userId: "non-member", companyIds: [companyId], isInstanceAdmin: false };
+    const feed = await attentionService(db).list(companyId, { userId: actor.userId, actor });
+    const card = feed.items.find((item) => item.dedupKey === `blocked-owner:${blockedId}:${transitionAt.toISOString()}`);
+
+    expect(card?.detail).toMatchObject({ heldUpDirectCount: 1, heldUpTotalCount: 1 });
+    expect(JSON.stringify(card)).not.toContain(privateDependentId);
+  });
+
+  it("keeps an open blocker, with its status, on a human unblock card", async () => {
+    const { companyId } = await seedCompany("ATO");
+    const transitionAt = new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() + 1);
+    const openBlockerId = await insertIssue({ companyId, identifier: "ATO-1", title: "Prep still underway", status: "in_progress" });
+    const blockedId = await insertIssue({
+      companyId,
+      identifier: "ATO-2",
+      title: "Second stage",
+      status: "blocked",
+      unblockDescriptor: { owner: "board", action: "Review the prep when it lands" },
+      blockedTransitionAt: transitionAt,
+    });
+    await db.insert(issueRelations).values({ companyId, issueId: openBlockerId, relatedIssueId: blockedId, type: "blocks" });
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const card = feed.items.find((item) => item.dedupKey === `blocked-owner:${blockedId}:${transitionAt.toISOString()}`);
+
+    expect(card?.detail).toMatchObject({
+      kind: "blocker",
+      blockingIssue: { id: openBlockerId, identifier: "ATO-1", title: "Prep still underway", status: "in_progress" },
+      unblockAction: "Review the prep when it lands",
+      heldUpDirectCount: 0,
+      heldUpTasks: [],
+      heldUpTotalCount: 0,
+    });
+  });
+
+  it("never says a stalled blocker blocks zero tasks", async () => {
+    const { companyId } = await seedCompany("ATZ");
+    const issueId = await insertIssue({
+      companyId,
+      identifier: "ATZ-1",
+      title: "Stalled alone",
+      status: "blocked",
+      blockedTransitionAt: new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() - 1),
+    });
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const row = feed.items.find((item) => item.dedupKey === `blocker:${issueId}`);
+
+    expect(row?.whyNow).toBe("Needs human attention.");
+  });
+
   it("keeps legacy blocker attention visible for pre-rollout blocked issues", async () => {
     const { companyId } = await seedCompany("ATP");
     const issueId = await insertIssue({

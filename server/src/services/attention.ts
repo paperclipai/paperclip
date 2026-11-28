@@ -32,7 +32,7 @@ import {
   projects,
   projectWorkspaces,
 } from "@paperclipai/db";
-import { ATTENTION_CLAIMABLE_SOURCE_KINDS, ATTENTION_PERSONAL_VIEWS, RESPONSIBILITY_DASHBOARD_ORIGIN_KIND, deriveProjectUrlKey } from "@paperclipai/shared";
+import { ATTENTION_CLAIMABLE_SOURCE_KINDS, ATTENTION_PERSONAL_VIEWS, ISSUE_PRIORITIES, RESPONSIBILITY_DASHBOARD_ORIGIN_KIND, deriveProjectUrlKey, type AttentionHeldUpTask } from "@paperclipai/shared";
 import { normalizedContentHash } from "@paperclipai/shared/portability-hash";
 import type {
   AttentionAudience,
@@ -176,6 +176,7 @@ type BlockingIssueSummary = {
   id: string | null;
   identifier: string | null;
   title: string | null;
+  status?: string | null;
 };
 
 type AttentionListOptions = AttentionFeedQuery & {
@@ -1108,6 +1109,7 @@ async function blockingIssueMap(
       id: issues.id,
       identifier: issues.identifier,
       title: issues.title,
+      status: issues.status,
     })
     .from(issueRelations)
     .innerJoin(issues, eq(issueRelations.issueId, issues.id))
@@ -1117,14 +1119,81 @@ async function blockingIssueMap(
       eq(issueRelations.type, "blocks"),
       inArray(issueRelations.relatedIssueId, ids),
       isNull(issues.hiddenAt),
+      // A finished blocker is not what the task waits on, so a card never names it.
+      notInArray(issues.status, ["done", "cancelled"]),
       readCondition,
     ))
     .orderBy(asc(issueRelations.relatedIssueId), asc(issueRelations.createdAt), asc(issueRelations.id));
   const map = new Map<string, BlockingIssueSummary>();
   for (const row of rows) {
     if (!map.has(row.blockedIssueId)) {
-      map.set(row.blockedIssueId, { id: row.id, identifier: row.identifier, title: row.title });
+      map.set(row.blockedIssueId, { id: row.id, identifier: row.identifier, title: row.title, status: row.status });
     }
+  }
+  return map;
+}
+
+const HELD_UP_TASK_LIMIT = 3;
+
+function heldUpPriorityRank(priority: string | null) {
+  const index = (ISSUE_PRIORITIES as readonly string[]).indexOf(priority ?? "");
+  return index === -1 ? ISSUE_PRIORITIES.length : index;
+}
+
+/**
+ * The open tasks each blocked task holds up directly: a count and the first
+ * few, highest priority first and then the longest waiting. A card names
+ * these; the full list stays on the task's own page.
+ */
+async function heldUpTaskMap(
+  db: Db,
+  companyId: string,
+  blockedIssueIds: string[],
+  readCondition: SQL<boolean> = sql<boolean>`true`,
+) {
+  const ids = [...new Set(blockedIssueIds)];
+  const map = new Map<string, { directCount: number; tasks: AttentionHeldUpTask[] }>();
+  if (ids.length === 0) return map;
+  const rows: Array<AttentionHeldUpTask & { blockerIssueId: string; priority: string | null; createdAt: Date }> = [];
+  for (const chunk of chunkValues(ids, ATTENTION_GRAPH_QUERY_CHUNK_SIZE)) {
+    rows.push(...await db
+      .select({
+        blockerIssueId: issueRelations.issueId,
+        id: issues.id,
+        identifier: issues.identifier,
+        title: issues.title,
+        status: issues.status,
+        priority: issues.priority,
+        createdAt: issues.createdAt,
+      })
+      .from(issueRelations)
+      .innerJoin(issues, eq(issueRelations.relatedIssueId, issues.id))
+      .where(and(
+        eq(issueRelations.companyId, companyId),
+        eq(issueRelations.type, "blocks"),
+        inArray(issueRelations.issueId, chunk),
+        eq(issues.companyId, companyId),
+        isNull(issues.hiddenAt),
+        notInArray(issues.status, ["done", "cancelled"]),
+        readCondition,
+      )));
+  }
+  const byBlocker = new Map<string, typeof rows>();
+  for (const row of rows) {
+    if (row.id === row.blockerIssueId) continue;
+    const dependents = byBlocker.get(row.blockerIssueId) ?? [];
+    dependents.push(row);
+    byBlocker.set(row.blockerIssueId, dependents);
+  }
+  for (const id of ids) {
+    const dependents = [...new Map((byBlocker.get(id) ?? []).map((row) => [row.id, row])).values()];
+    dependents.sort((left, right) => heldUpPriorityRank(left.priority) - heldUpPriorityRank(right.priority)
+      || left.createdAt.getTime() - right.createdAt.getTime()
+      || left.id.localeCompare(right.id));
+    map.set(id, {
+      directCount: dependents.length,
+      tasks: dependents.slice(0, HELD_UP_TASK_LIMIT).map(({ id: taskId, identifier, title, status }) => ({ id: taskId, identifier, title, status })),
+    });
   }
   return map;
 }
@@ -1140,7 +1209,13 @@ type BlockedWorkEdge = {
  * Per-root visited sets make corrupt cycles harmless; the blocker analyzer's
  * existing traversal caps bound unusually large graphs.
  */
-async function blockedWorkCountMap(db: Db, companyId: string, blockerIssueIds: string[]) {
+async function blockedWorkCountMap(
+  db: Db,
+  companyId: string,
+  blockerIssueIds: string[],
+  // Tasks the viewer cannot read are neither counted nor walked through.
+  readCondition: SQL<boolean> = sql<boolean>`true`,
+) {
   const rootIds = [...new Set(blockerIssueIds)];
   const seenByRoot = new Map(rootIds.map((rootId) => [rootId, new Set<string>()]));
   if (rootIds.length === 0) return new Map<string, number>();
@@ -1162,6 +1237,7 @@ async function blockedWorkCountMap(db: Db, companyId: string, blockerIssueIds: s
           eq(issues.companyId, companyId),
           isNull(issues.hiddenAt),
           notInArray(issues.status, ["done", "cancelled"]),
+          readCondition,
         ));
       const childRowsPromise: Promise<BlockedWorkEdge[]> = includeChildren
         ? db
@@ -1175,6 +1251,7 @@ async function blockedWorkCountMap(db: Db, companyId: string, blockerIssueIds: s
             inArray(issues.parentId, chunk),
             isNull(issues.hiddenAt),
             notInArray(issues.status, ["done", "cancelled"]),
+            readCondition,
           ))
         : Promise.resolve([]);
       const [dependentRows, childRows] = await Promise.all([dependentRowsPromise, childRowsPromise]);
@@ -2240,11 +2317,25 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         state: "stalled" | "needs_attention";
       }>();
 
-      for (const issue of typedBlockedIssues) {
+      const humanUnblockFor = (issue: BlockedAttentionIssue) => {
         const descriptor = issue.unblockDescriptor;
         const humanOwnerMatches = descriptor?.owner === "board"
           || (descriptor?.owner && "userId" in descriptor.owner && descriptor.owner.userId === options.userId);
-        if (descriptor && humanOwnerMatches && isProspectiveBlockedTransition(issue)) {
+        return descriptor && humanOwnerMatches && isProspectiveBlockedTransition(issue) ? descriptor : null;
+      };
+      // What each human unblock card holds up: the first few tasks by name and
+      // how much open work waits behind them. Both are card text.
+      const humanUnblockIssueIds = typedBlockedIssues.filter((issue) => humanUnblockFor(issue)).map((issue) => issue.id);
+      const [heldUpTasks, heldUpTotals] = summaryOnly
+        ? [new Map<string, { directCount: number; tasks: AttentionHeldUpTask[] }>(), new Map<string, number>()]
+        : await Promise.all([
+          heldUpTaskMap(db, companyId, humanUnblockIssueIds, readCondition),
+          blockedWorkCountMap(db, companyId, humanUnblockIssueIds, readCondition),
+        ]);
+
+      for (const issue of typedBlockedIssues) {
+        const descriptor = humanUnblockFor(issue);
+        if (descriptor && isProspectiveBlockedTransition(issue)) {
           const issueSummary = blockedIssueSummaries.get(issue.id) ?? null;
           add(createItem({
             companyId,
@@ -2268,6 +2359,10 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             detail: {
               kind: "blocker",
               blockingIssue: resolveBlockingIssue(issue, blockingIssues.get(issue.id)),
+              unblockAction: descriptor.action,
+              heldUpTasks: heldUpTasks.get(issue.id)?.tasks ?? [],
+              heldUpDirectCount: heldUpTasks.get(issue.id)?.directCount ?? 0,
+              heldUpTotalCount: heldUpTotals.get(issue.id) ?? 0,
               images: issueImages(blockerImageMap, issue.id),
             },
           }), {
@@ -2311,9 +2406,11 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           companyId,
           sourceKind: "blocker_attention",
           subject: issueSubject(prefix, candidate.terminalSummary),
-          whyNow: candidate.state === "needs_attention"
-            ? `Blocks ${blockedTaskCount} ${taskLabel} and needs human attention.`
-            : `Blocks ${blockedTaskCount} ${taskLabel}; choose the next owner or action.`,
+          whyNow: blockedTaskCount === 0
+            ? candidate.state === "needs_attention" ? "Needs human attention." : "Choose the next owner or action."
+            : candidate.state === "needs_attention"
+              ? `Blocks ${blockedTaskCount} ${taskLabel} and needs human attention.`
+              : `Blocks ${blockedTaskCount} ${taskLabel}; choose the next owner or action.`,
           decisionVerbs: decisionVerbs(
             { id: "unblock", label: "Unblock", description: "Repair or replace the stalled blocker path." },
             { id: "reassign", label: "Reassign", description: "Assign the stalled blocker to a live owner." },
