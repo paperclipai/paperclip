@@ -4855,6 +4855,8 @@ html:has(.design-proposal-theme) .design-navigation-group-label {
 .design-sidebar-project-toggle { width: calc(100% - var(--design-sidebar-item-inset) * 2); }
 .design-sidebar .design-sidebar-item:is(:hover, [aria-current="page"]) { background: var(--design-sidebar-item-highlight); color: var(--design-sidebar-item-active-foreground); }
 .design-sidebar-pin-target > [aria-pressed] { opacity: 0; pointer-events: none; }
+.design-sidebar .design-sidebar-plugin-item > :is(a, button) { min-height: var(--design-sidebar-item-height); color: var(--design-sidebar-item-foreground); font-size: var(--design-sidebar-label-size); line-height: var(--design-sidebar-label-leading); }
+.design-sidebar .design-sidebar-plugin-item > :is(a, button):is(:hover, [aria-current="page"]) { background: var(--design-sidebar-item-highlight); color: var(--design-sidebar-item-active-foreground); }
 .design-sidebar-pin-target:is(:hover, :has(> [aria-current="page"], > :focus-visible)) {
   > .design-sidebar-item { padding-inline-end: calc(var(--spacing) * 10); background: var(--design-sidebar-item-highlight); color: var(--design-sidebar-item-active-foreground); }
   > [aria-pressed] { opacity: 1; pointer-events: auto; }

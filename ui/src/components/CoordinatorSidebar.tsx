@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Inbox, Boxes, CircleCheck, Compass, Folder, History, LayoutDashboard, MessageCircle, MoreHorizontal, Network, Plus, Repeat, Search, Settings, SquarePen, Unplug, type LucideIcon } from "lucide-react";
+import { Inbox, Boxes, CircleCheck, Compass, Folder, History, LayoutDashboard, LayoutGrid, MessageCircle, MoreHorizontal, Network, Plus, Repeat, Search, Settings, SquarePen, Target, Unplug, type LucideIcon } from "lucide-react";
 import type { Agent, IssueSummary, Project } from "@paperclipai/shared";
 import { useCoordinatorAttentionCount } from "@/hooks/useCoordinatorAttentionCount";
 import { instanceSettingsApi } from "@/api/instanceSettings";
@@ -9,6 +9,7 @@ import { useResponsibilitiesEnabled } from "@/hooks/useResponsibilitiesEnabled";
 import { useRecentTasks } from "@/hooks/useRecentTasks";
 import { useRecentTaskOpenWarmup } from "@/hooks/useRecentTaskOpenWarmup";
 import { projectPinKey, usePinnedNavigation } from "@/hooks/usePinnedNavigation";
+import { useCompany } from "@/context/CompanyContext";
 import { useDialogActions } from "@/context/DialogContext";
 import { useSidebar } from "@/context/SidebarContext";
 import { queryKeys } from "@/lib/queryKeys";
@@ -32,6 +33,8 @@ import { PinnedNavigationList, type PinnedNavigationItem } from "./PinnedNavigat
 import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { NavigationPinButton, type PinControls } from "./NavigationPinButton";
 import { SidebarProjectTasks } from "./SidebarProjectTasks";
+import { PluginSlotOutlet } from "@/plugins/slots";
+import { PluginLauncherOutlet } from "@/plugins/launchers";
 
 const NO_RECENT_TASKS: never[] = [];
 const TASK_PIN_ID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
@@ -145,6 +148,8 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
       : moreDestinations;
     return experimental?.enableCases ? [...base, { label: "Cases", to: "/cases", icon: Boxes }] : base;
   }, [experimental?.enableCases, responsibilitiesHome]);
+  const { selectedCompany } = useCompany();
+  const pluginContext = { companyId, companyPrefix: selectedCompany?.issuePrefix ?? null };
   const [moreOpen, setMoreOpen] = useState(false);
   const [recentsOpen, setRecentsOpen] = useState(true);
   const moreContentRef = useRef<HTMLDivElement>(null);
@@ -200,6 +205,10 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
               className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity group-hover/coordinator-new:opacity-100 group-focus-within/coordinator-new:opacity-100 pointer-coarse:opacity-100 hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring"><Plus className="size-4" /></button>
           </div>
           <SidebarNavItem className="design-sidebar-item" to="/decisions" label="Inbox" icon={Inbox} badge={attentionCount} badgeLabel="decisions" />
+          {experimental?.enableStatusCards === true && <SidebarNavItem className="design-sidebar-item" to="/status" label="Status" icon={LayoutGrid} textBadge="beta" />}
+          {experimental?.enableGoalsSidebarLink === true && <SidebarNavItem className="design-sidebar-item" to="/goals" label="Goals" icon={Target} />}
+          <PluginSlotOutlet slotTypes={["sidebar"]} context={pluginContext} className="flex flex-col gap-0.5" itemClassName="design-sidebar-plugin-item" missingBehavior="placeholder" />
+          <PluginLauncherOutlet placementZones={["sidebar"]} context={pluginContext} className="flex flex-col gap-0.5" itemClassName="design-sidebar-plugin-item mx-2" onNavigate={isMobile ? () => setSidebarOpen(false) : undefined} />
           {orderedPins.length > 0 && <PinnedNavigationList key={`${companyId}:${userId}`} items={orderedPins} userId={userId} onReorder={pinnedNavigation.reorder} onUnpin={pinnedNavigation.toggle} />}
         </div>
         <Flyout open={moreOpen} onOpenChange={setMoreOpen}>
@@ -234,6 +243,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
         </RecentNavigationList>
       </SidebarSection></div>}
       {children}
+      <PluginSlotOutlet slotTypes={["sidebarPanel"]} context={pluginContext} className="flex flex-col gap-3 px-3" itemClassName="rounded-lg border border-border p-3" missingBehavior="placeholder" />
     </nav>
   </aside></TruncatedTextMarqueeProvider></FlyoutAppearanceProvider>;
 }
