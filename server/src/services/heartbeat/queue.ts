@@ -11,6 +11,7 @@ import { deliveredQueuedCommentIds } from "../queued-comment-delivery.js";
 import { hasAutomaticInteractionDeliveryHold, INTERACTION_DELIVERY_DENIED, recheckQueuedRunInteractions, withInteractionDeliveryOrigin } from "../agent-interaction-delivery.js";
 import { deferredWorkIntentWait } from "../work-intent-outbox.js";
 import { notifyIssueGraphRecovery } from "../issue-recovery-notifications.js";
+import { hasPendingNativeReviewSiblings } from "../native-runtime/native-review-renewal.js";
 import { createHeartbeatTimerPolicy } from "./timer-policy.js";
 import { QUEUED_RUN_AGING_MS, RECOVERY_WAKE_REASONS, createQueuedRunDispatcher, hasQueuedRunAged, isPersonRequestedRun, queuedRunDispatchClass } from "./queued-run-dispatch-order.js";
 import { reserveAutomaticRunStart } from "../recovery/automatic-run-brake.js";
@@ -3279,6 +3280,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       }
       issueId = readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueId;
     }
+    const resolvedReviewId = readNonEmptyString(enrichedContextSnapshot.interactionId) ?? readNonEmptyString(payload?.interactionId);
+    if (issueId && isUuidLike(issueId) && resolvedReviewId && await hasPendingNativeReviewSiblings(db, {
+      companyId: agent.companyId, issueId, agentId: agent.id, interactionId: resolvedReviewId,
+    })) return null;
     const effectiveTaskKey =
       readNonEmptyString(enrichedContextSnapshot.taskKey) ?? taskKey;
     const hasTaskScope = Boolean(
