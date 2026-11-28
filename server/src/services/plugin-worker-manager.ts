@@ -1316,6 +1316,10 @@ export function createPluginWorkerHandle(
       return companyId ? { companyId } : null;
     }
 
+    if (method === "runJob") {
+      return { companyId: "" };
+    }
+
     return null;
   }
 
@@ -2879,7 +2883,21 @@ export function createPluginWorkerHandle(
     }
     const entry = activeInvocations.get(invocationId);
     if (!entry) return { invalidInvocationScope: true };
-    return { invocationScope: entry.scope, traceparent: entry.traceparent, providerSpanBudget:entry.providerSpanBudget };
+
+    if (!entry.scope.companyId) {
+      const proactiveCompanyId = referencedCompanyId(
+        message.method,
+        (message as { params?: unknown }).params,
+      );
+      if (proactiveCompanyId) {
+        if (proactiveCompanyScopes.has(proactiveCompanyId)) {
+          return { invocationScope: { companyId: proactiveCompanyId }, traceparent: entry.traceparent, providerSpanBudget: entry.providerSpanBudget };
+        }
+        return { invalidInvocationScope: true };
+      }
+    }
+
+    return { invocationScope: entry.scope, traceparent: entry.traceparent, providerSpanBudget: entry.providerSpanBudget };
   }
 
   /**

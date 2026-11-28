@@ -450,6 +450,196 @@ describe("plugin-worker-manager stderr failure context", () => {
     } finally { await handle.stop().catch(() => undefined); }
   });
 
+  it("registers an unrestricted invocation scope for runJob so nested worker host calls succeed", async () => {
+    const companiesGet = vi.fn(async (
+      params: { companyId: string },
+      context?: { invocationScope?: { companyId?: string | null } | null },
+    ) => ({
+      id: params.companyId,
+      scopedCompanyId: context?.invocationScope?.companyId ?? null,
+    }));
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: {
+        instanceId: "instance-1",
+        hostVersion: "1.0.0",
+      },
+      apiVersion: 1,
+      proactiveCompanyScopes: ["company-a"],
+      hostHandlers: {
+        "companies.get": companiesGet as never,
+      },
+    });
+
+    try {
+      await handle.start();
+
+      await expect(handle.call("runJob", {
+        job: {
+          jobKey: "test.job",
+          runId: "run-1",
+          trigger: "schedule",
+          scheduledAt: new Date().toISOString(),
+        },
+        params: {
+          mode: "echo",
+          requestedCompanyId: "company-a",
+        },
+      } as never)).resolves.toEqual({
+        id: "company-a",
+        scopedCompanyId: "company-a",
+      });
+      expect(companiesGet).toHaveBeenCalledWith(
+        { companyId: "company-a" },
+        expect.objectContaining({ invocationScope: { companyId: "company-a" } }),
+      );
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  describe("runJob through the real SDK gate", () => {
+    const job = { jobKey: "test.job", runId: "run-1", trigger: "schedule", scheduledAt: "2026-11-23T00:00:00.000Z" };
+    const makeHandle = () => {
+      const stateGet = vi.fn(async (_params: unknown): Promise<unknown> => null);
+      const agentsList = vi.fn(async () => []);
+      const companiesList = vi.fn(async () => []);
+      const handle = createPluginWorkerHandle("test.plugin", {
+        entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
+        manifest: TEST_MANIFEST,
+        config: {},
+        instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" },
+        apiVersion: 1,
+        proactiveCompanyScopes: ["company-configured"],
+        hostHandlers: createHostClientHandlers({
+          pluginId: "test.plugin",
+          capabilities: ["plugin.state.read", "agents.read", "companies.read"],
+          services: {
+            state: { get: stateGet }, agents: { list: agentsList }, companies: { list: companiesList },
+          } as unknown as HostServices,
+        }),
+      });
+      return { handle, stateGet, agentsList, companiesList };
+    };
+
+    it.each(["getData", "onEvent", "executeTool"] as const)("admits job host calls while a scoped %s invocation stays active", async (method) => {
+      const { handle, stateGet, companiesList } = makeHandle();
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => { release = resolve; });
+      let entered!: () => void;
+      const started = new Promise<void>((resolve) => { entered = resolve; });
+      stateGet.mockImplementation(async () => {
+        expect(currentPluginInteractionOrigin()).toBeUndefined();
+        return null;
+      });
+      stateGet.mockImplementationOnce(async () => {
+        expect(currentPluginInteractionOrigin()).toEqual(method === "executeTool"
+          ? { companyId: "company-configured", agentId: "agent-a", runId: "run-a" }
+          : undefined);
+        entered();
+        await held;
+        return null;
+      });
+      let concurrent: Promise<unknown> | undefined;
+      try {
+        await handle.start();
+        const params = { mode: "echo", hostMethod: "state.get", nestedScopeKind: "instance" };
+        concurrent = method === "onEvent"
+          ? handle.call("onEvent", { event: {
+              eventId: "event-1", eventType: "issue.updated", occurredAt: job.scheduledAt,
+              companyId: "company-configured", payload: params,
+            } })
+          : method === "executeTool"
+            ? handle.call("executeTool", {
+                toolName: "probe", parameters: params,
+                runContext: { companyId: "company-configured", agentId: "agent-a", runId: "run-a" },
+              } as HostToWorkerMethods["executeTool"][0])
+            : handle.call("getData", { key: "probe", companyId: "company-configured", params });
+        await started;
+        await expect(handle.call("runJob", {
+          job, params: { mode: "echo", hostMethod: "state.get", nestedScopeKind: "instance", stateKey: "job-state" },
+        } as never)).resolves.toBeNull();
+        await expect(handle.call("runJob", {
+          job, params: { mode: "echo", hostMethod: "companies.list" },
+        } as never)).resolves.toEqual([]);
+        expect(stateGet).toHaveBeenCalledWith(expect.objectContaining({ scopeKind: "instance", stateKey: "job-state" }));
+        expect(companiesList).toHaveBeenCalledOnce();
+        await expect(handle.call("runJob", {
+          job, params: { mode: "echo", hostMethod: "agents.list", requestedCompanyId: "company-configured" },
+        } as never)).resolves.toEqual([]);
+        await expect(handle.call("runJob", {
+          job, params: { mode: "echo", hostMethod: "agents.list", requestedCompanyId: "company-other" },
+        } as never)).rejects.toMatchObject({ code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED });
+      } finally {
+        release();
+        await concurrent?.catch(() => undefined);
+        await handle.stop();
+      }
+    });
+
+    it.each(["agents.list", "state.get"])("admits configured-company %s and denies unconfigured companies before service access", async (hostMethod) => {
+      const { handle, stateGet, agentsList } = makeHandle();
+      const service = hostMethod === "state.get" ? stateGet : agentsList;
+      try {
+        await handle.start();
+        await handle.call("runJob", {
+          job, params: { mode: "echo", hostMethod, requestedCompanyId: "company-configured" },
+        } as never);
+        expect(service).toHaveBeenCalledOnce();
+        expect(service).toHaveBeenCalledWith(hostMethod === "state.get"
+          ? { scopeKind: "company", scopeId: "company-configured", namespace: "ns", stateKey: "key" }
+          : { companyId: "company-configured" });
+        service.mockClear();
+        await expect(handle.call("runJob", {
+          job, params: { mode: "echo", hostMethod, requestedCompanyId: "company-other" },
+        } as never)).rejects.toMatchObject({ code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED });
+        expect(service).not.toHaveBeenCalled();
+      } finally { await handle.stop(); }
+    });
+
+    it.each(["config.get", "secrets.resolve"])("requires an explicit configured company for %s", async (hostMethod) => {
+      const service = vi.fn(async () => ({}));
+      const handle = createPluginWorkerHandle("test.plugin", {
+        entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT, manifest: TEST_MANIFEST, config: {},
+        instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" }, apiVersion: 1,
+        proactiveCompanyScopes: ["company-configured"],
+        hostHandlers: createHostClientHandlers({
+          pluginId: "test.plugin", capabilities: ["secrets.read-ref"],
+          services: { config: { get: service }, secrets: { resolve: service } } as unknown as HostServices,
+        }),
+      });
+      try {
+        await handle.start();
+        await expect(handle.call("runJob", { job, params: { mode: "echo", hostMethod } } as never))
+          .rejects.toMatchObject({ code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED, message: expect.stringContaining("company context is required") });
+        expect(service).not.toHaveBeenCalled();
+        await handle.call("runJob", { job, params: { mode: "echo", hostMethod, requestedCompanyId: "company-configured" } } as never);
+        expect(service).toHaveBeenCalledOnce();
+        expect(service).toHaveBeenCalledWith(expect.objectContaining({ companyId: "company-configured" }), expect.objectContaining({ invocationScope: { companyId: "company-configured" } }));
+        service.mockClear();
+        await expect(handle.call("runJob", { job, params: { mode: "echo", hostMethod, requestedCompanyId: "company-other" } } as never))
+          .rejects.toMatchObject({ code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED });
+        expect(service).not.toHaveBeenCalled();
+      } finally { await handle.stop(); }
+    });
+
+    it("rejects a completed job's invocation id without losing the next job's scope", async () => {
+      const { handle, agentsList } = makeHandle();
+      const params = { hostMethod: "agents.list", requestedCompanyId: "company-configured" };
+      try {
+        await handle.start();
+        await handle.call("runJob", { job, params: { ...params, mode: "echo" } } as never);
+        agentsList.mockClear();
+        await expect(handle.call("runJob", { job, params: { ...params, mode: "previous" } } as never))
+          .rejects.toMatchObject({ code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED });
+        expect(agentsList).not.toHaveBeenCalled();
+        await expect(handle.call("runJob", { job, params: { ...params, mode: "echo" } } as never)).resolves.toEqual([]);
+      } finally { await handle.stop(); }
+    });
+  });
+
   it("passes echoed invocation scope to worker-to-host handlers", async () => {
     const companiesGet = vi.fn(async () => ({ id: "company-1" }) as Company);
     const handle = createPluginWorkerHandle("test.plugin", {

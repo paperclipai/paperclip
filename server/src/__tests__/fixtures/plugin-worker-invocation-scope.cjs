@@ -1,6 +1,7 @@
 const readline = require("node:readline");
 
 let nextRequestId = 1;
+let previousInvocationId;
 const pendingNested = new Map();
 
 function send(message) {
@@ -9,7 +10,7 @@ function send(message) {
 
 function sendNestedHostRequest(originalRequest, invocationId) {
   const nestedId = `nested-${nextRequestId++}`;
-  const params = originalRequest.params?.params ?? originalRequest.params?.parameters ?? {};
+  const params = originalRequest.params?.params ?? originalRequest.params?.parameters ?? originalRequest.params?.event?.payload ?? {};
   const mode = params.mode;
   const requestedCompanyId = params.requestedCompanyId;
   const hostMethod = params.hostMethod || "companies.get";
@@ -29,15 +30,18 @@ function sendNestedHostRequest(originalRequest, invocationId) {
         workspaceId: originalRequest.params.operation.source.id,
       }
     : hostMethod === "state.get"
-    ? {
-        // Company-scoped state key — the shape a proactive gateway loop uses
-        // (ctx.state.get with scopeKind "company"). The host derives the
-        // requested company from scopeId, not companyId.
-        scopeKind: "company",
-        scopeId: requestedCompanyId,
-        namespace: params.namespace || "ns",
-        stateKey: params.stateKey || "key",
-      }
+    ? params.nestedScopeKind === "instance"
+      ? {
+          scopeKind: "instance",
+          namespace: params.namespace || "ns",
+          stateKey: params.stateKey || "key",
+        }
+      : {
+          scopeKind: "company",
+          scopeId: requestedCompanyId,
+          namespace: params.namespace || "ns",
+          stateKey: params.stateKey || "key",
+        }
     : hostMethod === "events.subscribe"
     ? {
         // The subscribe shape the SDK issues from setup() via
@@ -59,10 +63,13 @@ function sendNestedHostRequest(originalRequest, invocationId) {
 
   if (mode === "echo") {
     nestedRequest.paperclipInvocationId = invocationId;
+  } else if (mode === "previous") {
+    nestedRequest.paperclipInvocationId = previousInvocationId;
   } else if (mode === "unknown") {
     nestedRequest.paperclipInvocationId = "unknown-invocation";
   }
 
+  previousInvocationId = invocationId;
   pendingNested.set(nestedId, {
     id: originalRequest.id,
     ...(hostMethod === "projects.resolveGitCredential" ? { identity: {
@@ -110,13 +117,13 @@ rl.on("line", (line) => {
       id: message.id,
       result: {
         ok: true,
-        supportedMethods: ["getData", "performAction", "resourceLifecycle", "workspaceOperation", "workspacePrepare", "executeTool"],
+        supportedMethods: ["getData", "performAction", "resourceLifecycle", "workspaceOperation", "workspacePrepare", "executeTool", "onEvent", "runJob"],
       },
     });
     return;
   }
 
-  if (["getData", "performAction", "resourceLifecycle", "workspaceOperation", "workspacePrepare", "executeTool"].includes(method)) {
+  if (["getData", "performAction", "resourceLifecycle", "workspaceOperation", "workspacePrepare", "executeTool", "onEvent", "runJob"].includes(method)) {
     sendNestedHostRequest(message, message.paperclipInvocation?.id);
     return;
   }
