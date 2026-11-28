@@ -181,6 +181,10 @@ function parseStdoutLine(line, ts) {
     return [{ kind: "stdout", ts, text: stripped }];
   }
 
+  if (trimmed.startsWith("\u2502")) {
+    return [{ kind: "stdout", ts, text: trimmed }];
+  }
+
   if (isThinkingLine(trimmed)) {
     return [{ kind: "thinking", ts, text: trimmed.replace(/^\u{1f4ad}\s*/u, "") }];
   }
