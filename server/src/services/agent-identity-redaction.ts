@@ -1,4 +1,4 @@
-import { REDACTED_EVENT_VALUE } from "../redaction.js";
+import { REDACTED_EVENT_VALUE, SECRET_ENV_KEY_RE } from "../redaction.js";
 import { redactRegisteredSecretValues } from "./run-secret-redaction.js";
 
 export const MIN_SECRET_OUTPUT_VALUE_LENGTH = 8;
@@ -10,6 +10,17 @@ export function secretEnvironmentValues(env: unknown, secretKeys: Iterable<strin
   if (!env || typeof env !== "object" || Array.isArray(env)) return [];
   const record = env as Record<string, unknown>;
   return [...new Set([...secretKeys].map(key => record[key]).filter((value): value is string => typeof value === "string" && value.length > 0))];
+}
+
+export function secretNamedEnvironmentValues(...envs: readonly unknown[]): string[] {
+  const values = new Set<string>();
+  for (const env of envs) {
+    if (!env || typeof env !== "object" || Array.isArray(env)) continue;
+    for (const [key, value] of Object.entries(env as Record<string, unknown>)) {
+      if (typeof value === "string" && value.length > 0 && SECRET_ENV_KEY_RE.test(key)) values.add(value);
+    }
+  }
+  return [...values];
 }
 
 export function secretOutputForms(secrets: readonly string[]): string[] {
