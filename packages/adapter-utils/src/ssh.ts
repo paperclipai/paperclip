@@ -724,7 +724,7 @@ async function streamLocalFileToSsh(input: {
     "-p",
     String(input.spec.port),
     `${input.spec.username}@${input.spec.host}`,
-    `sh -c ${shellQuote(input.remoteScript)}`,
+    buildRemoteShellCommand([`exec sh -c ${shellQuote(input.remoteScript)}`]),
   ];
 
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -784,7 +784,7 @@ async function streamSshToLocalFile(input: {
     "-p",
     String(input.spec.port),
     `${input.spec.username}@${input.spec.host}`,
-    `sh -c ${shellQuote(input.remoteScript)}`,
+    buildRemoteShellCommand([`exec sh -c ${shellQuote(input.remoteScript)}`]),
   ];
 
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1361,6 +1361,28 @@ export function buildKnownHostsEntry(input: {
   return `[${input.host}]:${input.port} ${input.publicKey.trim()}`;
 }
 
+function buildRemoteShellScript(commandLines: string[]): string {
+  const profiles = [
+    'if [ -f /etc/profile ]; then . /etc/profile || true; fi',
+    'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" || true; fi',
+    'case "${0##*/}" in bash) if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" || true; fi ;; zsh) if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" || true; fi ;; esac',
+  ].join(" && ");
+  const script = [
+    `{ ${profiles}; } </dev/null >/dev/null 2>&1`,
+    "exec 0<&3 1>&4 2>&5 3<&- 4>&- 5>&-",
+    ...commandLines,
+  ].join(" && ");
+  return [
+    "shell=sh",
+    'case "${SHELL##*/}" in bash|zsh) shell="$SHELL" ;; esac',
+    `exec "$shell" -c ${shellQuote(script)} 3<&0 4>&1 5>&2 </dev/null >/dev/null 2>&1`,
+  ].join("; ");
+}
+
+function buildRemoteShellCommand(commandLines: string[]): string {
+  return `sh -c ${shellQuote(buildRemoteShellScript(commandLines))}`;
+}
+
 export async function runSshCommand(
   config: SshConnectionConfig,
   remoteCommand: string,
@@ -1384,27 +1406,12 @@ export async function runSshCommand(
       }
     }
 
-    // Mirror buildSshSpawnTarget: source the login profiles first, then run
-    // `env KEY=VAL cmd` so user-supplied identity overrides win over anything a
-    // profile re-exports. The SSH target is an operator-configured host, not a
-    // Paperclip sandbox image, so it can expose `node` or an agent CLI only
-    // through a login profile; a non-login SSH command would miss that PATH.
-    // Source `/etc/profile` first so a host that exposes the PATH through
-    // `/etc/profile.d` scripts still resolves node and the agent CLI.
-    // The script no longer sources `nvm.sh`; a profile that adds nvm still runs.
-    // .bash_profile typically sources .bashrc itself; only source .bashrc
-    // directly when no .bash_profile exists, so a host that adds nvm in
-    // .bashrc still resolves node without a double-run of the setup.
     const envArgs = envEntries.map(([key, value]) => `${key}=${shellQuote(value)}`);
-    const remoteScript = [
-      'if [ -f /etc/profile ]; then . /etc/profile >/dev/null 2>&1 || true; fi',
-      'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
-      'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
-      'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
+    const remoteScript = buildRemoteShellScript([
       envArgs.length > 0
         ? `exec env ${envArgs.join(" ")} sh -c ${shellQuote(remoteCommand)}`
         : `exec sh -c ${shellQuote(remoteCommand)}`,
-    ].join(" && ");
+    ]);
 
     sshArgs.push(
       "-p",
@@ -1445,27 +1452,12 @@ export async function buildSshSpawnTarget(input: {
     .filter((entry): entry is [string, string] => typeof entry[1] === "string")
     .map(([key, value]) => `${key}=${shellQuote(value)}`);
   const remoteCommandParts = [shellQuote(input.command), ...input.args.map((arg) => shellQuote(arg))].join(" ");
-  // Source the login profiles first, then run `env KEY=VAL cmd` so
-  // user-supplied identity overrides win over anything a profile re-exports.
-  // The SSH target is an operator-configured host, not a Paperclip sandbox
-  // image, so it can expose `node` or an agent CLI only through a login
-  // profile; a non-login SSH command would miss that PATH. Source
-  // `/etc/profile` first so a host that exposes the PATH through
-  // `/etc/profile.d` scripts still resolves node and the agent CLI. The script
-  // no longer sources `nvm.sh`; a profile that adds nvm still runs.
-  // .bash_profile typically sources .bashrc itself; only source .bashrc
-  // directly when no .bash_profile exists, so a host that adds nvm in
-  // .bashrc still resolves node without a double-run of the setup.
-  const remoteScript = [
-    'if [ -f /etc/profile ]; then . /etc/profile >/dev/null 2>&1 || true; fi',
-    'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
-    'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
-    'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
+  const remoteScript = buildRemoteShellScript([
     `cd ${shellQuote(input.spec.remoteCwd)}`,
     envArgs.length > 0
       ? `exec env ${envArgs.join(" ")} ${remoteCommandParts}`
       : `exec ${remoteCommandParts}`,
-  ].join(" && ");
+  ]);
 
   sshArgs.push(
     "-p",
@@ -1497,7 +1489,10 @@ export async function syncDirectoryToSsh(input: {
     "-p",
     String(input.spec.port),
     `${input.spec.username}@${input.spec.host}`,
-    `sh -c ${shellQuote(`mkdir -p ${shellQuote(input.remoteDir)} && tar -xf - -C ${shellQuote(input.remoteDir)}`)}`,
+    buildRemoteShellCommand([
+      `mkdir -p ${shellQuote(input.remoteDir)}`,
+      `exec tar -xf - -C ${shellQuote(input.remoteDir)}`,
+    ]),
   ];
 
   // tar's archive size isn't known until tar finishes, so estimate it from the
@@ -1625,7 +1620,7 @@ export async function syncDirectoryFromSsh(input: {
     "-p",
     String(input.spec.port),
     `${input.spec.username}@${input.spec.host}`,
-    `sh -c ${shellQuote(remoteTarScript)}`,
+    buildRemoteShellCommand([`exec sh -c ${shellQuote(remoteTarScript)}`]),
   ];
 
   // The remote tar size isn't known locally, so probe the remote directory for
