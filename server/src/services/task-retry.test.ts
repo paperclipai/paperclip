@@ -661,6 +661,7 @@ describe("durable task Retry admission", () => {
     const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
     const queued = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.status, "queued")));
     expect(queued, JSON.stringify(wake.payload)).toHaveLength(1);
+    expect(queued[0].retryOfRunId).toBe(refused.id);
     expect(wake).toMatchObject({ status: "coalesced", runId: queued[0].id });
     await expect(dispatchRun(input, queued[0])).resolves.toMatchObject({ interruptedRunId: refused.id });
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, refused.id)))[0])
@@ -1415,8 +1416,12 @@ describe("durable task Retry admission", () => {
       const queued = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId),
         eq(heartbeatRuns.status, "queued")));
       expect(queued).toHaveLength(1);
+      // The refused replay continues from saved work; it is not a retry of
+      // the source run, so it carries no retry lineage.
+      expect(queued[0].retryOfRunId).toBeNull();
       expect(queued[0].contextSnapshot).toMatchObject({ issueId: input.issueId, previousRunId: source.id,
         taskRetryRequestId: receipt.requestId, forceFreshSession: true, responsibleUserId: input.actorId });
+      expect(queued[0].contextSnapshot?.explicitRetryOfRunId).toBeUndefined();
       expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!)))[0])
         .toMatchObject({ status: "coalesced", runId: queued[0].id });
     });
