@@ -146,6 +146,7 @@ import { drainHttpRequestWork } from "./middleware/idle-admission.js";
 import { initializeCloudRuntimeConfig } from "./services/cloud-runtime-config.js";
 import { loadCloudBootstrapConfig, loadConfig, type Config } from "./config.js";
 import { logger } from "./middleware/logger.js";
+import { installSocketDisconnectGuard } from "./services/socket-disconnect-guard.js";
 import { startEventLoopStallMonitor } from "./event-loop-stall-monitor.js";
 import { setStartupQueuedRunPassPending, setStartupRecoveryPhase } from "./startup-recovery-state.js";
 import { startupTimeline } from "./startup-timeline.js";
@@ -312,6 +313,8 @@ function initializeRuntimeConfigConsumers(config: ReturnType<typeof loadConfig>)
   }
 }
 
+let socketDisconnectGuardInstalled = false;
+
 export async function startServer(): Promise<StartedServer> {
   const startupDatabase: StartupDatabaseTeardown = { close: null };
   try {
@@ -338,6 +341,12 @@ async function startServerWithDatabaseTeardown(
   // Error monitoring must be ready before the first request can fail — see
   // sentry.ts.
   await sentryReady;
+  if (!socketDisconnectGuardInstalled) {
+    installSocketDisconnectGuard((error) => {
+      logger.warn({ err: error }, "ignored a broken pipe from a closed connection; the server keeps running");
+    });
+    socketDisconnectGuardInstalled = true;
+  }
   const startupConfig = isCloudManagedInstance() ? loadCloudBootstrapConfig() : loadConfig();
   if ("deploymentMode" in startupConfig) {
     assertEphemeralServerConfig(startupConfig);
