@@ -141,6 +141,7 @@ export function aiConnectionService(db: Db) {
         connection.config.ai,
       );
       if (!metadata.success) return [];
+      if (connection.status === "archived") return [];
       const needsReconnect = aiSubscriptionNeedsIsolatedLogin(connection.config);
       if (!canUseCredential(grant, userId, members.filter((m) => m.grantId === grant.id)))
         return [];
