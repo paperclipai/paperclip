@@ -1688,7 +1688,36 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       resultJson: { failureCause: "40001" } });
     expect(JSON.stringify(failed)).not.toMatch(/heartbeat_runs|secret-run-id|Failed query/);
     const failureLog = logged.mock.calls.find(call => call[1] === "heartbeat execution failed");
-    expect(failureLog?.[0]).toMatchObject({ runId: f.run.id, errorCode: "adapter_failed", failureCause: "40001" });
+    expect(failureLog?.[0]).toMatchObject({ runId: f.run.id, agentId: f.agent.id, errorCode: "adapter_failed", failureCause: "40001" });
+  });
+
+  it.each(["stopped during the failure", "already settled by another path"] as const)(
+    "logs a warning, not the execution failure error, for a run %s",
+    async (mode) => {
+      const f = await fixture();
+      const errors = vi.spyOn(logger, "error");
+      const warnings = vi.spyOn(logger, "warn");
+      onTestFinished(() => { errors.mockRestore(); warnings.mockRestore(); });
+      if (mode === "stopped during the failure") f.controller.abort();
+      else await db.update(heartbeatRuns).set({ status: "cancelled", errorCode: "cancelled", finishedAt: new Date() })
+        .where(eq(heartbeatRuns.id, f.run.id));
+      await f.completion.failRun(f.failure(new Error("adapter exited after stop")));
+      expect((await read(f.run.id)).status).toBe("cancelled");
+      expect(errors.mock.calls.find(call => call[1] === "heartbeat execution failed")).toBeUndefined();
+      const warning = warnings.mock.calls.find(call => call[1] === "heartbeat adapter failed after the run left running state");
+      expect(warning?.[0]).toMatchObject({ runId: f.run.id, agentId: f.agent.id, status: "cancelled" });
+    },
+  );
+
+  it("logs the execution failure error with the stored code when the run fails", async () => {
+    const f = await fixture();
+    const errors = vi.spyOn(logger, "error");
+    onTestFinished(() => errors.mockRestore());
+    await f.completion.failRun(f.failure(new Error("adapter crashed")));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "adapter_failed" });
+    const failureLogs = errors.mock.calls.filter(call => call[1] === "heartbeat execution failed");
+    expect(failureLogs).toHaveLength(1);
+    expect(failureLogs[0]?.[0]).toMatchObject({ runId: f.run.id, agentId: f.agent.id, errorCode: "adapter_failed" });
   });
 
   describe("a native run that fails before provider work", () => {
