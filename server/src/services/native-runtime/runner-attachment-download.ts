@@ -4,6 +4,8 @@ import { and, eq } from "drizzle-orm";
 import { assets, heartbeatRuns, issueAttachments, type Db } from "@paperclipai/db";
 import { z } from "zod";
 import { MAX_ATTACHMENT_BYTES } from "../../attachment-types.js";
+import { readConfigFile } from "../../config-file.js";
+import { deploymentServerCredential } from "../../deployment/runtime.js";
 import type { StorageService } from "../../storage/types.js";
 import { authorizeHistoricalRunnerAttachment } from "./chat-attachment-read.js";
 import type { ChatReuseBinding } from "./chat-attachment-reuse.js";
@@ -28,7 +30,7 @@ const claimsSchema = z.object({
 }).strict();
 
 function signingSecret(env: NodeJS.ProcessEnv) {
-  return env.PAPERCLIP_AGENT_JWT_SECRET?.trim() || env.BETTER_AUTH_SECRET?.trim();
+  return deploymentServerCredential("auth") || env.PAPERCLIP_AGENT_JWT_SECRET?.trim() || env.BETTER_AUTH_SECRET?.trim();
 }
 
 function sign(secret: string, body: Buffer) {
@@ -37,9 +39,10 @@ function sign(secret: string, body: Buffer) {
 
 export function runnerAttachmentDownloadUrl(env: NodeJS.ProcessEnv = process.env) {
   if (!signingSecret(env)) return null;
-  const configured = env.PAPERCLIP_PUBLIC_URL || env.PAPERCLIP_AUTH_PUBLIC_BASE_URL || env.PAPERCLIP_MANAGED_RUNTIME_PUBLIC_URL;
-  if (!configured) return null;
   try {
+    const configured = env.PAPERCLIP_PUBLIC_URL || env.PAPERCLIP_AUTH_PUBLIC_BASE_URL || env.PAPERCLIP_MANAGED_RUNTIME_PUBLIC_URL
+      || (env.PAPERCLIP_DECLARATIVE === "true" ? readConfigFile()?.auth?.publicBaseUrl : undefined);
+    if (!configured) return null;
     const origin = new URL(configured);
     if (origin.protocol !== "https:" || origin.username || origin.password || origin.pathname !== "/" || origin.search || origin.hash) return null;
     return new URL(RUNNER_ATTACHMENT_DOWNLOAD_PATH, origin).href;

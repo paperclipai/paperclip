@@ -12,4 +12,12 @@ describe("sanitizeInheritedPaperclipEnv", () => {
       PATH: "/usr/bin",
     });
   });
+  it("inherits only system execution settings in declarative mode", () => {
+    expect(sanitizeInheritedPaperclipEnv({
+      PAPERCLIP_DECLARATIVE: "true", PATH: "/bin", HOME: "/state", LANG: "C.UTF-8",
+      DATABASE_URL: "postgres://server-only", DATABASE_MIGRATION_URL: "postgres://migration-only",
+      BETTER_AUTH_SECRET: "server-only", PROVIDER_API_KEY: "unrelated-worker",
+      PAPERCLIP_API_KEY: "parent-task-token", PAPERCLIP_RUNTIME_API_URL: "parent-task-url",
+    })).toEqual({ PATH: "/bin", HOME: "/state", LANG: "C.UTF-8" });
+  });
 });

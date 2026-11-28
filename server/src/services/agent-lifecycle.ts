@@ -112,6 +112,10 @@ export function requestAgentHireInTransaction(tx: Db, publications: ActivityPubl
   return lifecycle.requestAgentHireInTransaction(tx, createAgentLifecycleEffects(), publications, ...args);
 }
 
+export function createAgentLifecycleInTransaction(tx: Db, publications: ActivityPublication[]) {
+  return lifecycle.createAgentLifecycleInTransaction(tx, createAgentLifecycleEffects(), publications);
+}
+
 function trackedDriver(driver: lifecycle.LifecycleDriver): lifecycle.LifecycleDriver {
   return { ...driver, runHost: agent => trackIdleWork(driver.runHost(agent)),
     runPlugin: (agent, pluginId) => trackIdleWork(driver.runPlugin(agent, pluginId)) };

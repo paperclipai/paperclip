@@ -2,6 +2,9 @@ export {
   createDb,
   databaseClientOptionsFromEnv,
   type DatabaseClientOptions,
+  acquireDeploymentLease,
+  assertSameDeploymentDatabase,
+  assertDeploymentSchemaCompatible,
   withDedicatedDbConnection,
   closeDedicatedDbConnections,
   DEDICATED_CONNECTION_IDLE_MAX,
@@ -70,3 +73,4 @@ export * from "./schema/index.js";
 export { databaseWorkScopeKey, primeDatabaseWorkTransactionId, signalDatabaseWork, subscribeDatabaseWork, databaseWorkPending, reconcileDatabaseWork } from "./work-signals.js";
 export { withDatabaseOperation } from "./response-capture.js";
 export { databaseStatementCount } from "./statement-count.js";
+export { resolveMigrationConnection } from "./migration-runtime.js";

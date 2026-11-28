@@ -91,15 +91,18 @@ async function loadEmbeddedPostgresCtor(): Promise<EmbeddedPostgresCtor> {
 async function ensureEmbeddedPostgresConnection(
   dataDir: string,
   preferredPort: number,
+  identity = { user: "paperclip", password: "paperclip", database: "paperclip", strictPort: false },
 ): Promise<MigrationConnection> {
   const EmbeddedPostgres = await loadEmbeddedPostgresCtor();
   await prepareEmbeddedPostgresNativeRuntime();
   const selectedPort = await findAvailablePort(preferredPort);
+  const url = (port: number, database = identity.database) =>
+    `postgres://${encodeURIComponent(identity.user)}:${encodeURIComponent(identity.password)}@127.0.0.1:${port}/${encodeURIComponent(database)}`;
   const postmasterPidFile = path.resolve(dataDir, "postmaster.pid");
   const pgVersionFile = path.resolve(dataDir, "PG_VERSION");
   const runningPid = readRunningPostmasterPid(postmasterPidFile);
   const runningPort = readPidFilePort(postmasterPidFile);
-  const preferredAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${preferredPort}/postgres`;
+  const preferredAdminConnectionString = url(preferredPort, "postgres");
   const logBuffer = createEmbeddedPostgresLogBuffer();
 
   if (!runningPid && existsSync(pgVersionFile)) {
@@ -111,12 +114,12 @@ async function ensureEmbeddedPostgresConnection(
       if (!matchesDataDir) {
         throw new Error("reachable postgres does not use the expected embedded data directory");
       }
-      await ensurePostgresDatabase(preferredAdminConnectionString, "paperclip");
+      await ensurePostgresDatabase(preferredAdminConnectionString, identity.database);
       process.emitWarning(
         `Adopting an existing PostgreSQL instance on port ${preferredPort} for embedded data dir ${dataDir} because postmaster.pid is missing.`,
       );
       return {
-        connectionString: `postgres://paperclip:paperclip@127.0.0.1:${preferredPort}/paperclip`,
+        connectionString: url(preferredPort),
         source: `embedded-postgres@${preferredPort}`,
         stop: async () => {},
       };
@@ -127,19 +130,22 @@ async function ensureEmbeddedPostgresConnection(
 
   if (runningPid) {
     const port = runningPort ?? preferredPort;
-    const adminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
-    await ensurePostgresDatabase(adminConnectionString, "paperclip");
+    if (identity.strictPort && port !== preferredPort) throw new Error("Embedded database port does not match the declaration");
+    const adminConnectionString = url(port, "postgres");
+    if (path.resolve(await getPostgresDataDirectory(adminConnectionString) ?? "") !== path.resolve(dataDir)) throw new Error("Embedded database belongs to another instance");
+    await ensurePostgresDatabase(adminConnectionString, identity.database);
     return {
-      connectionString: `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`,
+      connectionString: url(port),
       source: `embedded-postgres@${port}`,
       stop: async () => {},
     };
   }
 
+  if (identity.strictPort && selectedPort !== preferredPort) throw new Error("Configured embedded database port is in use");
   const instance = new EmbeddedPostgres({
     databaseDir: dataDir,
-    user: "paperclip",
-    password: "paperclip",
+    user: identity.user,
+    password: identity.password,
     port: selectedPort,
     persistent: true,
     initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
@@ -170,11 +176,11 @@ async function ensureEmbeddedPostgresConnection(
     });
   }
 
-  const adminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${selectedPort}/postgres`;
-  await ensurePostgresDatabase(adminConnectionString, "paperclip");
+  const adminConnectionString = url(selectedPort, "postgres");
+  await ensurePostgresDatabase(adminConnectionString, identity.database);
 
   return {
-    connectionString: `postgres://paperclip:paperclip@127.0.0.1:${selectedPort}/paperclip`,
+    connectionString: url(selectedPort),
     source: `embedded-postgres@${selectedPort}`,
     stop: async () => {
       await instance.stop();
@@ -182,7 +188,7 @@ async function ensureEmbeddedPostgresConnection(
   };
 }
 
-export async function resolveMigrationConnection(): Promise<MigrationConnection> {
+export async function resolveMigrationConnection(embeddedIdentity?: { user: string; password: string; database: string; strictPort: boolean }): Promise<MigrationConnection> {
   const target = resolveDatabaseTarget();
   if (target.mode === "postgres") {
     return {
@@ -192,5 +198,5 @@ export async function resolveMigrationConnection(): Promise<MigrationConnection>
     };
   }
 
-  return ensureEmbeddedPostgresConnection(target.dataDir, target.port);
+  return ensureEmbeddedPostgresConnection(target.dataDir, target.port, embeddedIdentity);
 }
