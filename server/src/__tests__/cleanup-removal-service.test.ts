@@ -27,6 +27,7 @@ import {
   issueExecutionDecisions,
   issueReadStates,
   issues,
+  routineRevisions,
   routines,
 } from "@paperclipai/db";
 import {
@@ -35,6 +36,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { agentService } from "../services/agents.ts";
 import { companyService } from "../services/companies.ts";
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.ts";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_CLEANUP_TEST_DATABASE_URL");
 const embeddedPostgresSupport = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
@@ -174,6 +176,69 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))).resolves.toHaveLength(0);
     await expect(db.select().from(issueComments).where(eq(issueComments.issueId, issueId))).resolves.toHaveLength(0);
     await expect(db.select().from(activityLog).where(eq(activityLog.companyId, companyId))).resolves.toHaveLength(0);
+  });
+
+  it("keeps the agent's routines unassigned, pauses active ones, and records a revision when deleting the agent", async () => {
+    const { agentId, companyId } = await seedFixture();
+    const activeRoutineId = randomUUID();
+    const archivedRoutineId = randomUUID();
+    const firstRevisionId = randomUUID();
+
+    await db.insert(routines).values([
+      { id: activeRoutineId, companyId, title: "Daily brief", assigneeAgentId: agentId, status: "active" },
+      { id: archivedRoutineId, companyId, title: "Old report", assigneeAgentId: agentId, status: "archived" },
+    ]);
+    await db.insert(routineRevisions).values({
+      id: firstRevisionId,
+      companyId,
+      routineId: activeRoutineId,
+      revisionNumber: 1,
+      title: "Daily brief",
+      snapshot: {
+        version: 1,
+        routine: {
+          id: activeRoutineId,
+          companyId,
+          projectId: null,
+          goalId: null,
+          parentIssueId: null,
+          title: "Daily brief",
+          description: null,
+          assigneeAgentId: agentId,
+          priority: "medium",
+          status: "active",
+          concurrencyPolicy: "coalesce_if_active",
+          catchUpPolicy: "skip_missed",
+          activityGatePolicy: "always",
+          activityGateScope: "company",
+          variables: [],
+          env: null,
+          responsibleUserId: null,
+        },
+        triggers: [],
+      },
+    });
+    await db.update(routines).set({ latestRevisionId: firstRevisionId, latestRevisionNumber: 1 }).where(eq(routines.id, activeRoutineId));
+
+    const wakes: string[] = [];
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.routineSchedules, () => wakes.push("routine-schedules"));
+    try {
+      await db.update(agents).set({ status: "terminated", lifecycleState: "terminated" }).where(eq(agents.id, agentId));
+      const removed = await agentService(db).remove(agentId);
+      expect(removed?.id).toBe(agentId);
+    } finally {
+      unsubscribe();
+    }
+
+    await expect(db.select().from(agents).where(eq(agents.id, agentId))).resolves.toHaveLength(0);
+    const [activeRoutine] = await db.select().from(routines).where(eq(routines.id, activeRoutineId));
+    const [archivedRoutine] = await db.select().from(routines).where(eq(routines.id, archivedRoutineId));
+    expect(activeRoutine).toMatchObject({ assigneeAgentId: null, status: "paused", latestRevisionNumber: 2 });
+    expect(archivedRoutine).toMatchObject({ assigneeAgentId: null, status: "archived" });
+    const [latestRevision] = await db.select().from(routineRevisions).where(eq(routineRevisions.id, activeRoutine!.latestRevisionId!));
+    expect(latestRevision).toMatchObject({ revisionNumber: 2, changeSummary: "Default agent deleted" });
+    expect(latestRevision!.snapshot).toMatchObject({ routine: { assigneeAgentId: null, status: "paused" } });
+    expect(wakes.length).toBeGreaterThan(0);
   });
 
   it("removes issue read states and activity rows before deleting the company", async () => {
