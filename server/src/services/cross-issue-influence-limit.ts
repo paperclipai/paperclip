@@ -91,6 +91,8 @@ export async function observeCrossIssueInfluence(
         companyId: heartbeatRuns.companyId,
         agentId: heartbeatRuns.agentId,
         responsibleUserId: heartbeatRuns.responsibleUserId,
+        issueId: heartbeatRuns.issueId,
+        nativeIssueId: heartbeatRuns.nativeIssueId,
         contextSnapshot: heartbeatRuns.contextSnapshot,
       })
       .from(heartbeatRuns)
@@ -114,7 +116,17 @@ export async function observeCrossIssueInfluence(
     // spends the cap. The locked run row above is the attribution anchor;
     // rejecting these writes as run-less left live heartbeat runs unable to
     // comment or update any task at all.
-    const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
+    // Prefer contextSnapshot, then the typed issueId / nativeIssueId columns —
+    // checkout binds those columns when a deferred unassigned wake checks out
+    // mid-run (DEF-963).
+    const sourceIssueId =
+      readRunSourceIssueId(run.contextSnapshot) ??
+      (typeof run.issueId === "string" && run.issueId.trim()
+        ? run.issueId.trim()
+        : null) ??
+      (typeof run.nativeIssueId === "string" && run.nativeIssueId.trim()
+        ? run.nativeIssueId.trim()
+        : null);
     if (
       sourceIssueId !== null &&
       (sourceIssueId === input.targetIssueId ||
