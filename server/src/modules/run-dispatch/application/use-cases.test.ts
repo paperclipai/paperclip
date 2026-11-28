@@ -6,38 +6,74 @@ import {
   createPromoteDueScheduledRetries,
   createPromoteScheduledRetry,
 } from "./use-cases.js";
+import { QUOTA_RECOVERY_RETRY_REASON } from "../domain/quota-recovery-release.js";
 import type { DueRetryRun, RunDispatchWriter, ScheduledRetryReader } from "./ports.js";
 
-function fakeReader(dueRuns: DueRetryRun[] = []): ScheduledRetryReader & { evaluateCalls: unknown[] } {
+const SWEEP_NOW = new Date("2026-01-01T00:00:00.000Z");
+
+function fakeReader(
+  dueRuns: DueRetryRun[] = [],
+  inflight: ReadonlyMap<string, number> | null = new Map(),
+): ScheduledRetryReader & { evaluateCalls: unknown[]; listCalls: unknown[] } {
   const evaluateCalls: unknown[] = [];
+  const listCalls: unknown[] = [];
   return {
     evaluateCalls,
-    async nextScheduledRetryAt() { return null; },
+    listCalls,
+    async nextScheduledRetryAt() {
+      return dueRuns[0]?.scheduledRetryAt.getTime() ?? null;
+    },
     async evaluateScheduledRetryGate(input) {
       evaluateCalls.push(input);
       return { allowed: true };
     },
-    async listDueRetries() {
-      return dueRuns;
+    // The real reader bounds each retry-mechanism class by `limit`; the fake
+    // honours it too, so a sweep ceiling is proven by what the caller asks for
+    // rather than by a second slice inside the use case.
+    async listDueRetries(input) {
+      listCalls.push(input);
+      return dueRuns.slice(0, input.limit);
     },
+    async countInflightQuotaRecoveryRetries() {
+      if (inflight instanceof Error) throw inflight;
+      return inflight;
+    },
+  };
+}
+
+/** A due retry row as the sweep reads it. */
+function dueRetry(overrides: Partial<DueRetryRun> & { runId: string }): DueRetryRun {
+  return {
+    companyId: "company-1",
+    agentId: "agent-1",
+    scheduledRetryAt: new Date("2026-01-01T00:00:00.000Z"),
+    scheduledRetryReason: QUOTA_RECOVERY_RETRY_REASON,
+    ...overrides,
   };
 }
 
 function fakeWriter(overrides: Partial<RunDispatchWriter> = {}): RunDispatchWriter & {
   promoteCalls: unknown[];
+  deferCalls: unknown[];
   cancelCalls: unknown[];
   dispatchCalls: unknown[];
 } {
   const promoteCalls: unknown[] = [];
+  const deferCalls: unknown[] = [];
   const cancelCalls: unknown[] = [];
   const dispatchCalls: unknown[] = [];
   return {
     promoteCalls,
+    deferCalls,
     cancelCalls,
     dispatchCalls,
     async promoteOrCancelDueRetry(input) {
       promoteCalls.push(input);
       return { outcome: "promoted", postCommitEffects: [] };
+    },
+    async deferScheduledRetry(input) {
+      deferCalls.push(input);
+      return { deferred: true };
     },
     async cancelStaleQueuedRun(input) {
       cancelCalls.push(input);
@@ -108,20 +144,151 @@ describe("createPromoteScheduledRetry", () => {
 });
 
 describe("createPromoteDueScheduledRetries", () => {
-  it("keeps due order and caps a sweep at 50 runs", async () => {
-    const dueRuns = Array.from({ length: 75 }, (_, i) => ({
-      runId: `run-${i}`,
-      companyId: "company-1",
-    }));
-    const reader = fakeReader(dueRuns);
-    const writer = fakeWriter();
-    const result = await createPromoteDueScheduledRetries({
+  const sweep = (reader: ScheduledRetryReader, writer: RunDispatchWriter) =>
+    createPromoteDueScheduledRetries({
       reader,
       promoteScheduledRetry: createPromoteScheduledRetry({ writer }),
-    })({ cutoff: null });
+      deferScheduledRetry: (input) => writer.deferScheduledRetry(input),
+      now: () => SWEEP_NOW,
+      planSeed: () => 1,
+    });
+
+  it("keeps due order and caps a sweep at 50 runs", async () => {
+    const dueRuns = Array.from({ length: 75 }, (_, i) =>
+      dueRetry({
+        runId: `run-${i}`,
+        // Distinct agents so the per-agent cap does not engage: this test is
+        // about the 50-row sweep ceiling, not the release cap.
+        agentId: `agent-${i}`,
+      }),
+    );
+    const reader = fakeReader(dueRuns);
+    const writer = fakeWriter();
+    const result = await sweep(reader, writer)({ cutoff: null, now: SWEEP_NOW });
 
     expect(result.promoted).toBe(50);
     expect(result.runIds).toEqual(dueRuns.slice(0, 50).map(({ runId }) => runId));
+    // The ceiling is requested from the reader, which applies it per retry
+    // mechanism class; the use case must not re-slice a merged read.
+    expect(reader.listCalls).toEqual([{ now: SWEEP_NOW, cutoff: null, limit: 50 }]);
+  });
+
+  it("releases only the per-agent cap and pushes the rest to a later due time", async () => {
+    const dueRuns = Array.from({ length: 6 }, (_, i) => dueRetry({ runId: `run-${i}` }));
+    const reader = fakeReader(dueRuns);
+    const writer = fakeWriter();
+    const result = await sweep(reader, writer)({ cutoff: null, now: SWEEP_NOW });
+
+    expect(result.promoted).toBe(1);
+    expect((writer.promoteCalls as unknown[]).length).toBe(1);
+    // Every row is accounted for: five pushed forward, none dropped.
+    expect((writer.deferCalls as { scheduledRetryAt: Date }[]).length).toBe(5);
+    for (const call of writer.deferCalls as { scheduledRetryAt: Date }[]) {
+      expect(call.scheduledRetryAt.getTime()).toBeGreaterThan(SWEEP_NOW.getTime());
+    }
+  });
+
+  it("counts an already in-flight quota recovery against the cap", async () => {
+    const reader = fakeReader([dueRetry({ runId: "run-1" })], new Map([["agent-1", 1]]));
+    const writer = fakeWriter();
+    const result = await sweep(reader, writer)({ cutoff: null, now: SWEEP_NOW });
+
+    expect(result.promoted).toBe(0);
+    expect((writer.deferCalls as unknown[]).length).toBe(1);
+  });
+
+  it("promotes another mechanism's retry on its existing path, without a cap slot", async () => {
+    const reader = fakeReader([
+      dueRetry({ runId: "run-quota" }),
+      dueRetry({ runId: "run-process-loss", scheduledRetryReason: "process_loss" }),
+    ]);
+    const writer = fakeWriter();
+    const result = await sweep(reader, writer)({ cutoff: null, now: SWEEP_NOW });
+
+    expect(result.promoted).toBe(2);
+    expect((writer.deferCalls as unknown[]).length).toBe(0);
+  });
+
+  it("denies quota-recovery releases when the in-flight count cannot be read, and keeps other mechanisms moving", async () => {
+    const reader = fakeReader(
+      [
+        dueRetry({ runId: "run-quota-1" }),
+        dueRetry({ runId: "run-quota-2" }),
+        dueRetry({ runId: "run-process-loss", scheduledRetryReason: "process_loss" }),
+      ],
+      new Error("connection reset") as unknown as ReadonlyMap<string, number>,
+    );
+    const writer = fakeWriter();
+    const result = await sweep(reader, writer)({ cutoff: null, now: SWEEP_NOW });
+
+    expect(result.releasePlan.degraded).toBe(true);
+    expect(result.degraded).toBe(true);
+    expect(result.runIds).toEqual(["run-process-loss"]);
+    // A denied retry is left parked on its own due time, not rescheduled onto
+    // a fabricated one, so a later sweep re-decides it.
+    expect((writer.deferCalls as unknown[]).length).toBe(0);
+  });
+
+  it("releases every agent's slot in the same sweep, not just the first", async () => {
+    const reader = fakeReader([
+      dueRetry({ runId: "run-a1", agentId: "agent-1" }),
+      dueRetry({ runId: "run-a2", agentId: "agent-1" }),
+      dueRetry({ runId: "run-b1", agentId: "agent-2" }),
+      dueRetry({ runId: "run-c1", agentId: "agent-3" }),
+    ]);
+    const writer = fakeWriter();
+    const result = await sweep(reader, writer)({ cutoff: null, now: SWEEP_NOW });
+
+    // Three agents, three slots. The cap is per agent, so it must not read as
+    // a company-wide throttle.
+    expect(result.promoted).toBe(3);
+    expect((writer.deferCalls as unknown[]).length).toBe(1);
+  });
+
+  it("passes the due time it read as the compare-and-set guard and counts a superseded deferral", async () => {
+    // The row's due time is what makes the deferral safe against an operator
+    // "retry now" landing between the read and the write: the adapter matches on
+    // it, and this use case must hand it over rather than let status decide.
+    const applied = new Date("2025-12-31T23:59:00.000Z");
+    const superseded = new Date("2025-12-31T23:58:00.000Z");
+    const reader = fakeReader([
+      dueRetry({ runId: "run-1" }),
+      dueRetry({ runId: "run-2", scheduledRetryAt: applied }),
+      dueRetry({ runId: "run-3", scheduledRetryAt: superseded }),
+    ]);
+    const writer = fakeWriter({
+      deferScheduledRetry: async (input) => {
+        writer.deferCalls.push(input);
+        return input.runId === "run-3" ? { deferred: false } : { deferred: true };
+      },
+    });
+    const result = await sweep(reader, writer)({ cutoff: null, now: SWEEP_NOW });
+
+    // One cap slot for the agent: run-1 released, the other two deferred.
+    expect(result.deferredApplied).toBe(1);
+    expect(result.deferralSuperseded).toBe(1);
+    expect(result.deferralSupersededRunIds).toEqual(["run-3"]);
+    const calls = writer.deferCalls as { runId: string; previousScheduledRetryAt: Date }[];
+    expect(calls.map((call) => call.runId)).toEqual(["run-2", "run-3"]);
+    expect(calls.map((call) => call.previousScheduledRetryAt.toISOString())).toEqual([
+      applied.toISOString(),
+      superseded.toISOString(),
+    ]);
+  });
+
+  it("is reproducible for the same sweep instant and seed", async () => {
+    const dueRuns = [
+      dueRetry({ runId: "run-1", agentId: "agent-1" }),
+      dueRetry({ runId: "run-2", agentId: "agent-1" }),
+      dueRetry({ runId: "run-3", agentId: "agent-2" }),
+    ];
+    const first = fakeWriter();
+    const second = fakeWriter();
+    await sweep(fakeReader(dueRuns), first)({ cutoff: null, now: SWEEP_NOW });
+    await sweep(fakeReader(dueRuns), second)({ cutoff: null, now: SWEEP_NOW });
+
+    expect(second.deferCalls).toEqual(first.deferCalls);
+    expect(second.promoteCalls).toEqual(first.promoteCalls);
   });
 });
 
@@ -163,12 +330,10 @@ describe("createDispatchResolvedInteractionIfCurrent", () => {
       companyId: "company-1",
       expectedStatus: "running",
       reservationId: "reservation-1",
-      enforceContinuationOwnership: false,
       dispatch,
     });
 
     expect(result.dispatched).toBe(true);
     expect(writer.dispatchCalls).toHaveLength(1);
-    expect(writer.dispatchCalls[0]).toMatchObject({ enforceContinuationOwnership: false });
   });
 });
