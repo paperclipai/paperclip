@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
@@ -90,6 +90,8 @@ test("resolveProvider still infers from the requested model when Hermes config i
   });
 });
 
+let fakeHermesCommand = "";
+
 async function withHermesHomeConfig(
   configLines: string[],
   fn: () => Promise<void>,
@@ -100,6 +102,9 @@ async function withHermesHomeConfig(
 
   await mkdir(hermesDir, { recursive: true });
   await writeFile(configPath, `${configLines.join("\n")}\n`, "utf8");
+  fakeHermesCommand = join(tempHome, "fake-hermes");
+  await writeFile(fakeHermesCommand, "#!/bin/sh\nif [ \"$1\" = chat ]; then echo hello; else echo \"Hermes Agent v0.23.3\"; fi\n", "utf8");
+  await chmod(fakeHermesCommand, 0o755);
   process.env.HOME = tempHome;
   process.env.USERPROFILE = tempHome;
   delete process.env.HOMEDRIVE;
@@ -126,7 +131,7 @@ test("testEnvironment does not warn about missing API keys when Hermes config pr
       companyId: "company-test",
       adapterType: "hermes_local",
       config: {
-        hermesCommand: "python3",
+        hermesCommand: fakeHermesCommand,
         model: "openrouter/gpt-4.1-mini",
       },
     });
@@ -149,7 +154,7 @@ test("testEnvironment describes provider-omitted runtime config without inventin
       companyId: "company-test",
       adapterType: "hermes_local",
       config: {
-        hermesCommand: "python3",
+        hermesCommand: fakeHermesCommand,
         model: "oca/gpt-5.4",
       },
     });
@@ -173,7 +178,7 @@ test("testEnvironment does not warn about missing API keys when Hermes config pr
       companyId: "company-test",
       adapterType: "hermes_local",
       config: {
-        hermesCommand: "python3",
+        hermesCommand: fakeHermesCommand,
         model: "oca/gpt-5.4",
       },
     });
