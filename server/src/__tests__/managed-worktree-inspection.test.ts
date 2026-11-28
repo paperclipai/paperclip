@@ -68,6 +68,38 @@ describe("managed worktree registration inspection", () => {
     });
   });
 
+  it("fails closed when total multi-line porcelain output exceeds the 16 MiB capture cap", async () => {
+    const { root, repo, worktree } = await fixture();
+    const entry = `worktree /tmp/linked-${"x".repeat(200)}\nHEAD ${"0".repeat(40)}\nbranch refs/heads/work\n\n`;
+    await replaceListProbe(
+      root,
+      `process.stdout.write(${JSON.stringify(entry)}.repeat(60_000) + ${JSON.stringify(`worktree ${worktree}\nHEAD ${"0".repeat(40)}\nbranch refs/heads/work\n\n`)});`,
+    );
+    expect(await inspectManagedGitWorktreeBranch({ repoRoot: repo, worktreePath: worktree, expectedBranchName: "work" })).toMatchObject({
+      valid: false,
+      reasonCode: "git_inspection_failed",
+      inspectionDiagnostic: { command: "worktree_list", failure: "output_truncated" },
+    });
+  });
+
+  it("accepts multi-worktree porcelain output exceeding 256 KB when the worktree is registered", async () => {
+    const { root, repo, worktree } = await fixture();
+    const prefixEntries = Array.from(
+      { length: 1_000 },
+      (_, index) =>
+        `worktree ${path.join(root, "linked-worktrees", `wt-${String(index).padStart(4, "0")}-${"a".repeat(220)}`)}\nHEAD ${"0".repeat(40)}\nbranch refs/heads/work-${index}\n\n`,
+    ).join("");
+    expect(Buffer.byteLength(prefixEntries, "utf8")).toBeGreaterThan(256 * 1024);
+    await replaceListProbe(
+      root,
+      `process.stdout.write(${JSON.stringify(`${prefixEntries}worktree ${worktree}\nHEAD ${"0".repeat(40)}\nbranch refs/heads/work\n\n`)});`,
+    );
+    expect(await inspectManagedGitWorktreeBranch({ repoRoot: repo, worktreePath: worktree, expectedBranchName: "work" })).toMatchObject({
+      valid: true,
+      reasonCode: null,
+    });
+  });
+
   it("retains the bounded probe failure in persisted-workspace validation without changing files", async () => {
     const { root, repo, worktree } = await fixture();
     await replaceListProbe(root, 'process.stderr.write("private-provider-output");process.exitCode=126;');
