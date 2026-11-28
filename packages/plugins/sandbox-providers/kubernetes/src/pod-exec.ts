@@ -18,6 +18,7 @@
  * connection. We then close the WebSocket explicitly inside the statusCallback.
  */
 
+import { describeThrownValue } from "@paperclipai/plugin-sdk";
 import { Exec } from "@kubernetes/client-node";
 import { PassThrough } from "node:stream";
 import type { Readable, Writable } from "node:stream";
@@ -187,7 +188,7 @@ export async function execInPod(
           // Belt-and-suspenders: even under an explicit cap (or with none set),
           // never let a `+=` RangeError at V8's max string length escape this
           // listener as an uncaught exception.
-          failClosed(err instanceof Error ? err : new Error(String(err)));
+          failClosed(err instanceof Error ? err : new Error(describeThrownValue(err)));
         }
       });
 
@@ -208,7 +209,7 @@ export async function execInPod(
         try {
           stderrData += chunk.toString("utf-8");
         } catch (err) {
-          failClosed(err instanceof Error ? err : new Error(String(err)));
+          failClosed(err instanceof Error ? err : new Error(describeThrownValue(err)));
         }
       });
 
@@ -260,7 +261,7 @@ export async function execInPod(
           if (resolved) return;
           resolved = true;
           if (watchdog) clearTimeout(watchdog);
-          reject(err);
+          reject(err instanceof Error ? err : new Error(describeThrownValue(err)));
         });
     },
   );
@@ -391,7 +392,7 @@ export async function execInPodStreaming(
       try {
         stderrData += chunk.toString("utf-8");
       } catch (err) {
-        failClosed(err instanceof Error ? err : new Error(String(err)));
+        failClosed(err instanceof Error ? err : new Error(describeThrownValue(err)));
       }
     });
     stderrStream.on("end", () => { stderrEnded = true; tryFinish(); });
@@ -438,7 +439,7 @@ export async function execInPodStreaming(
         if (resolved) return;
         resolved = true;
         if (watchdog) clearTimeout(watchdog);
-        reject(err);
+        reject(err instanceof Error ? err : new Error(describeThrownValue(err)));
       });
   });
 }

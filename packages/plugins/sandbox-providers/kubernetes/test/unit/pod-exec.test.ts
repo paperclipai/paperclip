@@ -17,6 +17,7 @@ let scriptedExec: (
   statusCb: StatusCb,
   stdin: PassThrough | null,
 ) => void = () => undefined;
+let execRejection: unknown = undefined;
 
 vi.mock("@kubernetes/client-node", () => {
   class Exec {
@@ -32,6 +33,7 @@ vi.mock("@kubernetes/client-node", () => {
       _tty: boolean,
       statusCb: StatusCb,
     ) {
+      if (execRejection !== undefined) throw execRejection;
       // Defer so the caller has wired its stream listeners first.
       setImmediate(() => scriptedExec(stdout, stderr, statusCb, stdin));
       return { close() {} };
@@ -234,5 +236,38 @@ describe("execInPodStreaming", () => {
         timeoutMs: 5_000,
       }),
     ).rejects.toThrow(/disk guard/i);
+  });
+});
+
+describe("exec WebSocket open failure", () => {
+  class ErrorEvent {
+    readonly type = "error";
+    readonly message = "Unexpected server response: 403";
+    readonly target = { headers: { Authorization: "Bearer synthetic-secret-token" } };
+  }
+
+  it("rejects execInPod with an Error that names the cause", async () => {
+    execRejection = new ErrorEvent();
+    try {
+      const failure = await execInPod(KC, "ns", "pod", "agent", ["/bin/sh", "-c", ":"], undefined, 5_000).catch(err => err);
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure.message).toBe("ErrorEvent: Unexpected server response: 403");
+      expect(failure.message).not.toContain("synthetic-secret-token");
+    } finally {
+      execRejection = undefined;
+    }
+  });
+
+  it("rejects execInPodStreaming with an Error that names the cause", async () => {
+    execRejection = new ErrorEvent();
+    const sink = new Writable({ write(_chunk, _encoding, callback) { callback(); } });
+    try {
+      const failure = await execInPodStreaming(KC, "ns", "pod", "agent", ["/bin/sh", "-c", ":"], { stdout: sink, timeoutMs: 5_000 })
+        .catch(err => err);
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure.message).toBe("ErrorEvent: Unexpected server response: 403");
+    } finally {
+      execRejection = undefined;
+    }
   });
 });

@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { definePlugin } from "@paperclipai/plugin-sdk";
+import { definePlugin, describeThrownValue } from "@paperclipai/plugin-sdk";
 import type {
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentDestroyLeaseParams,
@@ -283,7 +283,7 @@ const plugin = definePlugin({
         metadata: {
           namespace,
           provider: "kubernetes",
-          error: err instanceof Error ? err.message : String(err),
+          error: describeThrownValue(err),
         },
       };
     }
@@ -836,7 +836,7 @@ const plugin = definePlugin({
               exitCode: null,
               timedOut: true,
               stdout: "",
-              stderr: `fast-upload flush failed: ${err instanceof Error ? err.message : String(err)}`,
+              stderr: `fast-upload flush failed: ${describeThrownValue(err)}`,
               metadata: {
                 provider: "kubernetes",
                 backend: "sandbox-cr",
@@ -906,7 +906,7 @@ const plugin = definePlugin({
           exitCode: null,
           timedOut: true,
           stdout: "",
-          stderr: appendNetworkEgressDenyHint(err instanceof Error ? err.message : String(err), scopedNetworkEgress),
+          stderr: appendNetworkEgressDenyHint(describeThrownValue(err), scopedNetworkEgress),
           metadata: {
             provider: "kubernetes",
             backend: "sandbox-cr",

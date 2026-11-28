@@ -14,6 +14,7 @@ import { environmentTaskErrorCodeData, environmentTaskErrorData } from "./enviro
 import { workspaceOperationErrorData } from "./workspace-operation-error.js";
 import { createInvocationTracer } from "./invocation-tracer.js";
 import { createPluginIdleDrain } from "./idle-drain.js";
+import { describeThrownValue } from "./describe-thrown-value.js";
 /**
  * Worker-side RPC host — runs inside the child process spawned by the host.
  *
@@ -484,7 +485,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       } catch (err) {
         unsettledHostCalls.get(id)?.();
         unsettledHostCalls.delete(id);
-        settle(reject, err instanceof Error ? err : new Error(String(err)));
+        settle(reject, err instanceof Error ? err : new Error(describeThrownValue(err)));
       }
     });
   }
@@ -594,7 +595,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           void callHost("events.subscribe", { eventPattern: name, filter: registration.filter ?? null }).catch((err) => {
             notifyHost("log", {
               level: "warn",
-              message: `Failed to subscribe to event "${name}" on host: ${err instanceof Error ? err.message : String(err)}`,
+              message: `Failed to subscribe to event "${name}" on host: ${describeThrownValue(err)}`,
             });
           });
           return () => {
@@ -1665,7 +1666,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       const input = params as Partial<PluginEnvironmentTaskParams> | undefined;
       const taskError = method === "environmentTask" && input?.operation?.kind === "submit" && input.operation.resumeFrom
         ? environmentTaskErrorData(err) : undefined;
-      const errorMessage = taskError ? "Plugin Runner source state unavailable" : err instanceof Error ? err.message : String(err);
+      const errorMessage = taskError ? "Plugin Runner source state unavailable" : describeThrownValue(err);
       // Propagate specific error codes from handler errors (e.g.
       // METHOD_NOT_FOUND, METHOD_NOT_IMPLEMENTED) — fall back to
       // WORKER_ERROR for untyped exceptions.
@@ -2074,7 +2075,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         notifyHost("log", {
           level: "error",
           message: `Event handler for "${registration.name}" failed: ${
-            err instanceof Error ? err.message : String(err)
+            describeThrownValue(err)
           }`,
           meta: { eventType: event.eventType, stack: err instanceof Error ? err.stack : undefined },
         });
@@ -2463,7 +2464,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       // This is a host→worker RPC call — dispatch it
       handleHostRequest(message as JsonRpcRequest).catch((err) => {
         // Unhandled error in the async handler — send error response
-        const errorMessage = err instanceof Error ? err.message : String(err);
+        const errorMessage = describeThrownValue(err);
         const errorCode = (err as any)?.code ?? PLUGIN_RPC_ERROR_CODES.WORKER_ERROR;
         try {
           sendMessage(
@@ -2494,7 +2495,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         if (cb) void runNotification(() => cb(event)).catch((err) => {
           notifyHost("log", {
             level: "error",
-            message: `Failed to handle session event notification: ${err instanceof Error ? err.message : String(err)}`,
+            message: `Failed to handle session event notification: ${describeThrownValue(err)}`,
           });
         });
       } else if (notif.method === "onEvent" && notif.params) {
@@ -2502,7 +2503,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         Promise.resolve(runNotification(() => handleOnEvent(notif.params as OnEventParams))).catch((err) => {
           notifyHost("log", {
             level: "error",
-            message: `Failed to handle event notification: ${err instanceof Error ? err.message : String(err)}`,
+            message: `Failed to handle event notification: ${describeThrownValue(err)}`,
           });
         });
       }
@@ -2574,7 +2575,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     });
 
     process.on("unhandledRejection", (reason) => {
-      const message = reason instanceof Error ? reason.message : String(reason);
+      const message = describeThrownValue(reason);
       const stack = reason instanceof Error ? reason.stack : undefined;
       notifyHost("log", {
         level: "error",
