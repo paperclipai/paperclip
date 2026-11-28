@@ -18,6 +18,7 @@ const exec = promisify(execFile);
 const hasZstd = spawnSync("zstd", ["--version"]).status === 0;
 const roots: string[] = [];
 const digest = `sha256:${"a".repeat(64)}`;
+const fileDigest = async (file: string) => createHash("sha256").update(await fs.readFile(file)).digest("hex");
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => fs.rm(root, { recursive: true, force: true }))); });
 
 async function fixture() {
@@ -161,13 +162,13 @@ it.skipIf(!tar || !hasZstd)("stores repeated bytes once, from an image file unde
   expect(staged[0]!.ino).not.toBe((await fs.stat(path.join(image, toolPath))).ino);
   expect(staged[0]!.nlink).toBe(3);
   for (const relative of [toolPath, twinPath, otherTwinPath]) {
-    expect(await fs.readFile(path.join(targetPath, relative))).toEqual(await fs.readFile(path.join(pack, relative)));
+    expect(await fileDigest(path.join(targetPath, relative))).toBe(await fileDigest(path.join(pack, relative)));
     expect((await fs.stat(path.join(targetPath, relative))).mode & 0o777).toBe(0o755);
   }
   // Only the small-file overlay crosses the network, and the image is unchanged.
   expect((await remote.syncIn.mock.results[0]!.value).operations[0]!.bytesTransferred).toBe(archive.overlay.bytes);
   expect((await fs.readdir(image, { recursive: true })).sort()).toEqual(before);
-}, 60_000);
+});
 
 it("plans one private copy per digest and mode, with same-bytes twins as copy sources", () => {
   const a = "a".repeat(64), b = "b".repeat(64);
@@ -196,7 +197,7 @@ it.skipIf(!tar || !hasZstd)("keeps one private copy per mode when the same bytes
   expect(twin!.ino).not.toBe(tool!.ino);
   expect(twin!.mode & 0o777).toBe(0o644);
   expect(tool!.mode & 0o777).toBe(0o755);
-  expect(await fs.readFile(path.join(targetPath, twinPath))).toEqual(await fs.readFile(path.join(pack, twinPath)));
+  expect(await fileDigest(path.join(targetPath, twinPath))).toBe(await fileDigest(path.join(pack, twinPath)));
   expect((await remote.syncIn.mock.results[0]!.value).operations[0]!.bytesTransferred).toBe(archive.overlay.bytes);
 });
 
@@ -207,11 +208,11 @@ it.skipIf(!tar || !hasZstd)("transfers repeated bytes when no image has them, an
   const targetPath = path.join(root, "fresh");
   expect(await stageProviderPackArchive({ archive, runner: remote, targetPath, reuseRoots: [image] })).toBe(true);
   for (const relative of [toolPath, twinPath, otherTwinPath]) {
-    expect(await fs.readFile(path.join(targetPath, relative))).toEqual(await fs.readFile(path.join(pack, relative)));
+    expect(await fileDigest(path.join(targetPath, relative))).toBe(await fileDigest(path.join(pack, relative)));
   }
   const layers = archive.files.reduce((sum, file) => sum + file.archive.bytes, 0);
   expect((await remote.syncIn.mock.results[0]!.value).operations[0]!.bytesTransferred).toBe(archive.overlay.bytes + layers);
-}, 60_000);
+});
 
 it("writes the same archive for the same file every time, with nothing after the frame", async () => {
   // Ending the compressor while its last chunk was still queued made Node
@@ -271,7 +272,7 @@ it.skipIf(!tar || !hasZstd)("reuses only byte-matched image files, keeps modes, 
   expect(remote.syncIn.mock.calls[0]![0][0]!.files).toHaveLength(1);
   expect((await remote.syncIn.mock.results[0]!.value).operations[0]!.bytesTransferred).toBe(archive.overlay.bytes);
   const original = path.join(pack, "bin/large"), copied = path.join(targetPath, "bin/large");
-  expect(await fs.readFile(copied)).toEqual(await fs.readFile(original));
+  expect(await fileDigest(copied)).toBe(await fileDigest(original));
   expect((await fs.stat(copied)).mode & 0o777).toBe(0o755);
   expect((await fs.stat(copied)).ino).not.toBe((await fs.stat(original)).ino);
   await fs.writeFile(copied, "changed");
@@ -287,8 +288,8 @@ it.skipIf(!tar || !hasZstd)("stages a complete layered pack into a fresh nested 
   const targetPath = path.join(workspace, ".paperclip-runtime", "paperclip-runner", "provider-pack");
   await expect(fs.lstat(path.dirname(targetPath))).rejects.toMatchObject({ code: "ENOENT" });
   expect(await stageProviderPackArchive({ archive, runner: remote, targetPath, reuseRoots: [pack] })).toBe(true);
-  expect(await fs.readFile(path.join(targetPath, "bin/large"))).toEqual(await fs.readFile(path.join(pack, "bin/large")));
-  expect(await fs.readFile(path.join(targetPath, "provider-pack.json"))).toEqual(await fs.readFile(path.join(pack, "provider-pack.json")));
+  expect(await fileDigest(path.join(targetPath, "bin/large"))).toBe(await fileDigest(path.join(pack, "bin/large")));
+  expect(await fileDigest(path.join(targetPath, "provider-pack.json"))).toBe(await fileDigest(path.join(pack, "provider-pack.json")));
   expect(await fs.readlink(path.join(targetPath, "tool"))).toBe("bin/tool");
   for (const directory of [targetPath, path.dirname(targetPath), path.dirname(path.dirname(targetPath))]) {
     expect((await fs.stat(directory)).mode & 0o777).toBe(0o700);
@@ -309,7 +310,7 @@ it.skipIf(!tar || !hasZstd).each(["missing", "wrong-digest", "symlink", "ancesto
   const targetPath = path.join(root, "fresh");
   expect(await stageProviderPackArchive({ archive, runner: remote, targetPath, reuseRoots: [old] })).toBe(true);
   expect((await remote.syncIn.mock.results[0]!.value).operations[0]!.bytesTransferred).toBe(archive.overlay.bytes + archive.files[0]!.archive.bytes);
-  expect(await fs.readFile(path.join(targetPath, "bin/large"))).toEqual(await fs.readFile(path.join(pack, "bin/large")));
+  expect(await fileDigest(path.join(targetPath, "bin/large"))).toBe(await fileDigest(path.join(pack, "bin/large")));
 });
 
 it.each(["traversal", "duplicate", "ancestor", "mode", "digest", "layer-symlink"])("rejects invalid layer metadata or bytes: %s", async reason => {
