@@ -33,6 +33,7 @@ import {
   buildInvocationEnvForLogs,
   joinPromptSections,
   ensurePathInEnv,
+  buildLocalAgentProcessEnv,
   refreshPaperclipWorkspaceEnvForExecution,
   isPaperclipSkillSourceMissing,
   readPaperclipRuntimeSkillEntries,
@@ -140,7 +141,9 @@ function buildKimiHeadlessEnv(env: Record<string, string>): Record<string, strin
 
 function buildKimiRuntimeEnv(env: Record<string, string>): Record<string, string> {
   return Object.fromEntries(
-    Object.entries(ensurePathInEnv({ ...process.env, ...buildKimiHeadlessEnv(env) })).filter(
+    Object.entries(
+      ensurePathInEnv(buildLocalAgentProcessEnv(process.env, buildKimiHeadlessEnv(env))),
+    ).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
