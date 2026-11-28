@@ -75,6 +75,7 @@ export const SANDBOX_PROVIDERS = [
   "packages/plugins/sandbox-providers/daytona",
   "packages/plugins/sandbox-providers/e2b",
   "packages/plugins/sandbox-providers/exe-dev",
+  "packages/plugins/sandbox-providers/kosa8",
   "packages/plugins/sandbox-providers/kubernetes",
   "packages/plugins/sandbox-providers/modal",
   "packages/plugins/sandbox-providers/novita",

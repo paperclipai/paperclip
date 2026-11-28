@@ -266,6 +266,30 @@ describe("buildPluginWorkerEnv", () => {
     });
   });
 
+  it.each([
+    { packagePath: null, packageName: "@paperclipai/plugin-kosa8", driverKey: "kosa8", allowed: true },
+    { packagePath: "/app/packages/plugins/sandbox-providers/kosa8", packageName: "@paperclipai/plugin-kosa8", driverKey: "kosa8", allowed: true },
+    { packagePath: "/home/operator/plugins/fake-kosa8", packageName: "@paperclipai/plugin-kosa8", driverKey: "kosa8", allowed: false },
+    { packagePath: null, packageName: "@acme/plugin-kosa8", driverKey: "kosa8", allowed: false },
+    { packagePath: null, packageName: "@paperclipai/plugin-kosa8", driverKey: "daytona", allowed: false },
+  ])("confines the kosa8 fallback credential to its trusted worker: $packageName / $packagePath / $driverKey", ({ allowed, driverKey, ...installation }) => {
+    const env = buildPluginWorkerEnv({
+      ...installation,
+      manifest: {
+        capabilities: ["environment.drivers.register"],
+        environmentDrivers: [{ driverKey }],
+      },
+      trustedLocalPluginRoots: ["/app/packages/plugins"],
+      instanceInfo,
+      processEnv: { KOSA8_API_KEY: "kosa8-token", KOSA8_API_URL: "https://api.kosa8.example", DAYTONA_API_KEY: "daytona-token" },
+    });
+    expect(env).toEqual({
+      PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
+      ...(allowed ? { KOSA8_API_KEY: "kosa8-token", KOSA8_API_URL: "https://api.kosa8.example" } : {}),
+    });
+  });
+
   it("passes a first-party sandbox provider's documented credential env var to its own worker", () => {
     const env = buildPluginWorkerEnv({
       manifest: {

@@ -96,6 +96,11 @@ export const BUNDLED_PLUGIN_CATALOG: readonly BundledPluginCatalogEntry[] = [
     relativePath: "sandbox-providers/exe-dev",
   },
   {
+    key: "kosa8",
+    pluginKey: "paperclip.kosa8-sandbox-provider",
+    relativePath: "sandbox-providers/kosa8",
+  },
+  {
     key: "kubernetes",
     pluginKey: "paperclip.kubernetes-sandbox-provider",
     relativePath: "sandbox-providers/kubernetes",

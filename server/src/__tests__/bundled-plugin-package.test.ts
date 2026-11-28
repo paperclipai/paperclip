@@ -13,11 +13,12 @@ import cloudflare from "../../../packages/plugins/sandbox-providers/cloudflare/s
 import daytona from "../../../packages/plugins/sandbox-providers/daytona/src/manifest.js";
 import e2b from "../../../packages/plugins/sandbox-providers/e2b/src/manifest.js";
 import exe_dev from "../../../packages/plugins/sandbox-providers/exe-dev/src/manifest.js";
+import kosa8 from "../../../packages/plugins/sandbox-providers/kosa8/src/manifest.js";
 import kubernetes from "../../../packages/plugins/sandbox-providers/kubernetes/src/manifest.js";
 import modal from "../../../packages/plugins/sandbox-providers/modal/src/manifest.js";
 import novita from "../../../packages/plugins/sandbox-providers/novita/src/manifest.js";
 
-const manifests = { boxd, createos, cloudflare, daytona, e2b, "exe-dev": exe_dev, kubernetes, modal, novita };
+const manifests = { boxd, createos, cloudflare, daytona, e2b, "exe-dev": exe_dev, kosa8, kubernetes, modal, novita };
 const roots: string[] = [];
 function fixture() { const result = bundledImageFixture(); roots.push(result.root); return result; }
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
