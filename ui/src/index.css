@@ -2591,6 +2591,12 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   --tw-prose-invert-td-borders: color-mix(in oklab, currentColor 22%, transparent);
 }
 
+/* Secondary card text keeps its container's size and rhythm. */
+.paperclip-markdown.paperclip-markdown-inherit {
+  font-size: inherit;
+  line-height: inherit;
+}
+
 .paperclip-markdown > :first-child {
   margin-top: 0;
 }

@@ -41,6 +41,7 @@ import { BarProposalCard } from "@/components/responsibilities/BarProposalCard";
 import { AutomationProposalCard } from "@/components/responsibilities/AutomationProposalCard";
 import { DashboardChangesCard } from "@/components/responsibilities/DashboardChangesCard";
 import { MarkdownBody } from "@/components/MarkdownBody";
+import { SecondaryMarkdownText } from "@/components/PromptText";
 import type { MentionOption } from "@/components/MarkdownEditor";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -447,9 +448,9 @@ function ReceiptDisclosure({
     request = (
       <div className="grid gap-3">
         {questionSet.description ? (
-          <p className="text-sm text-muted-foreground">
-            {questionSet.description}
-          </p>
+          <div className="text-sm text-muted-foreground">
+            <SecondaryMarkdownText externalReferences={externalReferences}>{questionSet.description}</SecondaryMarkdownText>
+          </div>
         ) : null}
         {questionSet.questions.map((question) => {
           const answer = response?.answers[question.id];
@@ -468,11 +469,13 @@ function ReceiptDisclosure({
                   {question.header}
                 </p>
               ) : null}
-              <p className="text-sm text-foreground">{question.prompt}</p>
+              <MarkdownBody className="text-sm text-foreground" externalReferences={externalReferences} mediaMode="reference">
+                {question.prompt}
+              </MarkdownBody>
               {question.helpText ? (
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  {question.helpText}
-                </p>
+                <div className="mt-0.5 text-xs text-muted-foreground">
+                  <SecondaryMarkdownText externalReferences={externalReferences}>{question.helpText}</SecondaryMarkdownText>
+                </div>
               ) : null}
               <p className="mt-1 text-sm font-medium text-foreground">
                 Answer: {values.length > 0 ? values.join(", ") : "No answer"}
@@ -518,7 +521,9 @@ function ReceiptDisclosure({
     );
     request = (
       <div>
-        <p className="text-sm text-foreground">{interaction.payload.prompt}</p>
+        <MarkdownBody className="text-sm text-foreground" externalReferences={externalReferences} mediaMode="reference">
+          {interaction.payload.prompt}
+        </MarkdownBody>
         {decidedItems.length > 0 ? (
           <ul className="mt-2 grid gap-1 text-sm">
             {decidedItems.map((item) => {
