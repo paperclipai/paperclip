@@ -23,7 +23,7 @@ const mockPluginLoader = vi.hoisted(() => ({
   getOrExtractUiParserSource: vi.fn(),
   reloadExternalAdapter: vi.fn(),
 }));
-const mockCandidateAdmission = vi.hoisted(() => vi.fn());
+const mockCandidateForRunnerTarget = vi.hoisted(() => vi.fn());
 
 const overridingConfigSchemaAdapter: ServerAdapterModule = {
   type: "claude_local",
@@ -55,9 +55,8 @@ let adapterRoutes: typeof import("../routes/adapters.js").adapterRoutes;
 let errorHandler: typeof import("../middleware/index.js").errorHandler;
 
 function registerModuleMocks() {
-  vi.doMock("../services/native-runtime/acpx-qualification.js", async () => ({
-    ...await vi.importActual("../services/native-runtime/acpx-qualification.js"),
-    resolveAntigravityCandidateAdmission: mockCandidateAdmission,
+  vi.doMock("../services/native-runtime/antigravity-release.js", () => ({
+    antigravityCandidateForRunnerTarget: (...args: unknown[]) => mockCandidateForRunnerTarget(...args),
   }));
   vi.doMock("node:child_process", async () => vi.importActual("node:child_process"));
   vi.doMock("../adapters/plugin-loader.js", () => mockPluginLoader);
@@ -66,6 +65,7 @@ function registerModuleMocks() {
 
 function resetAdapterMocks() {
   vi.resetAllMocks();
+  mockCandidateForRunnerTarget.mockReturnValue(undefined);
   mockAdapterPluginStore.listAdapterPlugins.mockReturnValue([]);
   mockAdapterPluginStore.addAdapterPlugin.mockResolvedValue(undefined);
   mockAdapterPluginStore.removeAdapterPlugin.mockReturnValue(false);
@@ -153,8 +153,16 @@ describe("adapter routes", () => {
       expect(typeof adapter.capabilities.supportsAcp).toBe("boolean");
     }
   });
-  it("projects only the enabled company-local candidate and exact model", async () => {
-    mockCandidateAdmission.mockImplementation(({ companyId }) => companyId === "company-1"
+  it("omits candidateHarnesses when no candidate grant is active", async () => {
+    const local = createApp({}, { resolveRunnerTarget: async () => ({ driver: "local" }) });
+    const scoped = await request(local).get("/api/adapters?companyId=company-1");
+    expect(scoped.status).toBe(200);
+    expect(scoped.body.every((adapter: any) => adapter.candidateHarnesses === undefined)).toBe(true);
+    expect(mockCandidateForRunnerTarget).toHaveBeenCalledWith("company-1", { driver: "local" });
+  });
+
+  it("projects only the enabled company-local candidate and exact model when a candidate grant is returned", async () => {
+    mockCandidateForRunnerTarget.mockImplementation((companyId, target) => companyId === "company-1" && target.driver === "local"
       ? { agent: "antigravity", model: "exact-google-model", profileDigest: "private-profile", nativeClosureDigest: "private-closure" } : undefined);
     const local = createApp({}, { resolveRunnerTarget: async () => ({ driver: "local" }) });
     const scoped = await request(local).get("/api/adapters?companyId=company-1");
@@ -168,6 +176,7 @@ describe("adapter routes", () => {
       expect(response.status).toBe(200);
       expect(response.body.every((adapter: any) => adapter.candidateHarnesses === undefined)).toBe(true);
     }
+    // A cloud environment whose platform is unknown is never offered a candidate.
     const remote = await request(createApp({}, { resolveRunnerTarget: async () => ({ driver: "ssh" }) }))
       .get("/api/adapters?companyId=company-1&environmentId=remote");
     expect(remote.body.every((adapter: any) => adapter.candidateHarnesses === undefined)).toBe(true);
@@ -176,8 +185,20 @@ describe("adapter routes", () => {
     expect(disabled.body.find((adapter: any) => adapter.type === "paperclip_runner").candidateHarnesses).toBeUndefined();
   });
 
+  it("exposes paperclip_runner on a plugin Runner-task environment without any pending candidate grant", async () => {
+    // A plugin Runner-task environment offers no pending candidate grant (the plugin
+    // launch contract carries none), while still exposing paperclip_runner so released
+    // ACPX profiles like Copilot and released Antigravity are offered without a grant.
+    const pluginResponse = await request(createApp({}, { resolveRunnerTarget: async () => ({ driver: "plugin", runnerTasks: true }) }))
+      .get("/api/adapters?companyId=company-1&environmentId=plugin-tasks");
+    expect(pluginResponse.status).toBe(200);
+    const pluginRunner = pluginResponse.body.find((adapter: any) => adapter.type === "paperclip_runner");
+    expect(pluginRunner).toMatchObject({ type: "paperclip_runner", loaded: true, disabled: false });
+    expect(pluginRunner.supportedRunners.length).toBeGreaterThan(0);
+    expect(pluginRunner.candidateHarnesses).toBeUndefined();
+  });
   it("keeps ordinary adapter discovery available after candidate startup authority expires", async () => {
-    mockCandidateAdmission.mockImplementation(() => { throw new Error("ACPX candidate startup authorization expired"); });
+    mockCandidateForRunnerTarget.mockImplementation(() => { throw new Error("ACPX candidate startup authorization expired"); });
     const app = createApp({}, { resolveRunnerTarget: async () => ({ driver: "local" }) });
     const response = await request(app).get("/api/adapters?companyId=company-1");
     expect(response.status).toBe(200);
@@ -190,10 +211,10 @@ describe("adapter routes", () => {
     const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
     const app = createApp({}, { resolveRunnerTarget: async () => ({ driver: "local" }) });
     try {
-      mockCandidateAdmission.mockImplementation(() => { throw new Error("ACPX candidate startup authorization expired"); });
+      mockCandidateForRunnerTarget.mockImplementation(() => { throw new Error("ACPX candidate startup authorization expired"); });
       expect((await request(app).get("/api/adapters?companyId=company-1")).status).toBe(200);
       expect(warn).not.toHaveBeenCalled();
-      mockCandidateAdmission.mockImplementation(() => { throw new Error("Invalid Antigravity candidate admission"); });
+      mockCandidateForRunnerTarget.mockImplementation(() => { throw new Error("Invalid Antigravity candidate admission"); });
       for (let index = 0; index < 2; index++) {
         const response = await request(app).get("/api/adapters?companyId=company-1");
         expect(response.status).toBe(200);
@@ -519,6 +540,7 @@ describe("adapter routes", () => {
         { value: "copilot", label: "GitHub Copilot" },
         { value: "pi", label: "Pi" },
         { value: "kimi", label: "Kimi Code" },
+        { value: "antigravity", label: "Google Antigravity" },
       ],
     });
     expect(JSON.stringify(res.body)).not.toContain("Codex via ACPX");

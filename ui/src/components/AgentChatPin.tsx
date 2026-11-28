@@ -1,6 +1,5 @@
 import { Pin, PinOff } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
-import { useMemo } from "react";
 import { authApi } from "@/api/auth";
 import { usePinnedNavigation } from "@/hooks/usePinnedNavigation";
 import { queryKeys } from "@/lib/queryKeys";
@@ -12,8 +11,7 @@ export function useAgentChatPins() {
   const session = useQuery({ queryKey: queryKeys.auth.session, queryFn: () => authApi.getSession() });
   const userId = session.data?.user?.id ?? session.data?.session?.userId;
   const navigation = usePinnedNavigation(userId);
-  const keys = useMemo(() => new Set(navigation.pins), [navigation.pins]);
-  return { keys, orderedKeys: navigation.pins, toggle: navigation.toggle, reorder: navigation.reorder, canPin: navigation.canPin, error: navigation.error };
+  return { ...navigation, orderedKeys: navigation.pins };
 }
 
 export function AgentChatPin({ agent, pins, className }: {

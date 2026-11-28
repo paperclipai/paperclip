@@ -1,5 +1,6 @@
 import { JsonRpcCallError, environmentResumeErrorData } from "@paperclipai/plugin-sdk";
 import { collectRunFailureDiagnostics } from "../services/run-failure-diagnostics.js";
+import { readTransientLeaseAcquisitionFailure } from "../services/environment-provider-unavailable-error.js";
 import { PluginWorkerUnavailableError } from "../services/plugin-worker-unavailable-error.js";
 import { createSandboxOrphanCleanupSpool } from "../services/sandbox-orphan-cleanup-spool.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
@@ -74,6 +75,7 @@ import { claimNativeRestartRecoveries } from "../services/native-runtime/native-
 import { NATIVE_PREPARATION_FENCING_VERSION } from "../services/native-runtime/native-active-runs.js";
 
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+import { retireFullReusableSandbox } from "../services/full-reusable-sandbox.js";
 
 const externalTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ENVIRONMENT_RUNTIME_TEST_DATABASE_URL");
 const embeddedPostgresSupport = externalTestDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -382,8 +384,12 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       persistedExecutionWorkspace: null, adapterType: "paperclip_runner",
     });
     if (qualification === "unowned-marker") {
+      // The stale proof is re-checked automatically. That probe cannot prove
+      // this snapshot, so the run still never starts on an unpinned name.
       await expect(acquire).rejects.toThrow("sandbox_snapshot_qualification_required");
-      expect(worker.call).not.toHaveBeenCalled();
+      const leaseCalls = vi.mocked(worker.call).mock.calls.filter(([, method]) => method === "environmentAcquireLease");
+      expect(leaseCalls).toHaveLength(1);
+      expect(leaseCalls[0]![2]).toMatchObject({ resolveSnapshotIdentity: true, config: expect.objectContaining({ archiveOnRelease: true, reuseLease: false }) });
       return;
     }
     if (qualification === "provider-failure") {
@@ -395,6 +401,88 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       config: expect.objectContaining({ snapshot: config.snapshot }),
     }), expect.any(Number));
     expect(acquired.lease.metadata?.snapshot).toBe(config.snapshot);
+  });
+
+  it("re-qualifies a stale snapshot proof by itself instead of blocking the run until someone selects Run test", async () => {
+    // Staging 2026-11-24: the managed row's provider was not in the live managed
+    // config, so the managed-image bypass did not apply, and its saved proof was
+    // for an older snapshot. Every run failed at setup until a person clicked Run test.
+    vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", JSON.stringify({ ...managedCloudConfig, environments: [] }));
+    const pluginId = randomUUID();
+    const { companyId, environment: baseEnvironment, runId } = await seedEnvironment();
+    const config = { provider: "daytona", snapshot: "fleet-sbx-current" };
+    const snapshotId = "b7c0f8e1-0997-482b-a572-751ee49f9e10";
+    await insertSandboxProviderPlugin(pluginId, { environmentDrivers: [{ driverKey: "daytona", kind: "sandbox_provider", displayName: "Daytona", configSchema: { type: "object" } }] });
+    await db.update(environments).set({ driver: "sandbox", config, metadata: { managedByPaperclip: true,
+      paperclipSandboxPlatformProbes: { [companyId]: { v: 2, companyId, snapshot: "fleet-sbx-previous", template: null,
+        baseConfigFingerprint: "previous-config", runtimeConfigFingerprint: "previous-config",
+        snapshotIdentity: { provider: "daytona", requestedRef: "fleet-sbx-previous", id: "a6b9e7d0-f886-471a-b461-640dd03e8d0f",
+          name: "fleet-sbx-previous", organizationId: "provider-account", createdAt: "2026-10-07T23:19:57.133Z" } } },
+    } }).where(eq(environments.id, baseEnvironment.id));
+    const environment = (await environmentService(db).getById(baseEnvironment.id))!;
+    const worker = createFreshPluginLeaseWorker(pluginId);
+    let leases = 0;
+    let releaseProbe!: () => void;
+    const probeHeld = new Promise<void>(resolve => { releaseProbe = resolve; });
+    let probeStarted!: () => void;
+    const probeRunning = new Promise<void>(resolve => { probeStarted = resolve; });
+    vi.mocked(worker.call).mockImplementation(async (_id, method, params: any) => {
+      if (method === "environmentAcquireLease") {
+        leases += 1;
+        if (params.resolveSnapshotIdentity) { probeStarted(); await probeHeld; }
+        return { providerLeaseId: `lease-${leases}`, metadata: { provider: "daytona", snapshot: params.config.snapshot, remoteCwd: "/workspace",
+          ...(params.resolveSnapshotIdentity ? { snapshotIdentity: { provider: "daytona", requestedRef: config.snapshot, id: snapshotId,
+            name: config.snapshot, organizationId: "provider-account", createdAt: "2026-11-24T21:00:00.000Z" } } : {}) } };
+      }
+      if (method === "environmentExecute") return { exitCode: 0, signal: null, timedOut: false, stdout: "Linux\nx86_64\nglibc\nglibc 2.39\n", stderr: "" };
+      if (method === "environmentReleaseLease") return { providerLeaseId: params.providerLeaseId, state: "archived" };
+      throw new Error(`Unexpected ${method}`);
+    });
+    vi.mocked(worker.getWorker).mockReturnValue({ supportedMethods: ["environmentExecute", "environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] } as never);
+    // Routes build separate runtimes. A run that arrives through another runtime
+    // while the probe is still running joins that probe instead of starting one.
+    const acquire = (heartbeatRunId: string | null) => environmentRuntimeService(db, { pluginWorkerManager: worker }).acquireRunLease({
+      companyId, environment, issueId: null, heartbeatRunId, persistedExecutionWorkspace: null, adapterType: "paperclip_runner" });
+    const first = acquire(runId);
+    await probeRunning;
+    const pendingSecond = acquire(null);
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(leases).toBe(1);
+    releaseProbe();
+    const [acquired, second] = await Promise.all([first, pendingSecond]);
+    expect(acquired.lease.metadata?.snapshot).toBe(snapshotId);
+    expect(second.lease.metadata?.snapshot).toBe(snapshotId);
+    expect(vi.mocked(worker.call).mock.calls.filter(([, method, params]: any[]) => method === "environmentAcquireLease" && params.resolveSnapshotIdentity)).toHaveLength(1);
+    const proof = ((await environmentService(db).getById(environment.id))!.metadata?.paperclipSandboxPlatformProbes as Record<string, any>)[companyId];
+    expect(proof).toMatchObject({ v: 2, snapshot: config.snapshot, snapshotIdentity: { id: snapshotId } });
+    expect(proof).not.toHaveProperty("invalidated");
+  });
+
+  it("keeps provider error text out of the run error when automatic re-qualification fails", async () => {
+    vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", JSON.stringify({ ...managedCloudConfig, environments: [] }));
+    const pluginId = randomUUID();
+    const { companyId, environment: baseEnvironment, runId } = await seedEnvironment();
+    await insertSandboxProviderPlugin(pluginId, { environmentDrivers: [{ driverKey: "daytona", kind: "sandbox_provider", displayName: "Daytona", configSchema: { type: "object" } }] });
+    await db.update(environments).set({ driver: "sandbox", config: { provider: "daytona", snapshot: "fleet-sbx-current" }, metadata: { managedByPaperclip: true,
+      paperclipSandboxPlatformProbes: { [companyId]: { v: 2, companyId, snapshot: "fleet-sbx-previous", template: null, invalidated: true } } } })
+      .where(eq(environments.id, baseEnvironment.id));
+    const environment = (await environmentService(db).getById(baseEnvironment.id))!;
+    const worker = createFreshPluginLeaseWorker(pluginId);
+    vi.mocked(worker.call).mockImplementation(async (_id, method) => {
+      if (method === "environmentAcquireLease") throw new Error("upstream rejected token sk-live-secret-value");
+      throw new Error(`Unexpected ${method}`);
+    });
+    const runtime = environmentRuntimeService(db, { pluginWorkerManager: worker });
+    // Two runs one after the other: the failed check answers both, so only one probe sandbox boots.
+    for (const heartbeatRunId of [runId, null]) {
+      const failure = await runtime.acquireRunLease({ companyId, environment,
+        issueId: null, heartbeatRunId, persistedExecutionWorkspace: null, adapterType: "paperclip_runner" }).catch((error: Error) => error);
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toContain("sandbox_snapshot_qualification_required");
+      expect((failure as Error).message).toContain("The check sandbox could not start.");
+      expect((failure as Error).message).not.toContain("sk-live-secret-value");
+    }
+    expect(vi.mocked(worker.call).mock.calls.filter(([, method]) => method === "environmentAcquireLease")).toHaveLength(1);
   });
 
   it("forwards the run's warm idle window to the provider worker without changing lease identity", async () => {
@@ -503,7 +591,9 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     if (state !== "qualified") {
       expect(result.executionTarget).toBeNull();
       expect(result.fallbackChecks).toMatchObject([{ code: "environment_lease_acquire_failed", detail: expect.stringContaining("sandbox_snapshot_qualification_required") }]);
-      expect(worker.call).not.toHaveBeenCalled();
+      const leaseCalls = vi.mocked(worker.call).mock.calls.filter(([, method]) => method === "environmentAcquireLease");
+      expect(leaseCalls).toHaveLength(1);
+      expect(leaseCalls[0]![2]).toMatchObject({ resolveSnapshotIdentity: true });
       return;
     }
     expect(result.fallbackChecks).toEqual([]);
@@ -1496,6 +1586,37 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       .toEqual([expect.objectContaining({ state: "pending", originalEnvironmentId: seeded.environment.id, runId: seeded.runId })]);
   });
 
+  it.each(["worker", "forged error", "invalid worker diagnostic"])("records the step of a sandbox the provider could not start and removed: %s", async (mode) => {
+    const seeded = await seedReusablePluginSandboxLease();
+    await environmentService(db).releaseLease(seeded.reusableLease.id, "expired");
+    const data = { schema: "paperclip/environment-acquire-error/v1",
+      acquisitionDiagnostic: { phase: mode === "invalid worker diagnostic" ? "private-command" : "create",
+        elapsedMs: 38_000, budgetMs: 90_000, providerState: "error" } };
+    const failure = mode === "forged error"
+      ? Object.assign(new Error("Daytona could not start the sandbox; it was removed."), { data })
+      : new JsonRpcCallError({ code: -32002, message: "Daytona could not start the sandbox; it was removed.", data });
+    const call = vi.fn(async (_id: string, method: string) => {
+      if (method === "environmentAcquireLease") throw failure;
+      throw new Error(`Unexpected method ${method}`);
+    });
+    const worker = { isRunning: () => true, getWorker: () => ({ supportedMethods: ["environmentDestroyLease"] }), call } as unknown as PluginWorkerManager;
+    const caught = await environmentRuntimeService(db, { pluginWorkerManager: worker }).acquireRunLease({
+      companyId: seeded.companyId, environment: seeded.environment, issueId: null, heartbeatRunId: seeded.runId,
+      persistedExecutionWorkspace: null }).catch(error => error);
+    expect(caught).toBe(failure);
+    const run = { id: seeded.runId, companyId: seeded.companyId };
+    const execution = collectRunFailureDiagnostics({ ...run, errorCode: "setup_failed", resultJson: null,
+    } as typeof heartbeatRuns.$inferSelect, { error: caught, phase: "setup" }).execution;
+    if (mode === "worker") {
+      expect(execution).toMatchObject({ environmentAcquisitionPhase: "create", environmentAcquisitionProviderState: "error" });
+      expect(readTransientLeaseAcquisitionFailure(caught, run)).toEqual({ reason: "provider_start_failed" });
+    } else {
+      expect(execution).not.toHaveProperty("environmentAcquisitionPhase");
+      expect(readTransientLeaseAcquisitionFailure(caught, run)).toBeNull();
+    }
+    expect(await db.select().from(environmentLeases).where(eq(environmentLeases.status, "pending_cleanup"))).toHaveLength(0);
+  });
+
   it.each(["deleted receipt lost", "observation response lost", "journal write failed", "foreign observation"])(
     "journals observed creation identity before deletion and recovers: %s", async (fault) => {
       const seeded = await seedReusablePluginSandboxLease();
@@ -2377,6 +2498,58 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     await expect(
       runtimeWithPlugin.isPendingCleanupWorkerReady({ environment, lease: builtinLease }),
     ).resolves.toBe(true);
+  });
+
+  it("probes the plugin that recorded a failed creation when two plugins share its provider key", async () => {
+    // An interactive setup can create its sandbox through the second of two
+    // plugins with the same provider key, while the first is disabled. The
+    // cleanup must follow the recorded plugin, not the first one with the key.
+    const disabledPluginId = randomUUID();
+    const creatorPluginId = randomUUID();
+    const { companyId, environment, runId } = await seedEnvironment({
+      driver: "sandbox",
+      name: "Shared Provider Key Cleanup",
+      config: { provider: "fake-plugin-shared", image: "fake:test", reuseLease: false },
+    });
+    const sharedDriver = [{ driverKey: "fake-plugin-shared", kind: "sandbox_provider", displayName: "Fake Shared", configSchema: { type: "object" } }];
+    await insertSandboxProviderPlugin(disabledPluginId, {
+      pluginKey: "paperclip.fake-shared-disabled", packageName: "@paperclipai/plugin-fake-shared-disabled",
+      environmentDrivers: sharedDriver, status: "disabled", installOrder: 1,
+    });
+    await insertSandboxProviderPlugin(creatorPluginId, {
+      pluginKey: "paperclip.fake-shared-creator", packageName: "@paperclipai/plugin-fake-shared-creator",
+      environmentDrivers: sharedDriver, status: "ready", installOrder: 2,
+    });
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === creatorPluginId),
+      call: vi.fn(async () => {
+        throw new Error("call must not run during a readiness probe");
+      }),
+    } as unknown as PluginWorkerManager;
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+    const insertOrphan = async (providerLeaseId: string, metadata: Record<string, unknown>) => {
+      const orphan = await environmentService(db).insertPendingCleanupLease({
+        companyId, environmentId: environment.id, executionWorkspaceId: null, issueId: null, heartbeatRunId: runId,
+        provider: "fake-plugin-shared", providerLeaseId,
+        metadata: { provider: "fake-plugin-shared", driver: "sandbox", reuseLease: false, ...metadata },
+        failureReason: "interrupted_setup_creation",
+      });
+      return (await environmentService(db).getLeaseById(orphan.id))!;
+    };
+
+    const setupLease = await insertOrphan("paperclip-create-shared", {
+      pluginId: creatorPluginId,
+      failedCreateCleanup: {
+        providerLeaseId: "paperclip-create-shared", companyId, environmentId: environment.id,
+        attemptId: "attempt-shared", accountFingerprint: "account-shared", labels: {},
+      },
+    });
+    await expect(runtimeWithPlugin.isPendingCleanupWorkerReady({ environment, lease: setupLease })).resolves.toBe(true);
+
+    // The pinned plugin's worker is down: a transient window, not ready.
+    (workerManager.isRunning as ReturnType<typeof vi.fn>).mockReturnValue(false);
+    await expect(runtimeWithPlugin.isPendingCleanupWorkerReady({ environment, lease: setupLease })).resolves.toBe(false);
+    expect((workerManager.call as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
   });
 
   it("reports the plugin cleanup provider not ready while the plugin is not ready, then ready after it recovers", async () => {
@@ -4217,6 +4390,18 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(await db.select().from(environmentLeases)).toHaveLength(1);
   });
 
+  it("caps the exact resume call at the caller's remaining budget", async () => {
+    const seeded = await seedReusablePluginSandboxLease("paperclip_runner", { timeoutMs: 300_000 });
+    const lease = (await environmentService(db).getLeaseById(seeded.reusableLease.id))!;
+    const call = vi.fn(async () => ({ providerLeaseId: lease.providerLeaseId, metadata: { remoteCwd: "/workspace" } }));
+    const workerManager = { isRunning: () => true, call,
+      getWorker: () => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] }),
+    } as unknown as PluginWorkerManager;
+    await environmentRuntimeService(db, { pluginWorkerManager: workerManager })
+      .resumeRunLease({ environment: seeded.environment, lease, timeoutMs: 4_321 });
+    expect(call).toHaveBeenCalledWith(seeded.pluginId, "environmentResumeLease", expect.anything(), 4_321);
+  });
+
   it("forwards an explicit export directory to the selected generic plugin", async () => {
     const seeded = await seedReusablePluginSandboxLease();
     const requestedCwd = `/workspace/.paperclip-workspaces/${seeded.executionWorkspaceId}`;
@@ -4788,7 +4973,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     });
   });
 
-  it.each(["provider config", "workspace migration"])("does not resume released reusable plugin sandbox leases after %s drift", async drift => {
+  it.each(["provider config", "workspace migration", "full sandbox disk"])("does not resume released reusable plugin sandbox leases after %s drift", async drift => {
     const pluginId = randomUUID();
     const { companyId, agentId, environment: baseEnvironment, runId } = await seedEnvironment();
     const providerConfig = {
@@ -4878,6 +5063,13 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
         fingerprint: expect.stringMatching(/^v1:sha256:[a-f0-9]{64}$/),
       }),
     });
+    if (drift === "full sandbox disk") {
+      // A restore found this reused sandbox full of an earlier run's files.
+      await db.insert(environmentLeases).values({ id: randomUUID(), companyId, environmentId: environment.id,
+        heartbeatRunId: runId, provider: first.lease.provider, providerLeaseId: first.lease.providerLeaseId,
+        leasePolicy: "reuse_by_environment", status: "expired" });
+      await expect(retireFullReusableSandbox(db, first.lease, runId)).resolves.toBe(true);
+    }
     await runtimeWithPlugin.releaseRunLeases(runId);
 
     if (drift === "workspace migration") {
@@ -4920,7 +5112,8 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     });
 
     expect(second.lease.providerLeaseId).toBe(`lease-${updatedEnvironment.config.image}-replacement`);
-    expect(second.lease.metadata?.reusableSandboxLease).not.toEqual(first.lease.metadata?.reusableSandboxLease);
+    // The full sandbox's scope is unchanged; it is the sandbox that left reuse.
+    if (drift !== "full sandbox disk") expect(second.lease.metadata?.reusableSandboxLease).not.toEqual(first.lease.metadata?.reusableSandboxLease);
     expect(workerManager.call).not.toHaveBeenCalledWith(
       pluginId,
       "environmentResumeLease",

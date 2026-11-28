@@ -17,6 +17,8 @@ import { createAgentIdentityRedactor, secretEnvironmentValues } from "../agent-i
 import { agentIdentityService, supportsManagedAgentIdentity } from "../agent-identity.js";
 import { readAiConnectionConfigurationFailure, readAiCredentialAccessFailure } from "../ai-connection-configuration-failure.js";
 import { AI_AUTH_ENV_KEYS, isAiConnectionBusy, prepareManagedAiRuntime, stripAiAuthBindings } from "../ai-connection-runtime.js";
+import { getDefaultCloudTrialInferenceController } from "../cloud-trial-inference.js";
+import { isAgentUsingCloudTrialInference } from "@paperclipai/shared";
 import { managedAiSessionIdentityCompatible } from "../ai-connection-session.js";
 import type { companySkillService } from "../company-skills.js";
 import { connectionIntentService } from "../connection-intents.js";
@@ -93,6 +95,7 @@ export interface HeartbeatExecutionConfigurationInput {
   // The executor must observe these before a later preparation step can throw.
   onFailureSecretsResolved: (readSecrets: () => string[]) => void;
   onManagedAiRuntimeAcquired: (runtime: ManagedAiRuntime) => void;
+  onCloudTrialRuntimeCleanup?: (cleanup: () => Promise<void>) => void;
   onIdentityRedactorPrepared: (redactor: ReturnType<typeof createAgentIdentityRedactor>) => void;
 }
 
@@ -202,9 +205,11 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
       selectedEnvironmentForConfig?.driver ?? "local",
     );
 
+  const isCloudTrial = !aiBinding && isAgentUsingCloudTrialInference(agent.runtimeConfig);
+  const stripAiEnv = Boolean(aiBinding) || isCloudTrial;
   const { resolvedConfig, configuredTaskEnvironment, secretKeys, secretManifest } =
     await time("configuration_secrets", () => resolveExecutionRunAdapterConfig({
-      managedAiCredentials: Boolean(aiBinding),
+      managedAiCredentials: stripAiEnv,
       managedGitHubCredentials: !useHostGitHub,
       companyId: agent.companyId,
       agentId: agent.id,
@@ -212,14 +217,14 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
       issueId,
       heartbeatRunId: run.id,
       environmentId: selectedEnvironmentForConfig?.id ?? null,
-      environmentEnv: aiBinding ? stripAiAuthBindings(selectedEnvironmentForConfig?.envVars) : selectedEnvironmentForConfig?.envVars ?? null,
+      environmentEnv: stripAiEnv ? stripAiAuthBindings(selectedEnvironmentForConfig?.envVars) : selectedEnvironmentForConfig?.envVars ?? null,
       environmentDriver: selectedEnvironmentForConfig?.driver ?? null,
       projectId: taskProjectContext?.id ?? null,
       routineId: routineEnvContext.routineId,
       responsibleUserId,
-      executionRunConfig: aiBinding ? { ...executionRunConfig, env: stripAiAuthBindings(executionRunConfig.env) } : executionRunConfig,
-      projectEnv: aiBinding ? stripAiAuthBindings(taskProjectContext?.env) : taskProjectContext?.env ?? null,
-      routineEnv: aiBinding ? stripAiAuthBindings(routineEnvContext.env) : routineEnvContext.env,
+      executionRunConfig: stripAiEnv ? { ...executionRunConfig, env: stripAiAuthBindings(executionRunConfig.env) } : executionRunConfig,
+      projectEnv: stripAiEnv ? stripAiAuthBindings(taskProjectContext?.env) : taskProjectContext?.env ?? null,
+      routineEnv: stripAiEnv ? stripAiAuthBindings(routineEnvContext.env) : routineEnvContext.env,
       secretsSvc,
       trustPreset,
     }));
@@ -269,6 +274,24 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
     for (const key of AI_AUTH_ENV_KEYS) secretKeys.add(key);
     context.aiConnection = { ...managedAiRuntime.attribution, accountName: managedAiRuntime.accountName, identity: managedAiRuntime.identity, sessionIdentity: managedAiRuntime.sessionIdentity };
     await db.update(heartbeatRuns).set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ aiConnection: context.aiConnection, ...(context.aiRouterTaskKey ? { aiRouterTaskKey: context.aiRouterTaskKey } : {}), ...(context.aiRouterSelection ? { aiRouterSelection: context.aiRouterSelection } : {}) })}::jsonb` }).where(eq(heartbeatRuns.id, run.id));
+  } else if (isAgentUsingCloudTrialInference(agent.runtimeConfig)) {
+    const cloudTrialRuntime = await time("configuration_ai_runtime", () =>
+      getDefaultCloudTrialInferenceController().prepareCloudTrialRuntime(db, {
+        companyId: agent.companyId,
+        agentId: agent.id,
+        runId: run.id,
+        model: typeof resolvedConfig.model === "string" ? resolvedConfig.model : undefined,
+      }),
+    );
+    input.onCloudTrialRuntimeCleanup?.(cloudTrialRuntime.cleanup);
+    const currentEnv = parseObject(resolvedConfig.env);
+    resolvedConfig.env = {
+      ...stripAiAuthBindings(currentEnv),
+      ...cloudTrialRuntime.env,
+    };
+    resolvedConfig.model = cloudTrialRuntime.defaultModel;
+    for (const key of AI_AUTH_ENV_KEYS) secretKeys.add(key);
+    identityRedactor.addSecretValues(cloudTrialRuntime.secretValues);
   }
   if (secretManifest.length > 0) {
     context.paperclipSecrets = {

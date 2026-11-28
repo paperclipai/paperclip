@@ -68,7 +68,10 @@ export function isConnectionAccessProfile(profile: ProfileLike, connectionId?: s
     return profile.profileKey === `connection-intent:${metadata.connectionId}:${metadata.agentId}`
       && (connectionId == null || metadata.connectionId === connectionId);
   }
-  if (metadata.source !== "app_gallery_finish" || typeof metadata.connectionId !== "string") return false;
+  if (
+    (metadata.source !== "app_gallery_finish" && metadata.source !== "tool_connection_install")
+    || typeof metadata.connectionId !== "string"
+  ) return false;
   if (profile.profileKey !== `app:${metadata.connectionId}`) return false;
   return connectionId === undefined || connectionId === null || metadata.connectionId === connectionId;
 }

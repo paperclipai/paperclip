@@ -8,6 +8,8 @@ import { publishedTaskDocuments, validateNativeDeliverableEvidence } from "./nat
 import { findAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
 import { findSupersededExternalReviewRequests } from "./superseded-external-review-requests.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
+import { resolveNativeBlockerOwner } from "./blocker-owner.js";
+import { evaluateBlockerAgentHandoff } from "./blocker-owner-handoff.js";
 import { issueService } from "../issues.js";
 import { isConversation } from "../agent-conversations.js";
 import { completionReviewStageEntry } from "../issue-execution-policy.js";
@@ -173,6 +175,28 @@ export async function nativeCompletionFeedback(
       throw new Error("A monitor wait requires a persisted, eligible monitor on this task. Call set_task_monitor for the current task, confirm its schedule, then report yielded with continuation.kind monitor.");
     }
   }
+  if (result.reportedWorkDisposition === "blocked" && result.blocker?.owner.kind === "agent") {
+    // The saved owner must be the agent the report named, so it can be woken.
+    const owner = await resolveNativeBlockerOwner(db, { companyId: run.companyId, owner: result.blocker.owner });
+    if (owner.kind !== "agent") {
+      throw new Error(`blocker.owner names agent ${JSON.stringify(result.blocker.owner.name)}, which ${owner.kind === "unresolved" && owner.ambiguous ? "matches more than one agent" : "matches no agent"} in this company. Set blocker.owner.name to the owner's exact agent ID or full agent name, or use kind "user" for a person.`);
+    }
+    if (owner.agentId !== run.agentId) {
+      const handoff = await evaluateBlockerAgentHandoff(db, {
+        companyId: run.companyId,
+        issue,
+        runId: run.id,
+        actorAgentId: run.agentId,
+        responsibleUserId: run.responsibleUserId,
+        driverKind: run.driverKind,
+        contextSnapshot: run.contextSnapshot,
+        runnerProfileJson: run.runnerProfileJson,
+        targetAgentId: owner.agentId,
+        unblockAction: result.blocker.unblockAction,
+      });
+      if (!handoff.allowed) throw new Error(handoff.message);
+    }
+  }
   const signals = normalizePrpResultSignals(result);
   if (
     result.reportedWorkDisposition === "done" &&
@@ -236,7 +260,8 @@ export async function nativeCompletionFeedback(
   const objective = typeof continuation?.objective === "string"
     ? continuation.objective : [issue.title, issue.description].filter(Boolean).join("\n");
   await validateNativeDeliverableEvidence(db, { companyId: run.companyId, issueId: issue.id, runId,
-    objective, semanticToolReceipts: run.resultJson?.semanticToolReceipts }, result);
+    objective, semanticToolReceipts: run.resultJson?.semanticToolReceipts,
+    enteringConfiguredReview: !isConversation(issue) && completionReviewStageEntry(issue, run.agentId).kind === "starts" }, result);
   if (result.reportedWorkDisposition === "done") {
     const quality = await readRequiredQualityReview(db, issue);
     if (!quality.satisfied) throw new Error(`Required human quality review is incomplete: ${JSON.stringify(quality.missing)}. Read each existing review and preserve approved unchanged outputs. For missing or revised outputs call request_human_input with a concise confirmation payload.qualityReview:{key} (or item_verdicts items with qualityReview:{key}), payload.target with the exact current output, top-level resolverPolicy:human_only and continuationPolicy:wake_assignee, and payload.supersedeOnUserComment:false. Do not omit payload or its bindings after a validation error. Wait for its recorded response; do not report done, create a generic completion review, or treat plan acceptance/file presence as quality approval.`);

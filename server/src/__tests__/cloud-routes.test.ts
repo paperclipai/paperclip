@@ -62,7 +62,37 @@ function jsonResponse(payload: unknown, status = 200) {
 }
 
 describe("GET /api/cloud/stacks", () => {
-  it.each([401, 403, 429, 503])("preserves the response contract for upstream HTTP %s without reading the body", async (status) => {
+  it.each([
+    ["delta seconds", "7", "7"],
+    ["an HTTP date", new Date(Date.UTC(2026, 10, 10, 14, 25, 0)).toUTCString(), "34"],
+    ["an excessive delay", "86400", "300"],
+    ["a malformed hint", "soon", undefined],
+    ["no hint", null, undefined],
+  ])("passes an upstream 429 with %s through as a rate limit without reporting it", async (_case, hint, retryAfter) => {
+    const upstream = jsonResponse({ secret: "private upstream payload" }, 429);
+    if (hint !== null) upstream.headers.set("retry-after", hint);
+    const json = vi.spyOn(upstream, "json");
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(upstream);
+    const capture = vi.spyOn(sentry, "captureException").mockImplementation(() => {});
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    const app = createApp({ fetchImpl, now: () => Date.UTC(2026, 10, 10, 14, 24, 26, 209) });
+    const response = await request(app).get("/api/cloud/stacks");
+    expect(response.status).toBe(429);
+    expect(response.body).toEqual({ error: "Paperclip Cloud portfolio is rate limited", code: "cloud_portfolio_rate_limited", details: { code: "cloud_portfolio_rate_limited" } });
+    expect(response.headers["retry-after"]).toBe(retryAfter);
+    expect(json).not.toHaveBeenCalled();
+    expect(capture).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      { cloudPortfolio: expect.objectContaining({ phase: "http_response", upstreamStatus: 429, networkCode: "unknown" }) },
+      "Paperclip Cloud portfolio request rate limited",
+    );
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("private");
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ stacks: [] }));
+    expect((await request(app).get("/api/cloud/stacks")).body).toEqual({ stacks: [] });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([401, 403, 503])("preserves the response contract for upstream HTTP %s without reading the body", async (status) => {
     const upstream = jsonResponse({ secret: "private upstream payload" }, status);
     const json = vi.spyOn(upstream, "json");
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(upstream);

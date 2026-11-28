@@ -23,6 +23,8 @@ const ISSUE_USER_PARTICIPATION_ACTIVITY_ACTIONS = [
   "issue.child_created",
   "issue.comment_cancelled",
   "issue.document_annotation_comment_added",
+  "issue.document_annotation_comment_reaction_added",
+  "issue.document_annotation_comment_reaction_removed",
   "issue.document_annotation_remapped",
   "issue.document_annotation_thread_created",
   "issue.document_annotation_thread_resolved",
@@ -142,6 +144,7 @@ export function userParticipationActivityCondition(companyId: string, userId: st
     AND ${activityLog.actorType} = 'user'
     AND ${activityLog.actorId} = ${userId}
     AND NOT ${automaticReadRecoveryCleanupCondition()}
+    AND COALESCE(${activityLog.details}->>'source', '') <> 'needs_you_responsibility_repair'
     AND NOT (
       ${activityLog.action} = 'issue.inbox_touched'
       AND COALESCE(${activityLog.details}->>'source', '') = 'manual_routine_run'

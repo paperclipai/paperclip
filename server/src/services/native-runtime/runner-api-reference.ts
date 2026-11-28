@@ -81,13 +81,17 @@ export const runnerApiReference: Record<string, { section: string; description?:
     "section": "Issues (Tasks)",
     "description": "List issues, sorted by priority. Filters: `?status=`, `?assigneeAgentId=`, `?assigneeUserId=`, `?projectId=`, `?labelId=`, `?q=` (full-text search across title, identifier, description, comments)"
   },
+  "GET /api/companies/{}/issues/count": {
+    "section": "Issues (Tasks)",
+    "description": "Count blocked issues that need attention. `?attention=blocked` is required; other requests return 400. Accepts issue-list filters such as `?status=`, `?assigneeAgentId=`, `?projectId=`, `?labelId=` and `?q=`, and rejects `?limit=` and `?offset=`. For any other count, page through `GET /api/companies/:companyId/issues` with `?limit=` (default 500, maximum 1000) and increasing `?offset=` until a page is empty, and count every returned issue"
+  },
   "GET /api/issues/{}": {
     "section": "Issues (Tasks)",
     "description": "Issue details + ancestors"
   },
   "GET /api/issues/{}/heartbeat-context": {
     "section": "Issues (Tasks)",
-    "description": "Compact issue context including `currentExecutionWorkspace` when one is linked"
+    "description": "Compact context for heartbeat: issue state, ancestor summaries, comment cursor, and `currentExecutionWorkspace` when one is linked"
   },
   "GET /api/issues/{}/diagnostics/blockers": {
     "section": "Issues (Tasks)",
@@ -641,6 +645,117 @@ export const runnerApiReference: Record<string, { section: string; description?:
   "GET /api/routines/{}/runs": {
     "section": "Routines",
     "description": "Run history (default 50)"
+  },
+  "POST /api/issues/{}/routine-suggestions": {
+    "section": "Routines",
+    "description": "Offer once to repeat the task you just finished as a routine (assignee agent only; experimental). See **Offer a routine after recurring work** in `SKILL.md`",
+    "examples": [
+      {
+        "body": {
+          "title": "Weekly competitor pricing summary",
+          "instructions": "Check the pricing pages of Acme, Globex and Initech and summarize what changed since the last summary.",
+          "cadence": {
+            "frequency": "weekly",
+            "dayOfWeek": "monday",
+            "time": "09:00"
+          },
+          "message": "Want me to put this summary together every Monday morning?"
+        }
+      }
+    ]
+  },
+  "POST /api/issues/{}/bar-proposals": {
+    "section": "Responsibility bars",
+    "description": "Propose a bar in the bar conversation assigned to you (experimental). A new proposal replaces the waiting one. It may carry up to two supporting `metrics` and a `primaryDisplay`",
+    "examples": [
+      {
+        "body": {
+          "standard": "We always have between 12 and 24 months of runway.",
+          "metricKind": "range",
+          "metricName": "Runway",
+          "metricUnit": "months",
+          "metricLow": 12,
+          "metricHigh": 24,
+          "metricCurrent": 18,
+          "currentEvidence": "Cash on hand divided by the last three months' average burn",
+          "message": "Here is a bar that keeps runway in a healthy band."
+        }
+      }
+    ]
+  },
+  "POST /api/responsibilities/{}/metrics/{}/readings": {
+    "section": "Responsibility bars",
+    "description": "Record what one of a responsibility's metrics reads now (experimental). `metricId` is a supporting metric's id, or `primary` for the bar's own; you must run the responsibility or have a task or routine under it. Never send `recordedAt`",
+    "examples": [
+      {
+        "body": {
+          "value": 4,
+          "note": "Four intro meetings on the shared calendar this week"
+        }
+      }
+    ]
+  },
+  "POST /api/issues/{}/automation-proposals": {
+    "section": "Automation conversations and standing checks",
+    "description": "Propose one automation in the automation conversation assigned to you (experimental). A new proposal replaces the waiting one",
+    "examples": [
+      {
+        "body": {
+          "title": "Triage new support tickets",
+          "instructions": "Read the new ticket, label it by product area and urgency, and assign it.",
+          "trigger": {
+            "kind": "webhook",
+            "caller": "The help desk, each time a ticket is opened"
+          },
+          "message": "This can start by itself whenever a ticket arrives."
+        }
+      }
+    ]
+  },
+  "POST /api/routines/{}/standing-check-results": {
+    "section": "Automation conversations and standing checks",
+    "description": "Report what one of your standing checks found on this wake-up (experimental)"
+  },
+  "POST /api/issues/{}/dashboard-changes": {
+    "section": "Dashboard conversations",
+    "description": "Propose an ordered list of changes to the person's Dashboard in the dashboard conversation assigned to you (experimental). A new proposal replaces the waiting one",
+    "examples": [
+      {
+        "body": {
+          "message": "Here is a first dashboard from your answers.",
+          "changes": [
+            {
+              "op": "add_area",
+              "ref": "fundraising",
+              "name": "Fundraising"
+            },
+            {
+              "op": "add_responsibility",
+              "areaRef": "fundraising",
+              "sentence": "Every prospective LP hears from us at least every two weeks.",
+              "reason": "You run the weekly fundraising sync."
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "POST /api/responsibilities/{}/status-report": {
+    "section": "Responsibility status",
+    "description": "Write a responsibility's status, as its reporter or an agent working under it (experimental)",
+    "examples": [
+      {
+        "body": {
+          "status": "at_risk",
+          "message": "Drifted from 2.1 s to 2.4 s as the catalogue grew.",
+          "detail": "The image pipeline rebuild is the fix and it is two weeks late."
+        }
+      }
+    ]
+  },
+  "GET /api/responsibilities/{}/status-report": {
+    "section": "Responsibility status",
+    "description": "Read a responsibility's current status, its reporter and recent reports (experimental)"
   },
   "GET /api/companies/{}/approvals": {
     "section": "Approvals, Costs, Activity, Dashboard",

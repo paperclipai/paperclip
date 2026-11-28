@@ -1,4 +1,5 @@
 import { registerHeldPreparationResumer } from "./interrupted-preparation-hold-settlement.js";
+import { antigravitySwarmQuotaScope } from "./antigravity-swarm.js";
 import { registerCompletedTurnCleanupResumer } from "./native-runtime/completed-turn-cleanup-hold-settlement.js";
 import { endStorageOutageWaitOn, reportStorageOutageWaitsTo, runInOwnStorageScope } from "../storage/storage-unavailable.js";
 import { createStorageWaitNotice } from "./heartbeat/storage-wait-notice.js";
@@ -38,6 +39,7 @@ import { writeExecutionControl } from "./execution-control-notifications.js";
 import { readFreshWorkspaceReadiness, verifyRetryWorkspace, type ContinuationReadiness } from "./fresh-workspace-continuation.js";
 import { settleFailedNativeRecoveryPreparation } from "./native-runtime/native-recovery-preparation-failure.js";
 import { promptInjectionPreventionService } from "./prompt-injection-prevention.js";
+import { responsibilitySummaryModelGenerator } from "./responsibility-summary-generator.js";
 import { createHeartbeatAgentStatus } from "./heartbeat/agent-status.js";
 import { heartbeatExternalProvider, nativeRuntimeHasInstructionFilesystem } from "./heartbeat/external-provider.js";
 import { pendingCaseHandoffForRun, recordCaseHandoffExecutionReleased, recordLegacyCaseHandoffCleanupIntent, recordLegacyCaseHandoffCleanupVerified } from "./heartbeat/case-handoff-lifecycle.js";
@@ -58,6 +60,7 @@ import { createHeartbeatRunOutput } from "./heartbeat/run-output.js";
 import { readRecoverableRunLog } from "./native-runtime/native-run-log-recovery.js";
 import { observabilitySecretValues } from "@paperclipai/adapter-utils/agent-observability";
 import { prepareHeartbeatSession, resolveHeartbeatAdapterSession } from "./heartbeat/session-preparation.js";
+import { runContentDeleted } from "./tool-access/connections/run-session-reset.js";
 import { prepareHeartbeatTaskContext } from "./heartbeat/task-context.js";
 import { selectHeartbeatEnvironment, resolveSshAuthenticationBeforeRouting } from "./heartbeat/environment-selection.js";
 import { reconcileMuseNativeTerminalRun } from "./native-runtime/muse-terminal-reconciliation.js";
@@ -313,6 +316,7 @@ import {
   watchLegacyControllerLease,
 } from "./legacy-controller-lease.js";
 import { retryChatControlAdmission } from "./chat-control-admission-retry.js";
+import { awaitFailedChatRetrySourceStop } from "./chat-channels/failed-chat-retry-source-stop-wait.js";
 
 
 import {
@@ -1031,6 +1035,7 @@ export function heartbeatService(
     const outcomes = await Promise.allSettled([
       decisionModelService(db, { budgetHooks }).recoverInterrupted(),
       promptInjectionPreventionService(db, { budgetHooks }).recoverInterrupted(),
+      responsibilitySummaryModelGenerator(db).recoverInterrupted(),
     ]);
     const failed = outcomes.find(outcome => outcome.status === "rejected");
     if (failed?.status === "rejected") throw failed.reason;
@@ -1970,6 +1975,23 @@ export function heartbeatService(
     scheduleBoundedRetryForRun,
     releaseIssueExecutionAndPromote,
     finalizeAgentStatus,
+    // A task that names its own environment may run there as a low-trust
+    // review; only workspace preparation decides that, so dispatch checks then.
+    sshAuthentication: async (agent, run) => {
+      const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+      const [task] = issueId ? await db.select({ settings: issues.executionWorkspaceSettings }).from(issues)
+        .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId))) : [];
+      if (parseIssueExecutionWorkspaceSettings(task?.settings, { includeEnvironmentId: true })?.environmentId) return "undecided";
+      return resolveSshAuthenticationBeforeRouting({
+        agentDefaultEnvironmentId: agent.defaultEnvironmentId, lowTrustIssueEnvironmentId: null,
+        environmentsSvc, instanceSettings,
+      });
+    },
+    // A recorded, unfulfilled /swarm draws on the Antigravity CLI's own quota.
+    providerQuotaScope: async (agent, run) => {
+      const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+      return issueId ? antigravitySwarmQuotaScope(db, { companyId: run.companyId, issueId, runId: run.id, agent, context: run.contextSnapshot }) : null;
+    },
   });
 
   async function executeRunAttempt(
@@ -2199,6 +2221,7 @@ export function heartbeatService(
         }
       | undefined;
     let managedAiRuntime: Awaited<ReturnType<typeof prepareManagedAiRuntime>> | undefined;
+    let cloudTrialRuntimeCleanup: (() => Promise<void>) | undefined;
     let providerTraceCapture: Awaited<
       ReturnType<typeof traceStore.prepare>
     > | null = null;
@@ -2238,13 +2261,6 @@ export function heartbeatService(
         ? await db.select({ conversationAgentId: issues.conversationAgentId, conversationUserId: issues.conversationUserId })
           .from(issues).where(and(eq(issues.companyId, run.companyId), eq(issues.id, dispatchIssueId))).then(rows => rows[0] ?? null)
         : null;
-      if (isConversation(conversationIdentity) && !(await instanceSettings.getExperimental()).enableAgentChat) {
-        await setRunStatus(run.id, "cancelled", { finishedAt: new Date(), error: "Agent Chat is disabled", errorCode: "agent_chat_disabled" });
-        await setWakeupStatus(run.wakeupRequestId, "cancelled", { finishedAt: new Date() });
-        await releaseIssueExecutionAndPromote((await getRun(run.id))!, { suppressImmediateRecovery: true });
-        await finalizeAgentStatus(agent.id, "cancelled");
-        return;
-      }
       if (await deferRunForProviderLimit(run, agent, {
         resumingAdmittedRun: !!runOptions.nativeLeaseOwner,
         conversation: isConversation(conversationIdentity),
@@ -2272,9 +2288,19 @@ export function heartbeatService(
         return;
       }
       const runtime = await timePreparation("runtime_state", () => ensureRuntimeState(agent));
+      if (runtime.sessionId && await runContentDeleted(db, agent.companyId, runtime.lastRunId)) runtime.sessionId = null;
       const context = parseObject(run.contextSnapshot);
+      // Workspace recovery can restart the failed run's sandbox to save its
+      // files while this replay prepares. Wait for that stop to settle; the
+      // retry authority still decides each attempt.
       const authorizeFailedChatRetryExecution = (stage?: "dispatching") =>
-        retryChatControlAdmission(async () => {
+        awaitFailedChatRetrySourceStop(db, {
+          companyId: run.companyId,
+          sourceRunId: Object.hasOwn(context, "chatFailedRunRetry") ? readNonEmptyString(context.retryOfRunId) : null,
+          signal: executionControl.controller.signal,
+          onWait: () => appendRunEvent(run, { eventType: "lifecycle", stream: "system", level: "info",
+            message: "Waiting for the failed run's sandbox to stop before repeating the chat request" }),
+        }, () => retryChatControlAdmission(async () => {
           executionControl.controller.signal.throwIfAborted();
           await controllerLease.assertOwned(stage);
           return db.transaction((tx) =>
@@ -2287,7 +2313,7 @@ export function heartbeatService(
               runId: run.id,
               contextSnapshot: context,
             }));
-        });
+        }));
       const isFailedChatRunRetry = await timePreparation("chat_retry_admission", () => authorizeFailedChatRetryExecution());
       // Never adopt a chat-execution attestation supplied in a wake payload.
       // Reviewed chat turns rebuild it from the current durable owner below.
@@ -2369,7 +2395,13 @@ export function heartbeatService(
             .listDependencyReadiness(agent.companyId, [issueId])
             .then((rows) => rows.get(issueId) ?? null))
         : null;
-      const dependencyResponse = issueId && issueContext?.status === "blocked"
+      // A verified human answer on a task with open blockers is a bounded turn
+      // without checkout. A blocked task keeps that turn even if its last
+      // blocker finished during preparation. An active task (for example one
+      // waiting in review) checks out normally once its blockers are resolved;
+      // while they are open, checkout would refuse the answer with a 422.
+      const dependencyResponse = issueId && (issueContext?.status === "blocked"
+          || issueDependencyReadiness?.isDependencyReady === false)
         && context.dependencyBlockedInteraction === true
         && await isVerifiedDependencyInteractionResponse(db, { companyId: agent.companyId,
           issueId, agentId: agent.id, context });
@@ -2743,12 +2775,19 @@ export function heartbeatService(
         if ("homeMode" in homeConfig) config = { ...config, homeMode: homeConfig.homeMode };
       }
       const persistedRouterPoolId = routerHasPersistedInput ? readNonEmptyString(parseObject(context.aiRouterSelection).poolId) : null;
+      const taskEnvironmentId = parseIssueExecutionWorkspaceSettings(issueContext?.executionWorkspaceSettings, { includeEnvironmentId: true })?.environmentId ?? null;
       const sshAuthentication = routerHasPersistedInput ? null : await resolveSshAuthenticationBeforeRouting({
         agentDefaultEnvironmentId: agent.defaultEnvironmentId,
-        lowTrustIssueEnvironmentId: trustPreset.kind === "low_trust_review"
-          ? parseIssueExecutionWorkspaceSettings(issueContext?.executionWorkspaceSettings, { includeEnvironmentId: true })?.environmentId ?? null : null,
+        lowTrustIssueEnvironmentId: trustPreset.kind === "low_trust_review" ? taskEnvironmentId : null,
         environmentsSvc, instanceSettings,
       });
+      // A task that names its own environment left the usage-limit check
+      // undecided before workspace preparation. Its account is known now.
+      if (taskEnvironmentId && !routerHasPersistedInput && await deferRunForProviderLimit(run, agent, {
+        resumingAdmittedRun: !!runOptions.nativeLeaseOwner,
+        conversation: isConversation(conversationIdentity),
+        sshAuthentication,
+      })) return;
       if (agent.adapterType === "paperclip_runner" && sshAuthentication) {
         config = { ...config, homeMode: sshAuthentication === "host" ? "preconfigured" : "isolated" };
       }
@@ -2918,6 +2957,7 @@ export function heartbeatService(
         services: { secretsSvc, companySkills, appendRunEvent, finalizeAiConnectionBusyDeferral },
         onFailureSecretsResolved: (readSecrets) => { readFailureReportSecrets = () => [...readSecrets(), ...identityRedactor.values]; },
         onManagedAiRuntimeAcquired: (runtime) => { managedAiRuntime = runtime; },
+        onCloudTrialRuntimeCleanup: (cleanup) => { cloudTrialRuntimeCleanup = cleanup; },
         onIdentityRedactorPrepared: (redactor) => { identityRedactor = redactor; },
       }));
       if (!executionConfiguration.prepared) return;
@@ -3135,7 +3175,7 @@ export function heartbeatService(
         }
         const enforceContinuationOwnership = Boolean(issueId && (isFailedChatRunRetry || isResolvedInteractionContinuationWakeContext(context) ||
           typeof context.workspaceReconstructionActionId === "string" ||
-          ["native_safe_replacement", "native_provider_overloaded", "native_environment_blocker"].includes(run.scheduledRetryReason ?? "")));
+          ["native_safe_replacement", "native_provider_overloaded", "native_environment_blocker", "native_agent_blocker_continuation"].includes(run.scheduledRetryReason ?? "")));
         if (issueId && enforceContinuationOwnership) {
           await options.beforeResolvedInteractionContinuationDispatchCheck?.({ runId: run.id, issueId });
           await options.afterResolvedInteractionContinuationDispatchCheck?.({ runId: run.id, issueId });
@@ -3587,9 +3627,8 @@ export function heartbeatService(
           enabled:
             resolvedInstanceSettings.experimental.enableNativeRunner === true,
           museEnabled: resolvedInstanceSettings.experimental.enableMuse === true,
-          grokEnabled: resolvedInstanceSettings.experimental.enableGrokBot === true && resolvedInstanceSettings.experimental.enablePublicMcp === true,
-          dotEnabled: resolvedInstanceSettings.experimental.enableOpenAiDot === true
-            && resolvedInstanceSettings.experimental.enablePublicMcp === true,
+          grokEnabled: resolvedInstanceSettings.experimental.enableGrokBot === true,
+          dotEnabled: resolvedInstanceSettings.experimental.enableOpenAiDot === true,
           runtimeConfig: agent.runtimeConfig,
           adapterConfig: agent.adapterConfig,
           agent: {
@@ -4118,6 +4157,7 @@ export function heartbeatService(
       let failedProcessCancellationSeen = failedProcessRunCancellations.has(run.id);
       await instructionWorkingCopy?.nativeInstructionReservation?.release().catch(error => logger.warn({ runId: run.id, err: error }, "Managed warm session preparation cleanup failed"));
       if (managedAiRuntime) await managedAiRuntime.cleanup().catch(() => logger.warn({ runId: run.id }, "AI connection refresh or cleanup failed"));
+      if (cloudTrialRuntimeCleanup) await cloudTrialRuntimeCleanup().catch(() => logger.warn({ runId: run.id }, "Cloud trial inference proxy cleanup failed"));
       let latestRun = await getRun(run.id).catch(() => null);
       if (preparationHandedOff() && (!latestRun || latestRun.status === "running")) nativeSessionResumeScheduled = true;
       try {
@@ -4584,6 +4624,7 @@ export function heartbeatService(
       }),
 
     wakeup: trackWakeup,
+    resumeDeferredExecutionReceipts: heartbeatQueue.resumeDeferredExecutionReceipts,
     dispatchPendingNativeStatusWakeups,
     triggerIssueMonitor,
 

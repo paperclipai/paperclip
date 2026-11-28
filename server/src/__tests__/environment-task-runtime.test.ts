@@ -5,7 +5,7 @@ import { environmentTaskErrorCodeData, environmentTaskOperationSchema, parseEnvi
   readEnvironmentTaskErrorCode, readEnvironmentTaskErrorDiagnostic } from "@paperclipai/plugin-sdk";
 import { executeEnvironmentTask, isSettledReadyRunnerState, settleDispatchedEnvironmentTask } from "../services/environment-task-runtime.js";
 import { NativeExecutionContext } from "../services/native-runtime/native-execution-context.js";
-import { runnerLaunchPreparationDigest, runnerLaunchRunDigest } from "../vendor/paperclip-runner/index.js";
+import { createRunnerProviderLaunch, runnerLaunchPreparationDigest, runnerLaunchRunDigest, runnerProviderLaunchRequirements } from "../vendor/paperclip-runner/index.js";
 
 const state = vi.hoisted(() => ({ plugin: {} as any, release: vi.fn(), identity: vi.fn(), config: vi.fn() }));
 vi.mock("../services/provider-fresh-workspace.js", () => ({
@@ -327,6 +327,34 @@ describe("plugin-provided Runner execution", () => {
     await expect(executeEnvironmentTask(database(value).db, worker() as never, { companyId: "company", leaseId, operation })).resolves.toMatchObject({ kind: "accepted" });
     await expect(executeEnvironmentTask(database(value).db, worker() as never, { companyId: "company", leaseId,
       operation: { ...operation, credential: { type: "claude-env", environment: { ANTHROPIC_API_KEY: "never-leak" } } } })).rejects.toThrow("validation unavailable");
+  });
+  it.each(["grok", "copilot", "opencode", "antigravity"] as const)("dispatches a %s environment credential only for the matching harness", async harness => {
+    const credentials = {
+      grok: { type: "provider-env" as const, provider: "grok" as const, environment: { XAI_API_KEY: "never-leak" } },
+      copilot: { type: "provider-env" as const, provider: "copilot" as const, environment: { COPILOT_GITHUB_TOKEN: "never-leak" } },
+      opencode: { type: "provider-env" as const, provider: "opencode" as const, environment: { OPENROUTER_API_KEY: "never-leak" } },
+      antigravity: { type: "provider-env" as const, provider: "antigravity" as const, environment: { GEMINI_API_KEY: "never-leak" } },
+    };
+    const operation = { ...submit, runner: { ...submit.runner, harness }, accountIdentity: "account", credential: credentials[harness] };
+    const validated = () => {
+      const value = row();
+      Object.assign(value.lease.metadata, { runnerTaskProjectAuthValidation: { configurationId: "configuration", provider: harness, projectIds: [projectId] } });
+      return value;
+    };
+    const accepted = worker();
+    const store = database(validated());
+    await expect(executeEnvironmentTask(store.db, accepted as never, { companyId: "company", leaseId, operation })).resolves.toMatchObject({ kind: "accepted" });
+    expect(accepted.call).toHaveBeenCalledOnce();
+    expect(JSON.stringify(store.sets.map(set => new PgDialect().sqlToQuery(set.metadata as never).params))).not.toContain("never-leak");
+    const failing = worker();
+    failing.call.mockRejectedValue(Object.assign(new Error("submit failed for never-leak"), { data: operation }));
+    const error = await executeEnvironmentTask(database(validated()).db, failing as never, { companyId: "company", leaseId, operation }).catch(caught => caught);
+    expect(JSON.stringify({ ...error, message: error.message })).not.toContain("never-leak");
+    expect(error.cause).toBeUndefined();
+    const denied = worker();
+    await expect(executeEnvironmentTask(database(validated()).db, denied as never, { companyId: "company", leaseId,
+      operation: { ...operation, credential: credentials[harness === "grok" ? "copilot" : "grok"] } })).rejects.toThrow("validation unavailable");
+    expect(denied.call).not.toHaveBeenCalled();
   });
   it.each(["allowed", "denied", "wrong-configuration", "wrong-provider", "timeout"])("records only a matching successful project validation (%s)", async mode => {
     const operation = { kind: "check_project_auth" as const, configurationId: "configuration", provider: "openai" as const, projectIds: [projectId] };
@@ -662,6 +690,28 @@ describe("plugin-provided Runner execution", () => {
     workers.call.mockRejectedValue(new Error("The installed Runner does not match the expected revision"));
     expect(readEnvironmentTaskErrorCode(await executeEnvironmentTask(database().db, workers as never, { companyId: "company", leaseId, operation: submit }).catch(caught => caught))).toBeNull();
   });
+  it("preserves closed plugin operation and RPC error codes through worker error sanitization without leaking worker text", async () => {
+    const workers = worker();
+    workers.call.mockRejectedValueOnce(new JsonRpcCallError({ code: -32003, message: "secret-provider-token-123" }));
+    const timeoutError = await executeEnvironmentTask(database().db, workers as never, { companyId: "company", leaseId, operation: submit }).catch(caught => caught);
+    expect(timeoutError.message).toBe("Plugin-provided Runner execution operation unavailable; reconcile the same task before retrying");
+    expect(timeoutError.pluginTaskError).toEqual({ operation: "submit", rpcErrorCode: "timeout" });
+    expect(JSON.stringify({ ...timeoutError, message: timeoutError.message })).not.toContain("secret-provider-token-123");
+    expect(timeoutError.cause).toBeUndefined();
+
+    workers.call.mockRejectedValueOnce(new JsonRpcCallError({
+      code: -32002,
+      message: "secret-revision-token-456",
+      data: environmentTaskErrorCodeData(new PluginEnvironmentTaskError("runner_revision_mismatch")),
+    }));
+    const mismatchError = await executeEnvironmentTask(database().db, workers as never, { companyId: "company", leaseId, operation: submit }).catch(caught => caught);
+    expect(mismatchError.pluginTaskError).toEqual({
+      operation: "submit",
+      errorCode: "runner_revision_mismatch",
+      rpcErrorCode: "worker_error",
+    });
+    expect(JSON.stringify({ ...mismatchError, message: mismatchError.message })).not.toContain("secret-revision-token-456");
+  });
   it("accepts PRP identity characters and length limits", () => {
     for (const field of ["runnerId", "leaseId", "runId", "sessionId", "turnId", "itemId"]) {
       for (const value of ["session:part.1", "a".repeat(160)]) {
@@ -696,4 +746,18 @@ describe("plugin-provided Runner execution", () => {
     expect(() => parseEnvironmentTaskResult(submit, "attempt-1", { ...rejected, reason: "unknown" })).toThrow();
     expect(() => parseEnvironmentTaskResult({ kind: "stop" }, "attempt-1", rejected)).toThrow();
   });
+});
+
+describe("Runner launch requirements for plugin preparation", () => {
+  const identity = { runnerInstanceId: "runner", environmentLeaseId: leaseId, runId: "run", normalizedSessionId: "session", turnId: "turn", itemId: "item" };
+  it.each([{ grokDisableWebSearch: true }, { grokEffort: "high" as const, grokDisableWebSearch: true }, { grokDisableWebSearch: false }])(
+    "passes the Runner's Grok settings %j through the task contract", settings => {
+      const requirements = runnerProviderLaunchRequirements({ provider: "acpx", acpxAgent: "grok", ...settings }, identity,
+        { model: "grok-build" }, null, "Follow the assigned instructions.");
+      const prepared = environmentTaskOperationSchema.parse({ kind: "prepare", projectIds: [], requirements });
+      expect(prepared).toMatchObject({ requirements: { settings: { acpxAgent: "grok", ...settings } } });
+      expect(createRunnerProviderLaunch(requirements, { options: {}, root: "/runner", cwd: "/workspace", codexHome: "/runner/codex",
+        providerNodeCommand: "node", opencodeProxyPath: "/runner/opencode.cjs", acpxSidecarPath: "/runner/acpx.cjs" }))
+        .toMatchObject({ agent: "grok", grokDisableWebSearch: settings.grokDisableWebSearch });
+    });
 });

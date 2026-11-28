@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { computeBuildInputsDigest } from "../../../packages/paperclip-runner/scripts/build-inputs.mjs";
+import { buildRunnerBuildPlan } from "../../../packages/paperclip-runner/scripts/run-build.mjs";
 import {
   RUNNER_IMAGE_CONTEXT_INPUTS,
   RUNNER_IMAGE_INPUTS_SCHEMA,
@@ -339,19 +340,41 @@ describe("Runner image stages", () => {
     // whole script: a new step fails here until someone decides whether the
     // image build must run it too.
     const manifest = JSON.parse(readFileSync(path.join(repoRoot, "packages/paperclip-runner/package.json"), "utf8"));
-    expect((manifest.scripts.build as string).split(" && ")).toEqual([
-      "node scripts/record-build-inputs.mjs --begin",
-      "pnpm run check:protocol-manifest",
-      "pnpm run build:typescript",
-      "pnpm run check:capability-contract",
-      "pnpm run check:capability-inventory",
-      "pnpm run check:protocol-coverage",
-      "node scripts/generate-semantic-contracts.mjs --check",
-      "node scripts/check-runner-workflow-traceability.mjs",
-      "node scripts/build-runner-binary.mjs",
-      "node scripts/generate-replay-goldens.mjs --check",
-      "node scripts/generate-semantic-action-catalog.mjs --check",
-      "node scripts/record-build-inputs.mjs --finish",
+    expect(manifest.scripts.build).toBe("node scripts/run-build.mjs");
+    const phases = buildRunnerBuildPlan({ env: {} }) as Array<{
+      steps?: Array<{ label: string }>;
+      chains?: Array<{ steps: Array<{ label: string }> }>;
+    }>;
+    const plannedLabels = phases.flatMap((phase) =>
+      phase.steps
+        ? phase.steps.map((step) => step.label)
+        : (phase.chains ?? []).flatMap((chain) => chain.steps.map((step) => step.label)),
+    );
+    expect(plannedLabels).toEqual([
+      "record-build-inputs:begin",
+      "build:eval-kernel",
+      "tsc:version",
+      "tsc:tsconfig",
+      "tsc:surfaces",
+      "cargo:release-runnerd",
+      "check:protocol-manifest",
+      "check:acpx-profiles",
+      "check:antigravity-models",
+      "check:protocol-schema-module",
+      "check:acpx-sidecar-contract",
+      "check:runtime-context-contract",
+      "check:provider-failure-contract",
+      "check:capability-contract",
+      "check:capability-inventory",
+      "build:verified-entrypoints",
+      "install:copilot-assets",
+      "build:runner-binary",
+      "check:protocol-coverage",
+      "check:semantic-contracts",
+      "check:replay-goldens",
+      "check:semantic-action-catalog",
+      "check:runner-workflow-traceability",
+      "record-build-inputs:finish",
     ]);
     const build = runner.find((stage) => stage.name === "runner-artifacts-build")!.lines.join("\n");
     for (const step of ["node scripts/record-build-inputs.mjs --begin;", "pnpm run build:typescript;", "pnpm run build:binary;",

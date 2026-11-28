@@ -1,3 +1,4 @@
+import { containsSigV4PresignedUrl } from "@paperclipai/adapter-utils/command-redaction";
 import type { PromptInjectionModelOutcome, PromptInjectionDetectorMetadata } from "@paperclipai/shared";
 import { createCipheriv, createDecipheriv, createHash, createHmac, hkdfSync, randomBytes, timingSafeEqual } from "node:crypto";
 import { redactEventPayload, redactSensitiveText, REDACTED_EVENT_VALUE } from "../redaction.js";
@@ -114,7 +115,14 @@ function containsSensitiveToolArguments(canonicalArguments: string) {
     const value: unknown = JSON.parse(canonicalArguments);
     // Wrapping preserves recursive redaction for root arrays and strings too.
     const redacted = redactEventPayload({ value })?.value;
-    return redactSensitiveText(stableSerialize(redacted)) !== stableSerialize(value);
+    const serialized = stableSerialize(value);
+    // Keep SigV4 presigned URLs classified as sensitive for request identity
+    // hashing and approval encryption so side-effect idempotency keys stay
+    // stable across display-redaction changes and bearer URLs stay encrypted.
+    return (
+      containsSigV4PresignedUrl(serialized) ||
+      redactSensitiveText(stableSerialize(redacted)) !== serialized
+    );
   } catch {
     // Canonical arguments normally come from canonicalToolArguments. Never
     // persist an unparseable caller-supplied string as an unencrypted fallback.
@@ -295,12 +303,22 @@ export function readSignedToolArguments(input: {
   return readSignedToolArgumentsPayload(input)?.arguments ?? null;
 }
 
+/**
+ * Cuts to at most `max` UTF-16 code units without splitting a surrogate pair.
+ * Audit summaries are stored in `jsonb`, which rejects a lone surrogate, so a
+ * split emoji would fail the audit insert and with it the tool call.
+ */
+function cutWholeCharacters(text: string, max: number): string {
+  const last = text.charCodeAt(max - 1);
+  return text.slice(0, last >= 0xd800 && last <= 0xdbff ? max - 1 : max);
+}
+
 export function summarizeToolValue(value: unknown) {
   const redacted = isPlainObject(value) ? redactEventPayload(value) : value;
   const serialized = stableSerialize(redacted);
   const redactedText = redactSensitiveText(serialized);
   return {
-    summary: redactedText.length > 4000 ? `${redactedText.slice(0, 3997)}...` : redactedText,
+    summary: redactedText.length > 4000 ? `${cutWholeCharacters(redactedText, 3997)}...` : redactedText,
     sizeBytes: Buffer.byteLength(serialized, "utf8"),
     sha256: createHash("sha256").update(serialized).digest("hex"),
     redactedFields: redactedText.includes(REDACTED_EVENT_VALUE) ? ["sensitive_value"] : [],

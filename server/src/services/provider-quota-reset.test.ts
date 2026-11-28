@@ -1,5 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { parseProviderQuotaClockReset } from "./provider-quota-reset.js";
+import { isProviderQuotaActionRequired, parseProviderQuotaClockReset } from "./provider-quota-reset.js";
+
+describe("provider account action", () => {
+  const failure = { schema: "paperclip.provider-failure.v1", provider: "openai", phase: "turn",
+    category: "quota_exhausted", message: "Check billing and usage.", retryability: "requires_action" };
+  it("requires account repair for typed quota exhaustion even if an old recovery estimated a retry", () => {
+    expect(isProviderQuotaActionRequired({ resultJson: { providerFailure: failure, retryNotBefore: "2099-01-01T00:00:00Z" } })).toBe(true);
+  });
+  it.each([
+    { ...failure, category: "authentication" }, { ...failure, category: "rate_limit" },
+    { ...failure, message: "You've hit your weekly limit · resets Nov 12, 6pm (UTC)" },
+    { ...failure, retryAt: "2026-11-12T18:00:00.000Z" }, { ...failure, schema: "invalid" }, undefined,
+  ])("preserves other recovery and reported resets for %j", providerFailure => {
+    expect(isProviderQuotaActionRequired({ resultJson: { providerFailure } }, new Date("2026-11-10T20:00:00Z"))).toBe(false);
+  });
+});
 
 describe("parseProviderQuotaClockReset", () => {
   it("reads a weekly limit's calendar reset, as Claude's ACP agent reports it", () => {

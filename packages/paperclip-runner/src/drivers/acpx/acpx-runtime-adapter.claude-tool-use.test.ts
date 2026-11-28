@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 
 import { startRunnerToolBridge } from "../runner-tool-bridge.js";
-import { openCodexAcpxRuntime } from "./acpx-runtime-adapter.js";
+import { openQualifiedAcpxRuntime } from "./acpx-runtime-adapter.js";
 import { CLAUDE_TOOL_USE_META_KEY, ClaudeToolUseAdmission } from "./claude-tool-use-admission.js";
 import type { VerifiedAcpxCommandLease } from "./installation-integrity.js";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
@@ -138,9 +138,9 @@ it("admits each Claude tool call through the real ACP turn stream only for its o
     body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call",
       params: { name: "probe", arguments: { tag }, _meta: { [CLAUDE_TOOL_USE_META_KEY]: toolUseId } } }) })
     .then(response => response.json() as Promise<{ result: { isError?: boolean; content: Array<{ text: string }> } }>);
-  let port: Awaited<ReturnType<typeof openCodexAcpxRuntime>> | undefined;
+  let port: Awaited<ReturnType<typeof openQualifiedAcpxRuntime>> | undefined;
   try {
-    port = await openCodexAcpxRuntime(options, {
+    port = await openQualifiedAcpxRuntime(options, {
       awaitProviderOwnership: async () => undefined,
       awaitProviderExit: child => new Promise<void>(resolve => child.once("exit", () => resolve())),
     });

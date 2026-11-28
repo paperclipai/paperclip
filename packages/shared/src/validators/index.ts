@@ -409,6 +409,7 @@ export {
 
 export {
   createDocumentAnnotationCommentSchema,
+  documentAnnotationCommentReactionSchema,
   createDocumentAnnotationThreadSchema,
   documentAnnotationAnchorConfidenceSchema,
   documentAnnotationAnchorSelectorSchema,
@@ -464,6 +465,7 @@ export {
   issueCommentMetadataSectionSchema,
   issueCommentMetadataSchema,
   addIssueCommentSchema,
+  addIssueSwarmCommentSchema,
   sendChatMessageSchema,
   markIssueReadSchema,
   issueThreadInteractionStatusSchema,
@@ -517,6 +519,7 @@ export {
   createIssueAttachmentMetadataSchema,
   issueDocumentFormatSchema,
   issueDocumentKeySchema,
+  issueDocumentBatchQuerySchema,
   upsertIssueDocumentSchema,
   restoreIssueDocumentRevisionSchema,
   upsertIssueWatchdogSchema,
@@ -649,6 +652,37 @@ export {
 } from "./goal.js";
 
 export {
+  createResponsibilitySchema,
+  proposeResponsibilitySchema,
+  updateResponsibilitySchema,
+  linkResponsibilitySchema,
+  delegateResponsibilitySchema,
+  listResponsibilitiesQuerySchema,
+  createResponsibilityAreaSchema,
+  updateResponsibilityAreaSchema,
+  listResponsibilityAreasQuerySchema,
+  responsibilityLinkLookupQuerySchema,
+  fileResponsibilityItemsSchema,
+  unfileResponsibilityItemsSchema,
+  deleteResponsibilityQuerySchema,
+  deleteResponsibilityAreaQuerySchema,
+  RESPONSIBILITY_FILE_ITEM_KINDS,
+  type ResponsibilityFileItemKind,
+  type FileResponsibilityItems,
+  type UnfileResponsibilityItems,
+  type CreateResponsibilityArea,
+  type UpdateResponsibilityArea,
+  type ListResponsibilityAreasQuery,
+  type ResponsibilityLinkLookupQuery,
+  type CreateResponsibility,
+  type ProposeResponsibility,
+  type UpdateResponsibility,
+  type LinkResponsibility,
+  type DelegateResponsibility,
+  type ListResponsibilitiesQuery,
+} from "./responsibility.js";
+
+export {
   applyOnboardingSeedSchema,
   type ApplyOnboardingSeed,
 } from "./onboarding-seed.js";
@@ -676,6 +710,10 @@ export {
 } from "./attention.js";
 
 export {
+  ENV_VAR_NAME_RE,
+  looksLikeCredentialToken,
+  SECRET_SHAPED_ENV_NAME_ERROR,
+  SECRET_SHAPED_ACCESS_ALIAS_ERROR,
   envBindingPlainSchema,
   envBindingSecretRefSchema,
   envBindingUserSecretRefSchema,
@@ -775,6 +813,7 @@ export {
   currentUserProfileSchema,
   authSessionSchema,
   browserTracingConfigSchema,
+  browserAnalyticsConfigSchema,
   updateCurrentUserProfileSchema,
   updateCompanyMemberSchema,
   updateCompanyMemberWithPermissionsSchema,
@@ -797,6 +836,7 @@ export {
   type CurrentUserProfile,
   type AuthSession,
   type BrowserTracingConfig,
+  type BrowserAnalyticsConfig,
   type UpdateCurrentUserProfile,
   type UpdateCompanyMember,
   type UpdateCompanyMemberWithPermissions,

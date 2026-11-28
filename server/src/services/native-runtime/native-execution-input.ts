@@ -107,6 +107,13 @@ export interface BuildNativeExecutionInput {
   opencodePermissionMode?: NativeOpenCodePermissionMode;
   acpxPermissionMode?: NativeAcpxPermissionMode;
   acpxSessionMode?: "agent" | "plan" | "ask";
+  /**
+   * The verified /swarm request (services/antigravity-swarm.ts), set only for a
+   * run the signed-in user started with a trusted /swarm. It travels in its own
+   * provider field, apart from the rendered task prompt, and is the only text
+   * the swarm route sends.
+   */
+  antigravitySwarmRequest?: string;
   piThinkingLevel?: "off" | "low" | "high" | "max";
   claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
   grokEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
@@ -148,7 +155,9 @@ export function buildNativeExecutionInput(input: BuildNativeExecutionInput): Nat
   if (input.issue.workMode !== "standard" && input.issue.workMode !== "planning" && input.issue.workMode !== "ask" && input.issue.workMode !== "skill_test") {
     throw new Error("native_execution_input_invalid: issue work mode must be standard, planning, ask, or skill_test");
   }
-  const mode = resolvePaperclipRunnerCursorMode(input.provider, input.acpxAgent, input.acpxSessionMode);
+  const swarmRequest = input.antigravitySwarmRequest !== undefined && input.provider === "acpx" && input.acpxAgent === "antigravity"
+    ? input.antigravitySwarmRequest : undefined;
+  const mode = swarmRequest !== undefined ? "swarm" : resolvePaperclipRunnerCursorMode(input.provider, input.acpxAgent, input.acpxSessionMode);
   const piThinkingLevel = resolvePaperclipRunnerPiThinkingLevel(input.provider, input.acpxAgent, input.piThinkingLevel);
   const executionMode = input.executionMode
     ?? (input.issue.workMode === "planning" ? "plan" : "default");
@@ -344,6 +353,7 @@ export function buildNativeExecutionInput(input: BuildNativeExecutionInput): Nat
           model: input.model,
           permissionMode: input.acpxPermissionMode ?? "approve-all",
           ...(mode === undefined ? {} : { mode }),
+          ...(swarmRequest === undefined ? {} : { swarmRequest }),
           ...(piThinkingLevel === undefined ? {} : { piThinkingLevel }),
           ...(input.claudeEffort === undefined ? {} : { claudeEffort: input.claudeEffort }),
           ...(input.grokEffort === undefined ? {} : { grokEffort: input.grokEffort }),

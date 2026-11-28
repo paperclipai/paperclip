@@ -411,6 +411,86 @@ describeEmbeddedPostgres("agents adapter-config user-secret resolution routes", 
     expect(mockRunClaudeLogin).toHaveBeenCalledTimes(1);
     expect(mockRunClaudeLogin.mock.calls[0][0].config.env.ANTHROPIC_API_KEY).toBe("sk-owner");
   });
+
+  it("rejects secret-shaped env var names on PATCH /agents/:id without echoing the token", async () => {
+    const agentId = randomUUID();
+    mockAgentService.getById.mockResolvedValue({
+      id: agentId,
+      companyId: COMPANY_ID,
+      name: "Secret Guard Agent",
+      role: "engineer",
+      title: null,
+      status: "idle",
+      reportsTo: null,
+      adapterType: "external_test",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+      metadata: null,
+      budgetMonthlyCents: 0,
+      defaultEnvironmentId: null,
+      lifecycleHolds: [],
+      updatedAt: new Date(0),
+    });
+    beforeEachActor(boardUserActor);
+    const app = await createApp();
+
+    const secretShapedNames = [
+      ["github", "pat", "11ABCDEF0123456789", "secretTokenValue99"].join("_"),
+      ["ghp", "0123456789abcdef0123456789abcdef"].join("_"),
+      ["sk", "proj", "secretApiKey1234567890abcdef"].join("-"),
+    ];
+
+    for (const secretName of secretShapedNames) {
+      const res = await request(app)
+        .patch(`/api/agents/${agentId}`)
+        .send({
+          adapterConfig: {
+            env: {
+              [secretName]: { type: "plain", value: "some-value" },
+            },
+          },
+        });
+      expect(res.status, `expected 422 for ${secretName}: ${JSON.stringify(res.body)}`).toBe(422);
+      const serialized = JSON.stringify(res.body);
+      expect(serialized).not.toContain(secretName);
+      expect(serialized.toLowerCase()).toMatch(/secret|token/);
+    }
+
+    // Also reject secret-shaped access.* aliases without echoing the token.
+    const secretAlias = ["ghp", "0123456789abcdef0123456789abcdef"].join("_");
+    const aliasRes = await request(app)
+      .patch(`/api/agents/${agentId}`)
+      .send({
+        adapterConfig: {
+          [`access.${secretAlias}`]: {
+            type: "secret_ref",
+            secretId: randomUUID(),
+            version: "latest",
+          },
+        },
+      });
+    expect(aliasRes.status, JSON.stringify(aliasRes.body)).toBe(422);
+    expect(JSON.stringify(aliasRes.body)).not.toContain(secretAlias);
+    expect(JSON.stringify(aliasRes.body).toLowerCase()).toMatch(/secret|token/);
+
+    // Legacy secret-shaped env names already stored in DB must be skipped at runtime
+    // instead of breaking existing heartbeats.
+    const svc = secretService(db);
+    const legacyKey = ["github", "pat", "11ABCDEF0123456789", "legacyTokenValue"].join("_");
+    const resolvedEnv = await svc.resolveEnvBindings(COMPANY_ID, {
+      [legacyKey]: { type: "plain", value: "ignored" },
+      SAFE_VAR: { type: "plain", value: "ok" },
+    });
+    expect(resolvedEnv.env).toEqual({ SAFE_VAR: "ok" });
+    const resolvedRuntime = await svc.resolveAdapterConfigForRuntime(COMPANY_ID, {
+      env: {
+        [legacyKey]: { type: "plain", value: "ignored" },
+        SAFE_VAR: { type: "plain", value: "ok" },
+      },
+    });
+    expect(resolvedRuntime.config.env).toEqual({ SAFE_VAR: "ok" });
+  });
 });
 
 function beforeEachActor(actor: TestActor) {

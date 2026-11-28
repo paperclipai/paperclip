@@ -138,6 +138,7 @@ export function commentsToTaskChatItems(
       origin: comment.origin ?? "comment",
       chatMessage: comment.metadata?.chatMessage,
       sourceChannel: kind === "human" ? comment.metadata?.sourceChannel : undefined,
+      ...(kind === "human" && comment.nativeCommand === "swarm" ? { nativeCommand: "swarm" as const } : {}),
       timestamp: formatTaskChatCommentTimestamp(comment, kind),
       optimistic,
       queueTargetRunId: queued ? comment.queueTargetRunId ?? null : null,

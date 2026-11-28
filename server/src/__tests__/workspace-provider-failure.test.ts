@@ -16,7 +16,16 @@ import {
 } from "@paperclipai/plugin-sdk";
 import { HttpError } from "../errors.js";
 import { findPluginWorkerUnavailableError, PluginWorkerUnavailableError } from "../services/plugin-worker-unavailable-error.js";
-import { findWorkspaceProviderFailure, workspaceProviderCallFailure } from "../services/workspace-provider-failure.js";
+import {
+  findWorkspaceProviderFailure,
+  readWorkspaceProviderFailure,
+  workspaceProviderCallFailure,
+  workspaceProviderFailureMessage,
+} from "../services/workspace-provider-failure.js";
+import {
+  buildNoRunningExecutionNoticeSeed,
+  buildStrandedRecoveryEscalationNotice,
+} from "../services/recovery/stranded-notice.js";
 
 const id = (n: number) => `10000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const params = {
@@ -107,5 +116,52 @@ describe("workspace provider call failures", () => {
     const failure = workspaceProviderCallFailure(new Error("lost"));
     expect(findWorkspaceProviderFailure(new Error("setup failed", { cause: failure }))).toBe(failure);
     expect(findWorkspaceProviderFailure(new Error("other"))).toBeNull();
+  });
+
+  it("surfaces a saved binding_mismatch failure reason in the no-running-execution stranded notice and drops unknown text", () => {
+    const inProgress = buildNoRunningExecutionNoticeSeed({
+      status: "in_progress",
+      attempts: 3,
+      workspaceProviderFailure: "binding_mismatch",
+    });
+    expect(inProgress.body).toContain("after 3 tries");
+    expect(inProgress.body).toContain("Saved workspace storage no longer matches this workspace");
+    expect(inProgress.body).toContain("Press Retry");
+
+    const todo = buildNoRunningExecutionNoticeSeed({
+      status: "todo",
+      workspaceProviderFailure: "binding_mismatch",
+    });
+    expect(todo.body).toContain("Saved workspace storage no longer matches this workspace");
+    expect(todo.body).toContain("Press Retry to start it again.");
+
+    const generic = buildNoRunningExecutionNoticeSeed({ status: "todo" });
+    expect(generic.body).toBe(
+      "Paperclip tried to start this task again, but it still could not start. Press Retry to start it again.",
+    );
+
+    // Arbitrary/raw provider strings are never echoed into user-facing notices.
+    const unknownText = buildNoRunningExecutionNoticeSeed({
+      status: "todo",
+      workspaceProviderFailure: "raw provider stack trace" as never,
+    });
+    expect(unknownText.body).toBe(generic.body);
+
+    const savedSummary = readWorkspaceProviderFailure({
+      workspaceProviderFailure: { kind: "provider", reason: "binding_mismatch", retryable: false },
+    });
+    const escalated = buildStrandedRecoveryEscalationNotice({
+      seed: buildNoRunningExecutionNoticeSeed({ status: "in_progress", attempts: 2, workspaceProviderFailure: savedSummary }),
+      recoveryActionId: id(10),
+      recoveryOwner: null,
+      sourceRun: {
+        id: id(11),
+        status: "failed",
+        errorCode: "setup_failed",
+        errorSummary: workspaceProviderFailureMessage(savedSummary),
+      },
+    });
+    expect(escalated.body).toContain("Saved workspace storage no longer matches this workspace");
+    expect(escalated.body).toContain("after 2 tries");
   });
 });

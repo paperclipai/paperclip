@@ -394,6 +394,124 @@ fn ordinary_recovery_restores_a_completed_idle_session() {
 }
 
 #[test]
+fn a_fresh_runner_waits_for_run_attach_before_restoring_a_saved_session() {
+    let directory = temporary_directory("fresh-runner-attach");
+    let (config, _) = dormant_source_fixture(&directory);
+    let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    executor.observe_fresh_durable_state().unwrap();
+    assert_waits_for_run_attach(&mut executor, &directory);
+
+    let attached = executor
+        .execute(&command(
+            "attach",
+            2,
+            "run.attach",
+            json!({"authorizedTools": task_context_tool_set()}),
+        ))
+        .expect("attach the new run to the saved session");
+    assert!(attached
+        .events
+        .iter()
+        .any(|(event_type, _, _)| event_type == "run.attached"));
+    assert_eq!(call_count(&directory, "process-start"), 2);
+
+    executor
+        .execute(&command(
+            "turn",
+            3,
+            "turn.start",
+            json!({"text": "Continue the saved conversation."}),
+        ))
+        .expect("start the new run's turn");
+    wait_for_executor_event(&mut executor, "turn.completed");
+    assert_eq!(call_count(&directory, "process-start"), 2);
+    assert_eq!(call_count(&directory, "turn/start"), 2);
+    executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+fn assert_waits_for_run_attach(executor: &mut NativeProviderCommandExecutor, directory: &Path) {
+    assert!(poll_and_ack(executor).unwrap().is_empty());
+    executor
+        .execute(&command("snapshot", 1, "session.snapshot", json!({})))
+        .expect("a snapshot reads the saved session without restoring it");
+    let refused = executor
+        .execute(&command(
+            "early-turn",
+            1,
+            "turn.start",
+            json!({"text": "Start before attachment."}),
+        ))
+        .expect_err("a fresh runner must not start work before run.attach");
+    assert!(
+        refused
+            .to_string()
+            .contains("requires run.attach before commands from a new run"),
+        "unexpected refusal: {refused}"
+    );
+    assert_eq!(call_count(directory, "process-start"), 1);
+}
+
+#[test]
+fn a_fresh_runner_restarted_before_run_attach_still_waits_for_it() {
+    let directory = temporary_directory("fresh-runner-restart");
+    let (config, _) = dormant_source_fixture(&directory);
+    let mut first = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    first.observe_fresh_durable_state().unwrap();
+    assert_waits_for_run_attach(&mut first, &directory);
+    drop(first);
+
+    let mut restarted = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    assert_waits_for_run_attach(&mut restarted, &directory);
+    let attached = restarted
+        .execute(&command(
+            "attach",
+            2,
+            "run.attach",
+            json!({"authorizedTools": task_context_tool_set()}),
+        ))
+        .expect("attach the new run after the restart");
+    assert!(attached
+        .events
+        .iter()
+        .any(|(event_type, _, _)| event_type == "run.attached"));
+    assert_eq!(call_count(&directory, "process-start"), 2);
+    restarted.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn a_runner_lost_right_after_a_fresh_start_keeps_the_attach_wait() {
+    let directory = temporary_directory("fresh-runner-lost");
+    let (config, _) = dormant_source_fixture(&directory);
+    NativeProviderCommandExecutor::with_runner_config(&directory, &config)
+        .observe_fresh_durable_state()
+        .unwrap();
+    let mut restarted = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    assert_waits_for_run_attach(&mut restarted, &directory);
+    restarted.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn a_recovered_runner_restores_a_saved_session_before_run_attach() {
+    let directory = temporary_directory("recovered-runner-attach");
+    let (config, _) = dormant_source_fixture(&directory);
+    let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    let snapshot = executor
+        .execute(&command("snapshot", 1, "session.snapshot", json!({})))
+        .expect("a recovered runner serves its own saved session");
+    assert_eq!(
+        snapshot.result["status"], "session_open",
+        "{}",
+        snapshot.result
+    );
+    assert_eq!(call_count(&directory, "process-start"), 2);
+    executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn ordinary_recovery_checks_saved_dormant_state_against_live_work() {
     for fault in ["active", "goal"] {
         let directory = temporary_directory("dormant-live-recovery");
@@ -781,6 +899,7 @@ fn durable_config(directory: &Path) -> DurableRunnerConfig {
         reconnect_grace: None,
         max_runtime: std::time::Duration::from_secs(5),
         turn_scoped: false,
+        controller_silence: paperclip_runner_core::durable::DEFAULT_CONTROLLER_SILENCE,
     }
 }
 

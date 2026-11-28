@@ -79,6 +79,37 @@ Optional assigned apps do not emit run-start connection warnings, including
 unavailable shared apps. Their health state and reconnect controls remain in
 Apps. An unrelated run does not need to act on that state.
 
+### Connecting another Paperclip instance
+
+Every Paperclip serves its assistant connection at `/mcp/paperclip` (see
+[Public Paperclip MCP connection](../public-mcp.md)). Pasting that address
+connects your agents to another instance — for example a colleague's — so they
+can file and follow tasks there. Paperclip recognizes the address and, using
+only the address you typed (nothing the other server says):
+
+- names the connection after that instance with its distinctive part first —
+  `acme Paperclip` for `acme.paperclip.app`, `localhost-3101 Paperclip` for a
+  local instance — and prefixes its tools with the same host-derived label,
+  so agents see
+  `mcp.acme-paperclip-<id>:paperclip-create-task` (native runners:
+  `app_mcp_acme_paperclip_…_paperclip_create_task_…`), never a bare
+  `create_task` that looks like their own. Other address-based connections
+  keep their existing tool names. Setup records the prefix on the connection
+  (`paperclipPeerToolNamespace`) when it is created, so renaming or
+  reconnecting never changes tool names that saved tool-name rules, agents or
+  pending approvals refer to. Paperclip connections created before this keep
+  their original names;
+- adds agent instructions (template `paperclip.peer`, editable and
+  resettable under **Agent instructions** on the connection's Permissions page)
+  saying these tools act on a different
+  Paperclip, that agents keep using their own Paperclip tools for their own
+  work, and that links from the other instance must be quoted in full;
+- refuses the address of this same instance (`paperclip_self_connection`,
+  422), because its tools are already built in.
+
+Actions start on, as for any other connection. A name or instructions you
+supply yourself are kept.
+
 ### Slack app access
 
 If Slack reports that MCP access is disabled for the app, ask the Slack app
@@ -127,8 +158,10 @@ You never choose this; Paperclip resolves it and the wizard shows none of it.
 Recorded here for security review and diagnostics. In preference order:
 
 1. **Deployment-preconfigured client.** `PAPERCLIP_TOOL_OAUTH_<PROVIDER>_CLIENT_ID`
-   / `_SECRET`, or the unsuffixed `PAPERCLIP_TOOL_OAUTH_CLIENT_ID` / `_SECRET`.
-   Always wins when set.
+   / `_SECRET` and the unsuffixed `PAPERCLIP_TOOL_OAUTH_CLIENT_ID` / `_SECRET`
+   apply only to gallery apps, at the token endpoint their app definition
+   fixes. A pasted server never gets a deployment client. Add a client of your
+   own to the connection, or use CIMD or dynamic registration.
 2. **Client ID Metadata Document (CIMD).** When the authorization server
    advertises `client_id_metadata_document_supported`, Paperclip presents the URL
    of its own published metadata document as the `client_id`. Nothing is

@@ -10,11 +10,12 @@ import path from "node:path";
 import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { crashPoint } from "@paperclipai/shared/crash-points";
 import { sandboxDiskFullFaultTarget } from "./sandbox-disk-full-fault.js";
+import { retireFullReusableSandbox } from "./full-reusable-sandbox.js";
 import {
   companies, environmentLeases, executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, issues, workspaceOperations, type Db,
 } from "@paperclipai/db";
 import {
-  readRemoteWorkspaceAuthority, remoteWorkspaceSourceSchema,
+  adapterSupportsRemoteManagedEnvironments, readRemoteWorkspaceAuthority, remoteWorkspaceSourceSchema,
   type RemoteWorkspaceAuthority, type RemoteWorkspaceRunReference, type RemoteWorkspaceSource,
   type EnvironmentLease,
 } from "@paperclipai/shared";
@@ -26,14 +27,14 @@ import { logger } from "../middleware/logger.js";
 import { createGitRemoteAuthProvider } from "./git-credentials.js";
 import { notifyCancelledWorkspacePreservation } from "./cancelled-workspace-preservation-notifications.js";
 import { assertExecutionWorkspaceRecordAccess, assertTaskWorkspaceExecutionAccess } from "./task-workspace-access.js";
-import { readRemoteWorkspaceWriterHold, REMOTE_WORKSPACE_WRITER_PENDING_MESSAGE, type RemoteWorkspaceWriter } from "./remote-workspace-writer-hold.js";
+import { readRemoteWorkspaceWriterHold, releaseSupersededRemoteWorkspaceWriter, REMOTE_WORKSPACE_WRITER_PENDING_MESSAGE, type RemoteWorkspaceWriter } from "./remote-workspace-writer-hold.js";
 import { persistActivity } from "./activity-log.js";
 import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import {
   captureRemoteWorkspaceArchive, cleanupRemoteWorkspaceArchive, prepareRemoteWorkspaceDirectory, prepareRemoteRepository, remoteWorkspaceRepositoryPath,
   RemoteWorkspaceOperationTimeoutError, RemoteWorkspacePreparationTimeoutError, remoteWorkspaceFailureCause, hasRemoteRecoveryAttachment,
-  requireRemoteWorkspaceTarget, restoreRemoteWorkspaceDirectory, RemoteWorkspaceRestoreError, type RemoteWorkspaceRestoreStep,
-  type RemoteWorkspaceSavePhaseTiming,
+  requireRemoteWorkspaceTarget, restoreRemoteWorkspaceDirectory, RemoteWorkspaceRestoreError, isRemoteWorkspaceRestoreDiskFull, type RemoteWorkspaceRestoreStep,
+  type RemoteWorkspaceSavePhaseTiming, syncRemoteWorkspaceRecoveryDirectory,
 } from "./remote-workspace-transport.js";
 import {
   beginWorkspaceSnapshot, findUnchangedWorkspaceSnapshot, getWorkspaceSnapshot, loadWorkspaceSnapshotArchive, newWorkspaceSnapshotStorageTiming, uploadWorkspaceSnapshot,
@@ -94,25 +95,32 @@ function sameExportLocation(value: unknown, location: NonNullable<RemoteWorkspac
   return (["environmentId", "leaseId", "providerLeaseId", "remoteCwd"] as const).every(key => recorded[key] === location[key]);
 }
 
+export function supportsSshRemoteWorkspace(adapterType: string, environmentDriver: string | null | undefined) {
+  return environmentDriver === "ssh" && adapterSupportsRemoteManagedEnvironments(adapterType);
+}
+
 export function shouldUseRemoteWorkspaces(input: {
   adapterType: string; environmentDriver: string | null; experimentalEnabled: boolean; existingWorkspace?: { metadata?: Record<string, unknown> | null } | null;
 }) {
   const enrolled = readRemoteWorkspaceAuthority(input.existingWorkspace?.metadata) !== null;
-  if (enrolled && (input.adapterType !== "paperclip_runner" || input.environmentDriver !== "sandbox")) {
-    throw conflict("This workspace requires its native sandbox execution environment.", { code: "remote_workspace_execution_required" });
+  const supported = input.adapterType === "paperclip_runner" && input.environmentDriver === "sandbox"
+    || supportsSshRemoteWorkspace(input.adapterType, input.environmentDriver);
+  if (enrolled && !supported) {
+    throw conflict("This workspace requires a supported remote execution environment.", { code: "remote_workspace_execution_required" });
   }
   if (enrolled) return true;
   // Existing host authority changes only through the explicit import workflow.
-  if (input.existingWorkspace || !input.experimentalEnabled || input.adapterType !== "paperclip_runner"
-    || input.environmentDriver !== "sandbox") return false;
+  if (input.existingWorkspace || !input.experimentalEnabled || !supported) return false;
   return configuredRemoteWorkspacePersistence() !== null;
 }
 
 export function assertEphemeralWorkspaceExecution(input: {
   externalConversation: boolean; adapterType: string;
   pluginTaskWorkspace: boolean; remoteAuthority: boolean;
+  environmentDriver?: string | null;
 }) {
   if (process.env.PAPERCLIP_EPHEMERAL_SERVER !== "true" || input.externalConversation) return;
+  if (input.remoteAuthority && supportsSshRemoteWorkspace(input.adapterType, input.environmentDriver)) return;
   // Runtime selection has not promoted a fresh run yet. Validate storage here;
   if (input.adapterType !== "paperclip_runner"
     || (!input.pluginTaskWorkspace && !input.remoteAuthority)) {
@@ -121,8 +129,13 @@ export function assertEphemeralWorkspaceExecution(input: {
   }
 }
 
-export function assertEphemeralNativeRuntime(native: boolean) {
-  if (process.env.PAPERCLIP_EPHEMERAL_SERVER === "true" && !native) {
+export function assertEphemeralNativeRuntime(native: boolean, ssh?: {
+  adapterType: string; environmentDriver: string | null; remoteAuthority: boolean;
+  remoteCwd: string | null; authorityCwd: string | null;
+}) {
+  const durableSsh = ssh?.remoteAuthority && supportsSshRemoteWorkspace(ssh.adapterType, ssh.environmentDriver)
+    && Boolean(ssh.remoteCwd) && ssh.remoteCwd === ssh.authorityCwd;
+  if (process.env.PAPERCLIP_EPHEMERAL_SERVER === "true" && !native && !durableSsh) {
     throw unprocessable("Volume-free servers require native Paperclip Runner execution with remote workspace storage.",
       { code: "ephemeral_execution_configuration_required" });
   }
@@ -257,8 +270,12 @@ export async function reserveRemoteWorkspace(input: {
       }
       // An ended writer that provably changed nothing hands the workspace on
       // at its saved version, so this run is admitted instead of waiting.
+      // Likewise, a dirty epoch whose ended writer was already superseded by a
+      // finished successor is abandoned cleanly so the next run restores the
+      // last committed snapshot into a new root.
       if (authority.dirty && authority.writerRunId && authority.writerRunId !== input.runId) {
-        const released = await releaseUnchangedRemoteWorkspaceWriter(tx, { workspace: existing, authority, wakeWaiters: false });
+        const released = await releaseUnchangedRemoteWorkspaceWriter(tx, { workspace: existing, authority, wakeWaiters: false })
+          ?? await releaseSupersededRemoteWorkspaceWriter(tx, { workspace: existing, authority, callerRunId: input.runId, wakeWaiters: false });
         if (released) ({ workspace: existing, authority } = released);
       }
       const hold = await readRemoteWorkspaceWriterHold(tx as unknown as Db, { companyId: input.companyId, authority, runId: input.runId });
@@ -481,8 +498,11 @@ export async function prepareRemoteWorkspace(input: {
         // saved version; a failed restore never publishes over existing files.
         // A sandbox refusal that names its reason (an occupied folder, a changed
         // owner, a rejected archive) repeats on retry, so it goes to the board.
+        // A full disk on a reused sandbox leaves reuse, so the retry gets a new sandbox.
         let retryable = false;
-        const refused = error instanceof Error && / (?:reason|archive)=[a-z_]+/.test(error.message)
+        const movedOffFullSandbox = step === "sandbox_restore" && isRemoteWorkspaceRestoreDiskFull(error)
+          && await retireFullReusableSandbox(input.db, input.lease, input.runId);
+        const refused = error instanceof Error && / (?:reason|archive)=[a-z_]+/.test(error.message) && !movedOffFullSandbox
           && !(step === "sandbox_restore" && /; remote_workspace_restore_failed: stage=restore_lock reason=restore_lock_busy$/.test(error.message));
         if (step !== "snapshot_lookup" && !refused) {
           const [latest] = await input.db.select({ metadata: executionWorkspaces.metadata }).from(executionWorkspaces)
@@ -556,9 +576,8 @@ export async function prepareRemoteWorkspace(input: {
           const provenance = await readFile(path.join(item.path, "provenance.json"), "utf8");
           const exists = await hasRemoteRecoveryAttachment({ target, remoteCwd: remoteRoot, operationId: item.operationId,
             provenance });
-          if (!exists) await target.runner!.syncIn!([{ operationId: randomUUID(), files: [{
-              kind: "directory", sourcePath: item.path, targetPath: path.posix.join(remoteRoot, relative),
-            }] }]);
+          if (!exists) await syncRemoteWorkspaceRecoveryDirectory({ target,
+            sourcePath: item.path, targetPath: path.posix.join(remoteRoot, relative) });
           recoveredFiles.push({ operationId: item.operationId, sourceRunId: item.sourceRunId, path: relative, provenance });
         }
       } finally { await removeTaskDirectoryTree(scratch); }
