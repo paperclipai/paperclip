@@ -74,6 +74,8 @@ import { transientRetryWithinTaskCap } from "../recovery/task-automatic-attempts
 import { withRecoveryContext } from "../recovery/status-only-context.js";
 import {
   MAX_TURN_CONTINUATION_RETRY_REASON,
+  ORIGINAL_WAKE_REASON_KEY,
+  PENDING_INTERACTION_WAKE_REASON,
   WORKSPACE_BUSY_RETRY_REASON,
   AI_CONNECTION_BUSY_RETRY_REASON,
   AI_CONNECTION_POOL_WAIT_RETRY_REASON,
@@ -635,6 +637,12 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         : null;
     const transientRetryNotBefore = transientRecovery?.retryNotBefore ?? null;
     const contextSnapshot = parseObject(run.contextSnapshot);
+    const originalWakeReason =
+      readNonEmptyString(contextSnapshot[ORIGINAL_WAKE_REASON_KEY]) ??
+      (readNonEmptyString(contextSnapshot.wakeReason) ===
+        PENDING_INTERACTION_WAKE_REASON
+        ? PENDING_INTERACTION_WAKE_REASON
+        : null);
     // A retry inherits the durable authorization scope of its source run. Do
     // not promote an untrusted or legacy contextSnapshot.issueId into a new
     // issue binding: that could either violate the FK or misclassify history.
@@ -798,6 +806,9 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         ...contextSnapshot,
         executionRetryAccounting: accountingForScheduledRetry(run, retryReason, schedule.attempt, now),
         retryOfRunId: run.id,
+        ...(originalWakeReason
+          ? { [ORIGINAL_WAKE_REASON_KEY]: originalWakeReason }
+          : {}),
         ...(opts?.preserveWakeContext
           ? { preparationWait: { kind: retryReason, attempt: schedule.attempt, nextAttemptAt: schedule.dueAt.toISOString() } }
           : { wakeReason, retryReason }),

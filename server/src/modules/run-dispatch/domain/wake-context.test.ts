@@ -4,7 +4,9 @@ import {
   deriveCommentId,
   extractWakeCommentIds,
   isNonAssigneeWorkspaceBusyRetry,
+  isPendingInteractionWakeOrigin,
   isResolvedInteractionContinuationWakeContext,
+  readPendingInteractionWakeId,
   WORKSPACE_BUSY_RETRY_REASON,
 } from "./wake-context.js";
 
@@ -81,6 +83,52 @@ describe("wake context", () => {
       wakeCommentId: "comment-1",
     }, allowed)).toBe(false);
     expect(allowsIssueInteractionWake({ wakeReason: "issue_commented" }, allowed)).toBe(false);
+  });
+
+  it("reads the interaction id only from a pending-card wake snapshot", () => {
+    expect(readPendingInteractionWakeId({
+      wakeReason: "interaction_pending",
+      interactionId: "interaction-1",
+    })).toBe("interaction-1");
+    expect(readPendingInteractionWakeId({
+      wakeReason: "issue_commented",
+      interactionId: "interaction-1",
+    })).toBeNull();
+    expect(readPendingInteractionWakeId({ wakeReason: "interaction_pending" })).toBeNull();
+    expect(readPendingInteractionWakeId({
+      wakeReason: "interaction_pending",
+      interactionId: "  ",
+    })).toBeNull();
+    expect(readPendingInteractionWakeId(null)).toBeNull();
+  });
+
+  it("keeps the pending-card identity across a bounded retry", () => {
+    expect(readPendingInteractionWakeId({
+      wakeReason: "transient_failure_retry",
+      retryReason: "transient_failure",
+      originalWakeReason: "interaction_pending",
+      interactionId: "interaction-1",
+    })).toBe("interaction-1");
+    expect(readPendingInteractionWakeId({
+      wakeReason: "transient_failure_retry",
+      originalWakeReason: "issue_commented",
+      interactionId: "interaction-1",
+    })).toBeNull();
+    expect(readPendingInteractionWakeId({
+      wakeReason: "transient_failure_retry",
+      originalWakeReason: "interaction_pending",
+    })).toBeNull();
+  });
+
+  it("reports a card origin from either the wake or the retried wake", () => {
+    expect(isPendingInteractionWakeOrigin({ wakeReason: "interaction_pending" })).toBe(true);
+    expect(isPendingInteractionWakeOrigin({
+      wakeReason: "workspace_busy",
+      originalWakeReason: "interaction_pending",
+    })).toBe(true);
+    expect(isPendingInteractionWakeOrigin({ wakeReason: "issue_commented" })).toBe(false);
+    expect(isPendingInteractionWakeOrigin({ originalWakeReason: "issue_commented" })).toBe(false);
+    expect(isPendingInteractionWakeOrigin(null)).toBe(false);
   });
 
   it.each(["accepted", "answered", "cancelled", "rejected"])(

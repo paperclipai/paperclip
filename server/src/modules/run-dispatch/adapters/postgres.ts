@@ -29,6 +29,7 @@ import {
   heartbeatRuns,
   issueRecoveryActions,
   issueComments,
+  issueThreadInteractions,
   issueTreeHolds,
   issues,
   nativeRunFinalizations,
@@ -82,7 +83,9 @@ import {
   allowsIssueInteractionWake,
   deriveCommentId,
   isNonAssigneeWorkspaceBusyRetry,
+  isPendingInteractionWakeOrigin,
   isResolvedInteractionContinuationWakeContext,
+  readPendingInteractionWakeId,
 } from "../domain/wake-context.js";
 import type {
   CancelStaleQueuedRunInput,
@@ -148,6 +151,34 @@ const NO_REVIEW_PARTICIPANT: ReviewParticipantFacts = {
   currentStageType: null,
   currentParticipant: null,
 };
+
+async function hasAddressedPendingInteractionWake(
+  dbOrTx: Db,
+  input: {
+    companyId: string;
+    issueId: string;
+    agentId: string;
+    contextSnapshot: Record<string, unknown>;
+  },
+): Promise<boolean> {
+  const interactionId = readPendingInteractionWakeId(input.contextSnapshot);
+  if (!interactionId) return false;
+  const interaction = await dbOrTx
+    .select({ id: issueThreadInteractions.id })
+    .from(issueThreadInteractions)
+    .where(
+      and(
+        eq(issueThreadInteractions.id, interactionId),
+        eq(issueThreadInteractions.companyId, input.companyId),
+        eq(issueThreadInteractions.issueId, input.issueId),
+        eq(issueThreadInteractions.status, "pending"),
+        eq(issueThreadInteractions.addresseeAgentId, input.agentId),
+      ),
+    )
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  return interaction !== null;
+}
 
 async function readNativeReviewParticipantFacts(db: Db, input: {
   companyId: string; issueId: string; agentId: string; contextSnapshot: unknown;
@@ -381,6 +412,8 @@ export function createPostgresRunDispatchAdapter(
       retryReasonKind,
       enforceIssueExecutionLock: retryReasonKind === "max_turn_continuation" || retryReasonKind === "ai_connection_wait",
       isNonAssigneeWorkspaceBusyRetry: isNonAssigneeWorkspaceBusyRetry(retryReason, input.contextSnapshot),
+      isPendingInteractionWakeOrigin: isPendingInteractionWakeOrigin(input.contextSnapshot),
+      isAddressedPendingInteractionWake: false,
       budgetBlock: null,
       agentInvokable: true,
       agentInvokabilityDetails: {},
@@ -452,6 +485,14 @@ export function createPostgresRunDispatchAdapter(
     facts.issueAssigneeAgentId = issue.assigneeAgentId;
     facts.issueExecutionRunId = issue.executionRunId;
     facts.issueCheckoutRunId = issue.checkoutRunId;
+    facts.isAddressedPendingInteractionWake =
+      issue.assigneeAgentId !== input.agentId &&
+      await hasAddressedPendingInteractionWake(dbOrTx, {
+        companyId: input.companyId,
+        issueId,
+        agentId: input.agentId,
+        contextSnapshot: input.contextSnapshot,
+      });
     if (input.conversationContinuation || retryReason === "interrupted_preparation") {
       facts.pendingResponse = await connectionContinuationPendingResponse(dbOrTx as unknown as Db,
         issue, input.responsibleUserId, input.runId);
@@ -696,6 +737,15 @@ export function createPostgresRunDispatchAdapter(
         : false;
 
     const retryReasonKind = classifyRetryReasonKind(retryReason);
+    const isAddressedPendingInteractionWake =
+      issue !== null &&
+      issue.assigneeAgentId !== input.agentId &&
+      await hasAddressedPendingInteractionWake(dbOrTx, {
+        companyId: input.companyId,
+        issueId,
+        agentId: input.agentId,
+        contextSnapshot: context,
+      });
     // Dependency edges can change after scheduled promotion without changing
     // the displayed status. Read them again under the queued/final issue lock.
     const replacementReadiness = issue && retryReasonKind === "native_safe_replacement"
@@ -738,6 +788,8 @@ export function createPostgresRunDispatchAdapter(
       isConnectionContinuation: (isResolvedInteractionContinuation && context.interactionKind === "connection_intent")
         || context.source === "connection_tools.refreshed",
       isInteractionWake,
+      isPendingInteractionWakeOrigin: isPendingInteractionWakeOrigin(context),
+      isAddressedPendingInteractionWake,
       isAuthorizedSourceScopedRecovery,
       isNonAssigneeWorkspaceBusyRetry: isNonAssigneeWorkspaceBusyRetry(retryReason, context),
       resumeIntent,
