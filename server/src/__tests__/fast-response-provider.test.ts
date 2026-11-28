@@ -162,6 +162,20 @@ describe("fast response provider", () => {
         provider: "openai",
         method: "api_key",
         routing: {
+          kind: "wally",
+          protocol: "chat",
+          auth: "bearer",
+          models: [],
+        },
+      },
+      "https://inference.runanywhere.ai/v1/chat/completions",
+      "Bearer fixture-key",
+    ],
+    [
+      {
+        provider: "openai",
+        method: "api_key",
+        routing: {
           kind: "local",
           protocol: "chat",
           baseUrl: "http://localhost:8080/v1",

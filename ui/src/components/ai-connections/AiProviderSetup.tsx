@@ -50,6 +50,12 @@ const providers = [
     advanced: true,
   },
   {
+    id: "wally",
+    name: "Wally",
+    description: "Open-weight models through one API key",
+    advanced: true,
+  },
+  {
     id: "bedrock",
     name: "Amazon Bedrock",
     description: "Bedrock API key and AWS region",
@@ -105,7 +111,8 @@ export function AiProviderSetup({
     reconnect
       ? reconnect.routing?.kind === "gateway" ||
         reconnect.routing?.kind === "local" ||
-        reconnect.routing?.kind === "bedrock"
+        reconnect.routing?.kind === "bedrock" ||
+        reconnect.routing?.kind === "wally"
         ? reconnect.routing.kind
         : reconnect.provider
       : initialProvider,
@@ -145,11 +152,13 @@ export function AiProviderSetup({
   });
   const agentsView = useQueryView(agents);
   const label = providerLabel ?? providers.find((p) => p.id === provider)?.name ?? (provider === "github" ? "GitHub Copilot" : "provider");
-  const advanced = reconnect ? Boolean(reconnect.routing) : ["openrouter", "bedrock", "gateway", "local"].includes(provider ?? "");
+  const advanced = reconnect ? Boolean(reconnect.routing) : ["openrouter", "wally", "bedrock", "gateway", "local"].includes(provider ?? "");
   const nativeProvider: AiProvider =
     provider === "bedrock"
       ? "anthropic"
-      : provider === "gateway" || provider === "local"
+      : provider === "wally"
+        ? "openai"
+        : provider === "gateway" || provider === "local"
         ? protocol === "messages"
           ? "anthropic"
           : "openai"
@@ -187,8 +196,13 @@ export function AiProviderSetup({
         reconnect?.routing ??
         aiProviderRoutingSchema.parse({
           kind: provider,
-          protocol: provider === "bedrock" ? "bedrock" : protocol,
-          auth: provider === "openrouter" ? "bearer" : auth,
+          protocol:
+            provider === "bedrock"
+              ? "bedrock"
+              : provider === "wally"
+                ? "chat"
+                : protocol,
+          auth: provider === "openrouter" || provider === "wally" ? "bearer" : auth,
           ...(provider === "bedrock"
             ? { region }
             : provider === "gateway" || provider === "local"
@@ -258,8 +272,10 @@ export function AiProviderSetup({
         disabled={Boolean(reconnect)}
       />
       <span className="block">
-        Use the provider’s model ID or your gateway’s alias. You can
-        also enter one on the agent.
+        {provider === "wally"
+          ? "Use a Wally model ID, for example deepseek-v4.1-flash."
+          : "Use the provider’s model ID or your gateway’s alias."}{" "}
+        You can also enter one on the agent.
       </span>
     </label>
   );
@@ -396,7 +412,7 @@ export function AiProviderSetup({
               />
             </label>
           )}
-          {provider !== "openrouter" && (
+          {provider !== "openrouter" && provider !== "wally" && (
             <label className="block space-y-2 text-xs text-muted-foreground">
               Authentication
               <Select

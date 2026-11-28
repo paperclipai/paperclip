@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "slug": "wally",
+  "name": "Wally",
+  "description": "Run agents on open-weight models through Wally's OpenAI-compatible API.",
+  "categories": [
+    "ai"
+  ],
+  "branding": {
+    "logoUrl": "/brands/apps/wally.svg"
+  },
+  "urlPatterns": [
+    "https://inference.runanywhere.ai/*"
+  ],
+  "methods": [
+    {
+      "key": "ai-api_key",
+      "label": "Wally API key",
+      "purpose": "ai",
+      "transport": "runtime_auth",
+      "auth": "api_key",
+      "ai": {
+        "provider": "openai",
+        "method": "api_key"
+      },
+      "grantKinds": [
+        "user",
+        "organization"
+      ],
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Run agents on open-weight models through Wally's OpenAI-compatible API.",
+      "guidanceMd": "Use your personal account or an explicitly shared company account.",
+      "riskTier": "S3",
+      "credentialFields": [
+        {
+          "key": "apiKey",
+          "label": "API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Enter API key",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "env",
+        "name": "OPENAI_API_KEY"
+      }
+    }
+  ],
+  "tags": [
+    "model-provider"
+  ]
+}
