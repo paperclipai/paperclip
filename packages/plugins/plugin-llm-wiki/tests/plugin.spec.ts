@@ -1923,7 +1923,7 @@ Duplicate headings receive stable suffixes.
   });
 
   it("assembles deterministic Paperclip source bundles with issue, document, and comment provenance", async () => {
-    const harness = createTestHarness({ manifest });
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "issue.documents.write"] });
     const root = paperclipIssue({
       id: "77777777-7777-4777-8777-777777777781",
       identifier: "PAP-4000",
@@ -1997,7 +1997,7 @@ Duplicate headings receive stable suffixes.
   });
 
   it("suppresses secret-like comment and document bodies before storing distillation snapshots", async () => {
-    const harness = createTestHarness({ manifest });
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "issue.documents.write"] });
     const issue = paperclipIssue({
       id: "77777777-7777-4777-8777-777777777784",
       identifier: "PAP-4002",
@@ -2489,7 +2489,7 @@ Duplicate headings receive stable suffixes.
   });
 
   it("keeps suppressed secret-like source content out of generated wiki patches", async () => {
-    const harness = createTestHarness({ manifest });
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "issue.documents.write"] });
     const project = existingProject();
     const issue = paperclipIssue({
       id: "77777777-7777-4777-8777-777777777796",
