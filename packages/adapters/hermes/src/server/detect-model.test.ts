@@ -184,3 +184,190 @@ test("testEnvironment does not warn about missing API keys when Hermes config pr
     expect(result.status).toBe("pass");
   });
 });
+
+test("testEnvironment does not warn when Hermes config points the requested model at a local Ollama endpoint", async () => {
+  await withHermesHomeConfig([
+    "model:",
+    "  default: llama3.2",
+    "  provider: ollama",
+    "  base_url: http://localhost:11434",
+  ], async () => {
+    const result = await testEnvironment({
+      companyId: "company-test",
+      adapterType: "hermes_local",
+      config: {
+        hermesCommand: "python3",
+        model: "llama3.2",
+      },
+    });
+
+    const codes = result.checks.map((check) => check.code);
+
+    expect(codes.includes("hermes_no_api_keys")).toBe(false);
+    expect(codes).toContain("hermes_local_endpoint_no_api_key");
+    expect(result.status).toBe("pass");
+  });
+});
+
+test("testEnvironment treats an explicit IPv6 loopback [::1] inference endpoint as loopback without an API key", async () => {
+  await withHermesHomeConfig([
+    "model:",
+    "  default: llama3.2",
+    "  provider: ollama",
+    "  base_url: http://[::1]:11434/v1",
+  ], async () => {
+    const result = await testEnvironment({
+      companyId: "company-test",
+      adapterType: "hermes_local",
+      config: {
+        hermesCommand: "python3",
+        model: "llama3.2",
+      },
+    });
+
+    const codes = result.checks.map((check) => check.code);
+
+    expect(codes.includes("hermes_no_api_keys")).toBe(false);
+    expect(codes).toContain("hermes_local_endpoint_no_api_key");
+    expect(result.status).toBe("pass");
+  });
+});
+
+test("testEnvironment still warns for a remote endpoint even when the detected model matches the requested one", async () => {
+  await withHermesHomeConfig([
+    "model:",
+    "  default: llama3.2",
+    "  provider: ollama",
+    "  base_url: https://api.example.com/v1",
+  ], async () => {
+    const result = await testEnvironment({
+      companyId: "company-test",
+      adapterType: "hermes_local",
+      config: {
+        hermesCommand: "python3",
+        model: "llama3.2",
+      },
+    });
+
+    const codes = result.checks.map((check) => check.code);
+
+    expect(codes.includes("hermes_no_api_keys")).toBe(true);
+    expect(codes).not.toContain("hermes_local_endpoint_no_api_key");
+  });
+});
+
+test("testEnvironment still warns when a loopback endpoint's model does not match the requested override", async () => {
+  await withHermesHomeConfig([
+    "model:",
+    "  default: llama3.2",
+    "  provider: ollama",
+    "  base_url: http://localhost:11434",
+  ], async () => {
+    const result = await testEnvironment({
+      companyId: "company-test",
+      adapterType: "hermes_local",
+      config: {
+        hermesCommand: "python3",
+        model: "gpt-4",
+      },
+    });
+
+    const codes = result.checks.map((check) => check.code);
+
+    expect(codes.includes("hermes_no_api_keys")).toBe(true);
+    expect(codes).not.toContain("hermes_local_endpoint_no_api_key");
+  });
+});
+
+test("testEnvironment treats a private-network address as remote, not loopback", async () => {
+  await withHermesHomeConfig([
+    "model:",
+    "  default: llama3.2",
+    "  provider: ollama",
+    "  base_url: http://192.168.1.50:11434",
+  ], async () => {
+    const result = await testEnvironment({
+      companyId: "company-test",
+      adapterType: "hermes_local",
+      config: {
+        hermesCommand: "python3",
+        model: "llama3.2",
+      },
+    });
+
+    const codes = result.checks.map((check) => check.code);
+
+    expect(codes.includes("hermes_no_api_keys")).toBe(true);
+    expect(codes).not.toContain("hermes_local_endpoint_no_api_key");
+  });
+});
+
+test("testEnvironment treats http://127.0.0.1:11434/v1 as loopback without an API key", async () => {
+  await withHermesHomeConfig([
+    "model:",
+    "  default: llama3.2",
+    "  provider: ollama",
+    "  base_url: http://127.0.0.1:11434/v1",
+  ], async () => {
+    const result = await testEnvironment({
+      companyId: "company-test",
+      adapterType: "hermes_local",
+      config: {
+        hermesCommand: "python3",
+        model: "llama3.2",
+      },
+    });
+
+    const codes = result.checks.map((check) => check.code);
+
+    expect(codes.includes("hermes_no_api_keys")).toBe(false);
+    expect(codes).toContain("hermes_local_endpoint_no_api_key");
+    expect(result.status).toBe("pass");
+  });
+});
+
+test("testEnvironment treats a deceptive hostname as remote, not loopback", async () => {
+  await withHermesHomeConfig([
+    "model:",
+    "  default: llama3.2",
+    "  provider: ollama",
+    "  base_url: http://notlocalhost:11434",
+  ], async () => {
+    const result = await testEnvironment({
+      companyId: "company-test",
+      adapterType: "hermes_local",
+      config: {
+        hermesCommand: "python3",
+        model: "llama3.2",
+      },
+    });
+
+    const codes = result.checks.map((check) => check.code);
+
+    expect(codes.includes("hermes_no_api_keys")).toBe(true);
+    expect(codes).not.toContain("hermes_local_endpoint_no_api_key");
+  });
+});
+
+test("testEnvironment treats a non-HTTP URL scheme as remote, not loopback", async () => {
+  await withHermesHomeConfig([
+    "model:",
+    "  default: llama3.2",
+    "  provider: ollama",
+    "  base_url: ftp://127.0.0.1:21",
+  ], async () => {
+    const result = await testEnvironment({
+      companyId: "company-test",
+      adapterType: "hermes_local",
+      config: {
+        hermesCommand: "python3",
+        model: "llama3.2",
+      },
+    });
+
+    const codes = result.checks.map((check) => check.code);
+
+    expect(codes.includes("hermes_no_api_keys")).toBe(true);
+    expect(codes).not.toContain("hermes_local_endpoint_no_api_key");
+  });
+});
