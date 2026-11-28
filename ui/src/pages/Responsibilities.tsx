@@ -2,10 +2,10 @@ import { useResolvedViewerId } from "@/hooks/useResolvedViewerId";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { ResponsibilityArea, ResponsibilityWithRollup } from "@paperclipai/shared";
-import { Filter, Plus } from "lucide-react";
+import { Plus } from "lucide-react";
 import { describeError } from "@/api/errors";
 import { responsibilitiesApi } from "@/api/responsibilities";
-import { FilterGroup, FilterRow } from "@/components/CollectionFilterOptions";
+import { FilterGroup, FilterRow, ToolbarFilterPopover } from "@/components/CollectionFilterOptions";
 import { PageSkeleton } from "@/components/PageSkeleton";
 import { QueryErrorState, QueryView, useQueryView } from "@/components/QueryView";
 import { ToolbarSearch } from "@/components/ToolbarSearch";
@@ -36,8 +36,6 @@ import {
 } from "@/components/responsibilities/ResponsibilityDelegateDialog";
 import { usePageView } from "@/components/responsibilities/usePageView";
 import { Button } from "@/components/ui/button";
-import { FlyoutAppearanceProvider, FlyoutHeader } from "@/components/ui/flyout";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { useAgentlessOnboardingAutoOpen } from "@/hooks/useAgentlessOnboardingAutoOpen";
@@ -48,11 +46,10 @@ import {
   type AttentionItem,
 } from "@/lib/responsibilities";
 import {
-  filterOutlineV2Groups,
   outlineV2Counts,
   outlineV2CountsLabel,
   outlineV2Groups,
-  searchOutlineV2Groups,
+  outlineV2VisibleGroups,
   type OutlineV2RoutineFilter,
 } from "@/lib/responsibility-outline-v2";
 import { DASHBOARD_DEFAULT_VIEW, DASHBOARD_VIEW_OPTIONS } from "@/lib/responsibility-views";
@@ -146,15 +143,18 @@ function OwnerDashboard({ selectedCompanyId, ownerUserId }: { selectedCompanyId:
     () => (overview ? outlineV2Groups(overview.areas, overview.responsibilities, keepEmptyAreas) : null),
     [overview, keepEmptyAreas],
   );
+  const visibleOutlineGroups = useMemo(
+    () => (outlineGroups ? outlineV2VisibleGroups(outlineGroups, { search, routineFilter }) : null),
+    [outlineGroups, search, routineFilter],
+  );
   // Outline v2's one line of numbers, beside its search and filter. Null on an empty dashboard.
   const outlineCounts = useMemo(() => {
-    if (!overview || !outlineGroups) return null;
+    if (!overview || !outlineGroups || !visibleOutlineGroups) return null;
     const total = outlineV2Counts(outlineGroups);
     // The same rule as the view's empty state, which shows only the create module.
     if (total.areas === 0 && total.responsibilities === 0 && overview.proposed.length === 0) return null;
-    const visible = searchOutlineV2Groups(filterOutlineV2Groups(outlineGroups, routineFilter), search.trim());
-    return outlineV2Counts(visible);
-  }, [overview, outlineGroups, routineFilter, search]);
+    return outlineV2Counts(visibleOutlineGroups);
+  }, [overview, outlineGroups, visibleOutlineGroups]);
 
   const openAdd = useCallback((areaId: string | null) => setAdding({ areaId }), []);
   const agentName = useCallback((id: string) => agentsById.get(id)?.name, [agentsById]);
@@ -197,56 +197,30 @@ function OwnerDashboard({ selectedCompanyId, ownerUserId }: { selectedCompanyId:
                   placeholder="Search"
                   inputType="search"
                 />
-                <FlyoutAppearanceProvider appearance="refreshed">
-                  <Popover>
-                    <PopoverTrigger asChild>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="icon"
-                        className="design-toolbar-button design-toolbar-icon relative"
-                        title={routineFilter !== "all" ? "Filters: 1" : "Filter"}
-                        aria-label={routineFilter !== "all" ? "Filter responsibilities (1)" : "Filter responsibilities"}
-                        data-active={routineFilter !== "all"}
-                        data-outline-v2-filter=""
-                      >
-                        <Filter aria-hidden="true" />
-                        {routineFilter !== "all" ? (
-                          <span
-                            aria-hidden="true"
-                            className="absolute -right-1 -top-1 flex size-3.5 items-center justify-center rounded-full bg-primary text-(length:--text-nano) font-semibold text-primary-foreground"
-                          >
-                            1
-                          </span>
-                        ) : null}
-                      </Button>
-                    </PopoverTrigger>
-                    <PopoverContent align="start" className="w-56 p-0" aria-label="Filter responsibilities">
-                      <FlyoutHeader className="flex items-center justify-between">
-                        <span>Filters</span>
-                        {routineFilter !== "all" ? (
-                          <Button type="button" variant="ghost" size="xs" onClick={clearRoutineFilter}>
-                            Clear
-                          </Button>
-                        ) : null}
-                      </FlyoutHeader>
-                      <div className="p-3">
-                        <FilterGroup title="Routines" optionsKey="routines">
-                          <FilterRow
-                            label="Has routines"
-                            checked={routineFilter === "has_routines"}
-                            onToggle={() => setRoutineFilter((current) => (current === "has_routines" ? "all" : "has_routines"))}
-                          />
-                          <FilterRow
-                            label="No routines"
-                            checked={routineFilter === "no_routines"}
-                            onToggle={() => setRoutineFilter((current) => (current === "no_routines" ? "all" : "no_routines"))}
-                          />
-                        </FilterGroup>
-                      </div>
-                    </PopoverContent>
-                  </Popover>
-                </FlyoutAppearanceProvider>
+                <ToolbarFilterPopover
+                  activeCount={routineFilter === "all" ? 0 : 1}
+                  onClear={clearRoutineFilter}
+                  label="Filter responsibilities"
+                  contentLabel="Filter responsibilities"
+                  align="start"
+                  contentClassName="w-56"
+                  triggerDataAttr="data-outline-v2-filter"
+                >
+                  <div className="task-filters-grid">
+                    <FilterGroup title="Routines" optionsKey="routines">
+                      <FilterRow
+                        label="Has routines"
+                        checked={routineFilter === "has_routines"}
+                        onToggle={() => setRoutineFilter((current) => (current === "has_routines" ? "all" : "has_routines"))}
+                      />
+                      <FilterRow
+                        label="No routines"
+                        checked={routineFilter === "no_routines"}
+                        onToggle={() => setRoutineFilter((current) => (current === "no_routines" ? "all" : "no_routines"))}
+                      />
+                    </FilterGroup>
+                  </div>
+                </ToolbarFilterPopover>
               </div>
               <p className="text-sm text-muted-foreground" data-dashboard-counts="">{outlineV2CountsLabel(outlineCounts)}</p>
             </div>
@@ -321,7 +295,17 @@ function OwnerDashboard({ selectedCompanyId, ownerUserId }: { selectedCompanyId:
           if (view === "full") return <ResponsibilitiesHomeLayout {...layoutProps} />;
           const viewProps = { ...layoutProps, onAddArea: () => setAddingArea(true), onReviewProposals: () => visit("full") };
           if (view === "outline") return <DashboardOutline {...viewProps} />;
-          if (view === "outline_v2") return <DashboardOutlineV2 {...viewProps} search={search} routineFilter={routineFilter} onClearFilter={clearRoutineFilter} />;
+          if (view === "outline_v2") {
+            return (
+              <DashboardOutlineV2
+                {...viewProps}
+                search={search}
+                routineFilter={routineFilter}
+                visibleGroups={visibleOutlineGroups ?? undefined}
+                onClearFilter={clearRoutineFilter}
+              />
+            );
+          }
           if (view === "board") return <DashboardBoard {...viewProps} />;
           if (view === "automation") return <DashboardAutomation {...viewProps} />;
           if (view === "agent_status") return <DashboardAgentStatus {...viewProps} />;

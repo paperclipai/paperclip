@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   areaDealFlow,
+  areaFixture,
   areaFundraising,
   areaLegal,
   areaPortfolio,
@@ -19,6 +20,7 @@ import {
   outlineV2Groups,
   outlineV2Href,
   outlineV2Line,
+  outlineV2VisibleGroups,
   readCollapsedAreas,
   searchOutlineV2Groups,
   writeCollapsedAreas,
@@ -154,6 +156,46 @@ describe("filterOutlineV2Groups", () => {
       [OUTLINE_V2_NO_AREA_KEY, ["resp-board-reporting"]],
     ]);
   });
+
+  it.each(["has_routines", "no_routines"] as const)(
+    "bounds large-collection filtering work linearly for %s across 600 responsibilities",
+    (routineFilter) => {
+      const areaCount = 60;
+      const perArea = 10;
+      const total = areaCount * perArea;
+      const areas = Array.from({ length: areaCount }, (_, index) =>
+        areaFixture({ id: `area-${index}`, title: `Area ${index}`, sortOrder: index }),
+      );
+      let rowReads = 0;
+      const responsibilities = Array.from({ length: total }, (_, index) => {
+        const hasRoutine = index % 2 === 0;
+        const item = responsibilityFixture({
+          id: `resp-${index}`,
+          areaId: `area-${Math.floor(index / perArea)}`,
+          title: `Responsibility ${index}`,
+          standard: hasRoutine ? `Automated standard ${index}` : `Manual standard ${index}`,
+          rollup: {
+            routines: hasRoutine ? 2 : 0,
+            routineAgentIds: hasRoutine ? [`agent-${index % 500}`, `agent-${(index + 1) % 500}`] : [],
+          },
+        });
+        return new Proxy(item, {
+          get(target, property, receiver) {
+            if (++rowReads > total * 16) {
+              throw new Error("Outline v2 filtering exceeded linear collection work bound");
+            }
+            return Reflect.get(target, property, receiver);
+          },
+        });
+      });
+
+      const grouped = outlineV2Groups(areas, responsibilities);
+      const visible = outlineV2VisibleGroups(grouped, { routineFilter, search: "standard" });
+      expect(outlineV2Counts(visible)).toEqual({ areas: areaCount, responsibilities: total / 2 });
+      expect(rowReads).toBeGreaterThanOrEqual(total);
+      expect(rowReads).toBeLessThanOrEqual(total * 16);
+    },
+  );
 });
 
 describe("collapsed areas in storage", () => {

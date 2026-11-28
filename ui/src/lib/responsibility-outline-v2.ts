@@ -120,6 +120,19 @@ export function searchOutlineV2Groups(groups: readonly OutlineV2Group[], query: 
   return found;
 }
 
+/**
+ * Single selector for the Outline v2 groups shown after applying both the
+ * routine filter and search query, shared by the header counts and the list.
+ */
+export function outlineV2VisibleGroups(
+  groups: readonly OutlineV2Group[],
+  options: { search?: string; routineFilter?: OutlineV2RoutineFilter },
+): OutlineV2Group[] {
+  const routineFilter = options.routineFilter ?? "all";
+  const query = options.search?.trim() ?? "";
+  return searchOutlineV2Groups(filterOutlineV2Groups(groups, routineFilter), query);
+}
+
 /** A row's link: the responsibility page, opened in its simplified view. */
 export function outlineV2Href(responsibilityId: string): string {
   return `${responsibilityPath(responsibilityId)}?view=${OUTLINE_V2_RESPONSIBILITY_VIEW}`;
