@@ -11,6 +11,7 @@ import {
   askUserQuestionsPayloadSchema,
   createIssueThreadInteractionSchema,
   paperclipQuestionSetPayloadSchema,
+  requestConfirmationCustomTargetSchema,
   requestConfirmationPayloadSchema,
   requestConfirmationResultSchema,
   requestItemVerdictsResultSchema,
@@ -643,6 +644,36 @@ describe("issue thread interaction schemas", () => {
         requireReasonOn: ["defer"],
       },
     })).toThrow("requireReasonOn must reference enabled verdicts");
+  });
+
+  it("accepts the connection-authorization key built for an app-gallery connection", () => {
+    const key = `connection:app-gallery:somevend:11111111-1111-4111-8111-111111111111/${"s".repeat(19)}:user:${"u".repeat(32)}`;
+    expect(key.length).toBe(126);
+    const parsed = requestConfirmationCustomTargetSchema.parse({
+      type: "custom",
+      key,
+      label: "Connect somevend",
+    });
+    expect(parsed.key).toBe(key);
+  });
+
+  it("accepts the longest connection-authorization key the producer can build", () => {
+    const uid = `${"a".repeat(160)}/${"n".repeat(160)}-12345678`;
+    expect(uid.length).toBe(330);
+    const key = `connection:${uid}:user:11111111-1111-4111-8111-111111111111`;
+    expect(key.length).toBe(383);
+    const payload = requestConfirmationPayloadSchema.parse({
+      version: 1,
+      prompt: "Connect your account to continue",
+      target: { type: "custom", key, label: "Connect account" },
+    });
+    if (payload.target?.type !== "custom") throw new Error("expected custom target");
+    expect(payload.target.key).toBe(key);
+  });
+
+  it("still rejects a custom target key longer than the raised limit", () => {
+    expect(requestConfirmationCustomTargetSchema.safeParse({ type: "custom", key: "k".repeat(500) }).success).toBe(true);
+    expect(requestConfirmationCustomTargetSchema.safeParse({ type: "custom", key: "k".repeat(501) }).success).toBe(false);
   });
 
   it("rejects duplicate request_item_verdicts submit ids", () => {

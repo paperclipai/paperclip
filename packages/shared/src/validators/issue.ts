@@ -1703,7 +1703,7 @@ export const requestConfirmationIssueDocumentTargetSchema =
 export const requestConfirmationCustomTargetSchema =
   requestConfirmationTargetBaseSchema.extend({
     type: z.literal("custom"),
-    key: z.string().trim().min(1).max(120),
+    key: z.string().trim().min(1).max(500),
     revisionId: z.string().trim().min(1).max(255).nullable().optional(),
     revisionNumber: z.number().int().positive().nullable().optional(),
   });
