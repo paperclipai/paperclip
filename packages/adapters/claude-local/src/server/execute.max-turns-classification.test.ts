@@ -29,6 +29,11 @@ import { execute } from "./execute.js";
 const POISONED_TOOL_OUTPUT =
   'execute.ts:1199: : failed && isClaudeModelNotFoundError({ ... ? "model_not_found"';
 
+// The agent's own tool output quoting an upstream auth rejection. The provider
+// never produced it, so it must not be read as a Claude login prompt.
+const POISONED_AUTH_TOOL_OUTPUT =
+  'GET /v1/messages -> HTTP/1.1 401 Unauthorized (authentication required)';
+
 function buildProcResult(resultEvent: Record<string, unknown>, extraStdout = "") {
   return {
     exitCode: 1,
@@ -91,6 +96,32 @@ describe("claude_local failure classification precedence", () => {
     const result = await execute(buildContext() as never);
 
     expect(result.errorCode).toBe("max_turns_exhausted");
+  });
+
+  it("keeps max_turns_exhausted when stdout quotes an auth rejection", async () => {
+    // A turn-limited run whose transcript contains an upstream 401 used to be
+    // misfiled as claude_auth_required, which marked the shared AI connection
+    // unhealthy and blocked every other agent on it.
+    mockExecutionResult(
+      buildProcResult(
+        { is_error: true, subtype: "error_max_turns", errors: ["Reached maximum number of turns (60)"] },
+        POISONED_AUTH_TOOL_OUTPUT,
+      ),
+    );
+
+    const result = await execute(buildContext() as never);
+
+    expect(result.errorCode).toBe("max_turns_exhausted");
+  });
+
+  it("still reports claude_auth_required when the provider refuses the credential", async () => {
+    mockExecutionResult(
+      buildProcResult({ is_error: true, subtype: "success", result: "Invalid API key · Please run /login" }),
+    );
+
+    const result = await execute(buildContext() as never);
+
+    expect(result.errorCode).toBe("claude_auth_required");
   });
 
   it("still reports model_not_found when the provider returns it", async () => {

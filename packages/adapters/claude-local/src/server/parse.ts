@@ -243,6 +243,14 @@ export function detectClaudeLoginRequired(input: {
   parsed: Record<string, unknown> | null;
   stdout: string;
   stderr: string;
+  /**
+   * The CLI ended on its structured `error_max_turns` result. That subtype is
+   * authoritative: the run stopped because it spent its turn budget, not
+   * because the provider rejected the credential. The broad login-prompt scan
+   * reads every stdout line, so an agent that printed a 401 body or quoted an
+   * auth message while working would otherwise be misfiled as a login failure.
+   */
+  maxTurnsExhausted?: boolean;
 }): { requiresLogin: boolean; loginUrl: string | null } {
   const parsed = input.parsed ?? null;
   const resultText = asString(parsed?.result, "").trim();
@@ -255,7 +263,9 @@ export function detectClaudeLoginRequired(input: {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
-  const loginPrompt = promptLines.some((line) => CLAUDE_LOGIN_PROMPT_RE.test(line));
+  const loginPrompt = input.maxTurnsExhausted === true
+    ? false
+    : promptLines.some((line) => CLAUDE_LOGIN_PROMPT_RE.test(line));
 
   // The token-failure markers match only against the parsed terminal fields of
   // a failed run. The raw stdout is untrusted, so a model that prints a token
