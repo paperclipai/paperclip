@@ -62,7 +62,7 @@ export interface AdapterDisplayInfo {
 }
 
 const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
-  antigravity_runtime: { label: "Google Antigravity", description: "Antigravity through Paperclip Runner", icon: Gem, hideFromVisualSelection: true },
+  antigravity_runtime: { label: "Google Antigravity", description: "Google Antigravity CLI harness", icon: Gem, hideFromVisualSelection: true },
   copilot_runtime: { label: "GitHub Copilot", description: "Copilot through Paperclip Runner", icon: Code, hideFromVisualSelection: true },
   kimi_runtime: { label: "Kimi Code (Runner)", description: "Kimi Code through Paperclip Runner", icon: Moon, hideFromVisualSelection: true },
   acpx_local: {
@@ -219,9 +219,35 @@ export function getAdapterDisplay(type: string): AdapterDisplayInfo {
   };
 }
 
+function firstNonEmptyCommand(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function extractExecutableName(command: string): string {
+  const match = /^(?:"([^"]+)"|'([^']+)'|(\S+))/.exec(command.trim());
+  const executable = match?.[1] ?? match?.[2] ?? match?.[3] ?? "";
+  return executable.split(/[\\/]/).pop() ?? "";
+}
+
+function usesAntigravityCommand(adapterConfig: Record<string, unknown> | undefined): boolean {
+  if (!adapterConfig) return false;
+  const engine = typeof adapterConfig.engine === "string" ? adapterConfig.engine.trim().toLowerCase() : "";
+  const activeCommand = engine === "cli"
+    ? firstNonEmptyCommand(adapterConfig.command)
+    : firstNonEmptyCommand(adapterConfig.agentCommand, adapterConfig.acpAgentCommand, adapterConfig.command);
+  if (!activeCommand) return false;
+  return /^agy(?:\.(?:cmd|exe|bat))?$/i.test(extractExecutableName(activeCommand));
+}
+
 export function agentDisplayAdapterType(agent: { adapterType: string; adapterConfig: Record<string, unknown>; pauseReason?: unknown; metadata?: unknown }): string {
   const pendingSetup = pendingAgentSetupDisplayAdapter(agent);
   if (pendingSetup) return pendingSetup;
+  if (agent.adapterType === "gemini_local" && usesAntigravityCommand(agent.adapterConfig)) {
+    return "antigravity_runtime";
+  }
   if (agent.adapterType !== "paperclip_runner") return agent.adapterType;
   if (agent.adapterConfig.provider === "openai_dot" || agent.adapterConfig.provider === "grok_bot" || agent.adapterConfig.provider === "muse") {
     return agent.adapterConfig.provider;

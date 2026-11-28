@@ -27,8 +27,16 @@ function PropertyRow({ label, children }: { label: string; children: React.React
   );
 }
 
+export function agentConfiguredModel(adapterConfig: Record<string, unknown> | undefined): string | null {
+  const model = adapterConfig?.model;
+  if (typeof model !== "string") return null;
+  const trimmed = model.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 export function AgentProperties({ agent, runtimeState }: AgentPropertiesProps) {
   const { selectedCompanyId } = useCompany();
+  const configuredModel = agentConfiguredModel(agent.adapterConfig);
   const lastErrorIsActive = agent.status === "error";
 
   const { data: agents } = useQuery({
@@ -63,6 +71,11 @@ export function AgentProperties({ agent, runtimeState }: AgentPropertiesProps) {
         <PropertyRow label="Adapter">
           <span className="text-sm font-mono">{getAdapterLabel(agentDisplayAdapterType(agent))}</span>
         </PropertyRow>
+        {configuredModel ? (
+          <PropertyRow label="Model">
+            <span className="text-sm font-mono break-all">{configuredModel}</span>
+          </PropertyRow>
+        ) : null}
       </div>
 
       <Separator />

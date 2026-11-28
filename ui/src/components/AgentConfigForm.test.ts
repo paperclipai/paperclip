@@ -8,9 +8,10 @@ import {
 import { resolveForcedKubernetesEnvironment } from "../lib/forced-kubernetes-environment";
 
 describe("supportsAdapterModelRefresh", () => {
-  it("enables the model refresh action for Claude and Codex adapters", () => {
+  it("enables the model refresh action for Claude, Codex, and Gemini adapters", () => {
     expect(supportsAdapterModelRefresh("claude_local")).toBe(true);
     expect(supportsAdapterModelRefresh("codex_local")).toBe(true);
+    expect(supportsAdapterModelRefresh("gemini_local")).toBe(true);
     expect(supportsAdapterModelRefresh("acpx_local")).toBe(false);
   });
 
