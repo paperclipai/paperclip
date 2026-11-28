@@ -56,6 +56,8 @@ type ScopeRecord = {
   budgetHeld: boolean;
 };
 
+export type InvocationBlockCause = "company_paused" | "budget_exhausted";
+
 type PolicyRow = typeof budgetPolicies.$inferSelect;
 type IncidentRow = typeof budgetIncidents.$inferSelect;
 
@@ -232,11 +234,12 @@ async function readAdmissionScopes(db: Db, companyId: string, agentId: string | 
 }
 
 function scopePauseBlock(scopeType: BudgetScopeType, scopeId: string, scope: ScopeRecord, hasPolicies: boolean) {
+  const cause: InvocationBlockCause = scopeType === "company" && scope.paused ? "company_paused" : "budget_exhausted";
   if (scopeType !== "agent" && scope.paused && scope.pauseReason !== "budget") {
-    return { scopeType, scopeId, scopeName: scope.name, reason: `${scopeType === "company" ? "Company" : "Project"} is paused and cannot start new work.` };
+    return { scopeType, scopeId, scopeName: scope.name, cause, reason: `${scopeType === "company" ? "Company" : "Project"} is paused and cannot start new work.` };
   }
   if (scope.paused && scope.pauseReason === "budget" && !hasPolicies) {
-    return { scopeType, scopeId, scopeName: scope.name, reason: "Budget pause requires a policy or an explicit operator resume." };
+    return { scopeType, scopeId, scopeName: scope.name, cause, reason: "Budget pause requires a policy or an explicit operator resume." };
   }
   return null;
 }
@@ -701,15 +704,16 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     ));
     const observations = prepared?.observations ?? await computeObservedSpends(db, policies, now);
     const title = scopeType === "company" ? "Company" : scopeType === "agent" ? "Agent" : "Project";
+    const cause: InvocationBlockCause = scopeType === "company" && scope.paused ? "company_paused" : "budget_exhausted";
     for (const [index, policy] of policies.entries()) {
       const observed = observations[index];
       if (hardStopReached(policy, observed)) {
         await createIncidentIfNeeded(policy, "hard", observed);
         await pauseAndCancelScopeForBudget(policy, !scope.budgetHeld);
         if (unpricedUsageBlocks(policy, observed)) {
-          return { scopeType, scopeId, scopeName: scope.name, reason: `${title} cannot start work because recorded usage has no reliable price.` };
+          return { scopeType, scopeId, scopeName: scope.name, cause, reason: `${title} cannot start work because recorded usage has no reliable price.` };
         }
-        return { scopeType, scopeId, scopeName: scope.name, reason: scopeType === "project"
+        return { scopeType, scopeId, scopeName: scope.name, cause, reason: scopeType === "project"
           ? "Project cannot start work because its budget hard-stop is still exceeded."
           : `${title} is paused because its budget hard-stop was reached.` };
       }
@@ -811,6 +815,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
       policies: reservationIndexes.map(i => policies[i]), observations: reservationIndexes.map(i => observations[i]) });
     for (const [index, { scopeType, scopeId }] of scopes.entries()) {
       const scope = records[index];
+      const cause: InvocationBlockCause = scopeType === "company" && scope.paused ? "company_paused" : "budget_exhausted";
       const scoped = policies.map((policy, i) => ({ policy, observed: observations[i] }))
         .filter(({ policy }) => policy.scopeType === scopeType && policy.scopeId === scopeId);
       const pause = scopePauseBlock(scopeType, scopeId, scope, scoped.length > 0);
@@ -822,7 +827,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
       // worker releases it, admission does not wait for that.
       for (const { policy, observed } of scoped) {
         const title = scopeType === "company" ? "Company" : scopeType === "agent" ? "Agent" : "Project";
-        if (hardStopReached(policy, observed)) return admission({ scopeType, scopeId, scopeName: scope.name,
+        if (hardStopReached(policy, observed)) return admission({ scopeType, scopeId, scopeName: scope.name, cause,
           reason: unpricedUsageBlocks(policy, observed) ? `${title} cannot start work because recorded usage has no reliable price.`
             : scopeType === "project" ? "Project cannot start work because its budget hard-stop is still exceeded."
               : `${title} is paused because its budget hard-stop was reached.` });

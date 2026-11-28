@@ -2397,6 +2397,15 @@ export function recoveryService(
     return result?.awaiting === true;
   }
 
+  async function isCompanyPaused(companyId: string) {
+    const company = await db
+      .select({ status: companies.status })
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .then((rows) => rows[0] ?? null);
+    return company?.status === "paused";
+  }
+
   async function readInvocationBudgetBlock(
     issue: RecoveryIssue,
     agentId: string,
@@ -4974,6 +4983,10 @@ export function recoveryService(
 
     for (const issue of candidates) {
       if (handledIssueIds.has(issue.id)) continue;
+      if (await isCompanyPaused(issue.companyId)) {
+        result.skipped += 1;
+        continue;
+      }
       if (issue.originKind === "chat_channel") {
         if (opts?.skipExternalConversationSettlement) {
 
@@ -5297,6 +5310,10 @@ export function recoveryService(
         }
       }
       const budgetBlock = await readInvocationBudgetBlock(issue, agentId);
+      if (budgetBlock?.cause === "company_paused") {
+        result.skipped += 1;
+        continue;
+      }
       // A temporary hold (accounting still settling) only delays the task's
       // start or continuation; it is not a reason to escalate. Leave the task
       // as it is: settling accounting wakes this recovery again, which then
