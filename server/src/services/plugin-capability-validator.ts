@@ -107,6 +107,7 @@ const OPERATION_CAPABILITIES: Record<string, readonly PluginCapability[]> = {
   "approvals.respond": ["approvals.respond"],
   "approvals.decide": ["approvals.respond"],
   "activity.log": ["activity.log.write"],
+  "environmentTasks.reportStartupStage": ["environment.drivers.register"],
   "metrics.write": ["metrics.write"],
   "telemetry.track": ["telemetry.track"],
   "db.migrate": ["database.namespace.migrate"],

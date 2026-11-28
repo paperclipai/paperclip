@@ -5,6 +5,7 @@ import { environmentTaskErrorCodeData, environmentTaskOperationSchema, parseEnvi
   readEnvironmentTaskErrorCode, readEnvironmentTaskErrorDiagnostic } from "@paperclipai/plugin-sdk";
 import { executeEnvironmentTask, isSettledReadyRunnerState, settleDispatchedEnvironmentTask } from "../services/environment-task-runtime.js";
 import { NativeExecutionContext } from "../services/native-runtime/native-execution-context.js";
+import { beginRunStartupStages, clearAllRunStartupStages, getRunStartupStage, reportPluginStartupStage } from "../services/run-startup-stage.js";
 import { createRunnerProviderLaunch, runnerLaunchPreparationDigest, runnerLaunchRunDigest, runnerProviderLaunchRequirements } from "../vendor/paperclip-runner/index.js";
 
 const state = vi.hoisted(() => ({ plugin: {} as any, release: vi.fn(), identity: vi.fn(), config: vi.fn() }));
@@ -129,6 +130,24 @@ describe("plugin-provided Runner execution", () => {
     await expect(settleDispatchedEnvironmentTask(fixture.db, workers as never, { companyId: "company", id: leaseId }, { executionStopObserved: true })).resolves.toBe("completed");
     expect(operations).toEqual(preparationStopped ? ["status", "complete"] : ["status", "stop", "status", "complete"]);
   });
+  it("lets the task's plugin report a startup stage only while its operation runs", async () => {
+    beginRunStartupStages({ id: "run", companyId: "company", agentId: "agent", issueId: "issue" });
+    const workers = worker();
+    let duringCall: ReturnType<typeof getRunStartupStage> = null;
+    workers.call.mockImplementation(async () => {
+      expect(reportPluginStartupStage("another-plugin", "attempt-1", "starting_environment")).toBe(false);
+      expect(reportPluginStartupStage("original", "attempt-1", "starting_environment")).toBe(true);
+      duringCall = getRunStartupStage("run");
+      return { kind: "description", taskId: "attempt-1", runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
+    });
+    try {
+      await executeEnvironmentTask(database().db, workers as never, { companyId: "company", leaseId, operation: { kind: "describe" } });
+      expect(duringCall).toMatchObject({ stage: "starting_environment" });
+      expect(getRunStartupStage("run")).toMatchObject({ stage: "getting_ready" });
+      expect(reportPluginStartupStage("original", "attempt-1", "starting_environment")).toBe(false);
+    } finally { clearAllRunStartupStages(); }
+  });
+
   it("negotiates the transient context without reading transport for an older plugin", async () => {
     const context = new NativeExecutionContext({ binding: { companyId: "company", agentId: "agent", runId: "run" } } as never, 1_000);
     const workers = worker();

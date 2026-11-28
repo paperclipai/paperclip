@@ -792,6 +792,7 @@ Required SDK clients:
 - `ctx.secrets`
 - `ctx.assets`
 - `ctx.activity`
+- `ctx.environmentTasks`
 - `ctx.state`
 - `ctx.entities`
 - `ctx.projects`

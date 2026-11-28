@@ -321,6 +321,25 @@ Provider recovery, bounded host retention and deployment qualification are still
 required before activation. Recovery from a Core crash
 between claim and source authentication is not qualified by this integration.
 
+## Startup stages
+
+While the host waits for one of your task operations for a run (for example
+`prepare` or `submit`), your worker can tell the board which startup stage the
+task is on:
+
+```ts
+await ctx.environmentTasks.reportStartupStage({ taskId, stage: "starting_environment" });
+```
+
+The stages are the shared `RUN_STARTUP_STAGES`. The host also tracks the run's
+stage from its own steps. Your report shows instead of the host's stage until
+the operation returns, and it may name an earlier stage, such as a stopped
+machine starting during `submit`. The host ignores a report outside such an
+operation, for a task your plugin does not own, or after the agent turn has
+started. A report never fails the operation, so call it best effort. It
+requires `environment.drivers.register`. An older host does not have the
+method, so catch and ignore its error.
+
 ## Error codes
 
 Core does not read the text of a task error. To report a failure that Core can

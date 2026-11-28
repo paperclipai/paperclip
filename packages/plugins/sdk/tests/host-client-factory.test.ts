@@ -343,6 +343,18 @@ describe("createHostClientHandlers capability gating for LOOA-641 methods", () =
     expect(respondInteraction).toHaveBeenCalledOnce();
   });
 
+  it("gates startup stage reports on environment.drivers.register", async () => {
+    const reportStartupStage = vi.fn(async () => undefined);
+    const services = { environmentTasks: { reportStartupStage } } as unknown as HostServices;
+    const params = { taskId: "task-a", stage: "starting_environment" as const };
+    const denied = createHostClientHandlers({ pluginId: "paperclip.test", capabilities: ["issues.read"], services });
+    await expect(denied["environmentTasks.reportStartupStage"](params, context)).rejects.toBeInstanceOf(CapabilityDeniedError);
+    expect(reportStartupStage).not.toHaveBeenCalled();
+    const allowed = createHostClientHandlers({ pluginId: "paperclip.test", capabilities: ["environment.drivers.register"], services });
+    await expect(allowed["environmentTasks.reportStartupStage"](params, context)).resolves.toBeUndefined();
+    expect(reportStartupStage).toHaveBeenCalledExactlyOnceWith(params);
+  });
+
   it("denies approvals.decide without approvals.respond", async () => {
     const decide = vi.fn(async () => ({ approval: { id: "a" }, applied: true }));
     const services = { approvals: { decide } } as unknown as HostServices;

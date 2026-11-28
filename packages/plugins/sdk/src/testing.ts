@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createIssueThreadInteractionSchema, pluginOperationIssueOriginKind } from "@paperclipai/shared";
 import type {
+  RunStartupStage,
   PaperclipPluginManifestV1,
   PluginCapability,
   PluginEventType,
@@ -162,6 +163,8 @@ export interface TestHarness {
   simulateSessionEvent(sessionId: string, event: Omit<AgentSessionEvent, "sessionId">): void;
   logs: TestHarnessLogEntry[];
   activity: Array<{ message: string; entityType?: string; entityId?: string; metadata?: Record<string, unknown> }>;
+  /** Startup stages reported through `ctx.environmentTasks.reportStartupStage`, in order. */
+  startupStageReports: Array<{ taskId: string; stage: RunStartupStage }>;
   metrics: Array<{ name: string; value: number; tags?: Record<string, string> }>;
   telemetry: Array<{ eventName: string; dimensions?: Record<string, string | number | boolean> }>;
   dbQueries: Array<{ sql: string; params?: unknown[] }>;
@@ -510,6 +513,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
 
   const logs: TestHarnessLogEntry[] = [];
   const activity: TestHarness["activity"] = [];
+  const startupStageReports: TestHarness["startupStageReports"] = [];
   const metrics: TestHarness["metrics"] = [];
   const telemetry: TestHarness["telemetry"] = [];
   const dbQueries: TestHarness["dbQueries"] = [];
@@ -979,6 +983,12 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       async log(entry) {
         requireCapability(manifest, capabilitySet, "activity.log.write");
         activity.push(entry);
+      },
+    },
+    environmentTasks: {
+      async reportStartupStage(input) {
+        requireCapability(manifest, capabilitySet, "environment.drivers.register");
+        startupStageReports.push({ ...input });
       },
     },
     state: {
@@ -2793,6 +2803,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
     },
     logs,
     activity,
+    startupStageReports,
     metrics,
     telemetry,
     dbQueries,

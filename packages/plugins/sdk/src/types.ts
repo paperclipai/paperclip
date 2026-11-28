@@ -10,6 +10,7 @@
  */
 
 import type {
+  RunStartupStage,
   PaperclipPluginManifestV1,
   PluginStateScopeKind,
   PluginEventType,
@@ -788,6 +789,25 @@ export interface PluginActivityClient {
    * @param entry - The activity log entry to write
    */
   log(entry: PluginActivityLogEntry): Promise<void>;
+}
+
+/**
+ * `ctx.environmentTasks` — status reporting for this plugin's Runner tasks.
+ *
+ * Requires `environment.drivers.register`.
+ */
+export interface PluginEnvironmentTasksClient {
+  /**
+   * Report the startup stage of one of this plugin's Runner tasks while the
+   * host waits for an environment task operation on that task (for example
+   * `starting_environment` while a stopped machine starts during `submit`).
+   *
+   * The board shows the reported stage only for the rest of that operation.
+   * When it returns, the host's own stage for the run shows again. The host
+   * ignores a report outside such an operation, for another plugin's task, or
+   * after the run's agent turn has started. It never fails the operation.
+   */
+  reportStartupStage(input: { taskId: string; stage: RunStartupStage }): Promise<void>;
 }
 
 /**
@@ -2320,6 +2340,9 @@ export interface PluginContext {
 
   /** Write activity log entries. Requires `activity.log.write`. */
   activity: PluginActivityClient;
+
+  /** Report Runner task startup stages. Requires `environment.drivers.register`. */
+  environmentTasks: PluginEnvironmentTasksClient;
 
   /** Read and write scoped plugin state. Requires `plugin.state.read` / `plugin.state.write`. */
   state: PluginStateClient;
