@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
-import { and, eq, inArray, ne, notInArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
   approvals,
+  connectionIntentDeliveries,
   heartbeatRuns,
   issueApprovals,
   issueRelations,
@@ -90,7 +91,11 @@ type DurableWaitingFacts = {
   hasBlocker: boolean;
   hasPendingInteraction: boolean;
   hasPendingApproval: boolean;
+  hasPendingConnectionDelivery: boolean;
 };
+
+const CONNECTION_DELIVERY_ISSUE_STATUSES = new Set(["in_progress", "in_review"]);
+const connectionDeliveryIsFresh = sql`${connectionIntentDeliveries.createdAt} > now() - interval '5 minutes'`;
 
 function dispositionRepairDurablePathReason(issue: DispositionRepairIssue, facts: DurableWaitingFacts) {
   return issue.assigneeUserId
@@ -105,7 +110,9 @@ function dispositionRepairDurablePathReason(issue: DispositionRepairIssue, facts
             ? "interaction"
             : facts.hasPendingApproval
               ? "approval"
-              : null;
+              : facts.hasPendingConnectionDelivery && CONNECTION_DELIVERY_ISSUE_STATUSES.has(issue.status)
+                ? "connection_delivery"
+                : null;
 }
 
 /** Current wait facts for recovery resolution, without collecting retry fingerprints. */
@@ -133,7 +140,14 @@ export async function readDispositionRepairDurableWaitingState(
       where ${issueApprovals.companyId} = ${issue.companyId}
         and ${approvals.companyId} = ${issue.companyId}
         and ${issueApprovals.issueId} = ${issue.id}
-        and ${approvals.status} in ('pending', 'revision_requested')) as "hasPendingApproval"`);
+        and ${approvals.status} in ('pending', 'revision_requested')) as "hasPendingApproval",
+    exists (select 1 from ${connectionIntentDeliveries}
+      inner join ${issueThreadInteractions} on ${issueThreadInteractions.id} = ${connectionIntentDeliveries.interactionId}
+        and ${issueThreadInteractions.companyId} = ${connectionIntentDeliveries.companyId}
+      where ${connectionIntentDeliveries.companyId} = ${issue.companyId}
+        and ${issueThreadInteractions.issueId} = ${issue.id}
+        and ${connectionIntentDeliveries.deliveredAt} is null
+        and ${connectionDeliveryIsFresh}) as "hasPendingConnectionDelivery"`);
   const durablePathReason = dispositionRepairDurablePathReason(issue, facts!);
   return { hasDurableWaitingPath: durablePathReason !== null, durablePathReason };
 }
@@ -147,7 +161,7 @@ export async function collectDispositionRepairSourceState(
   },
 ): Promise<DispositionRepairSourceState> {
   const issue = input.issue;
-  const [blockers, children, interactions, linkedApprovals, workProducts, activeRuns, queuedWakes] =
+  const [blockers, children, interactions, linkedApprovals, workProducts, activeRuns, queuedWakes, pendingDeliveries] =
     await Promise.all([
       db
         .select({ id: issues.id, status: issues.status, assigneeAgentId: issues.assigneeAgentId })
@@ -249,12 +263,32 @@ export async function collectDispositionRepairSourceState(
               : sql`true`,
           ),
         ),
+      db
+        .select({ interactionId: connectionIntentDeliveries.interactionId })
+        .from(connectionIntentDeliveries)
+        .innerJoin(
+          issueThreadInteractions,
+          and(
+            eq(issueThreadInteractions.id, connectionIntentDeliveries.interactionId),
+            eq(issueThreadInteractions.companyId, connectionIntentDeliveries.companyId),
+          ),
+        )
+        .where(
+          and(
+            eq(connectionIntentDeliveries.companyId, issue.companyId),
+            eq(issueThreadInteractions.issueId, issue.id),
+            isNull(connectionIntentDeliveries.deliveredAt),
+            connectionDeliveryIsFresh,
+          ),
+        )
+        .limit(1),
     ]);
 
   const durablePathReason = dispositionRepairDurablePathReason(issue, {
     hasBlocker: blockers.length > 0,
     hasPendingInteraction: interactions.some((row) => row.status === "pending"),
     hasPendingApproval: linkedApprovals.some((row) => row.status === "pending" || row.status === "revision_requested"),
+    hasPendingConnectionDelivery: pendingDeliveries.length > 0,
   });
 
   const durableState = {
