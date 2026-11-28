@@ -1318,8 +1318,13 @@ function runnerCloseGraceMs(options: Pick<CapabilityRunnerdCodexTransportOptions
   // for its lifetime fence. Keep a drain round trip and suspension reserve too.
   // Explicit caller deadlines remain authoritative; all settlement proofs stay
   // mandatory even when the provider already completed its task.
-  return options.closeGraceMs ?? (options.provider === "acpx" && options.acpxAgent === "pi" ? 45_000 : 10_000);
+  const fallback = options.provider === "acpx" && options.acpxAgent === "pi" ? 45_000 : 10_000;
+  const configured = Number(process.env.PAPERCLIP_RUNNER_CLOSE_GRACE_MS);
+  const raised = Number.isFinite(configured) && configured > fallback ? Math.min(Math.trunc(configured), RUNNER_CLOSE_GRACE_CEILING_MS) : fallback;
+  return options.closeGraceMs ?? raised;
 }
+
+const RUNNER_CLOSE_GRACE_CEILING_MS = 120_000;
 
 const RUNNER_SUSPENSION_PROOF_READ_MS = 30_000;
 const RUNNER_SUSPENSION_PROOF_SETTLE_MS = 3_000;

@@ -2552,6 +2552,7 @@ it.each([
   { provider: "codex" as const, acpxAgent: undefined, closeGraceMs: undefined, drained: false },
   { provider: "acpx" as const, acpxAgent: "pi" as const, closeGraceMs: 400, drained: false },
 ])("keeps Pi stop, remote drain and suspension within a finite close budget ($provider, $closeGraceMs)", async ({ drained, ...options }) => {
+  vi.stubEnv("PAPERCLIP_RUNNER_CLOSE_GRACE_MS", undefined);
   vi.useFakeTimers();
   try {
     const { preparationDeadline, closeDeadline } = runnerdRecoveryInternals.runnerCloseDeadlines(
@@ -2582,7 +2583,26 @@ it.each([
     expect(await result).toBe(drained);
     expect(closeDeadline - preparationDeadline).toBeLessThanOrEqual(2_500);
     expect(runnerdRecoveryInternals.runnerCloseGraceMs(options)).toBeLessThanOrEqual(45_000);
-  } finally { vi.useRealTimers(); }
+  } finally { vi.useRealTimers(); vi.unstubAllEnvs(); }
+});
+
+it.each([
+  { configured: undefined, closeGraceMs: undefined, expected: 10_000 },
+  { configured: "60000", closeGraceMs: undefined, expected: 60_000 },
+  { configured: "60000", closeGraceMs: 400, expected: 400 },
+  { configured: "5000", closeGraceMs: undefined, expected: 10_000 },
+  { configured: "not-a-number", closeGraceMs: undefined, expected: 10_000 },
+  { configured: "900000", closeGraceMs: undefined, expected: 120_000 },
+])("raises the close budget from PAPERCLIP_RUNNER_CLOSE_GRACE_MS only above the default ($configured, $closeGraceMs)", ({ configured, closeGraceMs, expected }) => {
+  const previous = process.env.PAPERCLIP_RUNNER_CLOSE_GRACE_MS;
+  try {
+    if (configured === undefined) delete process.env.PAPERCLIP_RUNNER_CLOSE_GRACE_MS;
+    else process.env.PAPERCLIP_RUNNER_CLOSE_GRACE_MS = configured;
+    expect(runnerdRecoveryInternals.runnerCloseGraceMs({ provider: "codex", acpxAgent: undefined, closeGraceMs })).toBe(expected);
+  } finally {
+    if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_CLOSE_GRACE_MS;
+    else process.env.PAPERCLIP_RUNNER_CLOSE_GRACE_MS = previous;
+  }
 });
 
 it("joins an already-completed suspension without queuing a command to an exited runner", async () => {
