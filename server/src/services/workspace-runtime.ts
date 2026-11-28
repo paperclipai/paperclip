@@ -5240,7 +5240,7 @@ export async function allocateRuntimeServicePort(overrides?: {
 }
 
 function buildTemplateData(input: {
-  workspace: RealizedExecutionWorkspace;
+  workspace: Pick<RealizedExecutionWorkspace, "cwd" | "branchName" | "worktreePath" | "repoUrl" | "repoRef">;
   agent: ExecutionWorkspaceAgentRef;
   issue: ExecutionWorkspaceIssueRef | null;
   adapterEnv: Record<string, string>;
@@ -5280,6 +5280,34 @@ function renderRuntimeServiceEnv(input: {
   return rendered;
 }
 
+function resolveRuntimeServiceCwd(
+  service: Record<string, unknown>,
+  templateData: ReturnType<typeof buildTemplateData>,
+  workspaceCwd: string,
+) {
+  return resolveConfiguredPath(renderTemplate(asString(service.cwd, "."), templateData), workspaceCwd);
+}
+
+export function resolveRuntimeServiceCwdForControl(input: {
+  service: Record<string, unknown>;
+  workspace: Pick<RealizedExecutionWorkspace, "cwd" | "branchName" | "worktreePath" | "repoUrl" | "repoRef">;
+  agent: ExecutionWorkspaceAgentRef;
+  issue: ExecutionWorkspaceIssueRef | null;
+  adapterEnv?: Record<string, string>;
+  runningPort?: number | null;
+}) {
+  const portConfig = parseObject(input.service.port);
+  const explicitPort = asNumber(portConfig.value, asNumber(input.service.port, 0));
+  const templateData = buildTemplateData({
+    workspace: input.workspace,
+    agent: input.agent,
+    issue: input.issue,
+    adapterEnv: input.adapterEnv ?? {},
+    port: input.runningPort !== undefined ? input.runningPort : explicitPort > 0 ? explicitPort : null,
+  });
+  return resolveRuntimeServiceCwd(input.service, templateData, input.workspace.cwd);
+}
+
 function resolveRuntimeServiceReuseIdentity(input: {
   service: Record<string, unknown>;
   workspace: RealizedExecutionWorkspace;
@@ -5303,7 +5331,6 @@ function resolveRuntimeServiceReuseIdentity(input: {
   const serviceName = asString(input.service.name, "service");
   const lifecycle = asString(input.service.lifecycle, "shared") === "ephemeral" ? "ephemeral" : "shared";
   const command = asString(input.service.command, "");
-  const serviceCwdTemplate = asString(input.service.cwd, ".");
   const portConfig = parseObject(input.service.port);
   const envConfig = parseObject(input.service.env);
   const explicitPort = asNumber(portConfig.value, asNumber(input.service.port, 0));
@@ -5315,7 +5342,7 @@ function resolveRuntimeServiceReuseIdentity(input: {
     adapterEnv: input.adapterEnv,
     port: identityPort,
   });
-  const serviceCwd = resolveConfiguredPath(renderTemplate(serviceCwdTemplate, templateData), input.workspace.cwd);
+  const serviceCwd = resolveRuntimeServiceCwd(input.service, templateData, input.workspace.cwd);
   const renderedEnv = renderRuntimeServiceEnv({
     envConfig,
     templateData,
