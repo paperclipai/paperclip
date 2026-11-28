@@ -31,6 +31,12 @@ Explicit positive limits still stop at their deadline; connection/auth attempts,
 reconnect grace, cancellation, and idle cleanup remain bounded independently.
 Neither quiet tool execution nor a productive turn is an idle session.
 
+Cold native Codex startup allows 60 seconds for `initialize` and
+`thread/start`. The Rust provider request bound and controller admission bound
+match. `thread/resume`, other Codex requests, and warm admission retain their
+30-second bound. A startup that does not answer within 60 seconds still fails
+as a bounded timeout.
+
 The authenticated welcome advertises `connectionLeaseRenewalVersion: 1`.
 Supporting runners send `lease_renew` halfway through the remaining lease,
 independently of provider output. The request carries the current expiry and

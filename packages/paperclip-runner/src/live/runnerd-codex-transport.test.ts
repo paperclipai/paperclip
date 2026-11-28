@@ -5888,15 +5888,18 @@ describe("cold process admission budget", () => {
   it("bounds a cold OpenCode restore at 60 seconds", () => {
     expect(coldAdmissionTimeoutMs("opencode", undefined, true)).toBe(60_000);
   });
+  it("defaults cold admission to Codex when the provider is omitted", () => {
+    expect(coldAdmissionTimeoutMs("codex", undefined, true)).toBe(60_000);
+    expect(coldAdmissionTimeoutMs(undefined, undefined, true)).toBe(60_000);
+    expect(coldAdmissionTimeoutMs("codex", undefined, false)).toBe(30_000);
+  });
   it("preserves live adoption and every other provider at 30 seconds", () => {
     expect(coldAdmissionTimeoutMs("acpx", "pi", false)).toBe(30_000);
     expect(coldAdmissionTimeoutMs("opencode", undefined, false)).toBe(30_000);
     for (const agent of ["codex", "cursor", "copilot", "grok", undefined]) {
       expect(coldAdmissionTimeoutMs("acpx", agent, true)).toBe(30_000);
     }
-    for (const provider of ["codex", "cursor_cloud", undefined]) {
-      expect(coldAdmissionTimeoutMs(provider, "pi", true)).toBe(30_000);
-    }
+    expect(coldAdmissionTimeoutMs("cursor_cloud", "pi", true)).toBe(30_000);
   });
 });
 
