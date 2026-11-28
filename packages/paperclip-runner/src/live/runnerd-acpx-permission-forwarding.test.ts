@@ -10,6 +10,7 @@ import type { HarnessRuntimeRequest } from "../contracts/harness-driver.js";
 // event pump, registered handler, and request emission below all run unchanged.
 const peer = vi.hoisted(() => ({ current: null as TestPeer | null, readiness: {} as Record<string, unknown> }));
 interface TestPeer {
+  readonly recoveredSourceSeq: number;
   store: { state: { identity: DurableRecoveryIdentity; committedEvents: DurableRecoveryCommittedEvent[]; commands: Array<Record<string, unknown>> } };
   emit(type: string, payload: Record<string, unknown>): void;
 }
@@ -19,8 +20,14 @@ vi.mock("../control-plane/durable-prp-control-plane.js", async (importOriginal) 
     ...actual,
     spawnRunner: vi.fn(() => ({ child: { exitCode: null }, completion: new Promise(() => {}) })),
     DurablePrpControlPlane: class implements TestPeer {
+      readonly recoveredSourceSeq = 0;
       store: TestPeer["store"];
       connectUrl = "ws://fixture.invalid";
+      readers = new Set<() => void>();
+      onReadableStateChange(reader: () => void) {
+        this.readers.add(reader);
+        return () => { this.readers.delete(reader); };
+      }
       constructor(options: { identity: DurableRecoveryIdentity }) {
         this.store = { state: { identity: options.identity, committedEvents: [], commands: [] } };
         peer.current = this;
@@ -30,7 +37,11 @@ vi.mock("../control-plane/durable-prp-control-plane.js", async (importOriginal) 
       async drainPendingConnectionProcessing() {}
       disconnectActiveRunner() {}
       persistRunAttachTemplate() {}
+      persistPreparedLaunchConfiguration() {}
+      unclaimedBootstrapCheckpoint() { return null; }
       issueBootstrapTicket() { return {}; }
+      async flushCheckpoint() {}
+      async recoverPendingSemanticInputs() {}
       getCommand(id: string) { return this.store.state.commands.find(c => c.commandId === id); }
       queueCommand(type: string, payload: Record<string, unknown>, id = type) {
         this.store.state.commands.push({ type, commandId: id, status: "completed", result: { result: { providerTurnId: payload.turnId } } });
@@ -48,6 +59,7 @@ vi.mock("../control-plane/durable-prp-control-plane.js", async (importOriginal) 
           priority: 0, deliveryCount: 1, logicalEffectCount: 1,
           envelope: { turnId: this.store.state.identity.turnId, payload: { payload } },
         });
+        for (const reader of this.readers) reader();
       }
     },
   };

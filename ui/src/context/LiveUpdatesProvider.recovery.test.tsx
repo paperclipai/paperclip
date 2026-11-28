@@ -17,7 +17,9 @@ vi.mock("../api/auth", () => ({
 }));
 vi.mock("../api/health", () => ({ healthApi: { get: healthRead } }));
 import { LiveUpdatesProvider, useHasCompanyLiveConnection, useTaskRunLiveUpdates } from "./LiveUpdatesProvider";
-import { liveRunRefetchInterval } from "../lib/live-runs-cache";
+import { CONNECTED_ACTIVE_RUN_REFETCH_MS, liveRunRefetchInterval } from "../lib/live-runs-cache";
+import { taskBrowsersQueryKey } from "../lib/task-browsers-refresh";
+import { taskBrowsersRefetchInterval } from "../hooks/useTaskBrowsers";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -28,7 +30,9 @@ class Socket {
   onclose: (() => void) | null = null;
   onmessage: ((message: { data: string }) => void) | null = null;
   onerror: (() => void) | null = null;
+  sent: Array<{ type: string; revision?: number }> = [];
   constructor() { Socket.instances.push(this); }
+  send(encoded: string) { this.sent.push(JSON.parse(encoded)); }
   close() { this.readyState = 3; }
 }
 
@@ -102,6 +106,70 @@ describe("LiveUpdatesProvider connection recovery", () => {
     }
   }
 
+  it.each([false, true])("discovers a run started in the resync gap after acknowledgement (older read pending=%s)", async pending => {
+    vi.stubGlobal("WebSocket", Socket);
+    await renderPolling();
+    const socket = Socket.instances[0];
+    const deliver = async (type: string, extras: Record<string, unknown> = {}) => {
+      await act(async () => socket.onmessage?.({ data: JSON.stringify({ type, version: 1, ...extras }) }));
+      await act(async () => vi.advanceTimersByTimeAsync(1));
+    };
+    await act(async () => socket.onopen?.());
+    await deliver("live.capabilities", { capabilities: ["run-interests"] });
+    await deliver("live.subscribed", { revision: socket.sent.at(-1)!.revision });
+    pollRead.mockClear();
+    let release!: (value: unknown) => void;
+    if (pending) pollRead.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    await deliver("live.resync", { revision: socket.sent.at(-1)!.revision });
+    expect(pollRead).toHaveBeenCalledOnce();
+    const next = [{ id: "new-run", status: "running" }];
+    pollRead.mockResolvedValue(next);
+    await deliver("live.subscribed", { revision: socket.sent.at(-1)!.revision });
+    if (pending) {
+      expect(pollRead).toHaveBeenCalledOnce();
+      await act(async () => release([]));
+      await act(async () => vi.advanceTimersByTimeAsync(1));
+    }
+    expect(pollRead).toHaveBeenCalledTimes(2);
+    expect(client.getQueryData(["company-1", "idle-run-fixture"])).toEqual(next);
+  });
+
+  it.each(["unmount", "disconnect", "company", "session", "hidden"])("discards a queued resync-ack refresh after %s", async change => {
+    vi.stubGlobal("WebSocket", Socket);
+    await renderPolling();
+    const socket = Socket.instances[0];
+    const deliver = async (type: string, extras: Record<string, unknown> = {}) => {
+      await act(async () => socket.onmessage?.({ data: JSON.stringify({ type, version: 1, ...extras }) }));
+      await act(async () => vi.advanceTimersByTimeAsync(1));
+    };
+    await act(async () => socket.onopen?.());
+    await deliver("live.capabilities", { capabilities: ["run-interests"] });
+    await deliver("live.subscribed", { revision: socket.sent.at(-1)!.revision });
+    let release!: (value: unknown) => void;
+    pollRead.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    await deliver("live.resync", { revision: socket.sent.at(-1)!.revision });
+    await deliver("live.subscribed", { revision: socket.sent.at(-1)!.revision });
+    if (change === "unmount") await act(async () => root.unmount());
+    if (change === "disconnect") await act(async () => socket.onerror?.());
+    if (change === "company") { companySelection.id = "company-2"; await renderPolling(); }
+    if (change === "session") {
+      const next = { user: { id: "viewer" }, session: { id: "replacement", userId: "viewer" } };
+      sessionRead.mockResolvedValue(next);
+      await act(async () => client.setQueryData(queryKeys.auth.session, next));
+      await act(async () => vi.advanceTimersByTimeAsync(1));
+    }
+    if (change === "hidden") await act(async () => {
+      vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    const reads = pollRead.mock.calls.length;
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    await act(async () => release([]));
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(pollRead).toHaveBeenCalledTimes(reads);
+    expect(invalidate).not.toHaveBeenCalled();
+  });
+
   it.each([null, []])("keeps setup polling, then stops known-empty polling after connection for %j", async (data) => {
     vi.stubGlobal("WebSocket", Socket);
     pollRead.mockResolvedValue(data);
@@ -118,9 +186,86 @@ describe("LiveUpdatesProvider connection recovery", () => {
     expect(pollRead).toHaveBeenCalledTimes(readsAfterOpen);
   });
 
-  it.each([[{ id: "run-1" }], { id: "run-1" }])("keeps active work polling while connected for %j", async (data) => {
+  it.each([
+    ["a run list", [{ id: "run-1", status: "running" }]],
+    ["a single run", { id: "run-1", status: "running" }],
+  ])("slows active work polling to the safety interval while connected for %s", async (_label, data) => {
     vi.stubGlobal("WebSocket", Socket);
     pollRead.mockResolvedValue(data);
+    await renderPolling();
+    await act(async () => Socket.instances[0].onopen?.());
+    await advancePolls(1);
+    pollRead.mockClear();
+    // Lifecycle events refresh active runs while connected; no one-second reads.
+    await advancePolls(5);
+    expect(pollRead).not.toHaveBeenCalled();
+    await advancePolls(Math.ceil(CONNECTED_ACTIVE_RUN_REFETCH_MS / 1000));
+    expect(pollRead.mock.calls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("reads task browsers again when the connection opens during an older empty read", async () => {
+    vi.stubGlobal("WebSocket", Socket);
+    const started = [{ id: "browser-1", status: "running" }];
+    let release!: (value: unknown) => void;
+    const browsersRead = vi.fn<() => Promise<unknown>>().mockResolvedValue(started);
+    function Browsers() {
+      const connected = useHasCompanyLiveConnection("company-1");
+      useQuery({
+        queryKey: taskBrowsersQueryKey("task-1"), queryFn: browsersRead,
+        refetchInterval: (query) => taskBrowsersRefetchInterval(connected, query.state as Parameters<typeof taskBrowsersRefetchInterval>[1]),
+      });
+      return null;
+    }
+    browsersRead.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    await act(async () => root.render(
+      <QueryClientProvider client={client}><LiveUpdatesProvider><Browsers /></LiveUpdatesProvider></QueryClientProvider>,
+    ));
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(browsersRead).toHaveBeenCalledTimes(1);
+    // The browser starts while the socket is closed; its activity is not replayed.
+    await act(async () => Socket.instances[0].onopen?.());
+    await act(async () => release([]));
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(browsersRead).toHaveBeenCalledTimes(2);
+    expect(client.getQueryData(taskBrowsersQueryKey("task-1"))).toEqual(started);
+  });
+
+  it("reads an idle task browser list once when the connection opens", async () => {
+    vi.stubGlobal("WebSocket", Socket);
+    const browsersRead = vi.fn<() => Promise<unknown>>().mockResolvedValue([]);
+    function Browsers() {
+      const connected = useHasCompanyLiveConnection("company-1");
+      useQuery({
+        queryKey: taskBrowsersQueryKey("task-1"), queryFn: browsersRead,
+        refetchInterval: (query) => taskBrowsersRefetchInterval(connected, query.state as Parameters<typeof taskBrowsersRefetchInterval>[1]),
+      });
+      return null;
+    }
+    await act(async () => root.render(
+      <QueryClientProvider client={client}><LiveUpdatesProvider><Browsers /></LiveUpdatesProvider></QueryClientProvider>,
+    ));
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    browsersRead.mockClear();
+    await act(async () => Socket.instances[0].onopen?.());
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    // The open reconcile reads it once; it is not followed up as an older read.
+    expect(browsersRead).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps one-second polling for active work after the connection closes", async () => {
+    vi.stubGlobal("WebSocket", Socket);
+    pollRead.mockResolvedValue([{ id: "run-1", status: "running" }]);
+    await renderPolling();
+    await act(async () => Socket.instances[0].onopen?.());
+    await act(async () => Socket.instances[0].onclose?.());
+    pollRead.mockClear();
+    await advancePolls(3);
+    expect(pollRead.mock.calls.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("keeps fallback polling for an unrecognized active result while connected", async () => {
+    vi.stubGlobal("WebSocket", Socket);
+    pollRead.mockResolvedValue({ id: "run-1" });
     await renderPolling();
     await act(async () => Socket.instances[0].onopen?.());
     pollRead.mockClear();
@@ -212,10 +357,43 @@ describe("LiveUpdatesProvider connection recovery", () => {
     expect(pollRead).toHaveBeenCalledTimes(afterOpen);
   });
 
-  it("discovers matching new runs after empty polling stops on an unfocused non-task route", async () => {
+  // A session restored from the saved query cache has no session id. Its first
+  // verified read is the same sign-in, so the socket stays open and nothing is
+  // refetched. Before, the new id reconnected the socket, and that open
+  // refreshed every active query, session and health included.
+  it("keeps the socket when the restored session is verified for the same user", async () => {
+    vi.stubGlobal("WebSocket", Socket);
+    client.setQueryData(queryKeys.auth.session, { user: { id: "viewer" }, session: { userId: "viewer" } });
+    await renderPolling();
+    expect(Socket.instances).toHaveLength(1);
+    await act(async () => Socket.instances[0].onopen?.());
+    expect(container.textContent).toBe("connected");
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    await act(async () => client.setQueryData(queryKeys.auth.session, { user: { id: "viewer" }, session: { id: "session", userId: "viewer" } }));
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(Socket.instances).toHaveLength(1);
+    expect(container.textContent).toBe("connected");
+    expect(invalidate).not.toHaveBeenCalled();
+    // A later replacement session still needs a new connection.
+    await act(async () => client.setQueryData(queryKeys.auth.session, { user: { id: "viewer" }, session: { id: "replacement", userId: "viewer" } }));
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(Socket.instances).toHaveLength(2);
+  });
+
+  it("reconnects when the verified session belongs to another user", async () => {
+    vi.stubGlobal("WebSocket", Socket);
+    client.setQueryData(queryKeys.auth.session, { user: { id: "viewer" }, session: { userId: "viewer" } });
+    await renderPolling();
+    await act(async () => Socket.instances[0].onopen?.());
+    await act(async () => client.setQueryData(queryKeys.auth.session, { user: { id: "other" }, session: { id: "other-session", userId: "other" } }));
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(Socket.instances).toHaveLength(2);
+    expect(container.textContent).toBe("fallback");
+  });
+
+  it.each(["DEMO-1", "issue-1"])("discovers and finishes runs with cache key %s on an unfocused non-task route", async queryRef => {
     vi.stubGlobal("WebSocket", Socket);
     vi.spyOn(document, "hasFocus").mockReturnValue(false);
-    const queryRef = "DEMO-1";
     const runRead = vi.fn<() => Promise<unknown>>().mockResolvedValue([]);
     const activeRead = vi.fn<() => Promise<unknown>>().mockResolvedValue(null);
     function TaskRuns() {
@@ -234,9 +412,9 @@ describe("LiveUpdatesProvider connection recovery", () => {
     await advancePolls(5);
     expect(runRead).not.toHaveBeenCalled();
     expect(activeRead).not.toHaveBeenCalled();
-    const deliver = async (companyId: string, payload: Record<string, unknown>) => {
+    const deliver = async (companyId: string, payload: Record<string, unknown>, type = "heartbeat.run.queued") => {
       await act(async () => socket.onmessage?.({ data: JSON.stringify({ id: 1, companyId,
-        type: "heartbeat.run.queued", createdAt: "2020-01-01T00:00:00Z", payload }) }));
+        type, createdAt: "2020-01-01T00:00:00Z", payload }) }));
       await act(async () => vi.advanceTimersByTimeAsync(1));
     };
     await deliver("company-2", { issueId: "issue-1", agentId: "agent-1", runId: "foreign" });
@@ -252,6 +430,11 @@ describe("LiveUpdatesProvider connection recovery", () => {
     await deliver("company-1", { agentId: "reviewer-agent", runId: "reviewer-run-without-task-id" });
     expect(runRead).toHaveBeenCalledTimes(2);
     expect(activeRead).toHaveBeenCalledTimes(2);
+    runRead.mockResolvedValue([]);
+    activeRead.mockResolvedValue(null);
+    await deliver("company-1", { issueId: "issue-1", agentId: "agent-1", runId: "new-run", status: "succeeded" }, "heartbeat.run.status");
+    expect(client.getQueryData(queryKeys.issues.liveRuns(queryRef))).toEqual([]);
+    expect(container.textContent).not.toContain("new-run");
   });
 
   it.each(["initial", "background", "connection setup"])("refetches after an older empty %s read settles when run events arrive during it", async (phase) => {

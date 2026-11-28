@@ -11,6 +11,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { pathToFileURL } from "node:url";
 import { sumAttemptCosts } from "./runner-protocol-eval-metrics.mjs";
 import {
   publicChatView,
@@ -397,7 +398,9 @@ export async function aggregateProtocolEvalCampaign({
   runsOut,
   campaignOut,
   source,
+  controllerArchiveCli = process.env.PAPERCLIP_RUNNER_EVAL_ARCHIVE_CLI,
 }) {
+  const controllerArchive = () => import(controllerArchiveCli ? pathToFileURL(resolve(controllerArchiveCli)).href : "./controlled-evals/archive.mjs");
   const catalog = await loadObject(catalogPath);
   if (catalog.schema !== "paperclip.runner-protocol-eval.catalog/v1") {
     throw new Error("Unsupported protocol eval catalog");
@@ -464,7 +467,7 @@ export async function aggregateProtocolEvalCampaign({
           throw error;
         });
         if (bundleStat) {
-          const { readAttemptControlledEvidence } = await import("./controlled-evals/archive.mjs");
+          const { readAttemptControlledEvidence } = await controllerArchive();
           const bundle = await readAttemptControlledEvidence(join(attemptRoot, entry.name));
           const allocation = bundle.manifest.attempts.find(item => item.attemptId === attemptId);
           const selectedExecutions = new Set(bundle.manifest.attempts.map(item => item.executionId));
@@ -550,7 +553,7 @@ export async function aggregateProtocolEvalCampaign({
   };
   let controlledCosts;
   if (controllerBundles.length) {
-    const { summarizeControlledEvidence } = await import("./controlled-evals/archive.mjs");
+    const { summarizeControlledEvidence } = await controllerArchive();
     controlledCosts = await summarizeControlledEvidence(controllerBundles);
     const allocatedAttempts = new Set(controlledCosts.campaigns.flatMap(campaign => campaign.attempts.map(attempt => attempt.attemptId)));
     if ([...copiedAttemptIds].some(id => !allocatedAttempts.has(id))) {

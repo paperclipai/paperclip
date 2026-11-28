@@ -74,6 +74,36 @@ Codex `turn/diff/updated` is normalized separately as the latest same-turn
 families can drive a turn-status UI without changing the public PRP family or
 adding a control-plane endpoint.
 
+## Governance activity: hooks and automatic approval reviews
+
+`hook.started` / `hook.completed` (`paperclip.hook.v1`) and
+`safety.review.started` / `safety.review.completed`
+(`paperclip.safety.review.v1`) are display records. They make decisions that
+no person clicked auditable. They never grant or deny execution authority.
+
+- A hook record has an `outcome`: `running`, `passed`, `context`, `feedback`,
+  `blocked`, `stopped` or `failed`. `message` holds the hook's own text for
+  that outcome. `source` names where the hook is configured (`user hooks`,
+  `project hooks`) or the script file name, never an absolute host path.
+  `toolName` is set only when the harness reports it.
+- A review record has a `decision`: `pending`, `allowed`, `denied`,
+  `user_required`, `timed_out`, `aborted` or `unknown`. `action` is a short
+  description of the reviewed action. Terminal input is never echoed.
+  `targetExecutionId` matches the `executionId` of the reviewed tool
+  execution when the harness reports one.
+- All fields after `summary` are optional. A record without them is a
+  valid v1 record.
+
+| Qualified adapter profile | Hooks | Approval reviews |
+|---|---|---|
+| Direct Codex App Server | `hook/started`, `hook/completed` | `item/autoApprovalReview/*` (only with an on-request approval policy) |
+| ACPX Claude | Claude Agent SDK hook messages, forwarded by the patched adapter on `session_info_update._meta.claudeCode.hook` | Unavailable |
+| Other ACPX profiles | Unavailable | Unavailable |
+
+Hooks run only when the harness home defines and trusts them. An isolated
+Paperclip home defines none, so these records appear for agents with a
+preconfigured home.
+
 ## Provider-neutral semantic receipts
 
 - `capabilities.semanticTools` advertises stable operation IDs, availability,

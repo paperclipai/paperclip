@@ -1,19 +1,23 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agentWakeupRequests, agents, companies, createDb, heartbeatRuns, heartbeatRunEvents, issueComments, issueThreadInteractions, issues, secretAccessEvents } from "@paperclipai/db";
+import { agentWakeupRequests, agents, companies, applyPendingMigrations, createDb, closeRegisteredClients, heartbeatRuns, heartbeatRunEvents, issueComments, issueThreadInteractions, issues, runIdentityContexts, secretAccessEvents } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
-import { acceptSteeredIdentity, captureRunIdentity, initializeRunIdentity, listRunIdentityContexts, rejectSteeredIdentity, reserveSteeredIdentity } from "../services/run-identity.js";
+import { acceptSteeredIdentity, reconcileSteeredIdentity, captureRunIdentity, initializeRunIdentity, listRunIdentityContexts, rejectSteeredIdentity, reserveSteeredIdentity } from "../services/run-identity.js";
 
-const support = await getEmbeddedPostgresTestSupport();
+const externalDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
+const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("durable execution identity", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
   beforeAll(async () => {
-    database = await startEmbeddedPostgresTestDatabase("paperclip-run-identity-");
-    db = createDb(database.connectionString);
+    if (externalDatabaseUrl) { await applyPendingMigrations(externalDatabaseUrl); db = createDb(externalDatabaseUrl); }
+    else {
+      database = await startEmbeddedPostgresTestDatabase("paperclip-run-identity-");
+      db = createDb(database.connectionString);
+    }
   }, 30_000);
-  afterAll(async () => { await database?.cleanup(); }, 60_000);
+  afterAll(async () => { if (externalDatabaseUrl) await closeRegisteredClients(externalDatabaseUrl); await database?.cleanup(); }, 60_000);
 
   async function seed() {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
@@ -123,7 +127,7 @@ const support = await getEmbeddedPostgresTestSupport();
     },
   );
 
-  it.each([undefined, "github_credentials", "request_authentication"] as const)("holds acquisition during uncertain steering and never rewinds on replay with %s", async (readScope) => {
+  it.each([undefined, "github_credentials", "request_authentication", "identity", "task_authorization", "token_broker", "project_execution"] as const)("holds acquisition during uncertain steering and never rewinds on replay with %s", async (readScope) => {
     const options = readScope ? { readScope } : undefined;
     const input = await seed();
     await initializeRunIdentity(db, { ...input, messageIds: [input.messageIds[0]], responsibleUserId: "A", cause: "instruction" });
@@ -139,8 +143,8 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await captureRunIdentity(db, input, options)).context?.responsibleUserId).toBe("B");
     expect(startedUnderA.context?.responsibleUserId).toBe("A");
     const a = await reserveSteeredIdentity(db, { ...input, messageId: input.messageIds[2] });
-    await acceptSteeredIdentity(db, a!);
-    await acceptSteeredIdentity(db, b!);
+    await reconcileSteeredIdentity(db, a!);
+    await reconcileSteeredIdentity(db, b!);
     expect((await captureRunIdentity(db, input, options)).context?.responsibleUserId).toBe("A");
   });
   it("keeps rejected steering unchanged and preserves the originating identity on retry", async () => {
@@ -176,7 +180,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(captured.run.responsibleUserId).toBeNull();
     expect(captured.context?.parentContextId).toBe(origin.id);
   });
-  it.each([undefined, "github_credentials", "request_authentication"] as const)("recovers an uncertain native acknowledgement with %s", async (readScope) => {
+  it.each([undefined, "github_credentials", "request_authentication", "identity", "task_authorization", "token_broker", "project_execution"] as const)("recovers an uncertain native acknowledgement with %s", async (readScope) => {
     const options = readScope ? { readScope } : undefined;
     const input = await seed();
     await initializeRunIdentity(db, { ...input, messageIds: [], responsibleUserId: "A", cause: "instruction" });
@@ -199,7 +203,7 @@ const support = await getEmbeddedPostgresTestSupport();
       sourceIdentityContextId: origin.id, payload: { prompt: "Continue?" } as never,
     });
     const b = await reserveSteeredIdentity(db, { ...input, messageId: input.messageIds[1] });
-    await acceptSteeredIdentity(db, b!);
+    await reconcileSteeredIdentity(db, b!);
     for (const approval of [true, false]) {
       const runId = randomUUID();
       await db.insert(heartbeatRuns).values({ id: runId, companyId: input.companyId, agentId: input.agentId, status: "running" });
@@ -236,6 +240,172 @@ const support = await getEmbeddedPostgresTestSupport();
     }
   });
 
+  it.each(["durable", "snapshot"])("continues a connected handoff and retains the latest identity on a %s retry", async (retryKind) => {
+    const input = await seed();
+    const origin = await initializeRunIdentity(db, {
+      ...input, messageIds: [], responsibleUserId: "A", cause: "company_default",
+    });
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId, companyId: input.companyId, issueId: input.issueId,
+      kind: "connection_intent", status: "accepted", sourceRunId: input.runId,
+      sourceIdentityContextId: origin.id, addresseeUserId: "B", resolvedByUserId: "B",
+      payload: { version: 1, serviceSlug: "openai", serviceName: "OpenAI", purpose: "ai", requestingAgentId: input.agentId, requestingAgentName: "Shared agent", phase: "requested" },
+      result: { version: 1, outcome: "connected", connectionId: randomUUID() }, resolvedAt: new Date(),
+    });
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId, companyId: input.companyId, agentId: input.agentId,
+      status: "running", contextSnapshot: { issueId: input.issueId, interactionId },
+    });
+    const continued = await initializeRunIdentity(db, {
+      ...input, runId, interactionId, messageIds: [], responsibleUserId: "A", cause: "issue_commented",
+    });
+    expect(continued).toMatchObject({
+      responsibleUserId: "B", parentContextId: origin.id, cause: "connection_handoff",
+    });
+    expect((await captureRunIdentity(db, { ...input, runId })).run.responsibleUserId).toBe("B");
+    const [task] = await db.select().from(issues).where(eq(issues.id, input.issueId));
+    expect(task).toMatchObject({ responsibleUserId: "owner", continuationIdentityContextId: continued.id });
+    const [request] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId));
+    expect(request.sourceIdentityContextId).toBe(origin.id);
+    expect((await listRunIdentityContexts(db, input.companyId, input.runId))[0].responsibleUserId).toBe("A");
+    const retryRunId = randomUUID();
+    const retryFields = retryKind === "durable" ? { retryOfRunId: runId }
+      : { contextSnapshot: { issueId: input.issueId, interactionId, retryOfRunId: runId } };
+    await db.insert(heartbeatRuns).values({ id: retryRunId, companyId: input.companyId, agentId: input.agentId, status: "running", ...retryFields });
+    expect(await initializeRunIdentity(db, {
+      ...input, runId: retryRunId, interactionId, messageIds: [], parentRunId: runId, responsibleUserId: "A", cause: "retry",
+    })).toMatchObject({ responsibleUserId: "B", parentContextId: continued.id });
+    const later = await reserveSteeredIdentity(db, { ...input, runId, messageId: input.messageIds[0] });
+    await db.transaction(tx => acceptSteeredIdentity(tx, later!));
+    const steeredRetryRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: steeredRetryRunId, companyId: input.companyId, agentId: input.agentId, status: "running", ...retryFields });
+    expect(await initializeRunIdentity(db, {
+      ...input, runId: steeredRetryRunId, interactionId, messageIds: [], parentRunId: runId, responsibleUserId: "B", cause: "retry",
+    })).toMatchObject({ responsibleUserId: "A", parentContextId: later!.id });
+  });
+
+  it.each(["durable", "snapshot"].flatMap(retryKind => ["A", null].map(person => ({ retryKind, person }))))(
+    "preserves an approval's saved identity $person after pre-initialization failure ($retryKind)", async ({ retryKind, person }) => {
+      const input = await seed();
+      const origin = await initializeRunIdentity(db, { ...input, messageIds: [], responsibleUserId: person, cause: "instruction" });
+      const interactionId = randomUUID(), failedRunId = randomUUID(), runId = randomUUID();
+      await db.insert(issueThreadInteractions).values({ id: interactionId, companyId: input.companyId, issueId: input.issueId,
+        kind: "request_confirmation", status: "accepted", sourceIdentityContextId: origin.id,
+        addresseeUserId: "B", resolvedByUserId: "B", payload: { prompt: "Continue?" } as never,
+      });
+      // Admission selected the task owner B, but preparation failed before the
+      // approval's originating identity could be restored on that run.
+      await db.insert(heartbeatRuns).values({ id: failedRunId, companyId: input.companyId, agentId: input.agentId,
+        status: "failed", responsibleUserId: "B", contextSnapshot: { issueId: input.issueId, interactionId } });
+      await db.insert(heartbeatRuns).values({ id: runId, companyId: input.companyId, agentId: input.agentId, status: "running",
+        ...(retryKind === "durable" ? { retryOfRunId: failedRunId } : {}),
+        contextSnapshot: { issueId: input.issueId, interactionId, retryOfRunId: failedRunId },
+      });
+      expect(await initializeRunIdentity(db, { ...input, runId, interactionId, messageIds: [],
+        responsibleUserId: "B", cause: "retry" })).toMatchObject({ responsibleUserId: person, parentContextId: origin.id });
+    },
+  );
+
+  it.each(["durable", "snapshot"])("retries a pre-initialization failure as the stored source person (%s)", async (retryKind) => {
+    const input = await seed();
+    await db.update(heartbeatRuns).set({ status: "failed", responsibleUserId: "A" }).where(eq(heartbeatRuns.id, input.runId));
+    // The task's continuation and the caller's fallback can name another person.
+    // Neither replaces the persisted person on this uninitialized source run.
+    const [otherRun] = await db.insert(heartbeatRuns).values({ companyId: input.companyId, agentId: input.agentId, status: "succeeded" }).returning();
+    const other = await initializeRunIdentity(db, { companyId: input.companyId, runId: otherRun.id, responsibleUserId: "B", cause: "instruction" });
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: input.companyId, agentId: input.agentId, status: "running",
+      ...(retryKind === "durable" ? { retryOfRunId: input.runId } : {}),
+      contextSnapshot: { issueId: input.issueId, retryOfRunId: input.runId },
+    });
+    expect(await initializeRunIdentity(db, { ...input, runId, messageIds: [], parentContextId: other.id,
+      responsibleUserId: "B", cause: "retry" })).toMatchObject({ responsibleUserId: "A", parentContextId: null });
+  });
+
+  it.each(["durable", "snapshot"].flatMap(retryKind =>
+    ["missing-context", "pending-context", "missing-parent"].map(fault => ({ retryKind, fault })),
+  ))("refuses a $retryKind retry with $fault instead of replaying a connection handoff", async ({ retryKind, fault }) => {
+    const input = await seed();
+    const origin = await initializeRunIdentity(db, { ...input, messageIds: [], responsibleUserId: "A", cause: "instruction" });
+    const interactionId = randomUUID(), previousRunId = randomUUID(), runId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId, companyId: input.companyId, issueId: input.issueId,
+      kind: "connection_intent", status: "accepted", addresseeUserId: "B", resolvedByUserId: "B",
+      sourceIdentityContextId: origin.id, payload: {} as never,
+      result: { version: 1, outcome: "connected", connectionId: randomUUID() },
+    });
+    if (fault !== "missing-parent") {
+      await db.insert(heartbeatRuns).values({ id: previousRunId, companyId: input.companyId, agentId: input.agentId, status: "failed" });
+      if (fault === "pending-context") {
+        const [pending] = await db.insert(runIdentityContexts).values({
+          companyId: input.companyId, runId: previousRunId, revision: 1, responsibleUserId: "C",
+          cause: "instruction", correlationId: "dispatch", status: "pending",
+        }).returning();
+        await db.update(heartbeatRuns).set({ activeIdentityContextId: pending.id }).where(eq(heartbeatRuns.id, previousRunId));
+      }
+    }
+    await db.insert(heartbeatRuns).values({
+      id: runId, companyId: input.companyId, agentId: input.agentId, status: "running",
+      // The durable FK is cleared if the previous run was deleted; the saved
+      // snapshot must still identify this as a retry rather than a new handoff.
+      ...(retryKind === "durable" && fault !== "missing-parent" ? { retryOfRunId: previousRunId } : {}),
+      contextSnapshot: { issueId: input.issueId, interactionId, retryOfRunId: previousRunId },
+    });
+    await expect(initializeRunIdentity(db, {
+      ...input, runId, interactionId, messageIds: [], parentRunId: previousRunId, responsibleUserId: "B", cause: "retry",
+    })).rejects.toThrow(/execution identity is unavailable/);
+    expect(await listRunIdentityContexts(db, input.companyId, runId)).toEqual([]);
+  });
+
+  it.each(["", "  ", true])("ignores an invalid legacy retry marker %j on a new accepted handoff", async (retryOfRunId) => {
+    const input = await seed();
+    const origin = await initializeRunIdentity(db, { ...input, messageIds: [], responsibleUserId: "A", cause: "instruction" });
+    const interactionId = randomUUID(), runId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId, companyId: input.companyId, issueId: input.issueId,
+      kind: "connection_intent", status: "accepted", addresseeUserId: "B", resolvedByUserId: "B",
+      sourceIdentityContextId: origin.id, payload: {} as never,
+      result: { version: 1, outcome: "connected", connectionId: randomUUID() },
+    });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: input.companyId, agentId: input.agentId,
+      status: "running", contextSnapshot: { issueId: input.issueId, interactionId, retryOfRunId } });
+    expect(await initializeRunIdentity(db, { ...input, runId, interactionId, parentRunId: input.runId,
+      messageIds: [], responsibleUserId: "A", cause: "continuation" })).toMatchObject({
+      responsibleUserId: "B", parentContextId: origin.id, cause: "connection_handoff",
+    });
+  });
+
+  it.each(["approval", "pending", "other-resolver", "unaddressed", "declined", "satisfied", "administrative-expiry", "agent-resolved", "unconnected", "missing-connection"])("retains source identity for a %s request without an accepted connection handoff", async (fault) => {
+    const input = await seed();
+    const origin = await initializeRunIdentity(db, { ...input, messageIds: [], responsibleUserId: "A", cause: "instruction" });
+    const interactionId = randomUUID(), runId = randomUUID();
+    const interaction: typeof issueThreadInteractions.$inferInsert = {
+      id: interactionId, companyId: input.companyId, issueId: input.issueId,
+      kind: "connection_intent", status: "accepted", addresseeUserId: "B", resolvedByUserId: "B",
+      sourceIdentityContextId: origin.id, payload: {} as never,
+      result: { version: 1, outcome: "connected", connectionId: randomUUID() },
+    };
+    if (fault === "approval") { interaction.kind = "request_confirmation"; interaction.result = { version: 1, outcome: "accepted" }; }
+    if (fault === "pending") { interaction.status = "pending"; interaction.resolvedByUserId = null; interaction.result = null; }
+    if (fault === "other-resolver") interaction.resolvedByUserId = "C";
+    if (fault === "unaddressed") interaction.addresseeUserId = null;
+    if (fault === "declined") { interaction.status = "rejected"; interaction.result = { version: 1, outcome: "declined" }; }
+    if (fault === "satisfied" || fault === "administrative-expiry") {
+      interaction.status = "expired"; interaction.resolvedByUserId = null;
+      interaction.result = { version: 1, outcome: "expired", ...(fault === "satisfied" ? { connectionId: randomUUID() } : { reason: "Request withdrawn" }) };
+    }
+    if (fault === "agent-resolved") interaction.resolvedByAgentId = input.agentId;
+    if (fault === "unconnected") interaction.result = { version: 1, outcome: "declined" };
+    if (fault === "missing-connection") interaction.result = { version: 1, outcome: "connected", connectionId: null };
+    await db.insert(issueThreadInteractions).values(interaction);
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: input.companyId, agentId: input.agentId, status: "running" });
+    expect(await initializeRunIdentity(db, {
+      ...input, runId, interactionId, messageIds: [], responsibleUserId: "B", cause: "continuation",
+    })).toMatchObject({ responsibleUserId: "A", parentContextId: origin.id });
+  });
+
   it.each(["update", "no key update"] as const)("serializes identity initialization behind a task's %s lock", async (lockMode) => {
     const input = await seed();
     let initialization!: ReturnType<typeof initializeRunIdentity>;
@@ -260,9 +430,9 @@ const support = await getEmbeddedPostgresTestSupport();
     await expect(initialization).resolves.toMatchObject({ responsibleUserId: "A" });
   });
 
-  it.each(["initialize", "capture"] as const)(
-    "can %s identity while an audit append holds foreign-key locks",
-    async (operation) => {
+  it.each((["initialize", "capture"] as const).flatMap(operation => [false, true].map(withQuery => ({ operation, withQuery }))))(
+    "can $operation identity while an audit append holds foreign-key locks (query: $withQuery)",
+    async ({ operation, withQuery }) => {
       const input = await seed();
       if (operation === "capture") {
         await initializeRunIdentity(db, { ...input, messageIds: [], responsibleUserId: "A", cause: "instruction" });
@@ -270,11 +440,22 @@ const support = await getEmbeddedPostgresTestSupport();
       // A real append holds KEY SHARE on both parent rows until it commits.
       // Bound the other connection's wait so a conflicting lock fails this
       // regression instead of leaving both transactions waiting for each other.
-      const identityDb = createDb(`${database.connectionString}?options=-c%20lock_timeout%3D1000`, {
+      const identityUrl = new URL(externalDatabaseUrl ?? database.connectionString);
+      if (withQuery) {
+        identityUrl.searchParams.set("application_name", "identity-query-test");
+        identityUrl.searchParams.set("options", [identityUrl.searchParams.get("options"), "-c statement_timeout=5000"].filter(Boolean).join(" "));
+      }
+      identityUrl.searchParams.set("options", [identityUrl.searchParams.get("options"), "-c lock_timeout=1000"].filter(Boolean).join(" "));
+      const identityDb = createDb(identityUrl.toString(), {
         maxConnections: 1,
       });
       const [settings] = await identityDb.execute(sql`show lock_timeout`);
       expect(settings?.lock_timeout).toBe("1s");
+      if (withQuery) {
+        expect(identityUrl.searchParams.get("application_name")).toBe("identity-query-test");
+        const [timeouts] = await identityDb.execute(sql`show statement_timeout`);
+        expect(timeouts?.statement_timeout).toBe("5s");
+      }
       await db.transaction(async (audit) => {
         await audit.insert(secretAccessEvents).values({
           companyId: input.companyId,

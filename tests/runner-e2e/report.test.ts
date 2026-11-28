@@ -8,6 +8,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { STARTUP_REUSE_LAYERS, STARTUP_REUSE_SCHEMA, summarizeStartupReuse } from "../../packages/adapter-utils/src/startup-reuse.js";
 import type { RunnerE2EResult } from "./types.js";
 import { classifyLatency, observationTiming } from "./latency-timing.js";
+import { projectTaskChatThread } from "./task-chat.js";
+import { regenerateRunnerDashboard } from "./dashboard-regenerate.js";
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
@@ -21,6 +23,44 @@ afterEach(async () => {
 });
 
 describe("runner E2E report aggregation", () => {
+  it("retains task conversations through aggregation and public dashboard regeneration", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-task-chat-report-"));
+    cleanupDirectories.push(root);
+    const directory = path.join(root, "attempt-1");
+    await mkdir(directory);
+    const executionId = "core-compatibility.runner-codex.local.message-marker";
+    const at = "2026-10-28T12:00:00Z";
+    const result: RunnerE2EResult = {
+      schema: "paperclip.runner-e2e.result/v2", executionId, suiteId: "core-compatibility", attempt: 1,
+      status: "passed", profileId: "runner-codex", environmentId: "local", caseId: "message-marker",
+      provider: "codex", model: "fixture", runtimeMode: "native", startedAt: at, finishedAt: at,
+      durationMs: 0, cleanup: "passed", taskChat: {
+        schema: "paperclip.runner-e2e.task-chat/v1", capturedAt: at, status: "complete", missing: [],
+        threads: [projectTaskChatThread({ id: "task", title: "Saved task conversation", description: "Original user request", createdAt: at },
+          [{ id: "reply", authorAgentId: "agent", createdAt: at, body: "Entire persisted response <script>unsafe()</script>" }], [], new Map([["agent", "Morgan"]]))],
+      },
+    };
+    await writeFile(path.join(directory, "result.json"), JSON.stringify(result));
+    await writeFile(path.join(directory, "final-state.png"), "fixture-png");
+    await writeFile(path.join(directory, "evidence-manifest.json"), JSON.stringify({ files: ["final-state.png"], leaks: [], missing: [] }));
+    const output = path.join(root, "merged");
+    await execFileAsync(process.execPath, [path.join(repositoryRoot, "cli/node_modules/tsx/dist/cli.mjs"), path.join(repositoryRoot, "tests/runner-e2e/report.ts")], {
+      cwd: repositoryRoot, env: { ...process.env, PAPERCLIP_RUNNER_E2E_REPORT_ROOT: root, PAPERCLIP_RUNNER_E2E_REPORT_OUT: output,
+        PAPERCLIP_RUNNER_E2E_EXPECTED_IDS: JSON.stringify([executionId]) },
+    });
+    const normalized = JSON.parse(await readFile(path.join(output, "normalized-results.json"), "utf8"));
+    expect(normalized.results[0].taskChat).toEqual(result.taskChat);
+    const regenerated = path.join(root, "regenerated");
+    await regenerateRunnerDashboard({ bundle: output, outputDirectory: regenerated, historyFile: null });
+    for (const folder of [output, regenerated]) {
+      const page = await readFile(path.join(folder, "index.html"), "utf8");
+      expect(page).toContain('aria-label="Task chat"');
+      expect(page).toContain("Original user request");
+      expect(page).toContain("Entire persisted response &lt;script&gt;unsafe()&lt;/script&gt;");
+      expect(page).not.toContain("<script>unsafe()</script>");
+    }
+  });
+
   it("publishes retained passing results but exits unsuccessfully when the request journal is damaged", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "runner-damaged-ledger-report-"));
     cleanupDirectories.push(root);
@@ -184,7 +224,7 @@ describe("runner E2E report aggregation", () => {
     expect(normalized.results[0].startupReuse).toHaveLength(runIds.length);
     expect(normalized.results[0].startupReuse.every((reuse: { warmth: string; providerLaunchCount: number | null }) =>
       reuse.warmth === "unknown" && reuse.providerLaunchCount === null)).toBe(true);
-    expect(dashboard).toContain("Startup reuse evidence");
+    expect(dashboard).not.toContain("<caption>Startup reuse evidence</caption>");
   });
 
   it("keeps interrupted journeys incomplete unless their evidence is invalid", async () => {
@@ -351,6 +391,7 @@ describe("runner E2E report aggregation", () => {
           GITHUB_SERVER_URL: "https://github.com",
           GITHUB_REPOSITORY: "paperclipai/paperclip",
           GITHUB_RUN_ID: "123456",
+          GITHUB_RUN_ATTEMPT: "1",
           PAPERCLIP_RUNNER_E2E_HISTORY_PUBLIC_BASE_URL:
             "https://reports.example.test/",
           PAPERCLIP_RUNNER_E2E_HISTORY_PREFIX: "/runner-e2e/",
@@ -398,7 +439,7 @@ describe("runner E2E report aggregation", () => {
       path.join(output, "dashboard.html"),
       "utf8",
     );
-    expect(dashboard).toContain("Runner Full-Stack E2E");
+    expect(dashboard).toContain("E2E tests");
     expect(dashboard).toMatch(/\$0\.0250*<\/strong><span>LLM reported subtotal/);
     expect(dashboard).toContain("<strong>2s</strong><span>Summed attempt time</span>");
     expect(dashboard).toContain("Carried-forward evidence can span older runs");
@@ -654,6 +695,33 @@ describe("runner E2E report aggregation", () => {
         "utf8",
       ),
     ).toBe("warm-turn-png");
+  });
+
+  it("does not stage a private cell's trace viewer font, SVG or manifest into the merged report", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-e2e-report-carriers-"));
+    cleanupDirectories.push(root);
+    const executionId = "chat-features.runner-opencode.local.runs-adapters.inspect-failed-run";
+    const directory = path.join(root, "attempt-1");
+    const staged = ["final-state.png", "html-report/index.html", "html-report/trace/index.html", "html-report/trace/index.KZ4wOW1K.js", "html-report/data/0123456789abcdef0123456789abcdef01234567.zip"];
+    const refused = ["html-report/trace/codicon.DCmgc-ay.ttf", "html-report/trace/manifest.webmanifest", "html-report/trace/playwright-logo.svg"];
+    for (const file of [...staged, ...refused]) {
+      await mkdir(path.join(directory, path.dirname(file)), { recursive: true });
+      await writeFile(path.join(directory, file), `synthetic ${file}`);
+    }
+    await writeFile(path.join(directory, "result.json"), JSON.stringify({
+      schema: "paperclip.runner-e2e.result/v1", executionId, attempt: 1, status: "passed",
+      profileId: "runner-opencode", environmentId: "local", caseId: "runs-adapters.inspect-failed-run", provider: "opencode", model: "fixture-model",
+      runtimeMode: "native", startedAt: "2026-11-07T00:00:00.000Z", finishedAt: "2026-11-07T00:00:01.000Z", durationMs: 1_000, cleanup: "passed",
+    } satisfies RunnerE2EResult));
+    await writeFile(path.join(directory, "evidence-manifest.json"), JSON.stringify({ files: [...staged, ...refused], leaks: [], missing: [] }));
+    const output = path.join(root, "merged");
+    await execFileAsync(process.execPath, [path.join(repositoryRoot, "cli/node_modules/tsx/dist/cli.mjs"), path.join(repositoryRoot, "tests/runner-e2e/report.ts")], {
+      cwd: repositoryRoot,
+      env: { ...process.env, PAPERCLIP_RUNNER_E2E_REPORT_ROOT: root, PAPERCLIP_RUNNER_E2E_REPORT_OUT: output, PAPERCLIP_RUNNER_E2E_EXPECTED_IDS: JSON.stringify([executionId]) },
+    }).catch(error => { throw new Error(String(error.stderr).slice(-1500)); });
+    const evidence = path.join(output, "evidence", executionId, "attempt-1");
+    for (const file of staged) expect(await readFile(path.join(evidence, file), "utf8")).toBe(`synthetic ${file}`);
+    for (const file of refused) await expect(readFile(path.join(evidence, file))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("constructs the public root JUnit from fixed markup and escaped fields", async () => {

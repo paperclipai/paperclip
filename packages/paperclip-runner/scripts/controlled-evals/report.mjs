@@ -1,6 +1,6 @@
 import { isEntrypoint } from './entrypoint.mjs';
 import { join } from 'node:path';
-import { canonical, costRuntime, readJson, requestBindingSha256, sha256, units, usd, validateManifest } from './manifest.mjs';
+import { modelReadinessDefect, canonical, costRuntime, readJson, requestBindingSha256, sha256, units, usd, validateManifest } from './manifest.mjs';
 import { inspectControlledObservability } from './observability.mjs';
 import { attemptDirectory } from './run.mjs';
 import { limitFor, readRegularFile } from './evidence-files.mjs';
@@ -79,7 +79,8 @@ export async function summarizeControlledCampaign(value, { filesByAttempt } = {}
             campaignId: manifest.campaignId, executionId: allocation.executionId, attemptId: allocation.attemptId, descriptorSha256: sha256(descriptorBytes) })
           || artifact.attemptId !== allocation.attemptId || artifact.requestedModel !== allocation.model
           || snapshot.inflight || snapshot.conflictingRequests || snapshot.overBudget
-          || snapshot.unknownRequests !== snapshot.boundedUnresolvedRequests) throw new Error('Incomplete controller evidence');
+          || snapshot.unknownRequests !== snapshot.boundedUnresolvedRequests
+          || modelReadinessDefect(manifest, snapshot)) throw new Error('Incomplete controller evidence');
       verified = true;
     } catch {}
     const cost = snapshot ? units(snapshot.knownUsd) : 0n;
@@ -92,6 +93,7 @@ export async function summarizeControlledCampaign(value, { filesByAttempt } = {}
       unknownRequests: snapshot?.unknownRequests ?? null, boundedUnresolvedRequests: snapshot?.boundedUnresolvedRequests ?? null });
   }
   return { schema: 'paperclip.runner-eval.control-campaign/v1', campaignId: manifest.campaignId, manifestSha256,
+    ...(manifest.overhead.accountingReadiness ? { accountingReadiness: manifest.overhead.accountingReadiness, operatingReconciliation: 'pending' } : {}),
     limitUsd: manifest.maxUsd, allocatedUsd, operatingHeldUsd: overheadUsd, knownUsd: usd(known), heldUsd: usd(committed - known),
     committedUsd: usd(committed), overBudget: committed > units(manifest.maxUsd), incompleteAttempts: attempts.filter(attempt => attempt.status === 'incomplete').length,
     costStatus: attempts.some(attempt => attempt.status === 'incomplete') || committed > units(manifest.maxUsd) ? 'incomplete' : 'provisional', attempts };

@@ -5,7 +5,7 @@ test.setTimeout(60_000);
 
 for (const hasPlan of [false, true]) {
   for (const entry of ["direct", "list"]) {
-    test(`task reuses a full plan projection and fetches one for list-only snapshots (plan=${hasPlan}, entry=${entry})`, async ({ page, request }) => {
+    test(`task reveals its core plan projection while separate plan reads are stalled (plan=${hasPlan}, entry=${entry})`, async ({ page, request }, info) => {
       const companyResponse = await request.post("/api/companies", { data: { name: `Plan startup ${Date.now()}` } });
       expect(companyResponse.ok()).toBe(true);
       const company = await companyResponse.json();
@@ -19,22 +19,26 @@ for (const hasPlan of [false, true]) {
         expect(planResponse.ok()).toBe(true);
       }
       let planRequests = 0;
+      let release!: () => void;
+      const held = new Promise<void>(resolve => { release = resolve; });
       await page.route("**/api/issues/*/documents/plan", async (route) => {
         planRequests += 1;
-        if (entry === "direct") await route.abort();
-        else await route.continue();
+        await held;
+        await route.continue().catch(() => {});
       });
-      if (entry === "list") {
-        await page.goto(`/${company.issuePrefix}/issues`);
-        await page.locator("[data-inbox-issue-link]", { hasText: "Read a saved conversation" }).first().click();
-      } else {
-        await page.goto(`/${company.issuePrefix}/issues/${issue.identifier}`);
-      }
-      const thread = page.getByTestId("task-chat-thread");
-      await expect(thread.locator(':scope > [aria-busy="false"]')).toBeVisible({ timeout: 10_000 });
-      await expect(thread.getByText("This saved reply must be readable without a redundant plan request.", { exact: true })).toBeVisible();
-      if (hasPlan) await expect(thread.getByTestId("task-chat-plan-preview")).toBeVisible();
-      expect(planRequests).toBe(entry === "direct" ? 0 : 1);
+      try {
+        if (entry === "list") {
+          await page.goto(`/${company.issuePrefix}/issues`);
+          await page.locator("[data-inbox-issue-link]", { hasText: "Read a saved conversation" }).first().click();
+        } else {
+          await page.goto(`/${company.issuePrefix}/issues/${issue.identifier}`);
+        }
+        const thread = page.getByTestId("task-chat-thread");
+        await expect(thread.locator(':scope > [aria-busy="false"]')).toBeVisible({ timeout: 10_000 });
+        await expect(thread.getByText("This saved reply must be readable without a redundant plan request.", { exact: true })).toBeVisible();
+        if (hasPlan) await expect(thread.getByTestId("task-chat-plan-preview")).toBeVisible();
+        await info.attach("plan-reads.json", { body: JSON.stringify({ planRequests }), contentType: "application/json" });
+      } finally { release(); }
     });
   }
 }

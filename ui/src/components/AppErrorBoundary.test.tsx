@@ -3,7 +3,7 @@
 import { act, lazy, Suspense, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createChunkLoadRecovery, RELOAD_ABANDONED_MS } from "@/lib/chunk-load-recovery";
+import { createChunkLoadRecovery, RELOAD_ABANDONED_MS, RELOAD_DELAYS_MS } from "@/lib/chunk-load-recovery";
 import { AppErrorBoundary } from "./AppErrorBoundary";
 
 const captureBrowserExceptionMock = vi.hoisted(() => vi.fn());
@@ -23,6 +23,7 @@ vi.mock("@/lib/chunk-load-recovery", async (importOriginal) => {
     ...actual,
     reloadForChunkLoadError: (error: unknown) => chunkRecovery.current!.reloadForChunkLoadError(error),
     onChunkLoadReloadAbandoned: (listener: () => void) => chunkRecovery.current!.onChunkLoadReloadAbandoned(listener),
+    cancelPendingChunkLoadReload: () => chunkRecovery.current!.cancelPendingChunkLoadReload(),
   };
 });
 
@@ -86,7 +87,7 @@ describe("AppErrorBoundary", () => {
     });
   });
 
-  it("reloads once for a failed lazy chunk, then shows the prompt if it fails again", async () => {
+  it("reloads for a failed lazy chunk, then shows the prompt once the retries are used up", async () => {
     const chunkError = () => new Error("Failed to fetch dynamically imported module: https://paperclip.example/assets/layout.js");
     const root = createRoot(container);
     const FailedLayout = lazy(async () => { throw chunkError(); });
@@ -97,6 +98,11 @@ describe("AppErrorBoundary", () => {
     expect(captureBrowserExceptionMock).not.toHaveBeenCalled();
     expect(container.querySelector('[role="status"]')?.textContent).toContain("Reloading Paperclip");
     act(() => root.unmount());
+
+    // The reloaded pages keep failing, as when an asset stays broken.
+    for (let attempt = 1; attempt < RELOAD_DELAYS_MS.length; attempt += 1) {
+      expect(createChunkLoadRecovery({ reload: vi.fn() }).reloadForChunkLoadError(chunkError())).toBe(true);
+    }
 
     chunkRecovery.current = createChunkLoadRecovery({ reload: reloadMock });
     const nextRoot = createRoot(container);

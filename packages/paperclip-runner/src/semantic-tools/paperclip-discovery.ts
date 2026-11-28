@@ -13,6 +13,7 @@ import type {
 const NAMESPACE: Readonly<Record<PaperclipSemanticActionId, string>> =
   Object.freeze({
     set_task_title: "active_task",
+    send_chat_message: "active_task",
   set_task_monitor: "continuation",
     search_api: "api_fallback",
     call_api: "api_fallback",
@@ -45,6 +46,12 @@ const NAMESPACE: Readonly<Record<PaperclipSemanticActionId, string>> =
     control_workspace_service: "workspace",
     set_dependencies: "delegation", reassign_task: "delegation",
     create_skill: "skills", update_skill: "skills", create_task: "delegation", get_workspace: "workspace", list_workspaces: "workspace", select_workspace: "workspace", prepare_repository: "workspace", create_project: "projects", list_project_repositories: "projects", list_projects: "projects",
+  list_responsibilities: "responsibilities", get_responsibility: "responsibilities", find_responsibilities_for: "responsibilities",
+  create_area: "responsibilities", update_area: "responsibilities", delete_area: "responsibilities",
+  create_responsibility: "responsibilities", update_responsibility: "responsibilities", delete_responsibility: "responsibilities",
+  file_under_responsibility: "responsibilities", remove_from_responsibility: "responsibilities",
+  list_routines: "routines", update_routine: "routines",
+  update_skill_details: "skills",
     request_approval: "governance",
     decide_approval: "governance",
     comment_on_approval: "governance",

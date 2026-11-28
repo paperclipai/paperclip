@@ -1,24 +1,37 @@
 import { lstat, mkdir, realpath } from "node:fs/promises";
 import path from "node:path";
+import type { ExecutionWorkspace } from "@paperclipai/shared";
 import { parseObject } from "../adapters/utils.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 
-/** A repository-free sandbox task needs isolation, but has no Git base. */
+export function hasExplicitWorkspaceStrategy(workspaceStrategies: unknown[]): boolean {
+  return workspaceStrategies.some((value) => Object.keys(parseObject(value)).length > 0);
+}
+
+/** A repository-free task needs isolation, but has no Git base. */
 export function shouldUseIsolatedTaskDirectory(input: {
   trustPreset: string;
   environmentDriver: string | null;
   mode: string;
   hasProjectWorkspace: boolean;
   projectWorkspaceId: string | null;
+  hasSelectedExecutionWorkspace?: boolean;
   workspaceStrategies: unknown[];
 }): boolean {
-  return input.trustPreset === "low_trust_review"
-    && input.environmentDriver === "sandbox"
+  const supportedEnvironment = input.trustPreset === "low_trust_review"
+    ? input.environmentDriver === "sandbox"
+    : input.trustPreset === "standard" &&
+      !input.hasSelectedExecutionWorkspace &&
+      (input.environmentDriver === "local" ||
+        input.environmentDriver === "sandbox" ||
+        input.environmentDriver === "plugin" ||
+        input.environmentDriver === null);
+  return supportedEnvironment
     && input.mode === "isolated_workspace"
     && !input.hasProjectWorkspace
     && !input.projectWorkspaceId
     // Never discard an explicit repository/branch requirement or setup hook.
-    && input.workspaceStrategies.every((value) => Object.keys(parseObject(value)).length === 0);
+    && !hasExplicitWorkspaceStrategy(input.workspaceStrategies);
 }
 
 /** Stable across turns, separate from project roots and shared agent homes. */
@@ -62,4 +75,21 @@ export async function materializeIsolatedTaskDirectory(input: {
     }
   }
   return cwd;
+}
+
+export async function isBoundIsolatedTaskDirectory(input: {
+  companyId: string; issueId: string; workspaceId: string | null;
+  workspace: Pick<ExecutionWorkspace, "id" | "companyId" | "sourceIssueId" | "status" | "mode" | "strategyType" | "providerType" | "cwd" | "repoUrl" | "branchName"> | null;
+}): Promise<boolean> {
+  const workspace = input.workspace;
+  if (!workspace || workspace.id !== input.workspaceId || workspace.companyId !== input.companyId ||
+      workspace.sourceIssueId !== input.issueId || workspace.status !== "active" ||
+      workspace.mode !== "isolated_workspace" || workspace.strategyType !== "project_primary" ||
+      workspace.providerType !== "local_fs" || !workspace.cwd || workspace.repoUrl || workspace.branchName) return false;
+  try {
+    await materializeIsolatedTaskDirectory({ companyId: input.companyId, issueId: input.issueId, reuseCwd: workspace.cwd });
+    return true;
+  } catch {
+    return false;
+  }
 }

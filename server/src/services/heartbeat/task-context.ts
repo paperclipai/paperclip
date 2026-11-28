@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
-import type { Db, agents, agentTaskSessions, heartbeatRuns, issueComments } from "@paperclipai/db";
-import { FAST_RESPONSE_AGENT_GUIDANCE, fastResponseHistoryBody } from "@paperclipai/shared";
+import { eq } from "drizzle-orm";
+import { companies } from "@paperclipai/db";
+import type { Db, agents, agentTaskSessions, heartbeatRuns } from "@paperclipai/db";
+import { AUTOMATION_CONVERSATION_ORIGIN_KIND, FAST_RESPONSE_AGENT_GUIDANCE, ONBOARDING_FIRST_TASK_ORIGIN_KIND, RESPONSIBILITY_BAR_ORIGIN_KIND, RESPONSIBILITY_DASHBOARD_ORIGIN_KIND, RESPONSIBILITY_STATUS_UPDATE_ORIGIN_KIND, fastResponseHistoryBody, isValidIanaTimeZone } from "@paperclipai/shared";
 import type { PaperclipTurnContext } from "@paperclipai/adapter-utils/server-utils";
 import { parseObject } from "../../adapters/utils.js";
 import { isConversation } from "../agent-conversations.js";
@@ -12,11 +14,18 @@ import type { issueService } from "../issues.js";
 import { createRunSecretRedactionRegistry } from "../run-secret-redaction.js";
 import { redactQuarantinedBodyForHigherTrust, sanitizeQuarantinedCommentForHigherTrust } from "../source-trust.js";
 import { getTaskPlanContext } from "../task-plan-context.js";
+import { loadResponsibilityBarGuidance } from "../responsibility-bar-guidance.js";
+import { loadAutomationConversationGuidance } from "../automation-conversation-guidance.js";
+import { loadDashboardConversationGuidance } from "../responsibility-dashboard-guidance.js";
+import { loadStatusRefreshReminder, loadStatusUpdateGuidance } from "../responsibility-status-guidance.js";
+import { loadStandingCheckGuidance } from "../routine-standing-checks.js";
 import { caseExecutionMarkdown, getCaseExecutionContext } from "../case-context.js";
 import type { TrustPresetResolution } from "../trust-preset-resolver.js";
 import { liveVoiceExecutionGuidance } from "../voice/voice-execution-guidance.js";
-import { buildPaperclipWakePayload, PAPERCLIP_WAKE_PAYLOAD_KEY, type createHeartbeatRunPreparation } from "./run-preparation.js";
+import { buildPaperclipWakePayload, ConfigurationIncompleteFailure, readHeartbeatWakeComments, PAPERCLIP_WAKE_PAYLOAD_KEY, type createHeartbeatRunPreparation } from "./run-preparation.js";
 import { buildPaperclipTaskMarkdown } from "./task-markdown.js";
+import { deriveCommentId, extractWakeCommentIds } from "../../modules/run-dispatch/index.js";
+import { workspacePreferenceService } from "../workspace-preferences.js";
 
 type RunPreparation = ReturnType<typeof createHeartbeatRunPreparation>;
 type IssueContext = NonNullable<Awaited<ReturnType<RunPreparation["getIssueExecutionContext"]>>>;
@@ -29,15 +38,13 @@ export interface HeartbeatTaskContextInput {
       "id" | "identifier" | "title" | "status" | "priority" | "workMode" |
       "conversationAgentId" | "description" | "projectId"> | null;
     issueContext: IssueContext | null;
-    wakeCommentContext: Pick<typeof issueComments.$inferSelect,
-      "id" | "body" | "sourceTrust" | "presentation" | "metadata"> | null;
     context: Record<string, unknown>;
     taskSession: Pick<typeof agentTaskSessions.$inferSelect, "lastRunId"> | null;
   };
   policy: {
     recovering?: boolean;
     trustPreset: Pick<TrustPresetResolution, "kind">;
-    experimentalInstanceSettings: { enableSimplifiedEnglishInteractions?: boolean; enableCases?: boolean };
+    experimentalInstanceSettings: { enableSimplifiedEnglishInteractions?: boolean; enableCases?: boolean; enableConferenceRoomChat?: boolean; enableStatusCards?: boolean; enableResponsibilities?: boolean };
   };
   services: {
     issuesSvc: Pick<ReturnType<typeof issueService>, "getAncestors">;
@@ -52,12 +59,52 @@ function readNonEmptyString(value: unknown): string | null {
 /** Rebuilds task prompt fields on the run's context; acquires no execution resources. */
 export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskContextInput) {
   const { run, agent } = input;
-  const { issueRef, issueContext, wakeCommentContext, context, taskSession } = input.task;
+  const { issueRef, issueContext, context, taskSession } = input.task;
   const { trustPreset, experimentalInstanceSettings } = input.policy;
   const { issuesSvc, getPinnedSkillTestContext } = input.services;
-  const continuationSummary = issueRef && !isConversation(issueContext)
-    ? await getIssueContinuationSummaryDocument(db, issueRef.id)
-    : null;
+  const admittedScope = parseObject(context.paperclipAgentJwtScope);
+  if (!input.policy.recovering || (admittedScope.kind !== "standard" && admittedScope.kind !== "skill_test")) {
+    const savedIssue = parseObject(context.paperclipIssue);
+    const skillTest = input.policy.recovering
+      ? savedIssue.workMode === "skill_test" || Boolean(context.paperclipSkillTest)
+      : issueRef?.workMode === "skill_test";
+    context.paperclipAgentJwtScope = skillTest && issueRef
+      ? { kind: "skill_test", issueId: issueRef.id }
+      : { kind: "standard" };
+  }
+  const isSkillTest = parseObject(context.paperclipAgentJwtScope).kind === "skill_test";
+  const wakeCommentId = deriveCommentId(context, null);
+  const commentIds = [...new Set([...extractWakeCommentIds(context), ...(wakeCommentId ? [wakeCommentId] : [])])];
+  const [summary, ancestors, pinnedSkillTestRead, wakeComments] = await Promise.allSettled([
+    issueRef && !isConversation(issueContext) ? getIssueContinuationSummaryDocument(db, issueRef.id) : Promise.resolve(null),
+    issueRef ? issuesSvc.getAncestors(issueRef.id) : Promise.resolve([]),
+    isSkillTest && issueRef ? getPinnedSkillTestContext(agent.companyId, issueRef.id) : Promise.resolve(null),
+    readHeartbeatWakeComments(db, agent.companyId, readNonEmptyString(context.issueId), commentIds),
+  ]);
+  if (summary.status === "rejected") throw summary.reason;
+  if (ancestors.status === "rejected") throw ancestors.reason;
+  if (pinnedSkillTestRead.status === "rejected") throw pinnedSkillTestRead.reason;
+  if (wakeComments.status === "rejected") throw wakeComments.reason;
+  const wakeCommentRows = wakeComments.value;
+  const selectedWakeComment = issueRef && wakeCommentId ? wakeCommentRows.find(comment => comment.id === wakeCommentId && comment.issueId === issueRef.id) ?? null : null;
+  const wakeCommentContext = selectedWakeComment ? {
+    id: selectedWakeComment.id,
+    body: selectedWakeComment.deletedAt ? "" : selectedWakeComment.body,
+    authorType: selectedWakeComment.authorType,
+    authorAgentId: selectedWakeComment.authorAgentId,
+    authorUserId: selectedWakeComment.authorUserId,
+    presentation: selectedWakeComment.deletedAt ? null : selectedWakeComment.presentation,
+    metadata: selectedWakeComment.deletedAt ? null : selectedWakeComment.metadata,
+    deletedAt: selectedWakeComment.deletedAt,
+    deletedByType: selectedWakeComment.deletedByType,
+    deletedByAgentId: selectedWakeComment.deletedByAgentId,
+    deletedByUserId: selectedWakeComment.deletedByUserId,
+    deletedByRunId: selectedWakeComment.deletedByRunId,
+    sourceTrust: selectedWakeComment.sourceTrust,
+  } : null;
+  const continuationSummary = summary.value;
+  const issueAncestors = ancestors.value;
+  const pinnedSkillTestContext = pinnedSkillTestRead.value;
   const exposeLowTrustRaw = trustPreset.kind === "low_trust_review";
   const safeContinuationSummary =
     continuationSummary && !exposeLowTrustRaw
@@ -67,9 +114,6 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
     wakeCommentContext && !exposeLowTrustRaw
       ? sanitizeQuarantinedCommentForHigherTrust(wakeCommentContext)
       : wakeCommentContext;
-  const issueAncestors = issueRef
-    ? await issuesSvc.getAncestors(issueRef.id)
-    : [];
   if (continuationSummary) {
     context.paperclipContinuationSummary = {
       key: safeContinuationSummary!.key,
@@ -81,20 +125,11 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
   } else {
     delete context.paperclipContinuationSummary;
   }
-  const admittedScope = parseObject(context.paperclipAgentJwtScope);
-  if (!input.policy.recovering || (admittedScope.kind !== "standard" && admittedScope.kind !== "skill_test")) {
-    const savedIssue = parseObject(context.paperclipIssue);
-    const skillTest = input.policy.recovering
-      ? savedIssue.workMode === "skill_test" || Boolean(context.paperclipSkillTest)
-      : issueRef?.workMode === "skill_test";
-    context.paperclipAgentJwtScope = skillTest && issueRef
-      ? { kind: "skill_test", issueId: issueRef.id }
-      : { kind: "standard" };
+  if (isSkillTest && !pinnedSkillTestContext) {
+    throw new ConfigurationIncompleteFailure("The skill test's saved version is unavailable.", {
+      configurationIncomplete: { reason: "skill_unavailable", actionUrl: "/skills" },
+    });
   }
-  const pinnedSkillTestContext =
-    issueRef?.workMode === "skill_test"
-      ? await getPinnedSkillTestContext(agent.companyId, issueRef.id)
-      : null;
   if (pinnedSkillTestContext) {
     context.paperclipSkillTest = {
       ...pinnedSkillTestContext,
@@ -125,6 +160,7 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
     agentId: agent.id,
     runId: run.id,
     contextSnapshot: context,
+    wakeCommentRows,
     continuationSummary,
     issueSummary: issueRef
       ? {
@@ -201,10 +237,124 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
     issueContext?.chatAssignedAgentId === agent.id
       ? issueContext.chatCommunicationGuidance
       : null;
+  // Use the standing chat owner's saved preferences, never worker text.
+  // Recovery retains the admitted choices instead of silently changing its prompt.
+  const conversationOwnerPreference = isConversation(issueContext) && issueContext?.conversationUserId
+    && !input.policy.recovering
+    ? await workspacePreferenceService(db).get(issueContext.conversationUserId)
+    : null;
+  const coordinatorWorkspace = agent.adapterType === "paperclip_runner" && isConversation(issueContext)
+    && issueContext?.conversationUserId
+    ? input.policy.recovering
+      ? context.paperclipCoordinatorWorkspaceEnabled === true
+      : conversationOwnerPreference?.coordinatorWorkspaceEnabled === true
+    : false;
+  context.paperclipCoordinatorWorkspaceEnabled = Boolean(coordinatorWorkspace);
+  const savedPersonTimeZone = input.policy.recovering
+    ? readNonEmptyString(context.paperclipConversationTimeZone)
+    : conversationOwnerPreference?.timeZone ?? null;
+  const personTimeZone = isConversation(issueContext) && issueContext?.conversationUserId
+    && savedPersonTimeZone && isValidIanaTimeZone(savedPersonTimeZone)
+    ? savedPersonTimeZone
+    : null;
+  if (personTimeZone) context.paperclipConversationTimeZone = personTimeZone;
+  else delete context.paperclipConversationTimeZone;
+  const [chatCompany] = issueRef?.conversationAgentId && !issueRef.identifier
+    ? await db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, agent.companyId))
+    : [];
   const taskMarkdownInput = {
+    companyPrefix: chatCompany?.issuePrefix,
+    coordinatorWorkspace: Boolean(coordinatorWorkspace),
+    personTimeZone,
+    conferenceRoomEnabled: experimentalInstanceSettings.enableConferenceRoomChat === true,
+    statusCardsEnabled: experimentalInstanceSettings.enableStatusCards === true,
+    casesEnabled: experimentalInstanceSettings.enableCases === true,
+    responsibilitiesEnabled: experimentalInstanceSettings.enableResponsibilities === true,
+    // Work a routine created, the onboarding task, bar and automation conversations and status update requests are never offered as routines.
+    routineSuggestionsEnabled: experimentalInstanceSettings.enableResponsibilities === true
+      && issueContext?.originKind !== "routine_execution"
+      && issueContext?.originKind !== ONBOARDING_FIRST_TASK_ORIGIN_KIND
+      && issueContext?.originKind !== RESPONSIBILITY_BAR_ORIGIN_KIND
+      && issueContext?.originKind !== AUTOMATION_CONVERSATION_ORIGIN_KIND
+      && issueContext?.originKind !== RESPONSIBILITY_STATUS_UPDATE_ORIGIN_KIND
+      && issueContext?.originKind !== RESPONSIBILITY_DASHBOARD_ORIGIN_KIND,
+    // The bar conversation's instructions, rebuilt from the responsibility each wake.
+    responsibilityBarGuidance: experimentalInstanceSettings.enableResponsibilities === true && issueRef && issueContext
+      && issueContext.originKind === RESPONSIBILITY_BAR_ORIGIN_KIND
+      ? await loadResponsibilityBarGuidance(db, {
+        issue: {
+          id: issueRef.id,
+          companyId: agent.companyId,
+          originKind: issueContext.originKind,
+          originId: issueContext.originId ?? null,
+          assigneeAgentId: issueContext.assigneeAgentId ?? null,
+        },
+        agentId: agent.id,
+      })
+      : null,
+    // The automation conversation's instructions, rebuilt from the task being automated each wake.
+    automationConversationGuidance: experimentalInstanceSettings.enableResponsibilities === true && issueRef && issueContext
+      && issueContext.originKind === AUTOMATION_CONVERSATION_ORIGIN_KIND
+      ? await loadAutomationConversationGuidance(db, {
+        issue: {
+          id: issueRef.id,
+          companyId: agent.companyId,
+          originKind: issueContext.originKind,
+          originId: issueContext.originId ?? null,
+          assigneeAgentId: issueContext.assigneeAgentId ?? null,
+        },
+        agentId: agent.id,
+      })
+      : null,
+    // A status update request's instructions, rebuilt from the responsibility each wake.
+    responsibilityStatusUpdateGuidance: experimentalInstanceSettings.enableResponsibilities === true && issueRef && issueContext
+      && issueContext.originKind === RESPONSIBILITY_STATUS_UPDATE_ORIGIN_KIND
+      ? await loadStatusUpdateGuidance(db, {
+        issue: {
+          id: issueRef.id,
+          companyId: agent.companyId,
+          originKind: issueContext.originKind,
+          originId: issueContext.originId ?? null,
+          assigneeAgentId: issueContext.assigneeAgentId ?? null,
+        },
+        agentId: agent.id,
+        runId: run.id,
+      })
+      : null,
+    // The dashboard conversation's instructions, rebuilt from the person's dashboard each wake; they differ by mode.
+    responsibilityDashboardGuidance: experimentalInstanceSettings.enableResponsibilities === true && issueRef && issueContext
+      && issueContext.originKind === RESPONSIBILITY_DASHBOARD_ORIGIN_KIND
+      ? await loadDashboardConversationGuidance(db, {
+        issue: {
+          id: issueRef.id,
+          companyId: agent.companyId,
+          originKind: issueContext.originKind,
+          originId: issueContext.originId ?? null,
+          assigneeAgentId: issueContext.assigneeAgentId ?? null,
+        },
+        agentId: agent.id,
+      })
+      : null,
+    // On other work under a responsibility this agent reports on: a short reminder to refresh its status.
+    responsibilityStatusReminder: experimentalInstanceSettings.enableResponsibilities === true && issueRef && issueContext
+      && !isConversation(issueContext) && (issueRef.workMode ?? "standard") === "standard"
+      && issueContext.originKind !== RESPONSIBILITY_STATUS_UPDATE_ORIGIN_KIND
+      ? await loadStatusRefreshReminder(db, {
+        issue: {
+          id: issueRef.id,
+          companyId: agent.companyId,
+          projectId: issueRef.projectId ?? null,
+          originKind: issueContext.originKind ?? null,
+          assigneeAgentId: issueContext.assigneeAgentId ?? null,
+        },
+        agentId: agent.id,
+      })
+      : null,
     conversationConfirmations: issueRef && isConversation(issueContext)
       ? await getConversationConfirmationContext({ db, companyId: agent.companyId, issueId: issueRef.id, agentId: agent.id })
       : null,
+    onboardingChat: issueContext?.originKind === "onboarding_chat",
+    onboardingGreeting: context.wakeReason === "onboarding_chat_greeting",
     issue: issueRef
       ? {
           id: issueRef.id,
@@ -213,6 +363,7 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
           titleNeedsGeneration: issueContext?.titleNeedsGeneration,
           workMode: issueRef.workMode,
           conversationAgentId: issueContext?.conversationAgentId,
+          executionPolicy: issueContext?.executionPolicy,
           description: issueRef.description,
         }
       : null,
@@ -269,29 +420,28 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
   // must also reach resumed turns. Rebuild it from server records each wake.
   const liveVoiceTaskPrefix = liveVoiceGuidance ? `${liveVoiceGuidance}\n\n` : "";
   context.paperclipCasesEnabled = experimentalInstanceSettings.enableCases === true;
+  context.paperclipResponsibilitiesEnabled = experimentalInstanceSettings.enableResponsibilities === true;
   const workflowCase = issueRef && experimentalInstanceSettings.enableCases
     ? await getCaseExecutionContext(db, { companyId: agent.companyId, issueId: issueRef.id, agentId: agent.id, runId: run.id, exposeLowTrustRaw })
     : null;
   if (workflowCase) context.paperclipCase = workflowCase;
   else delete context.paperclipCase;
   const assignmentPrefix = liveVoiceTaskPrefix + caseExecutionMarkdown(workflowCase);
-  let taskMarkdown = assignmentPrefix + buildPaperclipTaskMarkdown({ ...taskMarkdownInput, taskPlan }) + chatCompletionInstruction(context);
-  let taskMarkdownAssignment = assignmentPrefix + buildPaperclipTaskMarkdown({
-    ...taskMarkdownInput,
-    taskPlan,
-    includeWakeComments: false,
-  }) + chatCompletionInstruction(context);
-  const taskMarkdownCompact = assignmentPrefix + buildPaperclipTaskMarkdown({
-    ...taskMarkdownInput,
-    taskPlan,
-    includeDescription: false,
-  }) + chatCompletionInstruction(context);
-  const taskMarkdownAssignmentCompact = assignmentPrefix + buildPaperclipTaskMarkdown({
-    ...taskMarkdownInput,
-    taskPlan,
-    includeDescription: false,
-    includeWakeComments: false,
-  }) + chatCompletionInstruction(context);
+  // Experimental standing checks (enableResponsibilities): a timer wake with
+  // no task carries the agent's active standing checks, rebuilt each wake.
+  const standingChecks = !issueRef && experimentalInstanceSettings.enableResponsibilities === true
+    && readNonEmptyString(context.wakeReason) === "heartbeat_timer"
+    ? await loadStandingCheckGuidance(db, { companyId: agent.companyId, agentId: agent.id })
+    : null;
+  // A wake with no task builds no task markdown; never let that read as "null".
+  const markdown = (options: { includeDescription?: boolean; includeWakeComments?: boolean }) =>
+    assignmentPrefix
+      + [buildPaperclipTaskMarkdown({ ...taskMarkdownInput, taskPlan, ...options }), standingChecks].filter(Boolean).join("\n\n")
+      + chatCompletionInstruction(context);
+  let taskMarkdown = markdown({});
+  let taskMarkdownAssignment = markdown({ includeWakeComments: false });
+  const taskMarkdownCompact = markdown({ includeDescription: false });
+  const taskMarkdownAssignmentCompact = markdown({ includeDescription: false, includeWakeComments: false });
   if (issueRef) {
     context.paperclipIssue = {
       id: issueRef.id,
@@ -394,5 +544,7 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
   } else {
     delete context.paperclipTurnContext;
   }
-  return { continuationSummary, executionContinuation, paperclipWakePayload, safeWakeComments, safeWakeCommentContext };
+  const pinnedSkillTest = pinnedSkillTestContext
+    ? { key: pinnedSkillTestContext.skillKey, versionId: pinnedSkillTestContext.skillVersionId } : null;
+  return { continuationSummary, executionContinuation, paperclipWakePayload, safeWakeComments, safeWakeCommentContext, pinnedSkillTest };
 }

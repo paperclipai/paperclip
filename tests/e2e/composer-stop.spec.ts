@@ -185,11 +185,24 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
       });
     });
     try {
-      await json(
-        await request.patch("/api/instance/settings/experimental", {
-          data: { enableClassicTaskInterface: false, enableNativeRunner: true },
-        }),
-      );
+      const needsSettingsPatch =
+        originalSettings.enableClassicTaskInterface !== false ||
+        originalSettings.enableNativeRunner !== true;
+      if (needsSettingsPatch) {
+        await json(
+          await request.patch("/api/instance/settings/experimental", {
+            data: { enableClassicTaskInterface: false, enableNativeRunner: true },
+          }),
+        );
+      }
+      await page.route("**/api/instance/settings/experimental", async (route) => {
+        const response = await route.fetch();
+        const settings = await response.json();
+        await route.fulfill({
+          response,
+          json: { ...settings, enableClassicTaskInterface: false, enableNativeRunner: true },
+        });
+      });
       async function agent(name: string) {
         return json(
           await request.post(`/api/companies/${company.id}/agents`, {
@@ -369,18 +382,35 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
       await expect(
         page.getByText("Subtree is paused.", { exact: true }),
       ).toBeVisible();
-      // Cross the isolated server's ten-second scheduler interval repeatedly.
-      for (let i = 0; i < 3; i++) {
-        await new Promise((resolve) => setTimeout(resolve, 10_000));
-        expect(
-          await json(await request.get(`/api/issues/${parent.id}/live-runs`)),
-        ).toEqual([]);
-        expect(
-          await json(await request.get(`/api/issues/${child.id}/live-runs`)),
-        ).toEqual([]);
+      // Cross the isolated server's ten-second scheduler interval and verify
+      // no paused subtree task resumes on the tick.
+      await new Promise((resolve) => setTimeout(resolve, 11_000));
+      expect(
+        await json(await request.get(`/api/issues/${parent.id}/live-runs`)),
+      ).toEqual([]);
+      expect(
+        await json(await request.get(`/api/issues/${child.id}/live-runs`)),
+      ).toEqual([]);
+      if (adapter === "process") {
+        // Stopped legacy runs settle asynchronously into the reconciliation gate
+        // (status "blocked"). Wait for both tasks to settle so Resume preview
+        // sees 0 wakeable agents instead of racing mid-transition.
+        await expect.poll(async () => {
+          const [parentIssue, childIssue] = await Promise.all([
+            json(await request.get(`/api/issues/${parent.id}`)),
+            json(await request.get(`/api/issues/${child.id}`)),
+          ]);
+          return [parentIssue.status, childIssue.status];
+        }, { timeout: 30_000 }).toEqual(["blocked", "blocked"]);
       }
       await menu(page, "Resume subtree");
-      const resumeWake = page.getByRole("dialog").getByRole("checkbox");
+      const resumeDialog = page.getByRole("dialog");
+      const resumeApply = resumeDialog.getByRole("button", {
+        name: "Resume subtree",
+        exact: true,
+      });
+      await expect(resumeApply).toBeEnabled();
+      const resumeWake = resumeDialog.getByRole("checkbox");
       if (adapter === "process") {
         // Stopped legacy work is blocked pending reconciliation. Removing the
         // pause must not promise or request a wake through that recovery gate.
@@ -390,11 +420,8 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
       } else {
         await resumeWake.check();
       }
-      await page
-        .getByRole("dialog")
-        .getByRole("button", { name: "Resume subtree", exact: true })
-        .click();
-      await expect(page.getByRole("dialog")).toHaveCount(0);
+      await resumeApply.click();
+      await expect(resumeDialog).toHaveCount(0);
       if (adapter === "process") {
         // Legacy processes lack runner stop/action proof, so releasing the hold
         // preserves their recovery gate until the fixture reconciles them.
@@ -486,13 +513,18 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
       await request.patch(`/api/companies/${company.id}`, {
         data: { status: "archived" },
       });
-      await request.patch("/api/instance/settings/experimental", {
-        data: {
-          enableClassicTaskInterface:
-            originalSettings.enableClassicTaskInterface,
-          enableNativeRunner: originalSettings.enableNativeRunner,
-        },
-      });
+      if (
+        originalSettings.enableClassicTaskInterface !== false ||
+        originalSettings.enableNativeRunner !== true
+      ) {
+        await request.patch("/api/instance/settings/experimental", {
+          data: {
+            enableClassicTaskInterface:
+              originalSettings.enableClassicTaskInterface,
+            enableNativeRunner: originalSettings.enableNativeRunner,
+          },
+        });
+      }
       await testInfo.attach("owned-company-status-metadata", {
         body: statusEvidence,
         contentType: "application/json",

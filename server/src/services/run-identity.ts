@@ -11,9 +11,11 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { conflict, forbidden } from "../errors.js";
-import { boundRunIssueId, runTaskContextColumn } from "./run-task-binding.js";
+import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
+import { boundRunIssueId, boundRunIssueIdSql, runTaskContextColumn } from "./run-task-binding.js";
 import { isUuidLike } from "@paperclipai/shared";
 import { queuedCommentIdsFromRunContext, queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
+import { queuedInteractionId } from "./queued-interaction-response.js";
 
 /** Resolve an explicit click from persisted receipts, never caller context or message authors. */
 export async function explicitOperatorRunIdentity(
@@ -45,18 +47,63 @@ export async function explicitOperatorRunIdentity(
   ));
   const marker = receipt?.payload?.queuedCommentInterrupt;
   const actorId = marker && typeof marker === "object" && "actorId" in marker ? marker.actorId : null;
-  const ids = queuedCommentIdsFromWakePayload(receipt?.payload);
-  const deliveredIds = queuedCommentIdsFromRunContext(run.contextSnapshot);
-  if (typeof actorId !== "string" || !actorId || !ids.length ||
-      receipt?.payload?.issueId !== run.contextSnapshot?.issueId ||
-      !ids.every(id => deliveredIds.includes(id)) ||
+  if (typeof actorId !== "string" || !actorId || !receipt ||
+      receipt.payload?.issueId !== run.contextSnapshot?.issueId ||
       request.requestedByActorType !== "user" || request.requestedByActorId !== actorId) {
+    throw forbidden("Queued-message interrupt authority is unavailable");
+  }
+  const ids = queuedCommentIdsFromWakePayload(receipt.payload);
+  if (!ids.length) {
+    const interactionId = queuedInteractionId(receipt.payload);
+    const [interaction] = interactionId && run.contextSnapshot?.interactionId === interactionId
+      ? await executor.select({ resolvedByUserId: issueThreadInteractions.resolvedByUserId })
+        .from(issueThreadInteractions).where(and(
+          eq(issueThreadInteractions.id, interactionId), eq(issueThreadInteractions.companyId, run.companyId),
+          eq(issueThreadInteractions.issueId, String(run.contextSnapshot.issueId)),
+          eq(issueThreadInteractions.status, String(receipt.payload?.interactionStatus)),
+        ))
+      : [];
+    if (!interaction || interaction.resolvedByUserId !== actorId) {
+      throw forbidden("Queued-message interrupt authority is unavailable");
+    }
+    return { actorId, cause: "queued_comment_interrupt" };
+  }
+  const deliveredIds = queuedCommentIdsFromRunContext(run.contextSnapshot);
+  if (!ids.every(id => deliveredIds.includes(id))) {
     throw forbidden("Queued-message interrupt authority is unavailable");
   }
   return { actorId, cause: "queued_comment_interrupt" };
 }
 
 export type RunIdentityContext = typeof runIdentityContexts.$inferSelect;
+
+/** Only the recipient's completed connection action authorizes a handoff. */
+function acceptedConnectionRecipient(interaction: Pick<typeof issueThreadInteractions.$inferSelect,
+  "kind" | "status" | "resolvedByAgentId" | "resolvedByUserId" | "addresseeUserId" | "result"
+> | undefined): string | null {
+  return interaction?.kind === "connection_intent"
+    && interaction.status === "accepted"
+    && !interaction.resolvedByAgentId
+    && interaction.resolvedByUserId === interaction.addresseeUserId
+    && interaction.result?.outcome === "connected"
+    && "connectionId" in interaction.result
+    && typeof interaction.result.connectionId === "string"
+    ? interaction.addresseeUserId : null;
+}
+
+function assertRunTaskIdentity(run: {
+  nativeIssueId?: string | null;
+  issueId?: string | null;
+  contextSnapshot?: Record<string, unknown> | null;
+} | undefined) {
+  const issueId = run?.nativeIssueId ?? run?.issueId ?? run?.contextSnapshot?.issueId ?? run?.contextSnapshot?.taskId;
+  const legacyIssueId = run?.contextSnapshot?.issueId ?? run?.contextSnapshot?.taskId;
+  if ([issueId, legacyIssueId].some(id => id !== undefined && id !== null &&
+      (typeof id !== "string" || !isUuidLike(id)))) {
+    throw forbidden("Run task identity is invalid");
+  }
+  return issueId;
+}
 type Executor = Pick<Db, "select" | "insert" | "update">;
 
 /**
@@ -81,12 +128,7 @@ async function lockIdentityTask(
     .where(
       and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId)),
     );
-  const issueId = run?.nativeIssueId ?? run?.issueId ?? run?.contextSnapshot?.issueId ?? run?.contextSnapshot?.taskId;
-  const legacyIssueId = run?.contextSnapshot?.issueId ?? run?.contextSnapshot?.taskId;
-  if ([issueId, legacyIssueId].some(id => id !== undefined && id !== null &&
-      (typeof id !== "string" || !isUuidLike(id)))) {
-    throw forbidden("Run task identity is invalid");
-  }
+  const issueId = assertRunTaskIdentity(run);
   if (typeof issueId === "string")
     await executor
       .select({ id: issues.id })
@@ -138,6 +180,13 @@ async function append(
 }
 
 async function activate(executor: Executor, context: RunIdentityContext) {
+  const [binding] = await executor.select({ issueId: boundRunIssueIdSql() })
+    .from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.id, context.runId), eq(heartbeatRuns.companyId, context.companyId),
+    ));
+  if (binding?.issueId) {
+    await notifyChatRunMilestones(executor, { companyId: context.companyId, issueId: binding.issueId });
+  }
   const [run] = await executor
     .update(heartbeatRuns)
     .set({
@@ -235,13 +284,19 @@ export async function initializeRunIdentity(
         retryOrigin = origin.identityContextId;
       }
     }
-    const [parent] = input.parentRunId
+    const snapshotRetryRunId = run.contextSnapshot?.retryOfRunId;
+    const retryRunId = run.retryOfRunId ?? (
+      typeof snapshotRetryRunId === "string" ? snapshotRetryRunId.trim() || null : null
+    );
+    const isRetry = retryRunId !== null || retryOrigin !== null;
+    const parentRunId = retryRunId ?? input.parentRunId;
+    const [parent] = parentRunId
       ? await tx
           .select()
           .from(heartbeatRuns)
           .where(
             and(
-              eq(heartbeatRuns.id, input.parentRunId),
+              eq(heartbeatRuns.id, parentRunId),
               eq(heartbeatRuns.companyId, input.companyId),
             ),
           )
@@ -259,8 +314,20 @@ export async function initializeRunIdentity(
               ),
             )
         : [];
+    const retryContextId = retryOrigin ?? (isRetry ? parent?.activeIdentityContextId : null);
+    // A preparation failure can precede identity initialization. An ordinary
+    // retry retains its stored person when available, or the caller's existing
+    // responsible-user resolution. It never replays a connection handoff.
+    const uninitializedRetryUserId = isRetry && !retryContextId
+      ? parent?.responsibleUserId : null;
+    if (!operatorIdentity && isRetry && !retryContextId && interaction?.kind === "connection_intent")
+      throw forbidden("Originating execution identity is unavailable");
+    // An ordinary approval keeps its saved origin when preparation failed
+    // before the previous run accepted an identity. A stored retry context
+    // still wins after initialization or later accepted steering.
     const parentId = operatorIdentity ? null : (
-      retryOrigin ?? interaction?.sourceIdentityContextId ?? input.parentContextId ?? parent?.activeIdentityContextId
+      retryContextId ?? interaction?.sourceIdentityContextId
+      ?? (isRetry ? null : input.parentContextId ?? parent?.activeIdentityContextId)
     );
     const [origin] = parentId
       ? await tx
@@ -276,13 +343,20 @@ export async function initializeRunIdentity(
       : [];
     if (parentId && !origin)
       throw forbidden("Originating execution identity is unavailable");
+    const connectionRecipient = acceptedConnectionRecipient(interaction);
+    const identity = operatorIdentity
+      ? { responsibleUserId: operatorIdentity.actorId, cause: operatorIdentity.cause }
+      : !isRetry && connectionRecipient && origin?.responsibleUserId !== connectionRecipient
+        ? { responsibleUserId: connectionRecipient, cause: "connection_handoff" }
+        : {
+          responsibleUserId: origin ? origin.responsibleUserId : uninitializedRetryUserId ?? input.responsibleUserId,
+          cause: origin?.cause === "company_default" ? "company_default" : input.cause,
+        };
     let current = await append(tx, {
       companyId: input.companyId,
       runId: input.runId,
-      responsibleUserId: operatorIdentity?.actorId ?? (origin ? origin.responsibleUserId : input.responsibleUserId),
+      ...identity,
       parentContextId: origin?.id ?? null,
-      cause:
-        operatorIdentity ? operatorIdentity.cause : origin?.cause === "company_default" ? "company_default" : input.cause,
       correlationId: "dispatch",
     });
     const ids = [...new Set(input.messageIds ?? [])];
@@ -447,6 +521,7 @@ export async function rejectSteeredIdentity(
     );
 }
 
+/** Accept within the caller's task/run transaction; standalone recovery uses reconcileSteeredIdentity. */
 export async function acceptSteeredIdentity(
   executor: Executor,
   context: RunIdentityContext,
@@ -465,16 +540,87 @@ export async function acceptSteeredIdentity(
   if (accepted) await activate(executor, accepted);
 }
 
-export async function captureRunIdentity(
+const runIdentityFields = {
+  id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
+  status: heartbeatRuns.status, responsibleUserId: heartbeatRuns.responsibleUserId,
+  activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
+};
+
+export const runIdentityTaskFields = {
+  ...runIdentityFields, nativeIssueId: heartbeatRuns.nativeIssueId, issueId: heartbeatRuns.issueId,
+  wakeupRequestId: heartbeatRuns.wakeupRequestId,
+  contextSnapshot: sql<Record<string, unknown> | null>`case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object'
+    then jsonb_build_object('issueId', ${heartbeatRuns.contextSnapshot}->'issueId',
+      'taskId', ${heartbeatRuns.contextSnapshot}->'taskId',
+      'conversationSessionGeneration', ${heartbeatRuns.contextSnapshot}->'conversationSessionGeneration',
+      'paperclipSkillTest', ${heartbeatRuns.contextSnapshot}->'paperclipSkillTest') else null end`,
+};
+
+export const runIdentityBrokerFields = {
+  ...runIdentityFields, invocationSource: heartbeatRuns.invocationSource,
+  contextSnapshot: sql<Record<string, unknown> | null>`case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object'
+    then jsonb_build_object('issueId', ${heartbeatRuns.contextSnapshot}->'issueId',
+      'projectId', ${heartbeatRuns.contextSnapshot}->'projectId', 'routineId', ${heartbeatRuns.contextSnapshot}->'routineId',
+      'responsibleUserId', ${heartbeatRuns.contextSnapshot}->'responsibleUserId',
+      'responsible_user_id', ${heartbeatRuns.contextSnapshot}->'responsible_user_id',
+      'paperclipIssue', case when jsonb_typeof(${heartbeatRuns.contextSnapshot}->'paperclipIssue') = 'object'
+        then jsonb_build_object('id', ${heartbeatRuns.contextSnapshot}->'paperclipIssue'->'id',
+          'projectId', ${heartbeatRuns.contextSnapshot}->'paperclipIssue'->'projectId',
+          'responsibleUserId', ${heartbeatRuns.contextSnapshot}->'paperclipIssue'->'responsibleUserId',
+          'responsible_user_id', ${heartbeatRuns.contextSnapshot}->'paperclipIssue'->'responsible_user_id') else null end)
+    else null end`,
+};
+
+const runIdentityProjectFields = {
+  ...runIdentityTaskFields, runtimeMode: heartbeatRuns.runtimeMode,
+  runnerProfileJson: sql<Record<string, unknown> | null>`case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object'
+    then case when ${heartbeatRuns.runnerProfileJson} ? 'nativeExecutionInput'
+      then jsonb_build_object('nativeExecutionInput', ${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput')
+      else '{}'::jsonb end else null end`,
+};
+
+type FullIdentityRun = typeof heartbeatRuns.$inferSelect;
+type IdentityRun = Pick<FullIdentityRun, keyof typeof runIdentityFields>;
+type TaskIdentityRun = Pick<FullIdentityRun, keyof typeof runIdentityTaskFields>;
+type BrokerIdentityRun = Pick<FullIdentityRun, keyof typeof runIdentityBrokerFields>;
+type ProjectIdentityRun = Pick<FullIdentityRun, keyof typeof runIdentityProjectFields>;
+export type RunIdentityReadScope = "github_credentials" | "request_authentication" | "identity" | "task_authorization" | "token_broker" | "project_execution";
+export type RunIdentityCapture<Scope extends RunIdentityReadScope | undefined = undefined> = {
+  run: Scope extends "identity" ? IdentityRun : Scope extends "task_authorization" ? TaskIdentityRun :
+    Scope extends "token_broker" ? BrokerIdentityRun : Scope extends "project_execution" ? ProjectIdentityRun : FullIdentityRun;
+  context: RunIdentityContext | null;
+};
+
+export async function captureRunIdentity<Scope extends RunIdentityReadScope | undefined = undefined>(
   db: Db,
   input: { companyId: string; runId: string; agentId: string },
-  options?: { readScope: "github_credentials" | "request_authentication" },
-) {
+  options?: { readScope: Scope },
+): Promise<RunIdentityCapture<Scope>> {
+  return captureRunIdentityForPurpose(db, input, options);
+}
+
+export async function captureRunCompletionIdentity(
+  db: Db,
+  input: { companyId: string; runId: string; agentId: string; issueId: string },
+): Promise<RunIdentityCapture<"github_credentials">> {
+  return captureRunIdentityForPurpose(db, input, { readScope: "github_credentials" }, input.issueId);
+}
+
+async function captureRunIdentityForPurpose<Scope extends RunIdentityReadScope | undefined = undefined>(
+  db: Db,
+  input: { companyId: string; runId: string; agentId: string },
+  options?: { readScope: Scope },
+  completionIssueId?: string,
+): Promise<RunIdentityCapture<Scope>> {
   // Lock acquisition serializes with steering delivery and its durable acknowledgement.
   return db.transaction(async (tx) => {
     await lockIdentityTask(tx, input.companyId, input.runId);
     const [run] = await tx
-      .select(options?.readScope === "github_credentials" || options?.readScope === "request_authentication" ? {
+      .select(options?.readScope === "identity" ? runIdentityFields :
+        options?.readScope === "task_authorization" ? runIdentityTaskFields :
+        options?.readScope === "token_broker" ? runIdentityBrokerFields :
+        options?.readScope === "project_execution" ? runIdentityProjectFields :
+        options?.readScope === "github_credentials" || options?.readScope === "request_authentication" ? {
         ...getTableColumns(heartbeatRuns),
         contextSnapshot: sql<Record<string, unknown> | null>`case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object'
           then jsonb_build_object('issueId', ${heartbeatRuns.contextSnapshot}->'issueId',
@@ -490,10 +636,11 @@ export async function captureRunIdentity(
           eq(heartbeatRuns.id, input.runId),
           eq(heartbeatRuns.companyId, input.companyId),
           eq(heartbeatRuns.agentId, input.agentId),
+          completionIssueId !== undefined ? eq(heartbeatRuns.nativeIssueId, completionIssueId) : undefined,
         ),
       )
       .for("no key update");
-    if (!run || run.status !== "running")
+    if (!run || (run.status !== "running" && !(completionIssueId !== undefined && run.status === "succeeded")))
       throw forbidden(
         "Credential acquisition requires this agent's active run",
       );
@@ -528,8 +675,45 @@ export async function captureRunIdentity(
             ),
           )
       : [];
-    return { run, context: context ?? null };
+    return { run, context: context ?? null } as RunIdentityCapture<Scope>;
   });
+}
+
+export const requestRunIdentityFields = {
+  nativeIssueId: heartbeatRuns.nativeIssueId,
+  issueId: heartbeatRuns.issueId,
+  taskContext: runTaskContextColumn,
+  pendingIdentityContext: sql<boolean>`exists (select 1 from run_identity_contexts pending_context
+    where pending_context.run_id = "heartbeat_runs"."id" and pending_context.status = 'pending')`,
+  identityContext: sql<{ id: string; responsibleUserId: string | null } | null>`(select
+    jsonb_build_object('id', active_context.id, 'responsibleUserId', active_context.responsible_user_id)
+    from run_identity_contexts active_context
+    where active_context.id = "heartbeat_runs"."active_identity_context_id"
+      and active_context.run_id = "heartbeat_runs"."id")`,
+};
+
+type RequestRunIdentityRow = Pick<FullIdentityRun, "status" | "activeIdentityContextId" | "responsibleUserId"> & {
+  nativeIssueId?: string | null;
+  issueId?: string | null;
+  taskContext?: Record<string, unknown> | null;
+  pendingIdentityContext?: boolean | null;
+  identityContext?: { id: string; responsibleUserId: string | null } | null;
+};
+
+export async function resolveRequestRunIdentity(
+  db: Db,
+  input: { companyId: string; runId: string; agentId: string },
+  run: RequestRunIdentityRow,
+): Promise<{ activeIdentityContextId: string | null; responsibleUserId: string | null }> {
+  if (!run.activeIdentityContextId || run.status !== "running") {
+    return { activeIdentityContextId: run.activeIdentityContextId, responsibleUserId: run.responsibleUserId };
+  }
+  if (run.pendingIdentityContext) {
+    const captured = await captureRunIdentity(db, input, { readScope: "request_authentication" });
+    return { activeIdentityContextId: captured.context?.id ?? null, responsibleUserId: captured.context?.responsibleUserId ?? null };
+  }
+  assertRunTaskIdentity({ nativeIssueId: run.nativeIssueId, issueId: run.issueId, contextSnapshot: run.taskContext });
+  return { activeIdentityContextId: run.identityContext?.id ?? null, responsibleUserId: run.identityContext?.responsibleUserId ?? null };
 }
 
 export async function listRunIdentityContexts(
