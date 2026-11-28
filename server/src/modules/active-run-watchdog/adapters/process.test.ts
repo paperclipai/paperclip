@@ -22,17 +22,17 @@ describe("adapters", () => {
       runningProcesses.clear();
     });
 
-    it("reports skipped_non_local_adapter for a non-sessioned adapter type", async () => {
+    it.each(["hermes_gateway", "t3code_local"])("reports skipped_non_local_adapter for %s", async (adapterType) => {
       const adapter = createProcessAdapter();
 
       const outcome = await adapter.cleanupRunProcess({
         runId: "run-1",
-        adapterType: "hermes_gateway",
+        adapterType,
         fallbackPid: 4242,
         fallbackProcessGroupId: null,
       });
 
-      expect(outcome).toEqual({ attempted: false, outcome: "skipped_non_local_adapter", adapterType: "hermes_gateway" });
+      expect(outcome).toEqual({ attempted: false, outcome: "skipped_non_local_adapter", adapterType });
       expect(mockedIsPidAlive).not.toHaveBeenCalled();
     });
 

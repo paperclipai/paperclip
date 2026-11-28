@@ -13,6 +13,14 @@ const support = await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
 if (!support.supported) console.warn(`Skipping execution identity regressions: ${support.reason}`);
 
+describe("conversation adapters", () => {
+  it("holds T3 Code runs for reconciliation like openclaw_gateway", () => {
+    expect(isConversationAdapter("kimi_local")).toBe(true);
+    expect(isConversationAdapter("openclaw_gateway")).toBe(false);
+    expect(isConversationAdapter("t3code_local")).toBe(false);
+  });
+});
+
 describePostgres("execution identity query contracts", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: Db;
