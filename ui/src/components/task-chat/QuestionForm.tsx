@@ -536,7 +536,7 @@ function QuestionFormForRequest({
           tabIndex={0}
           className={cn("max-h-96 overflow-auto text-muted-foreground", decision ? "text-xs" : "mb-3 text-sm")}
         >
-          <MarkdownBody mediaMode="reference" linkIssueReferences={false}>{questionSet.description}</MarkdownBody>
+          <MarkdownBody mediaMode="reference" linkIssueReferences={false} className="paperclip-markdown-inherit-size">{questionSet.description}</MarkdownBody>
         </div>
       ) : null}
       {question.answerMode === "text" && !decision ? (
@@ -562,9 +562,12 @@ function QuestionFormForRequest({
           </p>
         ) : null}
         <div ref={promptRef} tabIndex={-1} className={cn("leading-5", decision ? "text-(length:--text-compact)" : "text-sm", decision && promptStated && "sr-only")}>
-          <div id={`${id}-${question.id}-prompt`} className="flex items-start gap-1 font-medium text-foreground">
-            {decision && questionSet.questions.length > 1 ? <span>{page + 1}.</span> : null}
-            <MarkdownBody mediaMode="reference" linkIssueReferences={false} className={cn("min-w-0", decision && "text-(length:--text-compact)")}>{question.prompt}</MarkdownBody>
+          {/* A one-line prompt reads as the question itself; a prompt with
+              paragraphs or lists is body text and would turn into one bold
+              wall if it inherited the heading weight. */}
+          <div id={`${id}-${question.id}-prompt`} className={cn("flex items-start gap-1 text-foreground", !question.prompt.trim().includes("\n") && "font-medium")}>
+            {decision && questionSet.questions.length > 1 ? <span className="font-medium">{page + 1}.</span> : null}
+            <MarkdownBody mediaMode="reference" linkIssueReferences={false} className="paperclip-markdown-inherit-size min-w-0">{question.prompt}</MarkdownBody>
           </div>
           {decision ? <span aria-hidden className="text-muted-foreground"> · {question.required ? "Required" : "Optional"}</span> : null}
         </div>
