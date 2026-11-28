@@ -321,6 +321,39 @@ Current implementation status:
 
 - canonical model: `local_trusted` and `authenticated` (with `private/public` exposure)
 
+## Extra Codex sandbox roots (`PAPERCLIP_RUNNER_EXTRA_ROOTS`)
+
+Use this setting to give Codex runs in the Paperclip Runner access to more
+directories than the assigned workspace.
+
+- Set `PAPERCLIP_RUNNER_EXTRA_ROOTS` in the environment of the Paperclip server
+  process. Restart the server after you change it. Agent environment bindings
+  cannot set or replace this value.
+- Use a JSON array, for example `["/Users/me/Projects/shared"]`, or a list of
+  paths with the OS path delimiter (`:` on macOS and Linux).
+- Use absolute paths. The paths refer to the machine where the Paperclip
+  Runner starts Codex.
+- Execution turns get write access to each root. Planning turns get read
+  access only.
+- The runner resolves symlinks before it checks a root. It ignores a root if
+  the root:
+  - is a relative path;
+  - is the host home directory, the run `HOME`, or a parent of one of them
+    (for example `/` or `/Users`);
+  - is `CODEX_HOME` or a protected runner path, is in one of them, or is a
+    parent of one of them.
+- Directories in the host home directory, for example `~/Projects/shared`,
+  are accepted. Do not add credential directories such as `~/.ssh`, `~/.aws`,
+  or `~/.codex`. The runner does not reject them.
+- If a root does not exist when the run starts, the runner checks only the
+  path text.
+- If the value starts with `[` but is not valid JSON, the runner ignores the
+  setting and writes a warning. The warning does not include the paths.
+
+Every Codex run on the instance gets these roots. All agents can read and
+change their files. Add only directories that do not contain secrets and that
+all agents can change safely.
+
 ## Worktree-local Instances
 
 When developing from multiple git worktrees, do not point two Paperclip servers at the same embedded PostgreSQL data directory.

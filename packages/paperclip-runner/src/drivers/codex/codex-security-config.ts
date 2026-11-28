@@ -3,6 +3,7 @@ import { CERTIFICATE_ENVIRONMENT_KEYS, configuredEnvironmentKeys } from "../../c
 import { resolve, isAbsolute, join, dirname, delimiter, relative, sep } from "node:path";
 import { closeSync, constants, existsSync, fstatSync, openSync, realpathSync, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
+import { homedir } from "node:os";
 import { QUALIFIED_ACPX_PROFILES } from "../acpx/qualified-profiles.js";
 
 import {
@@ -178,6 +179,46 @@ function gitFilesystemRoots(source: NodeJS.ProcessEnv): { read: string[]; write:
   return { read: [...new Set(read)], write: [...new Set(write)] };
 }
 
+function isSameOrInside(path: string, parent: string): boolean {
+  const offset = relative(parent, path);
+  return offset === "" || (offset !== ".." && !offset.startsWith(`..${sep}`) && !isAbsolute(offset));
+}
+
+function pathVariants(path: string): string[] {
+  const lexical = resolve(path);
+  try { return [...new Set([lexical, realpathSync(lexical)])]; } catch { return [lexical]; }
+}
+
+function absoluteVariants(values: Array<string | undefined>): string[] {
+  return values
+    .filter((value): value is string => typeof value === "string" && isAbsolute(value.trim()))
+    .flatMap((value) => pathVariants(value.trim()));
+}
+
+function extraFilesystemRoots(source: NodeJS.ProcessEnv, protectedPaths: string[]): string[] {
+  const homes = absoluteVariants([source.HOME, source.PAPERCLIP_GITHUB_HOST_HOME, homedir()]);
+  const denied = absoluteVariants([source.CODEX_HOME, ...protectedPaths]);
+  let roots: unknown;
+  try {
+    const raw = (source.PAPERCLIP_RUNNER_EXTRA_ROOTS ?? "[]").trim();
+    roots = raw.startsWith("[") ? JSON.parse(raw) : raw.split(delimiter).filter(Boolean);
+  } catch {
+    roots = undefined;
+  }
+  if (!Array.isArray(roots)) {
+    console.warn("[paperclip-runner] ignoring PAPERCLIP_RUNNER_EXTRA_ROOTS: expected a JSON array or a path list");
+    return [];
+  }
+  const accepted = roots
+    .filter((root): root is string => typeof root === "string" && isAbsolute(root))
+    .map((root) => pathVariants(root))
+    .filter((variants) => !variants.some((root) =>
+      homes.some((home) => isSameOrInside(home, root))
+      || denied.some((path) => isSameOrInside(root, path) || isSameOrInside(path, root))))
+    .map((variants) => variants[variants.length - 1]!);
+  return [...new Set(accepted)];
+}
+
 export const CODEX_PROVIDER_CREDENTIAL_ENVIRONMENT_KEYS: readonly string[] = [
   "OPENAI_API_KEY", "CODEX_API_KEY", "PAPERCLIP_AI_PROVIDER_KEY",
   "OTEL_EXPORTER_OTLP_LOGS_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
@@ -269,6 +310,7 @@ export function createIsolatedCodexAppServerArgs(
   const explicitSource = source;
   source ??= process.env;
   const gitRoots = gitFilesystemRoots(source);
+  const extraRoots = extraFilesystemRoots(source, protectedPaths);
   readOnlyRoots = [...new Set([...readOnlyRoots, ...codexNetworkReadOnlyRoots(source)])];
   const networkAccess = codexNetworkAccess(source);
   const externalRunnerSandbox = usesExternalRunnerSandbox(source);
@@ -319,6 +361,7 @@ export function createIsolatedCodexAppServerArgs(
     ...generatedImageRoots.map((path) => `${tomlString(path)}="read"`),
     ...gitRoots.read.map((path) => `${tomlString(path)}="read"`),
     ...gitRoots.write.map((path) => `${tomlString(path)}="write"`),
+    ...extraRoots.map((path) => `${tomlString(path)}="write"`),
     ...(instructionWorkingCopyRoot ? [`${tomlString(resolve(instructionWorkingCopyRoot))}="write"`] : []),
     ...(source.PAPERCLIP_GITHUB_BROKER_TOKEN && source.GH_CONFIG_DIR
       ? [`${tomlString(resolve(source.GH_CONFIG_DIR))}="write"`] : []),
@@ -337,7 +380,7 @@ export function createIsolatedCodexAppServerArgs(
     ...(usesPreconfiguredHome(source) && source.HOME ? [`${tomlString(source.HOME)}="read"`] : []),
     ...readOnlyRoots.map((path) => `${tomlString(resolve(path))}="read"`),
     ...generatedImageRoots.map((path) => `${tomlString(path)}="read"`),
-    ...[...gitRoots.read, ...gitRoots.write].map((path) => `${tomlString(path)}="read"`),
+    ...[...gitRoots.read, ...gitRoots.write, ...extraRoots].map((path) => `${tomlString(path)}="read"`),
     ...(instructionWorkingCopyRoot ? [`${tomlString(resolve(instructionWorkingCopyRoot))}="read"`] : []),
     ...(source.PAPERCLIP_GITHUB_BROKER_TOKEN && source.GH_CONFIG_DIR
       ? [`${tomlString(resolve(source.GH_CONFIG_DIR))}="write"`] : []),
