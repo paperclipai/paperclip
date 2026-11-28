@@ -57,6 +57,27 @@ async function onlyEntry(directory: string, name: string): Promise<boolean> {
   return found;
 }
 
+async function emptyDirectory(target: string, expected?: Awaited<ReturnType<typeof entry>>): Promise<boolean> {
+  const before = expected ?? await entry(target);
+  if (!before?.isDirectory() || before.isSymbolicLink()) return false;
+  const handle = await fs.open(target, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW).catch(() => null);
+  if (!handle) return false;
+  try {
+    const opened = await handle.stat({ bigint: true });
+    if (opened.dev !== before.dev || opened.ino !== before.ino || !opened.isDirectory()) throw invalid();
+    for await (const _ of await fs.opendir(target)) return false;
+    const after = await handle.stat({ bigint: true }), current = await entry(target);
+    if (!current || !current.isDirectory() || current.isSymbolicLink()
+      || [opened, after, current].some(stat => stat.dev !== before.dev || stat.ino !== before.ino)) throw invalid();
+    return true;
+  } catch (error) {
+    if ((error as Error).message === "workspace_git_source_unproven") throw error;
+    return false;
+  } finally {
+    await handle.close();
+  }
+}
+
 export async function readWorkspaceGitSourceRoots(cwd: string, options: { ancestors?: boolean } = {}): Promise<WorkspaceGitSourceRoots | null> {
   let root = path.resolve(cwd), marker = "", markerEntry: Awaited<ReturnType<typeof entry>>;
   for (let depth = 0; ; depth++) {
@@ -66,6 +87,7 @@ export async function readWorkspaceGitSourceRoots(cwd: string, options: { ancest
     if (!source.isDirectory() || source.isSymbolicLink()) throw invalid();
     root = await fs.realpath(root);
     marker = path.join(root, ".git"); markerEntry = await entry(marker);
+    if (markerEntry?.isDirectory() && !markerEntry.isSymbolicLink() && await emptyDirectory(marker, markerEntry)) markerEntry = null;
     if (markerEntry) break;
     if (await entry(path.join(root, "objects")) && await entry(path.join(root, "HEAD"))) throw invalid();
     if (!options.ancestors || path.dirname(root) === root) return null;
@@ -123,7 +145,9 @@ export async function readNestedWorkspaceGitSourceRoots(cwd: string): Promise<Wo
     const children = (await fs.readdir(directory, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name));
     entries += children.length;
     if (entries > 100_000) throw invalid();
-    if (children.some(child => child.name === ".git")) {
+    const git = children.find(child => child.name === ".git");
+    const hasGit = git && !(git.isDirectory() && !git.isSymbolicLink() && await emptyDirectory(path.join(directory, ".git")));
+    if (hasGit) {
       const source = await readWorkspaceGitSourceRoots(directory);
       if (!source || roots.length >= 64) throw invalid();
       roots.push(source); inRepository = true;

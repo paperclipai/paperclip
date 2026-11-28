@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { readWorkspaceGitSourceRoots } from "./workspace-git-source-roots.js";
+import { readNestedWorkspaceGitSourceRoots, readWorkspaceGitSourceRoots } from "./workspace-git-source-roots.js";
 import { workspaceSourceIdentities } from "./workspace-source-lock.js";
 import { localWorkspaceSourcePaths } from "./execution-workspace-source-roots.js";
 import { resolveManagedProjectWorkspaceDir, resolvePaperclipInstanceRoot } from "../home-paths.js";
@@ -139,5 +139,53 @@ describe("Git physical source roots", () => {
   it("leaves absent and ordinary directories outside the Git proof", async () => {
     expect(await readWorkspaceGitSourceRoots(path.join(root, "absent"))).toBeNull();
     expect(await readWorkspaceGitSourceRoots(root)).toBeNull();
+  });
+  it("treats an empty .git directory as absent and preserves ancestor Git resolution", async () => {
+    const cwd = path.join(root, "sandbox-task");
+    await fs.mkdir(path.join(cwd, ".git"), { recursive: true });
+    expect(await readWorkspaceGitSourceRoots(cwd)).toBeNull();
+    expect(await readNestedWorkspaceGitSourceRoots(cwd)).toEqual([]);
+
+    const repo = await repository("parent-repo");
+    const nested = path.join(repo, "workspace");
+    await fs.mkdir(path.join(nested, ".git"), { recursive: true });
+    expect(await readWorkspaceGitSourceRoots(nested)).toBeNull();
+    expect(await readWorkspaceGitSourceRoots(nested, { ancestors: true })).toMatchObject({
+      root: repo,
+      gitDirectory: { path: path.join(repo, ".git") },
+    });
+    expect(await readNestedWorkspaceGitSourceRoots(nested)).toEqual([]);
+
+    const withSubrepo = path.join(root, "nested-task");
+    await fs.mkdir(path.join(withSubrepo, ".git"), { recursive: true });
+    const subrepo = path.join(withSubrepo, "inner");
+    await fs.mkdir(subrepo, { recursive: true });
+    await git(subrepo, "init", "--initial-branch=main");
+    await fs.writeFile(path.join(subrepo, "file.txt"), "hello\n");
+    await git(subrepo, "add", ".");
+    await git(subrepo, "commit", "-m", "Init");
+    const nestedRoots = await readNestedWorkspaceGitSourceRoots(withSubrepo);
+    expect(nestedRoots).toHaveLength(1);
+    expect(nestedRoots[0]!.root).toBe(subrepo);
+
+    const emptyFile = path.join(root, "empty-git-file");
+    await fs.mkdir(emptyFile, { recursive: true });
+    await fs.writeFile(path.join(emptyFile, ".git"), "");
+    await expect(readWorkspaceGitSourceRoots(emptyFile)).rejects.toThrow("workspace_git_source_unproven");
+    await expect(readNestedWorkspaceGitSourceRoots(emptyFile)).rejects.toThrow("workspace_git_source_unproven");
+
+    const invalidDir = path.join(root, "invalid-git-dir");
+    await fs.mkdir(path.join(invalidDir, ".git"), { recursive: true });
+    await fs.writeFile(path.join(invalidDir, ".git", "unknown"), "content");
+    await expect(readWorkspaceGitSourceRoots(invalidDir)).rejects.toThrow("workspace_git_source_unproven");
+    await expect(readNestedWorkspaceGitSourceRoots(invalidDir)).rejects.toThrow("workspace_git_source_unproven");
+
+    const symlinkGit = path.join(root, "symlink-git");
+    const emptyTarget = path.join(root, "empty-target");
+    await fs.mkdir(symlinkGit, { recursive: true });
+    await fs.mkdir(emptyTarget, { recursive: true });
+    await fs.symlink(emptyTarget, path.join(symlinkGit, ".git"));
+    await expect(readWorkspaceGitSourceRoots(symlinkGit)).rejects.toThrow("workspace_git_source_unproven");
+    await expect(readNestedWorkspaceGitSourceRoots(symlinkGit)).rejects.toThrow("workspace_git_source_unproven");
   });
 });
