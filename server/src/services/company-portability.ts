@@ -2333,6 +2333,28 @@ function extractPortableProjectEnvInputs(
   );
 }
 
+function extractPortableAdapterSecretInputs(
+  agentSlug: string,
+  adapterConfig: Record<string, unknown>,
+): CompanyPortabilityEnvInput[] {
+  const inputs: CompanyPortabilityEnvInput[] = [];
+  for (const [key, value] of Object.entries(adapterConfig)) {
+    if (!isPlainRecord(value) || value.type !== "secret_ref") continue;
+    delete adapterConfig[key];
+    inputs.push({
+      key,
+      description: `Provide ${key} for agent ${agentSlug}`,
+      agentSlug,
+      projectSlug: null,
+      kind: "secret",
+      requirement: "optional",
+      defaultValue: "",
+      portability: "portable",
+    });
+  }
+  return inputs;
+}
+
 function jsonEqual(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
@@ -3001,11 +3023,16 @@ function writeManifestEnvBinding(
   manifest: CompanyPortabilityManifest,
   input: CompanyPortabilityEnvInput,
   binding: AgentEnvConfig[string],
+  adapterSecretFields: readonly string[] = [],
 ) {
   if (input.agentSlug) {
     const agent = manifest.agents.find((entry) => entry.slug === input.agentSlug);
     if (!agent) return;
     const adapterConfig = isPlainRecord(agent.adapterConfig) ? agent.adapterConfig : {};
+    if (adapterSecretFields.includes(input.key)) {
+      agent.adapterConfig = { ...adapterConfig, [input.key]: binding };
+      return;
+    }
     const env = isPlainRecord(adapterConfig.env) ? { ...adapterConfig.env } : {};
     env[input.key] = binding;
     agent.adapterConfig = { ...adapterConfig, env };
@@ -3761,11 +3788,15 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         { userId: actorUserId ?? null, agentId: null },
       );
       createdSecretIds.push(secret.id);
+      const importAgent = manifest.agents.find((entry) => entry.slug === input.agentSlug);
+      const adapterSecretFields = importAgent
+        ? await secrets.listAdapterSchemaSecretFieldKeys(importAgent.adapterType)
+        : [];
       writeManifestEnvBinding(manifest, input, {
         type: "secret_ref",
         secretId: secret.id,
         version: "latest",
-      });
+      }, adapterSecretFields);
     }
   }
 
@@ -4268,6 +4299,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             defaultRules: adapterDefaultRules,
           },
         ) as Record<string, unknown>;
+        envInputs.push(...extractPortableAdapterSecretInputs(slug, portableAdapterConfig));
         const portableRuntimeConfig = pruneDefaultLikeValue(
           normalizePortableConfig(agent.runtimeConfig),
           {
@@ -5751,6 +5783,44 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             runner,
             existingImportAgent?.defaultEnvironmentId,
           );
+          const sourceAdapterSecretFields = await secrets.listAdapterSchemaSecretFieldKeys(
+            manifestAgent.adapterType,
+          );
+          const finalAdapterSecretFields = await secrets.listAdapterSchemaSecretFieldKeys(
+            normalizedAdapter.adapterType,
+          );
+          const materializedAgentInputs = importEnvInputs.filter((envInput) => (
+            envInput.agentSlug === manifestAgent.slug
+            && (envInputValue(envInput, input.secretValues)?.trim().length ?? 0) > 0
+          ));
+          const manifestAdapterEnv = isPlainRecord(manifestAgent.adapterConfig.env)
+            ? manifestAgent.adapterConfig.env
+            : {};
+          for (const envInput of materializedAgentInputs) {
+            const binding = envInput.kind === "secret"
+              && sourceAdapterSecretFields.includes(envInput.key)
+              ? manifestAgent.adapterConfig[envInput.key]
+              : manifestAdapterEnv[envInput.key];
+            if (binding === undefined) continue;
+            if (finalAdapterSecretFields.includes(envInput.key)) {
+              normalizedAdapter.adapterConfig[envInput.key] = binding;
+              continue;
+            }
+            const normalizedEnv = isPlainRecord(normalizedAdapter.adapterConfig.env)
+              ? normalizedAdapter.adapterConfig.env
+              : {};
+            normalizedAdapter.adapterConfig.env = { ...normalizedEnv, [envInput.key]: binding };
+          }
+          const completedAdapterConfig = await secrets.normalizeAdapterConfigForPersistence(
+            targetCompany.id,
+            normalizedAdapter.adapterConfig,
+            { strictMode: strictSecretsMode, adapterType: normalizedAdapter.adapterType },
+          );
+          await assertImportAdapterConfigConstraints(
+            targetCompany.id,
+            normalizedAdapter.adapterType,
+            completedAdapterConfig,
+          );
           const patch = {
             name: planAgent.plannedName,
             role: manifestAgent.role,
@@ -5760,7 +5830,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             capabilities: manifestAgent.capabilities,
             reportsTo: null,
             adapterType: normalizedAdapter.adapterType,
-            adapterConfig: normalizedAdapter.adapterConfig,
+            adapterConfig: completedAdapterConfig,
             runtimeConfig: sanitizeImportedAgentRuntimeConfig(manifestAgent.runtimeConfig),
             budgetMonthlyCents: manifestAgent.budgetMonthlyCents,
             permissions: manifestAgent.permissions,
