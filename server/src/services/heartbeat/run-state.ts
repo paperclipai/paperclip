@@ -1804,10 +1804,16 @@ export function createHeartbeatRunState(db: Db) {
       companyId: string,
       agentId?: string,
       limit?: number,
-      options: { summary?: boolean } = {},
+      options: { summary?: boolean; offset?: number } = {},
     ) => {
       const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
       const summary = options.summary === true;
+      const offset =
+        typeof options.offset === "number" &&
+        Number.isFinite(options.offset) &&
+        options.offset > 0
+          ? Math.floor(options.offset)
+          : 0;
       const rows = await retryIdempotentDatabaseOperation(async () => {
         const query = db
           .select(
@@ -1838,12 +1844,15 @@ export function createHeartbeatRunState(db: Db) {
                 )
               : eq(heartbeatRuns.companyId, companyId),
           )
-          .orderBy(desc(heartbeatRuns.createdAt));
+          // The id tiebreak keeps page boundaries stable when runs share a
+          // createdAt timestamp, so offset paging cannot repeat or skip rows.
+          .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id));
 
         const boundedLimit = Number.isFinite(limit)
           ? Math.max(1, Math.min(HEARTBEAT_RUN_LIST_MAX_LIMIT, Math.trunc(limit!)))
           : HEARTBEAT_RUN_LIST_DEFAULT_LIMIT;
-        return await query.limit(boundedLimit);
+        const limited = query.limit(boundedLimit);
+        return offset ? await limited.offset(offset) : await limited;
       });
       return rows.map((row) => {
         const {

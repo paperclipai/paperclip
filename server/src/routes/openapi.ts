@@ -8265,6 +8265,7 @@ registry.registerPath({
     query: z.object({
       agentId: z.string().optional(),
       limit: z.coerce.number().int().min(1).max(1000).default(200),
+      offset: z.coerce.number().int().min(0).optional(),
       summary: z.enum(["true", "false", "1", "0"]).optional(),
       latestFailuresOnly: z.enum(["true", "false"]).optional().describe("Return failures only when the agent's latest run within the bounded result failed or timed out. Applied before read redaction."),
     }),
