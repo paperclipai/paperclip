@@ -112,12 +112,16 @@ async function currentBootOwnsRun(tx: Db, lease: LeaseRow, runControllerBootId: 
   return native?.controllerBootId === bootId;
 }
 
+export function sharesRemoteWorkspaceInsteadOfSandbox(lease: Pick<LeaseRow, "provider" | "metadata">): boolean {
+  return lease.provider === "ssh" || lease.metadata?.driver === "ssh";
+}
+
 async function keptByAnotherObligation(tx: Db, lease: LeaseRow): Promise<string | null> {
   if (await nativeWorkspaceExportPendingForLease(tx, lease, { destructive: false })) return "workspace_export_pending";
   if (!(await allowLegacyShutdownWorkspaceCleanup(tx, lease))) return "legacy_shutdown_fence";
   // One provider resource id names one physical sandbox; another live lease
   // on it still owns that sandbox.
-  if (lease.provider && lease.providerLeaseId) {
+  if (lease.provider && lease.providerLeaseId && !sharesRemoteWorkspaceInsteadOfSandbox(lease)) {
     const [other] = await tx.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
       ne(environmentLeases.id, lease.id), eq(environmentLeases.provider, lease.provider),
       eq(environmentLeases.providerLeaseId, lease.providerLeaseId),

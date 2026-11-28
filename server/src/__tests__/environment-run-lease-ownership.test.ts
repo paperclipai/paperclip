@@ -235,6 +235,32 @@ suite("environment_run_lease_active on the shared ownership path", () => {
     expect((await row(leaseId)).status).toBe("pending_cleanup");
   });
 
+  it("settles orphaned SSH leases even when sequential runs share one workspace path", async () => {
+    const workspace = "ssh://root@executor.example.test:2222/home/repos/lab";
+    const firstRun = await run("cancelled");
+    const secondRun = await run("cancelled");
+    const sshLease = async (runId: string) => {
+      const id = randomUUID();
+      await db.insert(environmentLeases).values({ id, companyId, heartbeatRunId: runId, status: "active",
+        leasePolicy: "ephemeral", provider: "ssh", providerLeaseId: workspace,
+        metadata: { driver: "ssh", [ENVIRONMENT_LEASE_CONTROLLER_KEY]: await deadHolder() } });
+      return id;
+    };
+    const firstLease = await sshLease(firstRun);
+    const secondLease = await sshLease(secondRun);
+    const records = await OWNABLE_KINDS.find(kind => kind.id === "environment_run_lease_active")!.listForRuns!(db, [firstRun, secondRun]);
+    const outcomes = [];
+    for (const record of records) {
+      outcomes.push(await settleEnvironmentRunLease(db, record, { now: new Date(), proof: { verdict: "gone", reason: "pid_dead" } }));
+    }
+    expect(outcomes).toEqual([
+      { settled: true, reason: "pid_dead" },
+      { settled: true, reason: "pid_dead" },
+    ]);
+    expect(await row(firstLease)).toMatchObject({ status: "pending_cleanup", failureReason: "orphaned_active_lease_recovered" });
+    expect(await row(secondLease)).toMatchObject({ status: "pending_cleanup", failureReason: "orphaned_active_lease_recovered" });
+  });
+
   it("never settles on a read-only pass", async () => {
     const runId = await run("failed");
     const leaseId = await lease(runId, await deadHolder());
