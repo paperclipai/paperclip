@@ -1,6 +1,7 @@
 import { notifyRetentionWork, writeJoinRequestChange } from "../services/retention-work-notifications.js";
 import { isPublicIpAddress, parseIpv4Address } from "../lib/ip-address.js";
 import { createAgentLifecycle } from "../services/agent-lifecycle.js";
+import { assertNoAgentFixedProcessConfiguration } from "../middleware/fixed-process-configuration.js";
 import {
   createHash,
   generateKeyPairSync,
@@ -3891,6 +3892,9 @@ export function accessRoutes(
         const existingAdapterConfig = isPlainObject(existingAgent.adapterConfig)
           ? (existingAgent.adapterConfig as Record<string, unknown>)
           : {};
+        if (existingAdapterConfig.fixedCommand === true || Object.prototype.hasOwnProperty.call(existingAdapterConfig, "watchdogService")) {
+          throw forbidden("Invite replay cannot reconfigure an administratively fixed process.");
+        }
         const nextAdapterConfig = {
           ...existingAdapterConfig,
           ...(joinDefaults.normalized ?? {})
@@ -4174,6 +4178,7 @@ export function accessRoutes(
           }))
         );
 
+        assertNoAgentFixedProcessConfiguration({ actor: req.actor, body: existing.agentDefaultsPayload });
         const created = await agentsLifecycle.requestHire(companyId, {
           name: agentName,
           role: "general",
