@@ -560,6 +560,40 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
         env: {},
       });
     });
+    it.each(["revoked", "needs_reauthorization"] as const)(
+      "does not let an inactive dedicated grant block personal access after a policy switch (%s)",
+      async (status) => {
+        const input = await seed();
+        const personal = await grant(input, "A");
+        const dedicated = await grant(input, "robot", true);
+        expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({
+          status: "available",
+          source: "dedicated",
+          login: "robot",
+        });
+        await db
+          .update(connectionGrants)
+          .set({ status })
+          .where(eq(connectionGrants.id, dedicated.id));
+        await db
+          .update(toolConnections)
+          .set({ credentialPolicy: "per_user" })
+          .where(eq(toolConnections.id, dedicated.connectionId));
+        expect(
+          (
+            await resolveManagedGitHubIdentitySelection(db, input.companyId, {
+              ...input,
+              responsibleUserId: "A",
+            })
+          ).grant?.id,
+        ).toBe(personal.id);
+        expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({
+          status: "available",
+          source: "personal",
+          login: "A",
+        });
+      },
+    );
     it("does not resolve the company default person's GitHub", async () => {
       const input = await seed();
       await grant(input, "A");
