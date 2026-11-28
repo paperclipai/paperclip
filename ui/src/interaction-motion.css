@@ -1,0 +1,201 @@
+/* Imported by index.css. The app-wide motion for popups, menus, sheets, buttons,
+   page changes, list entry, and finishing a task. Values live here, next to the
+   keyframes that use them, so the feel retunes from one file.
+
+   The shadcn primitives carry `animate-in`, `zoom-in-95` and similar classes, but
+   the plugin that defines them is not installed, so they are inert. These rules
+   supply the motion by data-slot instead.
+
+   Keyframes animate `transform`. Tailwind positions with the separate `translate`
+   property, so centering a dialog and animating it do not fight.
+
+   Everything that moves sits inside the no-preference query at the end. Under
+   reduced motion nothing below it applies and surfaces appear at once. */
+:root {
+  --motion-popup-enter: 400ms;
+  --motion-popup-exit: 160ms;
+  --motion-menu-enter: 260ms;
+  --motion-menu-exit: 120ms;
+  --motion-sheet-enter: 420ms;
+  --motion-sheet-exit: 210ms;
+  --motion-page-enter: 300ms;
+  --motion-row-enter: 340ms;
+  --motion-row-stagger: 55ms;
+  --motion-press-in: 90ms;
+  --motion-press-out: 210ms;
+  --motion-press-scale: 0.9;
+  --motion-finish-check: 480ms;
+  --motion-finish-draw: 340ms;
+  --motion-finish-rays: 560ms;
+  --motion-ease-leave: cubic-bezier(0.4, 0, 1, 1);
+  --motion-ease-press-out: cubic-bezier(0.3, 1.9, 0.5, 1);
+  --finish-burst-size: 20px;
+  --finish-burst-ray-size: 5px;
+  --finish-burst-ray-travel: 22px;
+  --finish-burst-ray: oklch(0.81 0.165 85);
+  --finish-burst-check: oklch(1 0 0);
+}
+
+@keyframes overlay-enter { from { opacity: 0; } }
+@keyframes overlay-exit { to { opacity: 0; } }
+
+@keyframes popup-enter {
+  0% { opacity: 0; transform: translateY(24px) scale(0.78) rotate(-1.5deg); }
+  55% { opacity: 1; transform: translateY(-5px) scale(1.035) rotate(0.5deg); }
+  80% { transform: translateY(1px) scale(0.995); }
+  100% { opacity: 1; transform: none; }
+}
+@keyframes popup-exit { to { opacity: 0; transform: translateY(12px) scale(0.88); } }
+
+@keyframes menu-enter {
+  0% { opacity: 0; transform: scale(0.7); }
+  60% { opacity: 1; transform: scale(1.04); }
+  100% { opacity: 1; transform: none; }
+}
+@keyframes menu-exit { to { opacity: 0; transform: scale(0.88); } }
+
+/* Sheets slide from the edge they sit on. --sheet-x / --sheet-y hold its direction. */
+@keyframes sheet-enter {
+  0% { transform: translate(calc(var(--sheet-x) * 100%), calc(var(--sheet-y) * 100%)); }
+  60% { transform: translate(calc(var(--sheet-x) * -12px), calc(var(--sheet-y) * -12px)); }
+  85% { transform: translate(calc(var(--sheet-x) * 2px), calc(var(--sheet-y) * 2px)); }
+  100% { transform: none; }
+}
+@keyframes sheet-exit { to { transform: translate(calc(var(--sheet-x) * 100%), calc(var(--sheet-y) * 100%)); } }
+
+@keyframes page-enter {
+  0% { opacity: 0; transform: translateX(20px); }
+  65% { opacity: 1; transform: translateX(-2px); }
+  100% { opacity: 1; transform: none; }
+}
+/* On phones a transform would re-anchor the page's fixed controls, so pages only fade. */
+@keyframes page-enter-fade { from { opacity: 0; } }
+
+@keyframes row-enter {
+  0% { opacity: 0; transform: translateY(14px) scale(0.96); }
+  60% { opacity: 1; transform: translateY(-2px); }
+  100% { opacity: 1; transform: none; }
+}
+
+@keyframes finish-pop {
+  0% { transform: translate(-50%, -50%) scale(0.3); opacity: 1; }
+  45% { transform: translate(-50%, -50%) scale(1.45); }
+  75% { transform: translate(-50%, -50%) scale(0.9); }
+  100% { transform: translate(-50%, -50%); opacity: 1; }
+}
+@keyframes finish-draw { to { stroke-dashoffset: 0; } }
+@keyframes finish-ray {
+  0% { opacity: 1; transform: rotate(var(--ray-angle)); }
+  60% { opacity: 1; }
+  100% { opacity: 0; transform: rotate(var(--ray-angle)) translateX(var(--finish-burst-ray-travel)) scale(0.4); }
+}
+
+[data-slot="sheet-content"] { --sheet-x: 1; --sheet-y: 0; }
+[data-slot="sheet-content"][data-side="left"] { --sheet-x: -1; }
+[data-slot="sheet-content"][data-side="top"] { --sheet-x: 0; --sheet-y: -1; }
+[data-slot="sheet-content"][data-side="bottom"] { --sheet-x: 0; --sheet-y: 1; }
+
+/* Drawn over the control that finished the task, outside its list, so it is not
+   lost when the row moves to another group. */
+[data-finish-burst] {
+  position: fixed;
+  z-index: 60;
+  pointer-events: none;
+}
+[data-finish-burst] svg {
+  position: absolute;
+  width: var(--finish-burst-size);
+  height: var(--finish-burst-size);
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: var(--status-task-done);
+}
+[data-finish-burst] path {
+  fill: none;
+  stroke: var(--finish-burst-check);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 14;
+  stroke-dashoffset: 14;
+}
+[data-finish-burst] i {
+  position: absolute;
+  width: var(--finish-burst-ray-size);
+  height: var(--finish-burst-ray-size);
+  margin: calc(var(--finish-burst-ray-size) / -2);
+  border-radius: 50%;
+  background: var(--finish-burst-ray);
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  :is([data-slot="dialog-overlay"], [data-slot="alert-dialog-overlay"], [data-slot="sheet-overlay"])[data-state="open"] {
+    animation: overlay-enter var(--motion-menu-enter) ease-out;
+  }
+  /* The overlay and its surface leave together; the fill keeps the faded overlay from flashing back. */
+  :is([data-slot="dialog-overlay"], [data-slot="alert-dialog-overlay"])[data-state="closed"] {
+    animation: overlay-exit var(--motion-popup-exit) ease-in forwards;
+  }
+  [data-slot="sheet-overlay"][data-state="closed"] {
+    animation: overlay-exit var(--motion-sheet-exit) ease-in forwards;
+  }
+
+  :is([data-slot="dialog-content"], [data-slot="alert-dialog-content"])[data-state="open"] {
+    animation: popup-enter var(--motion-popup-enter) ease-out;
+  }
+  :is([data-slot="dialog-content"], [data-slot="alert-dialog-content"])[data-state="closed"] {
+    animation: popup-exit var(--motion-popup-exit) var(--motion-ease-leave) forwards;
+  }
+
+  /* Task quicklook keeps its own, shallower motion (see index.css). */
+  :is([data-slot="popover-content"]:not([data-quicklook]), [data-slot="dropdown-menu-content"], [data-slot="dropdown-menu-sub-content"], [data-slot="select-content"])[data-state="open"] {
+    animation: menu-enter var(--motion-menu-enter) ease-out;
+  }
+  :is([data-slot="popover-content"]:not([data-quicklook]), [data-slot="dropdown-menu-content"], [data-slot="dropdown-menu-sub-content"], [data-slot="select-content"])[data-state="closed"] {
+    animation: menu-exit var(--motion-menu-exit) var(--motion-ease-leave) forwards;
+  }
+
+  [data-slot="sheet-content"][data-state="open"] {
+    animation: sheet-enter var(--motion-sheet-enter) ease-out;
+  }
+  [data-slot="sheet-content"][data-state="closed"] {
+    animation: sheet-exit var(--motion-sheet-exit) var(--motion-ease-leave) forwards;
+  }
+
+  [data-slot="button"] {
+    transition: color 150ms, background-color 150ms, border-color 150ms, box-shadow 150ms, opacity 150ms, scale var(--motion-press-out) var(--motion-ease-press-out);
+  }
+  [data-slot="button"]:active:not(:disabled) {
+    scale: var(--motion-press-scale);
+    transition-duration: 150ms, 150ms, 150ms, 150ms, 150ms, var(--motion-press-in);
+    transition-timing-function: ease-out;
+  }
+
+  [data-page-enter] {
+    animation: page-enter-fade var(--motion-page-enter) ease-out;
+  }
+  @media (min-width: 48rem) {
+    [data-page-enter] {
+      animation-name: page-enter;
+    }
+  }
+  /* First rows only, and only while a page enters, so scrolling never replays it. */
+  [data-page-enter] :is([data-slot="task-row-group"], [data-issue-row-id], [data-slot="entity-row"]):nth-child(-n + 8) {
+    animation: row-enter var(--motion-row-enter) ease-out backwards;
+  }
+  [data-page-enter] :is([data-slot="task-row-group"], [data-issue-row-id], [data-slot="entity-row"]):nth-child(2) { animation-delay: var(--motion-row-stagger); }
+  [data-page-enter] :is([data-slot="task-row-group"], [data-issue-row-id], [data-slot="entity-row"]):nth-child(3) { animation-delay: calc(var(--motion-row-stagger) * 2); }
+  [data-page-enter] :is([data-slot="task-row-group"], [data-issue-row-id], [data-slot="entity-row"]):nth-child(4) { animation-delay: calc(var(--motion-row-stagger) * 3); }
+  [data-page-enter] :is([data-slot="task-row-group"], [data-issue-row-id], [data-slot="entity-row"]):nth-child(5) { animation-delay: calc(var(--motion-row-stagger) * 4); }
+  [data-page-enter] :is([data-slot="task-row-group"], [data-issue-row-id], [data-slot="entity-row"]):nth-child(6) { animation-delay: calc(var(--motion-row-stagger) * 5); }
+  [data-page-enter] :is([data-slot="task-row-group"], [data-issue-row-id], [data-slot="entity-row"]):nth-child(7) { animation-delay: calc(var(--motion-row-stagger) * 6); }
+  [data-page-enter] :is([data-slot="task-row-group"], [data-issue-row-id], [data-slot="entity-row"]):nth-child(8) { animation-delay: calc(var(--motion-row-stagger) * 7); }
+
+  /* The check fades into the real status icon once the rays are out. */
+  [data-finish-burst] svg {
+    animation: finish-pop var(--motion-finish-check) ease-out forwards, overlay-exit var(--motion-menu-exit) ease-in var(--motion-finish-rays) forwards;
+  }
+  [data-finish-burst] path { animation: finish-draw var(--motion-finish-draw) ease-out var(--motion-press-in) forwards; }
+  [data-finish-burst] i { animation: finish-ray var(--motion-finish-rays) ease-out; }
+}

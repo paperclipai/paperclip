@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { IssueBlockerAttention } from "@paperclipai/shared";
 import { cn } from "../lib/utils";
+import { playFinishBurst } from "../lib/finish-burst";
 import { StatusGlyph, type StatusGlyphSize } from "./StatusGlyph";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
@@ -37,6 +38,7 @@ export function getStatusIconLabel(status: string, externalConversationState?: "
  */
 export function StatusIcon({ status, displayStatus: presentationStatus, externalConversationState, blockerAttention, onChange, className, glyphContainerClassName, showLabel, size = "md" }: StatusIconProps) {
   const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const presentation = { status, displayStatus: presentationStatus, externalConversationState, blockerAttention };
   const { glyphStatus, label, ariaLabel } = resolveTaskStatusPresentation(presentation);
 
@@ -67,6 +69,7 @@ export function StatusIcon({ status, displayStatus: presentationStatus, external
 
   const trigger = showLabel ? (
     <button
+      ref={triggerRef}
       type="button"
       aria-label={`Change status (current: ${ariaLabel})`}
       className="inline-flex min-h-5 items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors"
@@ -76,6 +79,7 @@ export function StatusIcon({ status, displayStatus: presentationStatus, external
     </button>
   ) : (
     <button
+      ref={triggerRef}
       type="button"
       data-slot="icon-button"
       aria-label={`Change status (current: ${ariaLabel})`}
@@ -96,6 +100,9 @@ export function StatusIcon({ status, displayStatus: presentationStatus, external
             size="sm"
             className={cn("w-full justify-start gap-2 text-xs", s === status && "bg-accent")}
             onClick={() => {
+              if (s === "done" && status !== "done" && triggerRef.current) {
+                playFinishBurst(triggerRef.current.querySelector("svg") ?? triggerRef.current);
+              }
               onChange(s);
               setOpen(false);
             }}
