@@ -1,3 +1,5 @@
+import { notifyRetentionWork, writeJoinRequestChange } from "../services/retention-work-notifications.js";
+import { isPublicIpAddress, parseIpv4Address } from "../lib/ip-address.js";
 import { createAgentLifecycle } from "../services/agent-lifecycle.js";
 import {
   createHash,
@@ -1381,6 +1383,7 @@ async function loadCompanyUserDirectory(db: Db, companyId: string) {
     .select({
       principalId: companyMemberships.principalId,
       status: companyMemberships.status,
+      membershipRole: companyMemberships.membershipRole,
     })
     .from(companyMemberships)
     .where(
@@ -1398,6 +1401,7 @@ async function loadCompanyUserDirectory(db: Db, companyId: string) {
   return members.map((member) => ({
     principalId: member.principalId,
     status: "active" as const,
+    membershipRole: member.membershipRole,
     user: userMap.get(member.principalId) ?? null,
   }));
 }
@@ -2342,77 +2346,6 @@ type InviteResolutionNetwork = {
   ): Promise<InviteResolutionHeadResponse>;
 };
 
-function parseIpv4Address(address: string) {
-  const parts = address.split(".");
-  if (parts.length !== 4) return null;
-  const parsed = parts.map((part) => {
-    if (!/^\d+$/.test(part)) return NaN;
-    return Number(part);
-  });
-  if (parsed.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
-    return null;
-  }
-  return parsed as [number, number, number, number];
-}
-
-function isPrivateOrReservedIpv4(address: string) {
-  const octets = parseIpv4Address(address);
-  if (!octets) return true;
-  const [a, b, c] = octets;
-  if (a === 0) return true;
-  if (a === 10) return true;
-  if (a === 100 && b >= 64 && b <= 127) return true;
-  if (a === 127) return true;
-  if (a === 169 && b === 254) return true;
-  if (a === 172 && b >= 16 && b <= 31) return true;
-  if (a === 192 && b === 0 && c === 0) return true;
-  if (a === 192 && b === 168) return true;
-  if (a === 192 && b === 0 && c === 2) return true;
-  if (a === 192 && b === 88 && c === 99) return true;
-  if (a === 198 && (b === 18 || b === 19)) return true;
-  if (a === 198 && b === 51 && c === 100) return true;
-  if (a === 203 && b === 0 && c === 113) return true;
-  if (a >= 224) return true;
-  return false;
-}
-
-function parseMappedIpv4Hex(address: string) {
-  const match = address.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
-  if (!match) return null;
-  const hi = Number.parseInt(match[1]!, 16);
-  const lo = Number.parseInt(match[2]!, 16);
-  if (!Number.isInteger(hi) || !Number.isInteger(lo)) return null;
-  return `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
-}
-
-function isPrivateOrReservedIpv6(address: string) {
-  const lower = address.toLowerCase();
-  if (lower.startsWith("::ffff:")) {
-    const mappedIpv4 = lower.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/);
-    if (mappedIpv4?.[1]) return isPrivateOrReservedIpv4(mappedIpv4[1]);
-    const mappedIpv4Hex = parseMappedIpv4Hex(lower);
-    if (mappedIpv4Hex) return isPrivateOrReservedIpv4(mappedIpv4Hex);
-    return true;
-  }
-  if (lower === "::" || lower === "::1") return true;
-  if (lower.startsWith("fc") || lower.startsWith("fd")) return true;
-  if (/^fe[89ab]/.test(lower)) return true;
-  if (lower.startsWith("ff")) return true;
-  if (lower === "100::" || lower.startsWith("100:")) return true;
-  if (lower.startsWith("2001:db8:") || lower === "2001:db8::") return true;
-  if (lower.startsWith("2001:2:") || lower === "2001:2::") return true;
-  if (lower.startsWith("2002:")) return true;
-  if (lower.startsWith("64:ff9b:")) return true;
-  return false;
-}
-
-function isPublicIpAddress(address: string) {
-  const ipVersion = isIP(address);
-  if (ipVersion === 4) return !isPrivateOrReservedIpv4(address);
-  if (ipVersion === 6) return !isPrivateOrReservedIpv6(address);
-  return false;
-}
-
 function hostnameForResolution(url: URL) {
   return url.hostname.replace(/^\[|\]$/g, "");
 }
@@ -2792,7 +2725,7 @@ export function accessRoutes(
         created.challenge.id,
         created.challengeSecret,
       );
-      const baseUrl = requestBaseUrl(req);
+      const baseUrl = resolveBaseUrl(req, opts.authPublicBaseUrl);
       res.status(201).json({
         id: created.challenge.id,
         token: created.challengeSecret,
@@ -2889,7 +2822,9 @@ export function accessRoutes(
     res.json({
       user: accessSnapshot.user,
       userId: req.actor.userId,
-      isInstanceAdmin: accessSnapshot.isInstanceAdmin,
+      isInstanceAdmin: req.actor.source === "cloud_tenant"
+        ? req.actor.isInstanceAdmin === true
+        : accessSnapshot.isInstanceAdmin,
       companyIds: accessSnapshot.companyIds,
       memberships: accessSnapshot.memberships,
       source: req.actor.source ?? "none",
@@ -3136,7 +3071,7 @@ export function accessRoutes(
     const approvedAt = new Date();
     const approvedByUserId =
       input.invite.invitedByUserId ?? (isLocalImplicit(input.req) ? "local-board" : null);
-    const approved = await db
+    const approved = await writeJoinRequestChange(db, tx => tx
       .update(joinRequests)
       .set({
         status: "approved",
@@ -3146,7 +3081,7 @@ export function accessRoutes(
       })
       .where(eq(joinRequests.id, input.joinRequest.id))
       .returning()
-      .then((rows) => rows[0] ?? null);
+      .then((rows) => rows[0] ?? null));
 
     await logActivity(db, {
       companyId: input.companyId,
@@ -3882,6 +3817,7 @@ export function accessRoutes(
                   )
                 );
 
+              await notifyRetentionWork(tx, "join_request");
               const row = await tx
                 .insert(joinRequests)
                 .values({
@@ -3912,7 +3848,7 @@ export function accessRoutes(
                 .then((rows) => rows[0]);
               return row;
             })
-        : await db
+        : await writeJoinRequestChange(db, tx => tx
             .update(joinRequests)
             .set({
               requestIp: requestIp(req),
@@ -3935,7 +3871,7 @@ export function accessRoutes(
             })
             .where(eq(joinRequests.id, replayJoinRequestId as string))
             .returning()
-            .then((rows) => rows[0]);
+            .then((rows) => rows[0]));
 
       if (!created) {
         throw conflict("Join request not found");
@@ -4279,7 +4215,7 @@ export function accessRoutes(
         );
       }
 
-      const approved = await db
+      const approved = await writeJoinRequestChange(db, tx => tx
         .update(joinRequests)
         .set({
           status: "approved",
@@ -4291,7 +4227,7 @@ export function accessRoutes(
         })
         .where(eq(joinRequests.id, requestId))
         .returning()
-        .then((rows) => rows[0]);
+        .then((rows) => rows[0]));
 
       await logActivity(db, {
         companyId,
@@ -4338,7 +4274,7 @@ export function accessRoutes(
       if (existing.status !== "pending_approval")
         throw conflict("Join request is not pending");
 
-      const rejected = await db
+      const rejected = await writeJoinRequestChange(db, tx => tx
         .update(joinRequests)
         .set({
           status: "rejected",
@@ -4349,7 +4285,7 @@ export function accessRoutes(
         })
         .where(eq(joinRequests.id, requestId))
         .returning()
-        .then((rows) => rows[0]);
+        .then((rows) => rows[0]));
 
       await logActivity(db, {
         companyId,

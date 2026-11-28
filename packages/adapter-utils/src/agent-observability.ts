@@ -2,7 +2,7 @@ import type { AgentObservabilityCapture } from "@paperclipai/shared";
 
 /** Secret-bearing, controller-owned launch material. Never persist or merge into adapter config. */
 export type ProviderObservabilityLaunch = {
-  kind: "codex" | "claude";
+  kind: "codex" | "claude" | "opencode";
   compatibilityKey: string;
   otelConfig?: Record<string, unknown>;
   environment: Readonly<Record<string, string>>;
@@ -17,7 +17,7 @@ export const AGENT_OBSERVABILITY_ENV_KEYS = [
   "OTEL_EXPORTER_OTLP_LOGS_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
   "OTEL_EXPORTER_OTLP_LOGS_TIMEOUT", "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT",
   "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "OTEL_EXPORTER_OTLP_METRICS_HEADERS", "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
-  "PAPERCLIP_OBSERVABILITY_CODEX_CONFIG",
+  "PAPERCLIP_OBSERVABILITY_CODEX_CONFIG", "PAPERCLIP_OBSERVABILITY_OPENCODE",
   "OTEL_LOG_USER_PROMPTS", "OTEL_LOG_ASSISTANT_RESPONSES", "OTEL_LOG_TOOL_DETAILS", "OTEL_LOG_TOOL_CONTENT", "OTEL_LOG_RAW_API_BODIES",
 ] as const;
 
@@ -33,14 +33,17 @@ export function applyObservabilityEnvironment(env: NodeJS.ProcessEnv, launch: Pr
 export function observabilitySecretValues(launch: ProviderObservabilityLaunch | undefined): string[] {
   if (!launch) return [];
   const headers = ((launch.otelConfig?.exporter as Record<string, unknown> | undefined)?.["otlp-http"] as { headers?: Record<string, string> } | undefined)?.headers;
-  const encoded = launch.environment.OTEL_EXPORTER_OTLP_LOGS_HEADERS;
+  const encoded = [launch.environment.OTEL_EXPORTER_OTLP_LOGS_HEADERS, launch.environment.OTEL_EXPORTER_OTLP_TRACES_HEADERS].filter(Boolean).join(",");
   const decoded = (value: string) => { try { return decodeURIComponent(value); } catch { return value; } };
-  const values = [...Object.values(headers ?? {}).flatMap(value => [value, decoded(value)]), ...(encoded ? [encoded, ...encoded.split(",").map(item => decoded(item.slice(item.indexOf("=") + 1)))] : [])];
+  const values = [...Object.values(headers ?? {}).flatMap(value => [value, decoded(value)]), ...(encoded ? [encoded, ...encoded.split(",").flatMap(item => {
+    const value = item.slice(item.indexOf("=") + 1);
+    return [value, decoded(value)];
+  })] : [])];
   return [...new Set(values.flatMap(value => [value, value.replace(/^Bearer /i, ""), JSON.stringify(value).slice(1, -1)]).filter(Boolean))];
 }
 
 export function buildProviderObservabilityLaunch(input: {
-  kind: "codex" | "claude"; companyId: string; agentId: string; revision: string | null;
+  kind: "codex" | "claude" | "opencode"; companyId: string; agentId: string; revision: string | null;
   compatibilityKey: string; enabled: boolean; capture: AgentObservabilityCapture;
   logsEndpoint?: string; tracesEndpoint?: string; headers?: Readonly<Record<string, string>>;
 }): ProviderObservabilityLaunch {
@@ -50,16 +53,31 @@ export function buildProviderObservabilityLaunch(input: {
     OTEL_EXPORTER_OTLP_LOGS_TIMEOUT: "3000", OTEL_EXPORTER_OTLP_TRACES_TIMEOUT: "3000",
   };
   if (kind === "codex") {
-    // Codex passes these through opentelemetry-otlp 0.31's with_headers, which
-    // percent-decodes values. Encode once so literal percent sequences survive.
-    const headers = Object.fromEntries(Object.entries(input.headers ?? {}).map(([name, value]) => [name, encodeURIComponent(value)]));
-    const exporter = (endpoint: string | undefined) => enabled ? { "otlp-http": { endpoint, protocol: "binary", headers } } : "none";
+    if (enabled) Object.assign(environment, {
+      OTEL_EXPORTER_OTLP_LOGS_HEADERS: encodeObservabilityHeaders(input.headers ?? {}),
+      OTEL_EXPORTER_OTLP_TRACES_HEADERS: encodeObservabilityHeaders(input.headers ?? {}),
+    });
+    const exporter = (endpoint: string | undefined) => enabled ? { "otlp-http": { endpoint, protocol: "binary", headers: {} } } : "none";
     return { kind, compatibilityKey, environment, otelConfig: {
       exporter: exporter(input.logsEndpoint), trace_exporter: exporter(input.tracesEndpoint), metrics_exporter: "none",
       log_user_prompt: enabled && capture.userPrompts, log_agent_responses: enabled && capture.assistantResponses,
       log_guardian_assessments: false, tool_result: { max_bytes: enabled && capture.toolContent ? 65536 : 0 },
       span_attributes: enabled ? attributes : {},
     } };
+  }
+  if (kind === "opencode") {
+    // The runner owns this exporter. Never pass its credentials to OpenCode or tools.
+    environment.PAPERCLIP_OBSERVABILITY_OPENCODE = enabled ? "1" : "0";
+    if (enabled) Object.assign(environment, {
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: input.tracesEndpoint,
+      OTEL_EXPORTER_OTLP_TRACES_HEADERS: encodeObservabilityHeaders(input.headers ?? {}),
+      OTEL_RESOURCE_ATTRIBUTES: Object.entries(attributes).map(([key, value]) => `${key}=${encodeURIComponent(value)}`).join(","),
+      OTEL_LOG_USER_PROMPTS: capture.userPrompts ? "1" : "0",
+      OTEL_LOG_ASSISTANT_RESPONSES: capture.assistantResponses ? "1" : "0",
+      OTEL_LOG_TOOL_DETAILS: capture.toolDetails ? "1" : "0",
+      OTEL_LOG_TOOL_CONTENT: capture.toolContent ? "1" : "0",
+    });
+    return { kind, compatibilityKey, environment };
   }
   Object.assign(environment, {
     CLAUDE_CODE_ENABLE_TELEMETRY: enabled ? "1" : "0",

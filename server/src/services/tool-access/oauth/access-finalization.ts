@@ -1,10 +1,13 @@
+import { notifyGitHubCredentialChange } from "../../github-connection-notifications.js";
+import { notifyToolConnectionHealth, writeToolConnectionHealthChange } from "../../tool-connection-health-notifications.js";
+import { connectionActorUserId } from "../actor.js";
 import type { ActorInfo } from "../types.js";
 import { connectionMethodForConnection } from "../connection-methods.js";
 import { emitConnectionUpdated } from "../../connector-telemetry.js";
 import { and, eq, inArray, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { connectionGrantMembers, connectionGrantDelegations, connectionGrants, companySecrets, toolApplications, toolCatalogEntries, toolConnectionInstalls, toolConnections } from "@paperclipai/db";
-import type { FinishToolAppResult, FinalizeOAuthAccess, ToolCredentialSecretRef } from "@paperclipai/shared";
+import type { FinishToolApp, FinishToolAppResult, FinalizeOAuthAccess, ToolCredentialSecretRef } from "@paperclipai/shared";
 import { getConnectableAppDefinition, recommendedDefaultsForApp } from "@paperclipai/shared";
 import { badRequest, conflict, forbidden, unprocessable } from "../../../errors.js";
 import { secretService } from "../../secrets.js";
@@ -12,6 +15,7 @@ import { secretService } from "../../secrets.js";
 import type { OAuthCredentialStore } from "./credential-store.js";
 
 import type { FinishConnectionSetup } from "../catalog/contracts.js";
+import { connectionRemovedOrSignInCancelled, lockConnectionForSignIn } from "../connections/first-sign-in.js";
 
 type Dependencies = {
   getConnectionRow(idOrUid: string, companyId?: string): Promise<typeof toolConnections.$inferSelect>;
@@ -37,7 +41,9 @@ async function finalizeOAuthAccess(
     input: FinalizeOAuthAccess,
     actor?: ActorInfo,
     requestingAgentId?: string,
+    setupAccess?: FinishToolApp["access"],
   ): Promise<FinishToolAppResult> {
+    await actor?.managementContext?.reauthorize();
     if (requestingAgentId)
       await assertAgentsInCompany(companyId, [requestingAgentId]);
     let connection = await getConnectionRow(connectionId, companyId);
@@ -47,9 +53,9 @@ async function finalizeOAuthAccess(
     };
     if (connection.authKind !== "oauth")
       throw badRequest("This connection does not use browser sign-in");
-    if (connection.status === "archived")
+    if (connectionRemovedOrSignInCancelled(connection))
       throw conflict("Archived app connections cannot be finished");
-    const actorUserId = actor?.actorType === "user" ? actor.actorId : null;
+    const actorUserId = connectionActorUserId(actor);
     if (!actorUserId)
       throw badRequest("Finishing browser sign-in requires a signed-in user");
 
@@ -112,33 +118,39 @@ async function finalizeOAuthAccess(
       ) {
         throw conflict("This connection already uses a company identity");
       }
-      [connection] = await db
-        .update(toolConnections)
-        .set({
-          credentialPolicy: "per_user",
-          credentialRefs: connection.credentialRefs.filter(
-            (ref) => ref.name !== "oauth.access_token",
-          ),
-          credentialSecretRefs: connection.credentialSecretRefs.filter(
-            (ref) =>
-              ref.configPath !== "oauth.access_token" &&
-              ref.configPath !== "oauth.refresh_token",
-          ),
-          status: "active",
-          enabled: true,
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(toolConnections.id, connection.id),
-            eq(toolConnections.companyId, companyId),
-          ),
-        )
-        .returning();
-      await syncCredentialBindings(
-        connection,
-        personalGrant.credentialSecretRefs,
-      );
+      connection = await writeToolConnectionHealthChange(db, connection, async tx => {
+        await lockConnectionForSignIn(tx, connection);
+        await notifyGitHubCredentialChange(tx, connection);
+        const [updated] = await tx
+          .update(toolConnections)
+          .set({
+            credentialPolicy: "per_user",
+            credentialRefs: connection.credentialRefs.filter(
+              (ref) => ref.name !== "oauth.access_token",
+            ),
+            credentialSecretRefs: connection.credentialSecretRefs.filter(
+              (ref) =>
+                ref.configPath !== "oauth.access_token" &&
+                ref.configPath !== "oauth.refresh_token",
+            ),
+            status: "active",
+            enabled: true,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(toolConnections.id, connection.id),
+              eq(toolConnections.companyId, companyId),
+            ),
+          )
+          .returning();
+        await syncCredentialBindings(
+          updated,
+          personalGrant.credentialSecretRefs,
+          tx,
+        );
+        return updated;
+      });
     } else if (
       connection.credentialPolicy !== "shared" ||
       connection.credentialSecretRefs.length === 0
@@ -249,9 +261,7 @@ async function finalizeOAuthAccess(
           await tx.select({ id: toolApplications.id }).from(toolApplications)
             .where(and(eq(toolApplications.id, connection.applicationId), eq(toolApplications.companyId, companyId)))
             .for("update");
-          await tx.select({ id: toolConnections.id }).from(toolConnections)
-            .where(and(eq(toolConnections.id, connection.id), eq(toolConnections.companyId, companyId)))
-            .for("update");
+          await lockConnectionForSignIn(tx, connection);
           const [existingOrganizationGrant] = await tx
             .select()
             .from(connectionGrants)
@@ -323,6 +333,7 @@ async function finalizeOAuthAccess(
               updatedAt: nowAt,
             })
             .where(eq(connectionGrants.id, personalGrant.id));
+          await notifyToolConnectionHealth(tx, connection);
           [connection] = await tx
             .update(toolConnections)
             .set({
@@ -408,14 +419,14 @@ async function finalizeOAuthAccess(
         askFirstCatalogEntryIds: catalog
           .filter((entry) => askFirstRiskLevels.has(entry.riskLevel))
           .map((entry) => entry.id),
-        access: requestingAgentId
+        access: setupAccess ?? (requestingAgentId
           ? { agentIds: [requestingAgentId] }
-          : "all_agents",
+          : "all_agents"),
         preserveExistingAccess: Boolean(requestingAgentId),
       },
       actor,
     );
-    await db
+    if (!setupAccess) await db
       .insert(toolConnectionInstalls)
       .values({
         companyId,

@@ -232,6 +232,7 @@ const apps = [
         serverUrl: "https://mcp.railway.com",
         scopesHint: ["openid", "offline_access", "workspace:member"],
         oauthAuthorizationParams: { prompt: "consent" },
+        tokenEndpoint: "https://backboard.railway.com/oauth/token",
       },
       "S4",
       "Sign in to Railway and select the workspaces your agents may use. Paperclip adds direct service, deployment, and bounded log tools when Railway accepts the connection for API access. Container commands require the separate SSH setup on the connection. Project tokens are not supported by Railway's hosted connection.",
@@ -355,12 +356,43 @@ const apps = [
         "oauth",
         {
           serverUrl: "https://mcp.slack.com/mcp",
-          authorizationEndpoint: "https://slack.com/oauth/v2/authorize",
-          tokenEndpoint: "https://slack.com/api/oauth.v2.access",
-          scopesHint: ["channels:read", "chat:write", "search:read"],
+          authorizationEndpoint: "https://slack.com/oauth/v2_user/authorize",
+          tokenEndpoint: "https://slack.com/api/oauth.v2.user.access",
+          scopesHint: [
+            "canvases:read",
+            "canvases:write",
+            "channels:history",
+            "channels:read",
+            "channels:write",
+            "chat:write",
+            "emoji:read",
+            "files:read",
+            "files:write",
+            "groups:history",
+            "groups:read",
+            "groups:write",
+            "im:history",
+            "im:read",
+            "im:write",
+            "lists:read",
+            "lists:write",
+            "mpim:history",
+            "mpim:read",
+            "mpim:write",
+            "reactions:read",
+            "reactions:write",
+            "search:read.files",
+            "search:read.im",
+            "search:read.mpim",
+            "search:read.private",
+            "search:read.public",
+            "search:read.users",
+            "users:read",
+            "users:read.email",
+          ],
         },
         "S3",
-        "Connect a Slack workspace and limit access to the channels agents need.",
+        "In your Slack app settings, add Paperclip's callback URL under OAuth & Permissions, add the requested scopes under User Token Scopes (not Bot Token Scopes), and enable Model Context Protocol under Features → Agents & AI Apps.",
         {
           label: "Use this connection as an agent tool",
           purpose: "tool",
@@ -776,19 +808,51 @@ const apps = [
     "developer",
     "sentry.io",
     ["https://mcp.sentry.dev/*"],
-    method(
-      "mcp-oauth",
-      "mcp_remote",
-      "oauth",
-      {
-        serverUrl: "https://mcp.sentry.dev/mcp",
-        discoveryUrl:
-          "https://mcp.sentry.dev/.well-known/oauth-protected-resource/mcp",
-      },
-      "S2",
-      "Connect the Sentry organization and projects agents need for incident work.",
-      { requiredResourceFilters: ["organization", "project", "environment"] },
-    ),
+    [
+      method(
+        "mcp-oauth",
+        "mcp_remote",
+        "oauth",
+        {
+          serverUrl: "https://mcp.sentry.dev/mcp",
+          discoveryUrl:
+            "https://mcp.sentry.dev/.well-known/oauth-protected-resource/mcp",
+        },
+        "S2",
+        "Connect the Sentry organization and projects agents need for incident work.",
+        { requiredResourceFilters: ["organization", "project", "environment"] },
+      ),
+      method(
+        "mcp-user-token",
+        "mcp_remote",
+        "api_key",
+        { serverUrl: "https://mcp.sentry.dev/mcp" },
+        "S2",
+        "Connect with a Sentry user auth token for unattended agents. Browser sign-in grants expire and need the owner to sign in again; a user auth token lasts until you revoke it.",
+        {
+          label: "Use a user auth token",
+          whenToUse:
+            "Use a user auth token when an unattended agent needs Sentry access that does not expire with a browser sign-in grant.",
+          credentialFields: [
+            {
+              ...field("authorization", "Sentry user auth token", "sntryu_..."),
+              helperMd:
+                "Create a user auth token with org:read, project:read, project:write, team:read, team:write and event:write. The token acts as its creator, limited to that person's organization role.",
+            },
+          ],
+          keyPlacement: {
+            location: "header",
+            name: "Authorization",
+            prefix: "Sentry-Bearer ",
+          },
+          consoleLinks: {
+            keys: "https://sentry.io/settings/account/api/auth-tokens/",
+            docs: "https://github.com/getsentry/sentry-mcp#remote-server",
+          },
+          requiredResourceFilters: ["organization", "project", "environment"],
+        },
+      ),
+    ],
   ],
   [
     "vercel",
@@ -894,8 +958,8 @@ const apps = [
   ],
   [
     "anthropic",
-    "Anthropic",
-    "Use Anthropic APIs with a restricted key.",
+    "Anthropic (Claude)",
+    "Connect to Claude with Anthropic.",
     "ai",
     "anthropic.com",
     ["https://api.anthropic.com/*"],
@@ -1219,6 +1283,7 @@ const specialMethodsFor = (entry) => {
       defaults: {
         serverUrl: entry.serverUrl,
         discoveryUrl: "https://mcp.asana.com/.well-known/oauth-protected-resource/v2",
+        tokenEndpoint: "https://app.asana.com/-/oauth_token",
         scopesHint: ["default"],
       },
       oauthClientSecretRequired: true,
@@ -1960,7 +2025,6 @@ const aiCatalogEntries = [
   { slug: "openai", name: "OpenAI", provider: "openai", subscription: true, envKey: "OPENAI_API_KEY", url: "https://api.openai.com/*" },
   { slug: "openrouter", name: "OpenRouter", provider: "openrouter", envKey: "OPENROUTER_API_KEY", url: "https://openrouter.ai/api/*" },
   { slug: "xai", name: "Grok", provider: "xai", subscription: true, envKey: "XAI_API_KEY", url: "https://api.x.ai/*" },
-  { slug: "google", name: "Google Gemini", provider: "google", envKey: "GEMINI_API_KEY", url: "https://generativelanguage.googleapis.com/*" },
   { slug: "bedrock", name: "Amazon Bedrock", provider: "anthropic", envKey: "AWS_BEARER_TOKEN_BEDROCK", description: "Use Claude through Amazon Bedrock with a Bedrock API key and AWS region." },
   { slug: "responses-api", name: "Responses API", provider: "openai", envKey: "OPENAI_API_KEY", description: "Connect any compatible harness to an OpenAI Responses-compatible provider or gateway, including Emissary." },
   { slug: "messages-api", name: "Messages API", provider: "anthropic", envKey: "ANTHROPIC_API_KEY", description: "Connect any compatible harness to an Anthropic Messages-compatible provider or gateway." },
@@ -2064,6 +2128,7 @@ const validateApp = (app) => {
     if (
       connectionMethod.auth === "api_key" &&
       !connectionMethod.keyPlacement &&
+      !connectionMethod.credentialMinter &&
       (connectionMethod.purpose ?? "tool") !== "channel"
     )
       throw new Error(

@@ -1,7 +1,7 @@
 import { posix } from "node:path";
 import {
   codexCliVersionAtLeast,
-  DEFAULT_CODEX_LOCAL_MODEL,
+  CODEX_LOCAL_COMPATIBILITY_FALLBACK_MODEL,
   minimumCodexCliVersionForModel,
   models,
   normalizeCodexModel,
@@ -11,7 +11,7 @@ import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/com
 import { createNativeSshCommandRunner } from "./native-ssh-command-runner.js";
 import { isSupportedRemoteCodexVersion, parseCodexCliVersion } from "./codex-runtime-compatibility.js";
 
-/** Newest older model in the same class first, then the stable Runner default. */
+/** Newest older model in the same class first, then the floor-free compatibility model. */
 export function codexModelFallbackCandidates(requestedModel: string): string[] {
   const requested = normalizeCodexModel(requestedModel);
   const identity = /^gpt-(\d+(?:\.\d+)?)-(astra|sol|terra|luna)$/.exec(requested);
@@ -20,7 +20,7 @@ export function codexModelFallbackCandidates(requestedModel: string): string[] {
     return candidate && candidate[2] === identity[2] && Number(candidate[1]) < Number(identity[1])
       ? [id] : [];
   }) : [];
-  return [...new Set([...sameClass, DEFAULT_CODEX_LOCAL_MODEL])].filter((model) => model !== requested);
+  return [...new Set([...sameClass, CODEX_LOCAL_COMPATIBILITY_FALLBACK_MODEL])].filter((model) => model !== requested);
 }
 
 export function compatibleCodexModel(model: string | null, version: string | null): string | null {

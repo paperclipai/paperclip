@@ -1,6 +1,6 @@
 import type { ActorInfo } from "../types.js";
 import { createOAuthClientProtocol } from "./client.js";
-import { oauthConfig, sameOAuthIssuer } from "./metadata.js";
+import { asRecord, oauthConfig, sameOAuthIssuer } from "./metadata.js";
 import { resolveOAuthClientIdMetadataDocumentUrl } from "./client-metadata.js";
 import type { OAuthProviderEndpoints, OAuthClientRegistrationSource } from "./types.js";
 import { connectionMethodForConnection } from "../connection-methods.js";
@@ -8,12 +8,12 @@ import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { toolConnections } from "@paperclipai/db";
 import type { AppDefinition } from "@paperclipai/shared";
-import { notFound, unprocessable } from "../../../errors.js";
+import { conflict, notFound, unprocessable } from "../../../errors.js";
 import { type RemoteHttpEndpointLookup } from "../../remote-http-endpoint-guard.js";
 
 import type { OAuthCredentialStore } from "./credential-store.js";
 import { singleFlight } from "../single-flight.js";
-import { configuredOAuthClientForConnection, oauthSecretRef } from "./client-settings.js";
+import { configuredOAuthClientForConnection, manualOAuthClientRequiredError, oauthSecretRef, refusedDeploymentClientError } from "./client-settings.js";
 const oauthRegistrationFlights = new Map<string, Promise<unknown>>();
 
 type RegistrationDependencies = {
@@ -23,6 +23,34 @@ type RegistrationDependencies = {
   getConnectionRow(idOrUid: string, companyId?: string): Promise<typeof toolConnections.$inferSelect>;
   requestOAuthClientRegistration: ReturnType<typeof createOAuthClientProtocol>["requestOAuthClientRegistration"];
 };
+
+export function assertOAuthClientBindingUnchanged(
+  expected: typeof toolConnections.$inferSelect,
+  current: typeof toolConnections.$inferSelect,
+  endpoints: OAuthProviderEndpoints,
+  redirectUri: string,
+) {
+  const changedSetup = expected.config.sourceTemplateKey === "google-workspace" && expected.status === "draft"
+    && (current.status !== "draft" || (["credentialPolicy", "credentialSource", "authKind", "transport", "createdByUserId"] as const)
+      .some(key => current[key] !== expected[key])
+      || ["sourceTemplateKey", "connectionMethodKey"].some(key => current.config[key] !== expected.config[key]
+        || current.transportConfig[key] !== expected.transportConfig[key]));
+  const bindings: Record<string, unknown> = {
+    clientRedirectUri: redirectUri, clientIssuer: endpoints.issuer ?? null,
+    clientResource: endpoints.resource ?? null, clientCompanyId: expected.companyId,
+    issuer: endpoints.issuer ?? null, resource: endpoints.resource ?? null,
+  };
+  const changedClient = expected.ownership !== current.ownership
+    || JSON.stringify(oauthSecretRef(expected, "oauth.client_secret")) !== JSON.stringify(oauthSecretRef(current, "oauth.client_secret"))
+    || (["config", "transportConfig"] as const).some(target => {
+      const before = asRecord(expected[target].oauth);
+      const after = asRecord(current[target].oauth);
+      return ["clientId", "clientRegistrationSource", "clientTokenEndpointAuthMethod"].some(key => before[key] !== after[key])
+        || Object.entries(bindings).some(([key, value]) => before[key] !== after[key]
+          && !(before[key] == null && (after[key] == null || after[key] === value)));
+    });
+  if (changedSetup || changedClient) throw conflict("Connection sign-in settings changed. Reload before continuing");
+}
 
 export function createOAuthClientRegistration(db: Db, { now, options, store, getConnectionRow, requestOAuthClientRegistration }: RegistrationDependencies) {
   const { createOrRotateOAuthSecret, oauthClientForConnection, syncCredentialBindings } = store;
@@ -300,46 +328,55 @@ async function stampOAuthClientBinding(
     endpoints: OAuthProviderEndpoints,
     redirectUri: string,
   ): Promise<typeof toolConnections.$inferSelect> {
-    const originalOAuth = oauthConfig(connection);
-    const oauth = reviewedOAuthClientBinding(connection, endpoints);
-    const nextBinding = {
-      clientRedirectUri: redirectUri,
-      clientIssuer:
-        typeof oauth.clientIssuer === "string" && oauth.clientIssuer
-          ? oauth.clientIssuer
-          : (endpoints.issuer ?? null),
-      clientResource:
-        typeof oauth.clientResource === "string" && oauth.clientResource
-          ? oauth.clientResource
-          : (endpoints.resource ?? null),
-      clientCompanyId:
-        typeof oauth.clientCompanyId === "string" && oauth.clientCompanyId
-          ? oauth.clientCompanyId
-          : connection.companyId,
-    };
-    const unchanged = Object.entries(nextBinding).every(
-      ([key, value]) => originalOAuth[key] === value,
-    );
-    if (unchanged) return connection;
-    const nextConfig = {
-      ...connection.config,
-      oauth: { ...oauth, ...nextBinding },
-    };
-    const [updated] = await db
-      .update(toolConnections)
-      .set({
-        config: nextConfig,
-        transportConfig: nextConfig,
-        updatedAt: now(),
-      })
-      .where(
-        and(
-          eq(toolConnections.id, connection.id),
-          eq(toolConnections.companyId, connection.companyId),
-        ),
-      )
-      .returning();
-    return updated ?? connection;
+    return db.transaction(async tx => {
+      const [saved] = await tx.select().from(toolConnections).where(and(
+        eq(toolConnections.id, connection.id), eq(toolConnections.companyId, connection.companyId),
+      )).for("no key update");
+      if (!saved) throw notFound("Tool connection not found");
+      assertOAuthClientBindingUnchanged(connection, saved, endpoints, redirectUri);
+      const originalOAuth = oauthConfig(saved);
+      const oauth = reviewedOAuthClientBinding(saved, endpoints);
+      const nextBinding = {
+        clientRedirectUri: redirectUri,
+        clientIssuer:
+          typeof oauth.clientIssuer === "string" && oauth.clientIssuer
+            ? oauth.clientIssuer
+            : (endpoints.issuer ?? null),
+        clientResource:
+          typeof oauth.clientResource === "string" && oauth.clientResource
+            ? oauth.clientResource
+            : (endpoints.resource ?? null),
+        clientCompanyId:
+          typeof oauth.clientCompanyId === "string" && oauth.clientCompanyId
+            ? oauth.clientCompanyId
+            : saved.companyId,
+      };
+      const unchanged = Object.entries(nextBinding).every(
+        ([key, value]) => originalOAuth[key] === value,
+      );
+      if (unchanged) return saved;
+      const nextConfig = {
+        ...saved.config,
+        oauth: { ...oauth, ...nextBinding },
+      };
+      const nextTransportConfig = { ...saved.transportConfig, oauth: { ...asRecord(saved.transportConfig.oauth), ...nextBinding } };
+      const [updated] = await tx
+        .update(toolConnections)
+        .set({
+          config: nextConfig,
+          transportConfig: nextTransportConfig,
+          updatedAt: now(),
+        })
+        .where(
+          and(
+            eq(toolConnections.id, connection.id),
+            eq(toolConnections.companyId, connection.companyId),
+          ),
+        )
+        .returning();
+      if (!updated) throw notFound("Tool connection not found");
+      return updated;
+    });
   }
 
   /**
@@ -384,6 +421,7 @@ function canRegisterOAuthClientDynamically(
     const configured = configuredOAuthClientForConnection(
       input.connection,
       input.endpoints.provider,
+      input.endpoints.tokenUrl,
     );
     if (configured.clientId) {
       return {
@@ -425,6 +463,7 @@ function canRegisterOAuthClientDynamically(
         client: await oauthClientForConnection(
           bound,
           input.endpoints.provider,
+          input.endpoints.tokenUrl,
           input.actor,
         ),
         source: storedOAuthClientRegistrationSource(bound),
@@ -451,6 +490,9 @@ function canRegisterOAuthClientDynamically(
         input.galleryEntry,
       )
     ) {
+      if (refusedDeploymentClientError(input.endpoints.provider)) {
+        throw manualOAuthClientRequiredError(input.endpoints.provider, "");
+      }
       throw unprocessable(
         `OAuth client id is not configured for ${input.endpoints.provider}`,
         {
@@ -474,6 +516,7 @@ function canRegisterOAuthClientDynamically(
       const latestConfigured = configuredOAuthClientForConnection(
         latest,
         input.endpoints.provider,
+        input.endpoints.tokenUrl,
       );
       if (latestConfigured.clientId) {
         return {
@@ -500,6 +543,7 @@ function canRegisterOAuthClientDynamically(
           client: await oauthClientForConnection(
             bound,
             input.endpoints.provider,
+            input.endpoints.tokenUrl,
             input.actor,
           ),
           source: storedOAuthClientRegistrationSource(bound),
@@ -520,6 +564,7 @@ function canRegisterOAuthClientDynamically(
           client: await oauthClientForConnection(
             adopted,
             input.endpoints.provider,
+            input.endpoints.tokenUrl,
             input.actor,
           ),
           source: "cimd" as const,
@@ -527,9 +572,9 @@ function canRegisterOAuthClientDynamically(
       }
       // 4. Dynamic client registration.
       if (!input.endpoints.registrationUrl) {
-        throw unprocessable(
-          "This server needs sign-in details you create yourself. Add a client ID and secret under Advanced authentication.",
-          { code: "oauth_manual_client_required" },
+        throw manualOAuthClientRequiredError(
+          input.endpoints.provider,
+          "This server needs sign-in details you create yourself. Register Paperclip with the provider, then add the client ID and secret it gives you.",
         );
       }
       const registered = await registerOAuthClient({
@@ -543,6 +588,7 @@ function canRegisterOAuthClientDynamically(
         client: await oauthClientForConnection(
           registered,
           input.endpoints.provider,
+          input.endpoints.tokenUrl,
           input.actor,
         ),
         source: "dcr" as const,
