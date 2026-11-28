@@ -431,3 +431,13 @@ To add a check to the job, add it to `planLane` in the script.
 PR runs take the workflow from `master` but check out the PR's merge commit. A
 stacked PR, whose base is another branch, can have a merge commit without this
 script. The job then runs the six earlier commands one after another instead.
+
+## Node version policy check
+
+Run `pnpm check:node-version` to validate first-party Node version policy.
+The check excludes the generated third-party distributions under
+`packages/paperclip-runner/provider-assets/`, not other directories named
+`provider-assets`. These assets appear after generation or build; a source-only
+checkout may not contain them. Run
+`node --test scripts/check-node-version-policy.test.mjs` for the isolated
+synthetic vendored-manifest regression.

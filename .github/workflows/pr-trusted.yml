@@ -247,6 +247,12 @@ jobs:
       - name: Validate Node version policy
         run: pnpm check:node-version
 
+      - name: Test Node version policy checker
+        # This workflow loads from master; an older checkout has no copy of this test.
+        run: |
+          test=./scripts/check-node-version-policy.test.mjs
+          if [[ -f "$test" ]]; then node "$CI_NODE_TEST" "$test"; fi
+
       - name: Reject git push in adapter/runtime code
         run: node ./scripts/check-no-git-push.mjs
 
