@@ -2745,6 +2745,65 @@ export function agentRoutes(
     "filesystemSandboxCommand",
   ] as const;
 
+  const AGENT_PROTECTED_SANDBOX_KEYS = [
+    "engine",
+    "networkScope",
+    "networkAllowlist",
+    "filesystemScope",
+    "filesystemExtraPaths",
+    "dangerouslySkipPermissions",
+    "dangerouslyBypassApprovalsAndSandbox",
+    "dangerouslyBypassSandbox",
+    "permissionMode",
+    "acpPermissionMode",
+    "acpxPermissionMode",
+    "codexPermissionMode",
+    "opencodePermissionMode",
+    "nonInteractivePermissions",
+    "acpNonInteractivePermissions",
+    "alwaysApprove",
+    "sandbox",
+  ] as const;
+
+  function sandboxComparisonBaseline(adapterType: string, config: Record<string, unknown>) {
+    const withDefaults = applyCreateDefaultsByAdapterType(adapterType, config);
+    return adapterType === "paperclip_runner" && agentHarnessType(adapterType, withDefaults) === "claude_local"
+      ? normalizeClaudeRunnerOptions(withDefaults).config
+      : withDefaults;
+  }
+
+  function sandboxSettingValue(value: unknown) {
+    return value === null || value === "" ? undefined : value;
+  }
+
+  function assertNoAgentSandboxSettingMutation(
+    req: Request,
+    existingConfig: Record<string, unknown>,
+    nextConfig: Record<string, unknown>,
+  ) {
+    if (req.actor.type !== "agent") return;
+    const changedKeys = AGENT_PROTECTED_SANDBOX_KEYS.filter((key) =>
+      !isDeepStrictEqual(sandboxSettingValue(existingConfig[key]), sandboxSettingValue(nextConfig[key])),
+    );
+    if (changedKeys.length === 0) return;
+    throw forbidden(`Only an operator can change sandbox and permission settings (${changedKeys.join(", ")}).`);
+  }
+
+  function assertNoAgentAdapterSwitch(
+    req: Request,
+    existing: { id: string; adapterType: string; adapterConfig: unknown },
+    nextAdapterType: string,
+    nextConfig: Record<string, unknown>,
+  ) {
+    if (req.actor.type !== "agent" || req.actor.agentId !== existing.id) return;
+    const existingConfig = asRecord(existing.adapterConfig) ?? {};
+    if (
+      nextAdapterType === existing.adapterType
+      && agentHarnessType(existing.adapterType, existingConfig) === agentHarnessType(nextAdapterType, nextConfig)
+    ) return;
+    throw forbidden("Only an operator can change the adapter or harness of this agent.");
+  }
+
   const LOCAL_ADAPTER_CREDENTIAL_ENV_KEYS: Record<string, readonly string[]> = {
     ...INHERITABLE_AGENT_CREDENTIAL_ENV_KEYS,
     gemini_local: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
@@ -4450,6 +4509,14 @@ export function agentRoutes(
       rollbackAdapterType,
       true,
     );
+    if (req.actor.type === "agent" && req.actor.agentId === existing.id) {
+      assertNoAgentSandboxSettingMutation(
+        req,
+        sandboxComparisonBaseline(existing.adapterType, asRecord(existing.adapterConfig) ?? {}),
+        sandboxComparisonBaseline(rollbackAdapterType, rollbackAdapterConfig),
+      );
+    }
+    assertNoAgentAdapterSwitch(req, existing, rollbackAdapterType, rollbackAdapterConfig);
     assertExternalInstructionsAdmin(req, existing);
     assertExternalInstructionsAdmin(req, {
       ...existing,
@@ -5848,6 +5915,14 @@ export function agentRoutes(
           rawEffectiveAdapterConfig,
         );
       }
+      if (req.actor.type === "agent" && req.actor.agentId === existing.id) {
+        assertNoAgentSandboxSettingMutation(
+          req,
+          sandboxComparisonBaseline(existing.adapterType, existingAdapterConfig),
+          sandboxComparisonBaseline(requestedAdapterType, rawEffectiveAdapterConfig),
+        );
+      }
+      assertNoAgentAdapterSwitch(req, existing, requestedAdapterType, rawEffectiveAdapterConfig);
       const existingRunnerProvider =
         existing.adapterType === "paperclip_runner"
           ? existingAdapterConfig.provider
@@ -5967,6 +6042,15 @@ export function agentRoutes(
       await assertCanApplyAgentProfileChange(req, existing);
     } else {
       await assertCanConfigureAgentSetup(req, existing);
+      if (
+        req.actor.type === "agent"
+        && touchesProfileFields
+        && AGENT_PROFILE_CHANGE_CONSENT_FIELDS.some((key) =>
+          hasOwn(patchData, key) && !isDeepStrictEqual(patchData[key], (existing as Record<string, unknown>)[key]),
+        )
+      ) {
+        await assertCanApplyAgentProfileChange(req, existing);
+      }
     }
 
     const actor = getActorInfo(req);
