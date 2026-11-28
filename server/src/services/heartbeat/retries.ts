@@ -561,6 +561,14 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       return { outcome: "not_scheduled" as const, reason: "The completion outbox owns this reply's retry budget and publication identity.",
         errorCode: "chat_completion_outbox_owns_retry" as const, issueId: readNonEmptyString(run.contextSnapshot.issueId) };
     }
+    if (run.errorCode === "issue_reassigned") {
+      return {
+        outcome: "not_scheduled" as const,
+        reason: "The run was stopped because its issue was reassigned.",
+        errorCode: "issue_reassigned" as const,
+        issueId: readNonEmptyString(run.contextSnapshot?.issueId),
+      };
+    }
     const now = opts?.now ?? new Date();
     const preparationRecovery = parseObject(run.resultJson?.executionRecovery);
     const interruptedPreparation = ["interrupted", "failed"].includes(run.status) &&

@@ -168,6 +168,28 @@ describe("heartbeat retry module callbacks", () => {
     expect(database.access).not.toHaveBeenCalled();
   });
 
+  it("does not schedule a transient retry for a run cancelled by issue reassignment", async () => {
+    const database = guardedDatabase();
+    const deps = callbacks();
+    const run = {
+      ...unitRun(),
+      status: "cancelled",
+      errorCode: "issue_reassigned",
+      error: "Cancelled before issue reassignment",
+    } as Run;
+    const retry = await extracted.createHeartbeatRetries(database.db, deps).scheduleBoundedRetryForRun(
+      run,
+      { adapterType: "codex_local" } as Agent,
+    );
+    expect(retry).toMatchObject({
+      outcome: "not_scheduled",
+      errorCode: "issue_reassigned",
+      issueId: "issue",
+    });
+    expect(deps.appendRunEvent).not.toHaveBeenCalled();
+    expect(database.access).not.toHaveBeenCalled();
+  });
+
   it("passes the service's worktree cutoff and publishes only returned effects", async () => {
     const database = guardedDatabase();
     const deps = callbacks();
