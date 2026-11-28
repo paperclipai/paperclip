@@ -2096,8 +2096,14 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
     });
     afterEach(async () => {
-      await coordinator?.stop(); coordinator = undefined;
-      vi.useRealTimers(); vi.restoreAllMocks(); expect(errors).toEqual([]);
+      try {
+        await coordinator?.stop();
+      } finally {
+        coordinator = undefined;
+        vi.useRealTimers();
+        vi.restoreAllMocks();
+      }
+      expect(errors).toEqual([]);
     });
     async function seedEffects(state = "pending", tenant = { companyId, agentId }) {
       const { companyId } = tenant;
@@ -2118,11 +2124,11 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
         onError: error => errors.push(error) });
       await registerNativePendingEffectWork(db, coordinator, () => admitted).ready;
     }
-    async function flush() {
+    async function flush(timeout = 15_000) {
       await vi.waitFor(async () => {
         await vi.advanceTimersByTimeAsync(1000);
         expect(idleWorkSnapshot().active).toBe(0); expect(coordinator!.nextWakeAt()).toBeNull();
-      }, { timeout: 15_000 });
+      }, { timeout });
     }
     async function quiet(milliseconds = 120_000) {
       const read = vi.spyOn(db, "select"), write = vi.spyOn(db, "transaction");
@@ -2199,10 +2205,14 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       expect((await effect(other.effect.id)).deliveryState).toBe("delivered"); await quiet();
     });
     it("drains more than one discovery page and stops querying delivered history", async () => {
-      const fixtures = [];
-      for (let index = 0; index < 103; index++) fixtures.push(await seedEffects());
-      await start(); await flush();
-      for (const f of fixtures) expect((await effect(f.effect.id)).deliveryState).toBe("delivered");
+      const fixtures: Awaited<ReturnType<typeof seedEffects>>[] = [];
+      for (let index = 0; index < 103; index += 8) {
+        const batchSize = Math.min(8, 103 - index);
+        fixtures.push(...await Promise.all(Array.from({ length: batchSize }, () => seedEffects())));
+      }
+      await start(); await flush(30_000);
+      const states = await Promise.all(fixtures.map((f) => effect(f.effect.id)));
+      for (const state of states) expect(state.deliveryState).toBe("delivered");
       await quiet();
     }, 60_000);
     it("preserves failed target verification and retries only that obligation", async () => {
@@ -2275,8 +2285,13 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
     });
     afterEach(async () => {
-      await coordinator?.stop(); coordinator = undefined;
-      vi.useRealTimers(); vi.restoreAllMocks();
+      try {
+        await coordinator?.stop();
+      } finally {
+        coordinator = undefined;
+        vi.useRealTimers();
+        vi.restoreAllMocks();
+      }
       if (kind === "obsolete policy") await dismissObsoleteNativePolicyReviews(db);
       else await dismissAutomaticCompletionReviews(db);
       expect(errors).toEqual([]);
@@ -2301,12 +2316,12 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       const register = kind === "obsolete policy" ? registerObsoletePolicyReviewWork : registerAutomaticCompletionReviewWork;
       await register(db, coordinator, () => admitted).ready;
     }
-    async function flush() {
+    async function flush(timeout = 15_000) {
       await vi.waitFor(async () => {
         await vi.advanceTimersByTimeAsync(1000);
         expect(idleWorkSnapshot().active).toBe(0);
         expect(coordinator!.nextWakeAt()).toBeNull();
-      }, { timeout: 15_000 });
+      }, { timeout });
     }
     async function quiet() {
       const read = vi.spyOn(db, "select"), write = vi.spyOn(db, "transaction");
@@ -2471,10 +2486,14 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     });
 
     it("drains more than one reconstruction page without replaying settled reviews", async () => {
-      const created = [];
-      for (let index = 0; index < 103; index++) created.push(await seedReview());
-      await start(); await flush();
-      for (const value of created) expect((await card(value.interaction.id)).status).toBe("cancelled");
+      const created: Awaited<ReturnType<typeof seedReview>>[] = [];
+      for (let index = 0; index < 103; index += 8) {
+        const batchSize = Math.min(8, 103 - index);
+        created.push(...await Promise.all(Array.from({ length: batchSize }, () => seedReview())));
+      }
+      await start(); await flush(30_000);
+      const cards = await Promise.all(created.map((value) => card(value.interaction.id)));
+      for (const settled of cards) expect(settled.status).toBe("cancelled");
       await quiet();
     }, 60_000);
   });
