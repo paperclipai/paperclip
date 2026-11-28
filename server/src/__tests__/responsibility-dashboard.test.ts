@@ -745,6 +745,26 @@ describeEmbeddedPostgres("dashboard conversations, change sets and versions", ()
       expect(areas.find((row) => row.id === seeded.areas.Hiring)).toMatchObject({ title: "Talent", status: "archived" });
     });
 
+    it.each([
+      { liveTitle: "équipe", shouldReuse: false },
+      { liveTitle: "ÉQUIPE", shouldReuse: true },
+    ])("restores a deleted Équipe area when $liveTitle is live", async ({ liveTitle, shouldReuse }) => {
+      const seeded = await seed({ populated: true });
+      const hiring = `/api/responsibility-areas/${seeded.areas.Hiring}`;
+      await request(seeded.app).patch(hiring).send({ title: "Équipe" }).expect(200);
+      const versions = responsibilityDashboardVersionService(db);
+      const saved = await db.transaction(tx => versions.checkpoint(tx, seeded.company.id, OWNER, OWNER));
+      await request(seeded.app).delete(hiring).expect(200);
+      const live = await request(seeded.app).post(`/api/companies/${seeded.company.id}/responsibility-areas`)
+        .send({ title: liveTitle }).expect(201);
+      await request(seeded.app).post(`/api/responsibility-dashboard-versions/${saved.row.id}/restore`).send({}).expect(200);
+
+      const pipeline = (await ownRows(seeded)).find(row => row.id === seeded.items.pipeline)!;
+      const restored = (await areaRows(seeded)).find(row => row.id === pipeline.areaId);
+      expect(restored).toMatchObject({ title: shouldReuse ? liveTitle : "Équipe", status: "active" });
+      expect(pipeline.areaId === live.body.id).toBe(shouldReuse);
+    });
+
     it("restores private area names and ordering without touching a teammate’s copy", async () => {
       const seeded = await seed({ populated: true });
       const [otherArea] = await db.insert(responsibilityAreas).values({ companyId: seeded.company.id, ownerUserId: OTHER, title: "Hiring" }).returning();

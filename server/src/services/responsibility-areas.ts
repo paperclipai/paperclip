@@ -68,6 +68,7 @@ export function responsibilityAreaService(db: Db) {
   }
 
   return {
+    findLiveByTitle,
     getById: (id: string) =>
       db.select().from(responsibilityAreas).where(eq(responsibilityAreas.id, id)).then((rows) => rows[0] ?? null),
 

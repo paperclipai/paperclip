@@ -15,6 +15,7 @@ import {
   type ResponsibilityDashboardVersionSummary,
 } from "@paperclipai/shared";
 import { notFound } from "../errors.js";
+import { responsibilityAreaService } from "./responsibility-areas.js";
 import { skillAccessService } from "./skill-access.js";
 
 /**
@@ -99,11 +100,9 @@ export async function lockDashboard(tx: DashboardTransaction, companyId: string,
   await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`responsibility-dashboard:${companyId}:${ownerUserId}`}, 0))`);
 }
 
-function lower(value: string) {
-  return value.trim().toLowerCase();
-}
-
 export function responsibilityDashboardVersionService(db: Db) {
+  const areas = responsibilityAreaService(db);
+
   /**
    * The person's dashboard as it is: every responsibility they own that is
    * active, every area one of them is in, and every area a change on this
@@ -319,11 +318,9 @@ export function responsibilityDashboardVersionService(db: Db) {
     const now = new Date();
     const areaIds = [...new Set([...target.areas.map((area) => area.id), ...current.areas.map((area) => area.id)])];
     const targetItemIds = target.responsibilities.map((item) => item.id);
-    const [areaRows, liveAreas, ownRows] = await Promise.all([
+    const [areaRows, ownRows] = await Promise.all([
       areaIds.length === 0 ? Promise.resolve([] as AreaRow[]) : tx.select().from(responsibilityAreas)
         .where(and(eq(responsibilityAreas.ownerUserId, ownerUserId), eq(responsibilityAreas.companyId, companyId), inArray(responsibilityAreas.id, areaIds))),
-      tx.select({ id: responsibilityAreas.id, title: responsibilityAreas.title }).from(responsibilityAreas)
-        .where(and(eq(responsibilityAreas.ownerUserId, ownerUserId), eq(responsibilityAreas.companyId, companyId), ne(responsibilityAreas.status, "archived"))),
       targetItemIds.length === 0 ? Promise.resolve([] as ResponsibilityRow[]) : tx.select().from(responsibilities).where(and(
         eq(responsibilities.companyId, companyId),
         eq(responsibilities.ownerUserId, ownerUserId),
@@ -331,13 +328,6 @@ export function responsibilityDashboardVersionService(db: Db) {
       )),
     ]);
     const areasById = new Map(areaRows.map((row) => [row.id, row]));
-    // Live titles, kept current as this restore renames and archives, for the one-live-name-per-area rule.
-    const liveTitle = new Map(liveAreas.map((row) => [lower(row.title), row.id]));
-    const setLive = (row: { id: string; title: string; status: string }) => {
-      for (const [title, id] of liveTitle) if (id === row.id) liveTitle.delete(title);
-      if (row.status !== "archived") liveTitle.set(lower(row.title), row.id);
-    };
-
     // Areas: which area each of the snapshot's areas is now.
     const areaFor = new Map<string, string>();
     const pending: ResponsibilityDashboardSnapshotArea[] = [];
@@ -345,9 +335,9 @@ export function responsibilityDashboardVersionService(db: Db) {
       const row = areasById.get(want.id);
       if (!row) {
         // Deleted since: use the live area that has its name, else create it again.
-        const holder = liveTitle.get(lower(want.title));
+        const holder = await areas.findLiveByTitle(companyId, ownerUserId, want.title, tx);
         if (holder) {
-          areaFor.set(want.id, holder);
+          areaFor.set(want.id, holder.id);
           return true;
         }
         const [created] = await tx.insert(responsibilityAreas).values({
@@ -359,7 +349,6 @@ export function responsibilityDashboardVersionService(db: Db) {
         }).returning();
         areaFor.set(want.id, created!.id);
         createdAreaIds.push(created!.id);
-        setLive(created!);
         events.push({ action: "responsibility_area.created", entityType: "responsibility_area", entityId: created!.id, details: { title: created!.title, status: created!.status, ...source } });
         return true;
       }
@@ -370,11 +359,11 @@ export function responsibilityDashboardVersionService(db: Db) {
         return true;
       }
       if (nextStatus !== "archived") {
-        const holder = liveTitle.get(lower(nextTitle));
-        if (holder && holder !== row.id) {
+        const holder = await areas.findLiveByTitle(companyId, ownerUserId, nextTitle, tx);
+        if (holder && holder.id !== row.id) {
           if (!final) return false;
           // Its old name now belongs to another area: file the person's responsibilities there.
-          areaFor.set(want.id, holder);
+          areaFor.set(want.id, holder.id);
           return true;
         }
       }
@@ -383,7 +372,6 @@ export function responsibilityDashboardVersionService(db: Db) {
         .where(and(eq(responsibilityAreas.id, row.id), eq(responsibilityAreas.ownerUserId, ownerUserId), eq(responsibilityAreas.companyId, companyId)))
         .returning();
       areasById.set(row.id, updated!);
-      setLive(updated!);
       areaFor.set(want.id, row.id);
       events.push({
         action: "responsibility_area.updated",
