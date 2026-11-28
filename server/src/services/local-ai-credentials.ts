@@ -1,10 +1,11 @@
 import { readLocalAiCredentialFile } from "./local-ai-credential-file.js";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { readIsolatedClaudeKeychainToken } from "@paperclipai/adapter-claude-local/server";
+import { readIsolatedClaudeKeychainCredential } from "@paperclipai/adapter-claude-local/server";
 import { readCodexAuthInfo, fetchCodexQuota } from "@paperclipai/adapter-codex-local/server";
 import { parseGrokAuthPayload, hasUsableGrokAuthValue } from "@paperclipai/adapter-grok-local/server";
 import type { AiProvider } from "@paperclipai/shared";
+import { serializeClaudeOauth } from "./claude-oauth-credential.js";
 import { unprocessable } from "../errors.js";
 import { verifyAntigravityCredential } from "../vendor/paperclip-runner/index.js";
 
@@ -31,25 +32,20 @@ export async function readVerifiedLocalAiCredential(provider: AiProvider, loginH
     if (provider === "anthropic") {
       // Never change process.env or fall back to the server account when an
       // authenticated user's isolated login is missing or invalid.
-      let token: string | null = null;
-      for (const name of [".credentials.json", "credentials.json"]) {
-        const raw = await readLocalAiCredentialFile(path.join(loginHome, name)).catch(() => null);
+      const keychain = await readIsolatedClaudeKeychainCredential(loginHome);
+      for (const raw of [keychain, ...await Promise.all([".credentials.json", "credentials.json"].map(
+        name => readLocalAiCredentialFile(path.join(loginHome, name)).catch(() => null),
+      ))]) {
         if (!raw) continue;
         let parsed;
         try { parsed = JSON.parse(raw); } catch { continue; }
         const value = parsed?.claudeAiOauth?.accessToken;
-        if (typeof value === "string" && value.length) { token = value; break; }
+        if (typeof value === "string" && value.length) {
+          // Keep refresh token and expiry; a setup token remains a bare token.
+          return serializeClaudeOauth(parsed.claudeAiOauth) ?? value;
+        }
       }
-      // On macOS the CLI stores the isolated login in the auth home's own
-      // suffixed Keychain item rather than a credentials file. The helper
-      // never consults the unsuffixed operator item.
-      if (!token) token = await readIsolatedClaudeKeychainToken(loginHome);
-      if (!token) throw new Error("Missing login");
-      // Claude's setup-token OAuth flow requests user:inference. The usage API
-      // requires user:profile and returns 403 for that valid token, so it cannot
-      // serve as a sign-in check. This isolated credential is written only after
-      // the provider CLI completes the code exchange successfully.
-      return token;
+      throw new Error("Missing login");
     }
     if (provider === "openai") {
       const auth = await readCodexAuthInfo(loginHome);

@@ -72,6 +72,7 @@ import {
   claudeModelReceipts,
   parseClaudeStreamJson, createClaudeStreamParser,
   describeClaudeFailure,
+  claudeSubscriptionTokenRejection,
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
   isClaudeMaxTurnsResult,
@@ -1284,6 +1285,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         : claudeRefusal
         ? "model_refusal"
         : null;
+      const tokenRejection = failed && resolvedErrorCode === "claude_auth_required"
+        ? claudeSubscriptionTokenRejection({ parsed, subscriptionToken: Boolean(effectiveEnv.CLAUDE_CODE_OAUTH_TOKEN) && !isBedrockAuth(effectiveEnv) })
+        : null;
       const mergedResultJson: Record<string, unknown> = {
         ...parsed,
         ...(sshSessionState && runtimeSessionId && !sshSessionState.canResume
@@ -1296,6 +1300,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
         ...(providerQuota && transientRetryNotBefore ? { providerQuotaRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
         ...(proc.terminalResultCleanup ? { unmanagedBackgroundTask: proc.terminalResultCleanup } : {}),
+        ...(tokenRejection ? { providerFailure: tokenRejection } : {}),
       };
 
       return {

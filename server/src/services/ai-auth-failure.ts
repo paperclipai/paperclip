@@ -51,6 +51,15 @@ function authenticationProvider(run: AuthenticationFailure): AiProvider | undefi
   return AI_PROVIDERS.find(provider => provider === failure.provider) ?? AUTHENTICATION_PROVIDERS.get(failure.provider);
 }
 
+/**
+ * The run carries the typed report that this provider refused its credential.
+ * An error code alone is not that evidence: adapters also derive the
+ * authentication codes from the text of local errors.
+ */
+export function isAiCredentialRejectedByProvider(run: AuthenticationFailure, provider: AiProvider): boolean {
+  return authenticationProvider(run) === provider;
+}
+
 export function isAiAuthenticationRepairable(run: AuthenticationFailure, provider?: AiProvider): boolean {
   const failedProvider = authenticationProvider(run);
   if (provider && failedProvider && provider !== failedProvider) return false;

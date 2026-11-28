@@ -14,6 +14,7 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../../services/delivery-
 import { isAcknowledgedNativeReassignmentStop, isAcknowledgedNativeStop } from "../../../services/acknowledged-native-stop.js";
 import { readRunCancellation } from "../../../services/run-cancellation.js";
 import { withRunRedactionHistory } from "../../../services/run-secret-redaction.js";
+import { runContextKeepingAiCredentialHolder } from "../../../services/run-ai-credential-holder.js";
 import { CHAT_COMPLETION_WAKE_REASON, isCompletedOnboardingHandoffWake, settleReportedChatCompletions } from "../../../services/chat-completion-delivery.js";
 import { earlierDeclinedOutcomeReply } from "../../../services/chat-interaction-outcome-report.js";
 import { currentConversationCommentCondition, isConversation, isConversationReset } from "../../../services/agent-conversations.js";
@@ -1143,7 +1144,7 @@ export function createWakeAdmissionWriter(rawTx: IssueAdmissionDbTransaction, ad
         eq(agentWakeupRequests.agentId, input.agentId), eq(agentWakeupRequests.runId, current.id), eq(agentWakeupRequests.status, primary.status)));
       const mergedRun = await tx
         .update(heartbeatRuns)
-        .set({ contextSnapshot: withRunRedactionHistory(input.mergedContextSnapshot, current.contextSnapshot), updatedAt: now })
+        .set({ contextSnapshot: runContextKeepingAiCredentialHolder(withRunRedactionHistory(input.mergedContextSnapshot, current.contextSnapshot)), updatedAt: now })
         .where(
           and(
             eq(heartbeatRuns.id, input.activeExecutionRunId),

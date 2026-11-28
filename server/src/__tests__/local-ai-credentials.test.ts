@@ -1,12 +1,24 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readVerifiedLocalAiCredential } from "../services/local-ai-credentials.js";
 const mocks = vi.hoisted(() => ({ claude: vi.fn(), claudeIsolatedKeychain: vi.fn(), codex: vi.fn(), codexQuota: vi.fn(), readFile: vi.fn(), credentialFile: vi.fn() }));
-vi.mock("@paperclipai/adapter-claude-local/server", () => ({ readClaudeToken: mocks.claude, readIsolatedClaudeKeychainToken: mocks.claudeIsolatedKeychain }));
+vi.mock("@paperclipai/adapter-claude-local/server", () => ({ readClaudeToken: mocks.claude, readIsolatedClaudeKeychainCredential: mocks.claudeIsolatedKeychain }));
 vi.mock("@paperclipai/adapter-codex-local/server", () => ({ readCodexAuthInfo: mocks.codex, fetchCodexQuota: mocks.codexQuota }));
 vi.mock("../services/local-ai-credential-file.js", () => ({ readLocalAiCredentialFile: mocks.credentialFile }));
 vi.mock("node:fs/promises", () => ({ default: { readFile: mocks.readFile } }));
 afterEach(() => { vi.resetAllMocks(); vi.unstubAllGlobals(); });
 describe("explicit local subscription import", () => {
+  it.each(["file", "keychain"])("keeps renewable credentials from the selected %s", async source => {
+    const oauth = { accessToken: "access", refreshToken: "refresh", expiresAt: Date.now() + 8 * 3600_000, scopes: ["user:inference", "user:profile"] };
+    const raw = JSON.stringify({ claudeAiOauth: oauth, unrelated: "discard" });
+    mocks.credentialFile.mockResolvedValue(source === "file" ? raw : null);
+    mocks.claudeIsolatedKeychain.mockResolvedValue(source === "keychain" ? raw : null);
+    expect(JSON.parse(await readVerifiedLocalAiCredential("anthropic", "/isolated/claude"))).toEqual({ claudeAiOauth: oauth });
+  });
+  it("does not mask an isolated Keychain access denial with a stale file", async () => {
+    mocks.claudeIsolatedKeychain.mockRejectedValue(new Error("private ACL detail"));
+    mocks.credentialFile.mockResolvedValue(JSON.stringify({ claudeAiOauth: { accessToken: "stale" } }));
+    await expect(readVerifiedLocalAiCredential("anthropic", "/isolated/claude")).rejects.toThrow("Could not verify");
+  });
   it("verifies Claude only from the selected isolated home, never the host account", async () => {
     mocks.credentialFile.mockResolvedValue(JSON.stringify({ claudeAiOauth: { accessToken: "isolated-claude" } }));
     await expect(readVerifiedLocalAiCredential("anthropic", "/isolated/claude")).resolves.toBe("isolated-claude");
@@ -28,16 +40,16 @@ describe("explicit local subscription import", () => {
     // Keychain item, not a credentials file — the live onboarding failure
     // this covers. The ambient reader must stay untouched.
     mocks.credentialFile.mockRejectedValue(new Error("No file"));
-    mocks.claudeIsolatedKeychain.mockResolvedValue("isolated-keychain-claude");
+    mocks.claudeIsolatedKeychain.mockResolvedValue(JSON.stringify({ claudeAiOauth: { accessToken: "isolated-keychain-claude" } }));
     await expect(readVerifiedLocalAiCredential("anthropic", "/isolated/claude")).resolves.toBe("isolated-keychain-claude");
     expect(mocks.claudeIsolatedKeychain).toHaveBeenCalledWith("/isolated/claude");
     expect(mocks.claude).not.toHaveBeenCalled();
   });
-  it("prefers the credentials file over the Keychain for an isolated login", async () => {
+  it("prefers the isolated Keychain credential over a stale file", async () => {
     mocks.credentialFile.mockResolvedValue(JSON.stringify({ claudeAiOauth: { accessToken: "file-token" } }));
-    mocks.claudeIsolatedKeychain.mockResolvedValue("keychain-token");
-    await expect(readVerifiedLocalAiCredential("anthropic", "/isolated/claude")).resolves.toBe("file-token");
-    expect(mocks.claudeIsolatedKeychain).not.toHaveBeenCalled();
+    mocks.claudeIsolatedKeychain.mockResolvedValue(JSON.stringify({ claudeAiOauth: { accessToken: "keychain-token" } }));
+    await expect(readVerifiedLocalAiCredential("anthropic", "/isolated/claude")).resolves.toBe("keychain-token");
+    expect(mocks.claudeIsolatedKeychain).toHaveBeenCalledWith("/isolated/claude");
   });
   it("tries the alternate Claude filename after malformed JSON", async () => {
     mocks.credentialFile.mockResolvedValueOnce("malformed").mockResolvedValueOnce(JSON.stringify({ claudeAiOauth: { accessToken: "alternate-token" } }));

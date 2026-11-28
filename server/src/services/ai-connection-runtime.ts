@@ -30,6 +30,14 @@ import { readLocalAiCredentialFile } from "./local-ai-credential-file.js";
 import { prepareAntigravityCredentialWriteback } from "./native-runtime/antigravity-runner-credentials.js";
 import { quotaCredentialHash, quotaCredentialRecovery, RetiredCredentialRecoveryError } from "./quota-credential-recovery.js";
 import { bindRetainedAiCredentialHome, reconcileRetainedAiCleanup, retainAiCredentialCleanup } from "./retained-ai-credential-cleanup.js";
+import { trackIdleWork } from "./task-admission.js";
+import { hasPendingClaudeExchange } from "./claude-pending-exchanges.js";
+import type { ClaudeProbeHold } from "./claude-subscription-refresh.js";
+
+// A cleanup renewal whose exchange succeeded but whose vault save failed is
+// saved again after a short wait, this many times.
+const CLAUDE_CLEANUP_SAVE_ATTEMPTS = 3;
+const CLAUDE_CLEANUP_SAVE_RETRY_MS = 2000;
 
 export function isAiConnectionBusy(error: unknown): error is HttpError {
   return error instanceof HttpError && error.status === 422 &&
@@ -223,6 +231,10 @@ export async function prepareManagedAiRuntime(
     allowUninstalledShared?: boolean;
     allowLegacyValidation?: boolean;
     config: Record<string, unknown>;
+    /** The run this runtime is prepared for. Its own token does not defer a Claude renewal, and the renewal records it as a holder of the token it receives. */
+    currentRunId?: string;
+    /** Set by `withManagedAiProbe`: counts this preparation as a holder of a Claude subscription token until the probe releases it. */
+    probeHold?: ClaudeProbeHold;
   },
 ) {
   const configuredEnv =
@@ -298,7 +310,7 @@ export async function prepareManagedAiRuntime(
       // against a concurrent reconnect or explicit rotation.
       for (let attempt = 0; attempt < 2; attempt += 1) {
         const before = await readFreshness();
-        const value = await service.runtimeCredential(selection);
+        const value = await service.runtimeCredential(selection, { currentRunId: input.currentRunId, probeHold: input.probeHold });
         const after = await readFreshness();
         if (before && after && before.version === after.version && before.epoch === after.epoch) {
           return { value, freshness: after };
@@ -340,6 +352,7 @@ export async function prepareManagedAiRuntime(
       );
     if (!routing && subscriptionFile && !antigravitySubscription) await writeFile(authFile, value, { mode: 0o600 });
     else if (!routing && !subscriptionFile) env[capability.envKey] = value;
+    const claudeSubscription = !routing && input.binding.provider === "anthropic" && selection.attribution.method === "subscription";
     if (
       !routing && input.binding.provider === "openai" && harness === "codex_local" &&
       selection.attribution.method === "api_key"
@@ -556,6 +569,24 @@ export async function prepareManagedAiRuntime(
           // recovery handoff must own the refresh before deleting its home.
           removalOnly = true;
           await removeHome();
+          // If no run holds the token now, renew a token that is close to
+          // expiry here instead of under the next run. This run is not named
+          // as the caller: it counts as a holder while its status is still
+          // `running`, which is the case when the controller detaches for a
+          // restart and leaves the runner alive. The exchange consumes a
+          // single-use refresh token, so it stays tracked as active work
+          // until its save settles. A save that fails is tried again
+          // here; a pair that is still unsaved after that keeps the idle
+          // probe of the renewal module set until the next read saves it.
+          if (claudeSubscription) void trackIdleWork((async () => {
+            for (let attempt = 0; attempt < CLAUDE_CLEANUP_SAVE_ATTEMPTS; attempt += 1) {
+              try { await service.runtimeCredential(selection); return; }
+              catch {
+                if (!hasPendingClaudeExchange(input.companyId, selection.grant.id)) return;
+                await new Promise(resolve => setTimeout(resolve, CLAUDE_CLEANUP_SAVE_RETRY_MS * (attempt + 1)));
+              }
+            }
+          })());
         } catch (error) {
           if (!durableGoogleRefresh && !removalOnly) throw error;
           // Once native retirement and encrypted fsync transfer ownership, the
@@ -617,7 +648,14 @@ export async function withManagedAiProbe<T>(
   input: Parameters<typeof prepareManagedAiRuntime>[1],
   probe: (runtime: Awaited<ReturnType<typeof prepareManagedAiRuntime>>) => Promise<T>,
 ): Promise<T> {
-  const runtime = await prepareManagedAiRuntime(db, input);
+  // A probe has no run row, so the holder check of a Claude subscription
+  // renewal cannot see it. Count it in memory while it uses the token: a
+  // renewal in that time would revoke the token and fail the test, and a
+  // failed agent verification then waits for a person.
+  const probeHold: ClaudeProbeHold = {};
+  let runtime: Awaited<ReturnType<typeof prepareManagedAiRuntime>>;
+  try { runtime = await prepareManagedAiRuntime(db, { ...input, probeHold }); }
+  catch (error) { probeHold.release?.(); throw error; }
   let retained = false;
   try {
     return await probe(runtime);
@@ -628,13 +666,19 @@ export async function withManagedAiProbe<T>(
       // retired and completed its refresh handoff. HTTP need not wait for it.
       retained = true;
       const retryCleanup = (error as { retryCleanup?: () => Promise<void> }).retryCleanup;
-      retainAiCredentialCleanup({ scope: runtime.retainedCleanupScope!, home: runtime.home && path.join(runtime.home, "provider"), cleanup: runtime.cleanup, retired: error.retired,
+      // The native process still runs with the token until its retirement
+      // is confirmed. The retained cleanup runs only after that, so it
+      // releases the hold.
+      retainAiCredentialCleanup({ scope: runtime.retainedCleanupScope!, home: runtime.home && path.join(runtime.home, "provider"),
+        cleanup: async () => { probeHold.release?.(); await runtime.cleanup(); }, retired: error.retired,
         ...(typeof retryCleanup === "function" ? { retryRetirement: () => retryCleanup.call(error) } : {}) });
       throw unprocessable("The native account test is still cleaning up. Retry after runtime cleanup completes.", { code: "native_probe_cleanup_pending" });
     }
     throw error;
   } finally {
     if (!retained) {
+      // Before cleanup, so the renewal at cleanup does not wait for this probe.
+      probeHold.release?.();
       try { await runtime.cleanup(); }
       catch (error) {
         if (runtime.retainedCleanupScope && !(error instanceof RetiredCredentialRecoveryError)) {

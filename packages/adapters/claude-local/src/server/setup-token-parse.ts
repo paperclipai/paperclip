@@ -94,6 +94,9 @@ const CODE_CHALLENGE_RE = /^[A-Za-z0-9_-]{43,128}$/;
 const STATE_RE = /^[A-Za-z0-9_-]{16,256}$/;
 // One `scope` token. The `scope` value is one to eight space-separated tokens.
 const SCOPE_TOKEN_RE = /^[A-Za-z0-9:._-]{1,64}$/;
+// Newer CLI versions print a short sign-in link whose whole query is one
+// opaque handle; the provider resolves it to the full authorization request.
+const SHORT_LINK_QUERY_RE = /^\?[A-Za-z0-9_-]{32,128}$/;
 
 // The name of an added query key. An added key is any key that is not a required
 // key. The parser accepts at most four added keys, each with a name that matches
@@ -170,10 +173,11 @@ const OSC_ANY_RE = /\x1b\][^\x1b\x07]*(?:\x1b\\|\x07)/g;
 // rejects any trailing punctuation on its own.
 const TRAILING_PUNCTUATION_RE = /[)\].,;:!]+$/;
 
-// The line that introduces the URL. The Claude login UI prints this phrase right
-// before the URL. The parser anchors the URL search on this phrase, so a URL far
-// from the login context cannot bind.
-const URL_PREAMBLE_RE = /the url below to sign in/i;
+// The line that introduces the URL. The Claude login UI prints one of these
+// phrases right before the URL: `setup-token` prints the first and `auth login`
+// prints the second. The parser anchors the URL search on this phrase, so a URL
+// far from the login context cannot bind.
+const URL_PREAMBLE_RE = /the url below to sign in|if the browser didn't open, visit:/i;
 
 // The browser-code prompt on a dedicated line. The line starts with the exact
 // prompt phrase. The line can end with the input caret `>` and masked echo `*`
@@ -278,6 +282,9 @@ function isValidRedirectUri(value: string): boolean {
  * characters. It rejects an API-key prefix in any decoded value.
  */
 function hasValidQuery(parsed: URL): boolean {
+  // A short link carries no parameters to validate. The host and path were
+  // checked already, and the handle's alphabet excludes every delimiter.
+  if (SHORT_LINK_QUERY_RE.test(parsed.search)) return !API_KEY_RE.test(parsed.search);
   // Collect the values of each key, so the parser can reject a duplicate key and
   // read the one decoded value of each key.
   const byKey = new Map<string, string[]>();
