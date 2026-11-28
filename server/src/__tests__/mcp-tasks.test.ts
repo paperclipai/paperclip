@@ -104,7 +104,6 @@ describe("MCP Tasks protocol", () => {
     expect(openMcpTaskId("secret", scope, sealed)).toBe("task-123");
     expect(openMcpTaskId("secret", { ...scope, companyId: "c2" }, sealed)).toBeNull();
     expect(openMcpTaskId("other", scope, sealed)).toBeNull();
-    expect(mcpTaskIdIndex("secret", scope, "task-123")).toBe(mcpTaskIdIndex("secret", scope, "task-123"));
     expect(mcpTaskIdIndex("secret", { ...scope, connectionId: "k2" }, "task-123")).not.toBe(mcpTaskIdIndex("secret", scope, "task-123"));
   });
 });

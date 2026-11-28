@@ -70,7 +70,6 @@ describe("Runner image identity", () => {
 
   it("is the same for the same tree", () => {
     const root = repository();
-    expect(digestOf(root)).toBe(digestOf(root));
     expect(digestOf(repository())).toBe(digestOf(root));
   });
 

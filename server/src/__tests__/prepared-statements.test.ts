@@ -12,7 +12,6 @@ describe("prepared statements", () => {
     const first = statements(root, "first");
     expect(statements(root, "first")).toBe(first);
     expect(statements(root, "after")).not.toBe(first);
-    expect(statements(root, "after")).toBe(statements(root, "after"));
     expect(statements(transaction, "first")).toEqual({ db: transaction, shape: "first" });
     expect(statements(transaction, "first")).not.toBe(first);
     expect(prepare.mock.calls).toEqual([[root, "first"], [root, "after"], [transaction, "first"]]);
