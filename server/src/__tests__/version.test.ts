@@ -1,5 +1,14 @@
-import { describe, expect, it, vi } from "vitest";
+import path from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseGitDescribeVersion, resolveServerVersion } from "../version.js";
+
+const gitDescribeProcess = vi.hoisted(() => vi.fn());
+vi.mock("node:child_process", () => ({ execFileSync: gitDescribeProcess }));
+
+afterEach(() => {
+  gitDescribeProcess.mockReset();
+  vi.unstubAllEnvs();
+});
 
 describe("parseGitDescribeVersion", () => {
   it("reports drift from the nearest release tag as a PEP 440 local version", () => {
@@ -30,6 +39,39 @@ describe("parseGitDescribeVersion", () => {
 });
 
 describe("resolveServerVersion", () => {
+  it("uses the build stamp without spawning git outside a checkout", () => {
+    vi.stubEnv("GIT_DIR", "");
+    gitDescribeProcess.mockClear();
+
+    expect(resolveServerVersion({
+      packageRoot: path.resolve("unpacked", "server"),
+      pathExists: () => false,
+      realpath: (value) => value,
+      buildVersion: "v2026.1117.0-5-g012345678",
+      packageVersion: "0.3.1",
+    })).toBe("2026.1117.0+5.git.012345678");
+    expect(gitDescribeProcess).not.toHaveBeenCalled();
+  });
+
+  it.each(["checkout metadata", "GIT_DIR"])("uses live git when %s is present", (metadata) => {
+    const root = path.resolve("checkout", "server");
+    vi.stubEnv("GIT_DIR", metadata === "GIT_DIR" ? "/custom/git-dir" : "");
+    gitDescribeProcess.mockClear().mockReturnValue("v2026.1117.0-3-g012345678-dirty");
+
+    expect(resolveServerVersion({
+      packageRoot: root,
+      pathExists: (value) => metadata === "checkout metadata" && value === path.join(root, "..", ".git"),
+      realpath: (value) => value,
+      buildVersion: "v2026.1117.0-0-g012345678",
+      packageVersion: "0.3.1",
+    })).toBe("2026.1117.0+3.git.012345678.dirty");
+    expect(gitDescribeProcess).toHaveBeenCalledExactlyOnceWith(
+      "git",
+      ["describe", "--tags", "--match", "v*", "--long", "--dirty"],
+      expect.objectContaining({ cwd: root }),
+    );
+  });
+
   it("returns the parsed git-derived version when git describe succeeds", () => {
     expect(
       resolveServerVersion({
