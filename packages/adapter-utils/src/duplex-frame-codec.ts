@@ -148,10 +148,17 @@ export function encodeDuplexFrameChecked(
  * streaming decoder calls this for each complete line. It is exported so a
  * caller with its own line splitter can reuse the same validation.
  *
- * The check order matters. A parseable frame with the wrong version becomes a
- * `version_mismatch`, so the version check runs before the type check.
+ * The check order matters. The size guard runs before parsing so an over-limit
+ * line never reaches `JSON.parse`; a parseable frame with the wrong version then
+ * becomes a `version_mismatch`, keeping the version check before the type check.
  */
-export function decodeDuplexLine(line: string | Buffer): DuplexDecodeResult {
+export function decodeDuplexLine(
+  line: string | Buffer,
+  maxFrameBytes: number = DEFAULT_MAX_DUPLEX_FRAME_BYTES,
+): DuplexDecodeResult {
+  if (Buffer.byteLength(line, "utf8") > maxFrameBytes) {
+    return fail("frame_too_large", "frame exceeds the maximum size");
+  }
   const text = typeof line === "string" ? line : line.toString("utf8");
   let parsed: unknown;
   try {

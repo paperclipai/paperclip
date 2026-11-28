@@ -216,3 +216,42 @@ describe("size-checked encode", () => {
     if (result.ok) expect(result.line).toBe(encodeDuplexFrame(frame));
   });
 });
+
+describe("size-checked decode", () => {
+  // Pad a READY frame's nonce to land the encoded line on an exact byte count.
+  // Each padding character adds one byte to the JSON, matching the byte bound
+  // the decoder measures before parsing.
+  const paddedReady = (n: number): DuplexFrame => ({
+    version: DUPLEX_FRAME_VERSION,
+    type: "ready",
+    nonce: "x".repeat(n),
+  });
+  const baseBytes = Buffer.byteLength(JSON.stringify(paddedReady(0)), "utf8");
+
+  it("decodes a frame whose line is exactly the default max size in bytes", () => {
+    const frame = paddedReady(DEFAULT_MAX_DUPLEX_FRAME_BYTES - baseBytes);
+    const line = JSON.stringify(frame);
+    expect(Buffer.byteLength(line, "utf8")).toBe(DEFAULT_MAX_DUPLEX_FRAME_BYTES);
+    const result = decodeDuplexLine(line);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.frame).toEqual(frame);
+  });
+
+  it("rejects a frame one byte over the default max size with frame_too_large", () => {
+    const line = JSON.stringify(paddedReady(DEFAULT_MAX_DUPLEX_FRAME_BYTES - baseBytes + 1));
+    expect(Buffer.byteLength(line, "utf8")).toBe(DEFAULT_MAX_DUPLEX_FRAME_BYTES + 1);
+    const result = decodeDuplexLine(line);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("frame_too_large");
+  });
+
+  it("still decodes a normal small frame", () => {
+    const result = decodeDuplexLine(
+      JSON.stringify({ version: DUPLEX_FRAME_VERSION, type: "heartbeat" }),
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.frame).toEqual({ version: DUPLEX_FRAME_VERSION, type: "heartbeat" });
+    }
+  });
+});
