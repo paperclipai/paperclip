@@ -50,7 +50,7 @@ export function useMuseConnection(companyId: string | undefined, agentId: string
   const currentScope = useRef(scope); currentScope.current = scope;
   const [pairing, setPairing] = useState<MusePairing | null>(null);
   const state = useQuery({ queryKey: key, enabled: enabled && identity.settled && !!companyId && !!agentId,
-    queryFn: ({ signal }) => museInvitationsApi.connection(companyId!, agentId!, signal), retry: false, staleTime: 0,
+    queryFn: ({ signal }) => museInvitationsApi.connection(companyId!, agentId!, signal), staleTime: 0,
     refetchInterval: query => query.state.error ? false
       : query.state.data?.binding || query.state.data?.agentStatus === "pending_approval" ? 5000 : false });
   const refresh = () => cache.invalidateQueries({ queryKey: key });

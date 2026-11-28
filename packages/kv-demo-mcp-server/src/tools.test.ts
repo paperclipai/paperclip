@@ -19,10 +19,10 @@ async function connectedClient() {
 }
 
 describe("kv demo MCP tools", () => {
-  it("exposes exactly kv_set, kv_get, kv_list, kv_delete", async () => {
+  it("exposes exactly kv_set, kv_get, kv_list, kv_delete and the progress demo tool", async () => {
     const { client } = await connectedClient();
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual(["kv_delete", "kv_get", "kv_list", "kv_set"]);
+    expect(tools.map((t) => t.name).sort()).toEqual(["kv_delete", "kv_get", "kv_list", "kv_set", "slow_with_progress"]);
   });
 
   it("reflects kv_set writes in the shared store", async () => {

@@ -1,5 +1,21 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
+/** Own a browser event and its initiating action in the same error boundary. */
+export async function withBrowserEvent<T>(observe: () => Promise<T>, action: () => Promise<unknown>): Promise<T> {
+  // Attach both rejection handlers before the action can fail or the event can
+  // time out. A synchronous action failure must own the pending event too.
+  const observed = observe(), initiated = Promise.resolve().then(action);
+  try {
+    const [event] = await Promise.all([observed, initiated]);
+    return event;
+  } catch (error) {
+    // A failed observation must not let a late click mutate owned resources
+    // after normal cleanup has begun. Keep the first failure and settle both.
+    await Promise.allSettled([observed, initiated]);
+    throw error;
+  }
+}
+
 /** Rich editors interpret pasted Markdown; fill inserts literal paragraph text. */
 export async function fillTaskPrompt(editor: Locator, prompt: string): Promise<void> {
   if (!/^ {0,3}(?:`{3,}|~{3,})/m.test(prompt)
@@ -95,14 +111,15 @@ export async function createTaskThroughUi(input: {
     await input.page.getByText(input.projectName, { exact: true }).last().click();
   }
   if (input.attachments?.length) {
-    const chooser = input.page.waitForEvent("filechooser");
-    const upload = dialog.getByRole("button", { name: "Upload", exact: true });
-    if (await upload.count()) await upload.click();
-    else {
-      await dialog.getByRole("button", { name: "Add to composer", exact: true }).click();
-      await input.page.getByRole("menuitem", { name: /^Files and images/ }).click();
-    }
-    await (await chooser).setFiles([...input.attachments]);
+    const chooser = await withBrowserEvent(() => input.page.waitForEvent("filechooser"), async () => {
+      const upload = dialog.getByRole("button", { name: "Upload", exact: true });
+      if (await upload.count()) await upload.click();
+      else {
+        await dialog.getByRole("button", { name: "Add to composer", exact: true }).click();
+        await input.page.getByRole("menuitem", { name: /^Files and images/ }).click();
+      }
+    });
+    await chooser.setFiles([...input.attachments]);
     // Upload finishes as part of task creation; the dialog retains the selected files.
   }
   // The prompt-only composer generates a provisional title which the provider
@@ -131,14 +148,21 @@ export async function createTaskThroughUi(input: {
 export async function submitTaskReply(
   page: Page,
   body: string,
+  remainingBudget?: () => number,
 ): Promise<number> {
   const composer = page.getByTestId("task-chat-composer-input").last();
-  await expect(composer).toBeVisible({ timeout: 30_000 });
-  await composer
-    .locator('[contenteditable="true"], textarea')
-    .first()
-    .fill(body);
+  const options = () => {
+    const remaining = remainingBudget!();
+    if (!Number.isFinite(remaining) || remaining <= 0) throw new Error("Task reply original observation budget exhausted");
+    return { timeout: Math.min(30_000, remaining) };
+  };
+  await expect(composer).toBeVisible(remainingBudget ? options() : { timeout: 30_000 });
+  const editor = composer.locator('[contenteditable="true"], textarea').first();
+  if (remainingBudget) await editor.fill(body, options());
+  else await editor.fill(body);
   const submittedAtMs = Date.now();
-  await page.getByTestId("task-chat-composer-send").last().click();
+  const send = page.getByTestId("task-chat-composer-send").last();
+  if (remainingBudget) await send.click(options());
+  else await send.click();
   return submittedAtMs;
 }

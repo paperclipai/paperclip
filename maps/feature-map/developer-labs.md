@@ -35,13 +35,13 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Use 
 
 ### `preview-lab`
 
-Automated: [onboarding variant](../../ui/src/components/OnboardingWizardVariant.test.tsx) is an example component contract. There is no claim of full automated acceptance coverage for every lab page.
+Automated: none (the mocked onboarding-variant component test was removed; there is no automated acceptance coverage for lab pages — verify manually).
 
 Manual: Open the specific fixture state, inspect controls and layout, then repeat the affected interaction in the actual product host. Report fixture results separately from persisted task/company results.
 
 ### `performance-fixture`
 
-Automated: [task thread component](../../ui/src/components/IssueChatThread.test.tsx) does not establish a performance budget. Timing/scroll measurements need a dedicated browser run.
+Automated: none (mocked `IssueChatThread` component tests were removed and did not establish a performance budget). Timing/scroll measurements need a dedicated browser run.
 
 Manual: Record browser/build/data size, exercise scrolling and rendering in the
 long-thread fixture, and retain timing or trace evidence. Its composer is

@@ -11,6 +11,7 @@ import { resolveExternalTestDatabaseUrl } from "../../../__tests__/helpers/exter
 import { createQueuedCommentIssueLockWriter } from "./queued-comment-postgres.js";
 import type { QueuedCommentQueuePostgresAdapterDeps } from "./queued-comment-postgres.js";
 import { QueuedCommentMutationError } from "../application/queued-comment-use-cases.js";
+import { buildAgentMentionHref } from "@paperclipai/shared";
 
 // Proves the same two properties the release-half adapter test proves for
 // this module's other transaction: the one company the caller names in
@@ -137,6 +138,30 @@ describeEmbeddedPostgres("queued-comment postgres adapter", () => {
     });
     return id;
   }
+
+  it("checks the authenticated editor and changed mentions atomically before updating a queued comment", async () => {
+    const companyId = await seedCompany();
+    const recipient = await seedAgent({ companyId }), sender = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: recipient });
+    const commentId = await seedComment({ companyId, issueId, authorUserId: "user-1" });
+    const wakeId = await seedDeferredWake({ companyId, agentId: recipient, issueId, commentIds: [commentId] });
+    const issueLock = createQueuedCommentIssueLockWriter(db, noopDeps);
+    const input = { issue: { id: issueId, companyId, assigneeAgentId: recipient, executionRunId: null },
+      actor: { actorType: "agent" as const, actorId: sender, agentId: sender, runId: null, agentApiKeyId: null }, queueId: wakeId };
+    await db.update(agents).set({ permissions: { interactions: { canMentionAgents: false } } }).where(eq(agents.id, sender));
+    await expect(issueLock.withLockedQueue(input, async (_locked, tx) => tx.updateCommentBody({ issueId, commentId,
+      body: `[@Recipient](${buildAgentMentionHref(recipient)})`, updatedAt: new Date() }))).rejects.toMatchObject({ status: 403,
+        details: expect.objectContaining({ permission: "canMentionAgents", actorAgentId: sender }) });
+    await db.update(agents).set({ permissions: { interactions: { canReceiveCommentsFromAgents: false } } }).where(eq(agents.id, recipient));
+    await expect(issueLock.withLockedQueue(input, async (_locked, tx) => tx.deleteComment({ issueId, commentId })))
+      .rejects.toMatchObject({ status: 403, details: expect.objectContaining({ permission: "canReceiveCommentsFromAgents" }) });
+    expect((await db.select().from(issueComments).where(eq(issueComments.id, commentId)))[0]?.body).toBe("queued message");
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId)))[0]?.payload)
+      .toMatchObject({ _paperclipWakeContext: { wakeCommentIds: [commentId] } });
+    await issueLock.withLockedQueue({ ...input, actor: { ...input.actor, actorType: "user", actorId: "user-1", agentId: null } },
+      async (_locked, tx) => tx.updateCommentBody({ issueId, commentId, body: "Human edit", updatedAt: new Date() }));
+    expect((await db.select().from(issueComments).where(eq(issueComments.id, commentId)))[0]?.body).toBe("Human edit");
+  });
 
   it("scopes the wake lookup to its own company: a foreign-company issue context resolves not_pending and deletes nothing", async () => {
     const companyId = await seedCompany();

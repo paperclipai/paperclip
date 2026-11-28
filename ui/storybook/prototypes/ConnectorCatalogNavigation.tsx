@@ -7,7 +7,12 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { CATALOG_PAGE_SIZE, ConnectorCard } from "@/pages/apps/Browse";
 import { appCopyFor } from "@/lib/app-gallery-copy";
-import { CatalogSourceFilters, CATALOG_SOURCE_NAMES as SOURCE_NAMES, type CatalogSource as Source } from "@/pages/apps/CatalogSourceFilters";
+import { TabFilters } from "@/components/TabBar";
+
+// This prototype keeps the five-source model it was reviewed with; the shipped page has since merged "Paperclip" into "All".
+const SOURCES = ["paperclip", "composio", "arcade", "installed", "all"] as const;
+type Source = (typeof SOURCES)[number];
+const SOURCE_NAMES = { paperclip: "Paperclip", composio: "Composio", arcade: "Arcade", executor: "Executor", installed: "Installed", all: "All" };
 
 type Row = ComponentProps<typeof ConnectorCard>["row"];
 const NATIVE_SLUGS = ["notion", "composio", "agentmail", "arcade", "browser-use-cloud", "discord", "executor", "github", "linear", "posthog", "railway", "slack", "telegram", "zapier"];
@@ -146,7 +151,7 @@ export function ConnectorCatalogNavigation({
         {query ? <button aria-label="Clear search" className="absolute right-3 top-1/2 -translate-y-1/2 rounded-sm text-muted-foreground hover:text-foreground"
           onClick={() => changeQuery("")}><X className="size-4" /></button> : null}
       </div>
-      <CatalogSourceFilters source={source} onChange={browse} />
+      <TabFilters label="App filters" size="standard" items={SOURCES.map(value => ({ value, label: SOURCE_NAMES[value] }))} value={source} onValueChange={browse} />
     </header>
 
     {connected.length > 0 ? <section aria-label="Connected apps" className="flex flex-col gap-3">

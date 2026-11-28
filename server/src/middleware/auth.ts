@@ -1,6 +1,8 @@
+import { notifyMuseContactVerification } from "../modules/external-agents/index.js";
+import { idleApiActivity } from "../services/idle-api-activity.js";
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { Request, RequestHandler } from "express";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, exists, isNull, sql, type Placeholder } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -11,6 +13,7 @@ import {
   companyMemberships,
   heartbeatRuns,
   instanceUserRoles,
+  principalPermissionGrants,
 } from "@paperclipai/db";
 import {
   MAX_ISSUE_PREFIX_ATTEMPTS,
@@ -21,13 +24,15 @@ import {
   rekeyCompanyIssueIdentifiers,
 } from "../services/issue-prefix.js";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
-import { agentRunWritesRevoked } from "../agent-run-cancellation.js";
+import { agentRunSupersededByFreshContinuation, agentRunWritesRevoked } from "../agent-run-cancellation.js";
 import { loadAgentRunAuthentication } from "./agent-run-authentication.js";
 import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
-import { captureRunIdentity } from "../services/run-identity.js";
+import { localAgentProcessBoundary, type LocalAgentProcessBoundary } from "./local-agent-process-boundary.js";
+import { resolveRequestRunIdentity } from "../services/run-identity.js";
 import { boardAuthService } from "../services/board-auth.js";
+import { preparedStatement } from "../services/prepared-statements.js";
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 import { beginIdleTrackedWork } from "../services/task-admission.js";
 import { notifyChatCompanyAuthorityChange } from "../services/chat-run-milestone-notifications.js";
@@ -40,10 +45,11 @@ export {
 import { syncCloudTenantWrites } from "./cloud-tenant-sync.js";
 import { resolveOwnerInstanceAdmin } from "../services/cloud-tenant-authority.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
+import { grantsForHumanRole, normalizeHumanRole } from "../services/company-member-roles.js";
 import { forbidden, unauthorized, unprocessable } from "../errors.js";
 
 export { isCloudManagedInstance } from "../services/cloud-instance.js";
-import { cloudTenantPrimaryCompanyId } from "../services/cloud-instance.js";
+import { cloudTenantPrimaryCompanyId, isCloudManagedInstance } from "../services/cloud-instance.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -67,61 +73,26 @@ function invalidAgentTokenMessage(token: string) {
   return "Agent token did not verify; obtain fresh credentials and retry";
 }
 
-async function resolveLegacyRunResponsibleUserId(
-  db: Db,
-  input: { companyId: string; agentId: string; runId: string },
-) {
-  if (!isUuidLike(input.runId)) return null;
-  const run = await db
-    .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
-    .from(heartbeatRuns)
-    .where(
-      and(
-        eq(heartbeatRuns.id, input.runId),
-        eq(heartbeatRuns.companyId, input.companyId),
-        eq(heartbeatRuns.agentId, input.agentId),
-      ),
-    )
-    .then((rows) => rows[0] ?? null);
-  return normalizeOptionalString(run?.responsibleUserId);
+const agentAuthenticationFields = {
+  companyId: agents.companyId,
+  status: agents.status,
+  lifecycleHolds: agents.lifecycleHolds,
+};
+
+type Bound<Value> = Value | Placeholder;
+
+export function agentAuthenticationQuery(db: Db, agentId: Bound<string>) {
+  return db.select(agentAuthenticationFields).from(agents).where(eq(agents.id, agentId));
 }
 
-async function loadResponsibleUserMemberships(
-  db: Db,
-  input: { companyId: string; userId: string | null },
-) {
-  if (!input.userId) return [];
-  const [user, memberships] = await Promise.all([
-    db
-      .select({ id: authUsers.id })
-      .from(authUsers)
-      .where(eq(authUsers.id, input.userId))
-      .then((rows) => rows[0] ?? null),
-    db
-      .select({
-        companyId: companyMemberships.companyId,
-        membershipRole: companyMemberships.membershipRole,
-        status: companyMemberships.status,
-      })
-      .from(companyMemberships)
-      .where(
-        and(
-          eq(companyMemberships.companyId, input.companyId),
-          eq(companyMemberships.principalType, "user"),
-          eq(companyMemberships.principalId, input.userId),
-          eq(companyMemberships.status, "active"),
-        ),
-      ),
-  ]);
-  return user ? memberships : [];
+const agentAuthenticationStatement = preparedStatement(db =>
+  agentAuthenticationQuery(db, sql.placeholder("agentId")).prepare("agent_authentication"));
+
+function loadAgentAuthentication(db: Db, agentId: string) {
+  return agentAuthenticationStatement(db).execute({ agentId }).then((rows) => rows[0] ?? null);
 }
 
-/**
- * The user's own active company memberships — the exact company scope a
- * locally authenticated session actor carries. Shared by the session path
- * and the Cloud trusted-header path so both resolve the same access set.
- */
-async function loadActiveUserCompanyMemberships(db: Db, userId: string) {
+export function responsibleUserMembershipsQuery(db: Db, input: { companyId: Bound<string>; userId: Bound<string> }) {
   return db
     .select({
       companyId: companyMemberships.companyId,
@@ -131,11 +102,97 @@ async function loadActiveUserCompanyMemberships(db: Db, userId: string) {
     .from(companyMemberships)
     .where(
       and(
+        eq(companyMemberships.companyId, input.companyId),
         eq(companyMemberships.principalType, "user"),
-        eq(companyMemberships.principalId, userId),
+        eq(companyMemberships.principalId, input.userId),
         eq(companyMemberships.status, "active"),
+        exists(db.select({ id: authUsers.id }).from(authUsers).where(eq(authUsers.id, input.userId))),
       ),
     );
+}
+
+const responsibleUserMembershipsStatement = preparedStatement(db => responsibleUserMembershipsQuery(db, {
+  companyId: sql.placeholder("companyId"),
+  userId: sql.placeholder("userId"),
+}).prepare("responsible_user_memberships"));
+
+async function loadResponsibleUserMemberships(
+  db: Db,
+  input: { companyId: string; userId: string | null },
+) {
+  if (!input.userId) return [];
+  return responsibleUserMembershipsStatement(db).execute({ companyId: input.companyId, userId: input.userId });
+}
+
+/**
+ * The user's own active company memberships — the exact company scope a
+ * locally authenticated session actor carries. Shared by the session path
+ * and the Cloud trusted-header path so both resolve the same access set.
+ */
+function activeUserMembershipFilter(userId: string) {
+  return and(
+    eq(companyMemberships.principalType, "user"),
+    eq(companyMemberships.principalId, userId),
+    eq(companyMemberships.status, "active"),
+  );
+}
+
+async function loadActiveUserCompanyMemberships(db: Db, userId: string) {
+  return db
+    .select({
+      companyId: companyMemberships.companyId,
+      membershipRole: companyMemberships.membershipRole,
+      status: companyMemberships.status,
+    })
+    .from(companyMemberships)
+    .where(activeUserMembershipFilter(userId));
+}
+
+async function loadCloudTenantMembershipsWithStaleAdmin(db: Db, userId: string) {
+  return db
+    .select({
+      companyId: companyMemberships.companyId,
+      membershipRole: companyMemberships.membershipRole,
+      status: companyMemberships.status,
+      staleInstanceAdmin: sql<boolean>`exists (select 1 from ${instanceUserRoles}
+        where ${instanceUserRoles.userId} = ${userId} and ${instanceUserRoles.role} = 'instance_admin')`,
+      // Lets a request with an unchanged membership skip the write sync only
+      // when the role's default grants are also present.
+      grantedPermissionKeys: sql<string[] | null>`(select array_agg(${principalPermissionGrants.permissionKey})
+        from ${principalPermissionGrants}
+        where ${principalPermissionGrants.companyId} = ${companyMemberships.companyId}
+          and ${principalPermissionGrants.principalType} = 'user'
+          and ${principalPermissionGrants.principalId} = ${userId})`,
+    })
+    .from(companyMemberships)
+    .where(activeUserMembershipFilter(userId));
+}
+
+/** A lock held elsewhere fails the repair quickly instead of holding the request. */
+const CLOUD_TENANT_GRANT_REPAIR_LOCK_TIMEOUT_MS = 2_000;
+const CLOUD_TENANT_GRANT_REPAIR_STATEMENT_TIMEOUT_MS = 5_000;
+
+function missesDefaultGrants(grantedPermissionKeys: unknown, membershipRole: string) {
+  if (!Array.isArray(grantedPermissionKeys)) return true;
+  const granted = new Set(grantedPermissionKeys);
+  return grantsForHumanRole(normalizeHumanRole(membershipRole, "operator"))
+    .some((grant) => !granted.has(grant.permissionKey));
+}
+
+async function repairCloudTenantDefaultGrants(
+  db: Db,
+  input: { companyId: string; userId: string; membershipRole: string },
+) {
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`select set_config('lock_timeout', ${`${CLOUD_TENANT_GRANT_REPAIR_LOCK_TIMEOUT_MS}ms`}, true),
+      set_config('statement_timeout', ${`${CLOUD_TENANT_GRANT_REPAIR_STATEMENT_TIMEOUT_MS}ms`}, true)`);
+    await ensureHumanRoleDefaultGrants(tx as unknown as Db, {
+      companyId: input.companyId,
+      principalId: input.userId,
+      membershipRole: input.membershipRole,
+      grantedByUserId: null,
+    });
+  });
 }
 
 async function auditAgentJwtRunHeaderMismatch(
@@ -208,6 +265,7 @@ async function auditAgentKeyMissingResponsibleUser(
 interface ActorMiddlewareOptions {
   deploymentMode: DeploymentMode;
   resolveSession?: (req: Request) => Promise<BetterAuthSessionResult | null>;
+  localAgentProcessBoundary?: LocalAgentProcessBoundary | null;
 }
 
 const publicRoutineWebhookPath = /^\/api\/routine-triggers\/public\/[a-f0-9]{24}\/fire\/?$/i;
@@ -216,6 +274,9 @@ const publicMcpGatewayProtocolPath = /^\/mcp\/gateways\/gw_[a-f0-9]{32}\/?$/i;
 
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
+  const localBoundary = opts.deploymentMode === "local_trusted"
+    ? opts.localAgentProcessBoundary === undefined ? localAgentProcessBoundary() : opts.localAgentProcessBoundary
+    : null;
   const authenticate: RequestHandler = async (req, _res, next) => {
     req.actor =
       opts.deploymentMode === "local_trusted"
@@ -301,6 +362,10 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           return;
         }
       }
+      if (req.actor.source === "local_implicit"
+        && !(await localBoundary?.grantsImplicitBoard(req.socket))) {
+        req.actor = { type: "none", source: "none" };
+      }
       if (runIdHeader) req.actor.runId = runIdHeader;
       next();
       return;
@@ -312,7 +377,8 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
-    const boardKey = await boardAuth.findBoardApiKeyByToken(token);
+    const verifiedClaims = verifyLocalAgentJwt(token);
+    const boardKey = verifiedClaims ? null : await boardAuth.findBoardApiKeyByToken(token);
     if (boardKey) {
       const access = await boardAuth.resolveBoardAccess(boardKey.userId);
       if (access.user) {
@@ -329,30 +395,28 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           runId: runIdHeader || undefined,
           source: "board_key",
         };
+        if (isCloudManagedInstance() && (access.isInstanceAdmin || access.companyIds.length)) {
+          _res.once("finish", () => { if (_res.statusCode >= 200 && _res.statusCode < 400) idleApiActivity.record(); });
+        }
         next();
         return;
       }
     }
 
-    const tokenHash = hashToken(token);
-    const key = await db
+    const key = verifiedClaims ? null : await db
       .select()
       .from(agentApiKeys)
-      .where(and(eq(agentApiKeys.keyHash, tokenHash), isNull(agentApiKeys.revokedAt)))
+      .where(and(eq(agentApiKeys.keyHash, hashToken(token)), isNull(agentApiKeys.revokedAt)))
       .then((rows) => rows[0] ?? null);
 
     if (!key) {
-      const claims = verifyLocalAgentJwt(token);
+      const claims = verifiedClaims;
       if (!claims) {
         next(unauthorized(invalidAgentTokenMessage(token)));
         return;
       }
 
-      const agentRecord = await db
-        .select()
-        .from(agents)
-        .where(eq(agents.id, claims.sub))
-        .then((rows) => rows[0] ?? null);
+      const agentRecord = await loadAgentAuthentication(db, claims.sub);
 
       if (!agentRecord || agentRecord.companyId !== claims.company_id) {
         next(unauthorized("Agent record is missing or belongs to another company; obtain fresh credentials and retry"));
@@ -400,15 +464,17 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       if (agentRunWritesRevoked(identityRun)
         && !["GET", "HEAD", "OPTIONS"].includes(req.method)) {
         const conversation = identityRun?.contextSnapshot?.conversationMode === true;
+        if (agentRunSupersededByFreshContinuation(identityRun)) {
+          _res.status(403).json({ error: "A newer run continues this task. End the turn.", code: "agent_run_superseded" });
+          return;
+        }
         _res.status(403).json({ error: conversation ? "This conversation turn was cancelled" : "This run was cancelled",
           code: conversation ? "conversation_turn_cancelled" : "agent_run_cancelled" });
         return;
       }
-      if (identityRun?.activeIdentityContextId && identityRun.status === "running") {
-        const captured = await captureRunIdentity(db, { companyId: claims.company_id, agentId: claims.sub, runId: claims.run_id },
-          { readScope: "request_authentication" });
-        identityRun.activeIdentityContextId = captured.context?.id ?? null;
-        identityRun.responsibleUserId = captured.context?.responsibleUserId ?? null;
+      if (identityRun) {
+        Object.assign(identityRun, await resolveRequestRunIdentity(db,
+          { companyId: claims.company_id, agentId: claims.sub, runId: claims.run_id }, identityRun));
       }
       if (claims.authorizing_user_id) {
         // This signed projection exists only for internal native tools. Recheck
@@ -437,11 +503,9 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         ? identityRun.responsibleUserId
         : claims.responsible_user_id !== undefined
         ? normalizeOptionalString(claims.responsible_user_id)
-        : await resolveLegacyRunResponsibleUserId(db, {
-            companyId: claims.company_id,
-            agentId: claims.sub,
-            runId: claims.run_id,
-          });
+        : isUuidLike(claims.run_id)
+        ? normalizeOptionalString(identityRun?.responsibleUserId)
+        : null;
       const onBehalfOfMemberships = await loadResponsibleUserMemberships(db, {
         companyId: claims.company_id,
         userId: onBehalfOfUserId,
@@ -469,11 +533,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       .set({ lastUsedAt: new Date() })
       .where(eq(agentApiKeys.id, key.id));
 
-    const agentRecord = await db
-      .select()
-      .from(agents)
-      .where(eq(agents.id, key.agentId))
-      .then((rows) => rows[0] ?? null);
+    const agentRecord = await loadAgentAuthentication(db, key.agentId);
 
     if (!agentRecord || agentRecord.companyId !== key.companyId) {
       next(unauthorized("Agent record is missing or belongs to another company; obtain fresh credentials and retry"));
@@ -521,7 +581,9 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       runId: runIdHeader || undefined,
       source: "agent_key",
     };
-
+    if (isCloudManagedInstance() && req.actor.onBehalfOfMemberships?.length) {
+      _res.once("finish", () => { if (_res.statusCode >= 200 && _res.statusCode < 400) idleApiActivity.record(); });
+    }
     next();
   };
   return async (req, res, next) => {
@@ -615,11 +677,23 @@ async function resolveCloudTenantActorOnce(
   // the BetterAuth session path, board API keys, and the authorization
   // service's own instanceUserRoles lookup — so actively purge them on every
   // trusted-header authentication instead of merely no longer inserting them.
-  await db
-    .delete(instanceUserRoles)
-    .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")));
-
-  await syncCloudTenantWrites(db, userId, syncFingerprint, async () => {
+  //
+  // Every request runs this path, static files included. The membership read
+  // below reports whether such a row exists, so the purge runs only when one
+  // does, or when that read cannot tell. A loaded database then costs one
+  // round trip per request rather than three in a row.
+  const membershipRowsRead = loadCloudTenantMembershipsWithStaleAdmin(db, userId);
+  const purgeStaleInstanceAdmin = async () => {
+    await db
+      .delete(instanceUserRoles)
+      .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")));
+  };
+  const purge = membershipRowsRead.then(
+    (rows) => rows.length === 0 || rows.some((row) => row.staleInstanceAdmin) ? purgeStaleInstanceAdmin() : undefined,
+    () => purgeStaleInstanceAdmin(),
+  );
+  // The same promise for every request that shares one pending per-user sync.
+  const tenantSync = syncCloudTenantWrites(db, userId, syncFingerprint, async () => {
     const now = new Date();
     await db
       .insert(authUsers)
@@ -666,6 +740,7 @@ async function resolveCloudTenantActorOnce(
       // guarded upsert that leaves unchanged memberships untouched.
       if (!existing || existing.status !== "active" || existing.membershipRole === "viewer") {
         await notifyChatCompanyAuthorityChange(tx, { companyId });
+        await notifyMuseContactVerification(tx, { companyId, operatorId: userId });
       }
       return tx
         .insert(companyMemberships)
@@ -691,6 +766,33 @@ async function resolveCloudTenantActorOnce(
       grantedByUserId: null,
     });
   });
+  // Handled at once: the decision below attaches its handler only after the
+  // membership read returns.
+  tenantSync.catch(() => {});
+  // A request waits for the sync only when its authority depends on it: a new
+  // user, or a role or status change. When the stored primary membership
+  // already grants exactly this authority, the sync cannot change the actor,
+  // so it finishes in the background. Otherwise one open transaction holding
+  // this user's rows queues every request of the user, static files included,
+  // behind the shared per-user sync.
+  const tenantSyncForRequest = membershipRowsRead.then(
+    (rows) => {
+      const primary = rows.find((row) => row.companyId === companyId && row.status === "active"
+        && row.membershipRole === membershipRole);
+      if (!primary) return tenantSync;
+      finishCloudTenantSyncInBackground(tenantSync, { userId, stackId });
+      // Missing default grants deny the user, so this request waits for the
+      // grant insert alone, bounded, and never for the rest of the sync.
+      // A failed repair never fails the request: authorization still denies
+      // what a missing grant covers, and the background sync retries it.
+      return missesDefaultGrants(primary.grantedPermissionKeys, membershipRole)
+        ? repairCloudTenantDefaultGrants(db, { companyId, userId, membershipRole }).catch((err) => {
+          logger.warn({ err, userId, stackId }, "Cloud tenant default grant repair failed; the sync retries it");
+        })
+        : undefined;
+    },
+    () => tenantSync,
+  );
 
   // The stack's seeded company is only where Cloud provisioned this user.
   // Companies created afterwards on the instance (imports, in-app company
@@ -698,21 +800,46 @@ async function resolveCloudTenantActorOnce(
   // the pinned primary — the same active-membership scope a locally
   // authenticated session actor carries. Strictly this user's own rows; the
   // membership-creating flows seed their own permission grants, so nothing
-  // needs seeding per request here. A read failure degrades to the pinned
-  // primary instead of blocking authentication, mirroring the fail-closed
-  // owner-elevation resolution below.
-  let additionalMemberships: { companyId: string; membershipRole: string | null; status: string }[] =
-    [];
-  try {
-    additionalMemberships = (await loadActiveUserCompanyMemberships(db, userId)).filter(
-      (row) => row.companyId !== companyId,
+  // needs seeding per request here. The sync above writes only the primary
+  // company's membership, which this read excludes, so it need not wait for
+  // the sync. A read failure degrades to the pinned primary instead of
+  // blocking authentication, mirroring the fail-closed owner-elevation
+  // resolution below.
+  const additionalMembershipsRead: Promise<{ companyId: string; membershipRole: string | null; status: string }[]> =
+    membershipRowsRead.then(
+      (rows) => rows
+        .filter((row) => row.companyId !== companyId)
+        .map((row) => ({ companyId: row.companyId, membershipRole: row.membershipRole, status: row.status })),
+      (err) => {
+        logger.warn(
+          { err, userId, stackId },
+          "Failed to load cloud tenant user's company memberships; scoping actor to the stack's primary company",
+        );
+        return [];
+      },
     );
-  } catch (err) {
-    logger.warn(
-      { err, userId, stackId },
-      "Failed to load cloud tenant user's company memberships; scoping actor to the stack's primary company",
-    );
-  }
+  // Computed per request, never persisted: the stack owner is elevated to
+  // instance admin of their own dedicated instance only while the
+  // `enableOwnerInstanceAdmin` flag is on. Non-owner stack roles stay
+  // company-scoped. Turning the flag off de-elevates on the next request —
+  // there is no role row to clean up.
+  const ownerInstanceAdminRead = resolveOwnerInstanceAdmin(db, stackRole);
+
+  // Settle every started statement before an error leaves: the caller stops
+  // counting authentication work for idle and drain checks when this throws,
+  // and the owner-settings read can insert the missing settings row.
+  const [purged, synced, membershipsRead, ownerRead] = await Promise.allSettled([
+    purge,
+    tenantSyncForRequest,
+    additionalMembershipsRead,
+    ownerInstanceAdminRead,
+  ]);
+  if (purged.status === "rejected") throw purged.reason;
+  if (synced.status === "rejected") throw synced.reason;
+  if (membershipsRead.status === "rejected") throw membershipsRead.reason;
+  if (ownerRead.status === "rejected") throw ownerRead.reason;
+  const additionalMemberships = membershipsRead.value;
+  const isInstanceAdmin = ownerRead.value;
 
   return {
     type: "board",
@@ -728,15 +855,24 @@ async function resolveCloudTenantActorOnce(
       },
       ...additionalMemberships,
     ],
-    // Computed per request, never persisted: the stack owner is elevated to
-    // instance admin of their own dedicated instance only while the
-    // `enableOwnerInstanceAdmin` flag is on. Non-owner stack roles stay
-    // company-scoped. Turning the flag off de-elevates on the next request —
-    // there is no role row to clean up.
-    isInstanceAdmin: await resolveOwnerInstanceAdmin(db, stackRole),
+    isInstanceAdmin,
     canManageExperimentalSettings: stackRole === "admin",
     source: "cloud_tenant",
   };
+}
+
+// Requests of one user share one sync promise. Track and report each shared
+// sync once, so a long-blocked sync does not gain a handler per request.
+const backgroundCloudTenantSyncs = new WeakSet<Promise<void>>();
+
+function finishCloudTenantSyncInBackground(sync: Promise<void>, context: { userId: string; stackId: string }) {
+  if (backgroundCloudTenantSyncs.has(sync)) return;
+  backgroundCloudTenantSyncs.add(sync);
+  // Idle and drain checks still count the writes until they settle.
+  const finish = beginIdleTrackedWork();
+  sync
+    .catch((err) => logger.warn({ err, ...context }, "Cloud tenant sync failed; the next request retries it"))
+    .finally(finish);
 }
 
 function requiredCloudHeader(req: CloudActorHeaderSource, name: string): string {

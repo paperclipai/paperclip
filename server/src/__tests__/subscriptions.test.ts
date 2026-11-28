@@ -5,7 +5,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { createDb, companies, agents, heartbeatRuns, costEvents, activityLog, aiSubscriptions, aiSubscriptionPrices, aiSubscriptionConnections, companySecrets, toolApplications, toolConnections, connectionGrants, connectionGrantMembers } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { monthlySubscriptionCents, subscriptionPlan, subscriptionPriceSchema } from "@paperclipai/shared";
-import { subscriptionService, type SubscriptionConnection } from "../services/subscriptions.js";
+import { subscriptionService, type SubscriptionActor, type SubscriptionConnection } from "../services/subscriptions.js";
 import { subscriptionCostReport } from "../services/subscription-report.js";
 import { refreshSubscriptionConnection } from "../services/subscription-refresh.js";
 import { subscriptionCredentialIdentity, probeSubscriptionIdentity } from "../services/subscription-identity.js";
@@ -40,13 +40,13 @@ async function company() {
 }
 async function connection(companyId: string, credential = token(), provider: SubscriptionConnection["provider"] = "openai", userId: string | null = "alice") {
   const applicationId = randomUUID(), connectionId = randomUUID(), grantId = randomUUID();
-  await db.insert(toolApplications).values({ id: applicationId, companyId, name: applicationId, type: "custom" });
+  await db.insert(toolApplications).values({ id: applicationId, companyId, name: applicationId, type: "mcp_http" });
   await db.insert(toolConnections).values({ id: connectionId, companyId, applicationId, name: "My subscription", uid: connectionId,
     connectionPurpose: "ai", transport: "runtime_auth", status: "active", enabled: true, config: { ai: { provider, method: "subscription" } } });
   await db.insert(connectionGrants).values({ id: grantId, companyId, connectionId, kind: userId ? "user" : "organization", subjectUserId: userId });
   return { companyId, connectionId, grantId, credential, provider, name: "My subscription", ownerUserId: userId };
 }
-async function price(companyId: string, id: string, amountCents: string | null = "10000", extra: Record<string, unknown> = {}, actor = owner) {
+async function price(companyId: string, id: string, amountCents: string | null = "10000", extra: Record<string, unknown> = {}, actor: SubscriptionActor = owner) {
   const [account] = await db.select().from(aiSubscriptions).where(eq(aiSubscriptions.id, id));
   return subscriptionService(db).updatePrice(companyId, id, { expectedRevision: account.revision, plan: "My plan", amountCents, currency: "USD", cadence: "month", status: "active", ...extra }, actor);
 }

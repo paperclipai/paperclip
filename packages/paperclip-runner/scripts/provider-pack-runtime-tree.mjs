@@ -1,5 +1,42 @@
+import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmdirSync, rmSync, unlinkSync } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
+
+/**
+ * The digest the pack manifest records for a directory tree: `distDigest` and
+ * each provider asset tree. The server recomputes it with the same walk
+ * (remote-provider-pack-verification.ts), so the entry order and the record
+ * format are part of the pack contract.
+ */
+export function sha256Tree(root) {
+  const hash = createHash("sha256");
+  const visit = (directory, prefix = "") => {
+    const entries = readdirSync(directory, { withFileTypes: true }).sort(
+      (left, right) => left.name.localeCompare(right.name),
+    );
+    for (const entry of entries) {
+      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const absolutePath = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        hash.update(`directory\0${relativePath}\n`);
+        visit(absolutePath, relativePath);
+      } else if (entry.isFile()) {
+        const file = createHash("sha256").update(readFileSync(absolutePath)).digest("hex");
+        hash.update(`file\0${relativePath}\0sha256:${file}\n`);
+      } else if (entry.isSymbolicLink()) {
+        hash.update(
+          `symlink\0${relativePath}\0${readlinkSync(absolutePath)}\n`,
+        );
+      } else {
+        throw new Error(
+          `Provider pack tree contains unsupported entry ${relativePath}`,
+        );
+      }
+    }
+  };
+  visit(root);
+  return `sha256:${hash.digest("hex")}`;
+}
 
 export function removeControllerArtifactsFromProviderPack(packRoot) {
   for (const directory of ["bin", "remote-provider-packs"]) {

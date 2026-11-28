@@ -220,16 +220,18 @@ export function isExpectedStoryInterruption(
 ): boolean {
   if (!allowedRunIds.includes(run.id)) return false;
   return (
-    (run.status === "cancelled" && (!run.errorCode || run.errorCode === "cancelled")) ||
+    // Operator interrupts and reassignment are deliberate reliability-scenario stops.
+    (run.status === "cancelled" && (!run.errorCode || ["cancelled", "operator_interrupted", "issue_reassigned"].includes(run.errorCode))) ||
     (run.status === "interrupted" && run.errorCode === "server_shutdown_interrupted") ||
     (run.status === "failed" && run.errorCode === "process_lost")
   );
 }
 
-export function storyUnexpectedRunFailure(runs: StoryRun[], allowedRunIds: readonly string[]) {
+/** `recoveredRunIds`: failures whose work a later run on the same task verifiably resumed. */
+export function storyUnexpectedRunFailure(runs: StoryRun[], allowedRunIds: readonly string[], recoveredRunIds: readonly string[] = []) {
   return runs.find((run) =>
     ["failed", "timed_out", "cancelled", "interrupted"].includes(run.status) &&
-    !isStoryWorkspaceDeferral(run) &&
+    !isStoryWorkspaceDeferral(run) && !recoveredRunIds.includes(run.id) &&
     !isExpectedStoryInterruption(run, allowedRunIds),
   );
 }
@@ -274,6 +276,10 @@ export function storyLifecycleChecks(input: {
   parentId: string;
   leadId: string;
   allowedInterruptedRuns?: string[];
+  /** Failed runs whose work a later run on the same task verifiably resumed (reliability scenarios). */
+  recoveredRuns?: readonly string[];
+  /** Agents that may execute on the parent; defaults to the lead (reassignment adds the new owner). */
+  parentAgentIds?: readonly string[];
   requireRemoteRestart?: boolean;
   remoteRestart?: RemoteRestartEvidence;
 }): StoryCheck[] {
@@ -307,7 +313,8 @@ export function storyLifecycleChecks(input: {
     ),
     check(
       "successful-runs",
-      executed.every((r) => r.status === "succeeded" || isExpectedStoryInterruption(r, allowed)),
+      executed.every((r) => r.status === "succeeded" || isExpectedStoryInterruption(r, allowed)
+        || (input.recoveredRuns ?? []).includes(r.id)),
       "Only the expected stop or process-loss outcome of an injected interruption is exempt.",
     ),
     check(
@@ -321,7 +328,7 @@ export function storyLifecycleChecks(input: {
         (r) =>
           (r.contextSnapshot?.issueId === input.parentId ||
             r.contextSnapshot?.taskId === input.parentId) &&
-          r.agentId !== input.leadId,
+          !(input.parentAgentIds ?? [input.leadId]).includes(r.agentId),
       ),
       "A mentioned worker must not execute on the parent.",
     ),

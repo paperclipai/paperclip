@@ -33,13 +33,14 @@ export default defineConfig({
     teardownTimeout: 30000,
     // The route/authz suites import very large modules (for example
     // src/routes/issues.ts and its dependency graph). The first test in each
-    // file pays the one-time transform cost inside its own timeout budget. On
-    // the loaded serial shard (maxWorkers=1) that cost can cross vitest's
-    // default 5s testTimeout and fail the first test, which also lets its
-    // fire-and-forget wake leak into the next test. Give each test generous
-    // headroom; 15s is far above the observed module-load cost yet still
-    // catches a genuinely hung test well inside the 20 minute job limit.
-    testTimeout: 15000,
+    // file can pay the one-time Vite transform cost inside its own timeout
+    // budget. Under file-parallel CI shards (up to 5 workers sharing Vite's
+    // transform server on 8-core runners, with --retry=0 on Cloud Readiness),
+    // simultaneous cold transforms regularly cross 15s and fail the first test,
+    // which also lets fire-and-forget wakes leak into the next test. Match
+    // hookTimeout/teardownTimeout at 30s so cold module loading never flakes
+    // while genuinely hung tests still fail well inside the 20 minute job limit.
+    testTimeout: 30000,
     isolate: true,
     maxConcurrency: 1,
     maxWorkers: 1,

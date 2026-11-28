@@ -38,6 +38,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import type { IssueBlockerAttention, IssueRelationIssueSummary } from "@paperclipai/shared";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import {
   clampIssueListLimit,
@@ -104,6 +105,15 @@ function deferred<T>() {
   });
   return { promise, resolve, reject };
 }
+
+// list() adds these fields at runtime. The declared return type collapses the
+// union of its result shapes to the base row.
+type IssueListRow = Awaited<ReturnType<ReturnType<typeof issueService>["list"]>>[number] & {
+  lastActivityAt?: Date | null;
+  blockedBy?: IssueRelationIssueSummary[];
+  blockerAttention?: IssueBlockerAttention;
+  descriptionTruncated?: boolean;
+};
 
 describe("issue list limit helpers", () => {
   it("clamps untrusted issue-list limits to the server maximum", () => {
@@ -862,12 +872,76 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     const expectedIds = variants.filter(v => v.counts).map(v => v.id).sort();
     expect((await svc.list(companyId, { touchedByUserId: userId })).map(v => v.id).sort()).toEqual(expectedIds);
     expect(await svc.countUnreadTouchedByUser(companyId, userId)).toBe(expectedIds.length);
-    const rows = await svc.list(companyId, {});
+    const rows = await svc.list(companyId, {}) as IssueListRow[];
     for (const variant of variants) {
       expect(rows.find(v => v.id === variant.id)?.lastActivityAt).toEqual(variant.counts ? recent : old);
     }
     // Audit evidence is preserved, including the wrongly attributed old row.
     expect(await db.select().from(activityLog).where(eq(activityLog.companyId, companyId))).toHaveLength(variants.length);
+  });
+
+  it("excludes responsibility repair audits from Mine without hiding ordinary user updates", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const userId = "board-user";
+    const variants = [
+      { id: randomUUID(), action: "issue.updated", details: { source: "needs_you_responsibility_repair" }, counts: false },
+      { id: randomUUID(), action: "issue.thread_interaction_created", details: { source: "needs_you_responsibility_repair" }, counts: false },
+      { id: randomUUID(), action: "issue.inbox_touched", details: { source: "needs_you_responsibility_repair" }, counts: false },
+      { id: randomUUID(), action: "issue.updated", details: null, counts: true },
+      { id: randomUUID(), action: "issue.updated", details: {}, counts: true },
+      { id: randomUUID(), action: "issue.updated", details: { source: "manual_edit" }, counts: true },
+    ];
+    await db.insert(issues).values(variants.map(({ id }) => ({
+      id, companyId, title: "Repaired routine task", status: "blocked", originKind: "routine_execution",
+      responsibleUserId: "other-user",
+    })));
+    await db.insert(activityLog).values(variants.map(({ id, action, details }) => ({
+      companyId, actorType: "user", actorId: userId, action, entityType: "issue", entityId: id, details,
+    })));
+    await db.insert(issueThreadInteractions).values({
+      companyId, issueId: variants[0]!.id, kind: "request_confirmation", status: "expired",
+      addresseeUserId: userId, payload: { version: 1, prompt: "Obsolete request" },
+    });
+    await db.insert(issueComments).values(variants.map(({ id }) => ({
+      companyId, issueId: id, authorType: "system" as const, body: "Routine update",
+    })));
+
+    const expectedIds = variants.filter(v => v.counts).map(v => v.id).sort();
+    const filters = { touchedByUserId: userId, inboxArchivedByUserId: userId, includeRoutineExecutions: true };
+    expect((await svc.list(companyId, filters)).map(v => v.id).sort()).toEqual(expectedIds);
+    expect((await svc.list(companyId, { ...filters, touchedCandidates: "participation" })).map(v => v.id).sort()).toEqual(expectedIds);
+    expect(await svc.countUnreadTouchedByUser(companyId, userId)).toBe(expectedIds.length);
+    expect((await svc.unreadInboxIssueIds(companyId, userId, sql<boolean>`true`)).sort()).toEqual(expectedIds);
+    expect(await db.select().from(activityLog).where(eq(activityLog.companyId, companyId))).toHaveLength(variants.length);
+  });
+
+  it("keeps repaired tasks in Mine when the viewer has independent participation", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const userId = "board-user";
+    const ids = { creator: randomUUID(), assignee: randomUUID(), commenter: randomUUID(), editor: randomUUID(), addressee: randomUUID() };
+    await db.insert(issues).values(Object.entries(ids).map(([kind, id]) => ({
+      id, companyId, title: "Participated repaired task", status: "blocked",
+      originKind: kind === "creator" ? "manual" : "routine_execution",
+      createdByUserId: kind === "creator" ? userId : null,
+      assigneeUserId: kind === "assignee" ? userId : null,
+    })));
+    await db.insert(activityLog).values(Object.values(ids).map(id => ({
+      companyId, actorType: "user", actorId: userId, action: "issue.updated", entityType: "issue", entityId: id,
+      details: { source: "needs_you_responsibility_repair" },
+    })));
+    await db.insert(activityLog).values({
+      companyId, actorType: "user", actorId: userId, action: "issue.updated", entityType: "issue", entityId: ids.editor,
+    });
+    await db.insert(issueComments).values({ companyId, issueId: ids.commenter, authorUserId: userId, body: "Following this task" });
+    await db.insert(issueThreadInteractions).values({
+      companyId, issueId: ids.addressee, kind: "request_confirmation", addresseeUserId: userId,
+      payload: { version: 1, prompt: "Please confirm" },
+    });
+
+    const expectedIds = Object.values(ids).sort();
+    const filters = { touchedByUserId: userId, includeRoutineExecutions: true };
+    expect((await svc.list(companyId, filters)).map(v => v.id).sort()).toEqual(expectedIds);
+    expect((await svc.list(companyId, { ...filters, touchedCandidates: "participation" })).map(v => v.id).sort()).toEqual(expectedIds);
   });
 
   function agentRow(companyId: string, input: {
@@ -1010,7 +1084,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       title: "Waiting for a connection", status: "in_review", priority: "medium", assigneeAgentId: agentId,
     });
     const [application] = await db.insert(toolApplications).values({
-      companyId, name: "Connection app", type: "mcp",
+      companyId, name: "Connection app", type: "mcp_http",
     }).returning();
     const [connection] = await db.insert(toolConnections).values({
       companyId, applicationId: application!.id, name: "Notion", uid: randomUUID(),
@@ -2568,7 +2642,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       },
     ]);
 
-    const result = await svc.list(companyId, {});
+    const result = await svc.list(companyId, {}) as IssueListRow[];
 
     expect(result.map((issue) => issue.id)).toEqual([
       activityIssueId,
@@ -2862,10 +2936,10 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       type: "blocks",
     });
 
-    const defaultResult = await svc.list(companyId);
+    const defaultResult = await svc.list(companyId) as IssueListRow[];
     expect(defaultResult.find((issue) => issue.id === blockedId)?.blockedBy).toBeUndefined();
 
-    const result = await svc.list(companyId, { includeBlockedBy: true });
+    const result = await svc.list(companyId, { includeBlockedBy: true }) as IssueListRow[];
     const byId = new Map(result.map((issue) => [issue.id, issue]));
 
     expect(byId.get(blockedId)?.blockedBy).toEqual([
@@ -2918,7 +2992,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       },
     ]);
 
-    const byId = new Map((await svc.list(companyId)).map((issue) => [issue.id, issue]));
+    const byId = new Map((await svc.list(companyId) as IssueListRow[]).map((issue) => [issue.id, issue]));
     const result = byId.get(issueId);
 
     expect(result).toBeTruthy();
@@ -3095,7 +3169,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     await tempDb?.cleanup();
   });
 
-  it("inherits the parent issue workspace linkage when child workspace fields are omitted", async () => {
+  it("gives a child its own workspace and keeps only the parent's strategy when child workspace fields are omitted", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const parentIssueId = randomUUID();
@@ -3153,8 +3227,8 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
 
     expect(child.parentId).toBe(parentIssueId);
     expect(child.projectWorkspaceId).toBe(projectWorkspaceId);
-    expect(child.executionWorkspaceId).toBe(executionWorkspaceId);
-    expect(child.executionWorkspacePreference).toBe("reuse_existing");
+    expect(child.executionWorkspaceId).toBeNull();
+    expect(child.executionWorkspacePreference).toBeNull();
     expect(child.executionWorkspaceSettings).toEqual({
       mode: "isolated_workspace",
       workspaceRuntime: { profile: "agent" },
@@ -3372,7 +3446,6 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     await db.insert(environments).values([
       {
         id: assigneeEnvironmentId,
-        companyId,
         name: "QA E2B",
         driver: "sandbox",
         status: "active",
@@ -3441,7 +3514,6 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     await db.insert(environments).values([
       {
         id: projectEnvironmentId,
-        companyId,
         name: "QA SSH",
         driver: "ssh",
         status: "active",
@@ -3449,7 +3521,6 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       },
       {
         id: assigneeEnvironmentId,
-        companyId,
         name: "QA E2B",
         driver: "sandbox",
         status: "active",
@@ -3518,7 +3589,6 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     await db.insert(environments).values([
       {
         id: firstEnvironmentId,
-        companyId,
         name: "QA SSH",
         driver: "ssh",
         status: "active",
@@ -3526,7 +3596,6 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       },
       {
         id: secondEnvironmentId,
-        companyId,
         name: "QA E2B",
         driver: "sandbox",
         status: "active",
@@ -3618,9 +3687,9 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
 
     await db.insert(environments).values([
-      { id: firstEnvironmentId, companyId, name: "Env 1", driver: "ssh", status: "active", config: {} },
-      { id: secondEnvironmentId, companyId, name: "Env 2", driver: "sandbox", status: "active", config: { provider: "e2b" } },
-      { id: operatorEnvironmentId, companyId, name: "Operator pick", driver: "ssh", status: "active", config: {} },
+      { id: firstEnvironmentId, name: "Env 1", driver: "ssh", status: "active", config: {} },
+      { id: secondEnvironmentId, name: "Env 2", driver: "sandbox", status: "active", config: { provider: "e2b" } },
+      { id: operatorEnvironmentId, name: "Operator pick", driver: "ssh", status: "active", config: {} },
     ]);
 
     await db.insert(agents).values([
@@ -3765,7 +3834,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     });
   });
 
-  it("inherits workspace linkage from an explicit source issue without creating a parent-child relationship", async () => {
+  it("inherits project and strategy, not the realized workspace, from an explicit source issue without creating a parent-child relationship", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const sourceIssueId = randomUUID();
@@ -3819,14 +3888,12 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
 
     expect(followUp.parentId).toBeNull();
     expect(followUp.projectWorkspaceId).toBe(projectWorkspaceId);
-    expect(followUp.executionWorkspaceId).toBe(executionWorkspaceId);
-    expect(followUp.executionWorkspacePreference).toBe("reuse_existing");
-    expect(followUp.executionWorkspaceSettings).toEqual({
-      mode: "operator_branch",
-    });
+    expect(followUp.executionWorkspaceId).toBeNull();
+    expect(followUp.executionWorkspacePreference).toBeNull();
+    expect(JSON.stringify(followUp.executionWorkspaceSettings ?? {})).not.toContain("operator_branch");
   });
 
-  it("createChild applies parent defaults, acceptance criteria, workspace inheritance, and optional parent blocker chaining", async () => {
+  it("createChild applies parent defaults, acceptance criteria, an independent workspace, and optional parent blocker chaining", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const goalId = randomUUID();
@@ -3907,8 +3974,8 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     expect(child.description).toContain("## Acceptance Criteria");
     expect(child.description).toContain("- Uses the parent issue as parentId");
     expect(child.projectWorkspaceId).toBe(projectWorkspaceId);
-    expect(child.executionWorkspaceId).toBe(executionWorkspaceId);
-    expect(child.executionWorkspacePreference).toBe("reuse_existing");
+    expect(child.executionWorkspaceId).toBeNull();
+    expect(child.executionWorkspacePreference).toBeNull();
 
     const parentRelations = await svc.getRelationSummaries(parentIssueId);
     expect(parentRelations.blockedBy).toEqual([
@@ -4166,6 +4233,7 @@ const dependencyTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ISSU
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
+    await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(instanceSettings);
     await db.delete(companies);
@@ -4510,6 +4578,55 @@ const dependencyTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ISSU
     ).rejects.toMatchObject({ status: 422 });
   });
 
+  it("names the existing order in a blocking-cycle denial and keeps it", async () => {
+    const companyId = randomUUID();
+    await seedIssueCompany(db, companyId);
+
+    const website = randomUUID();
+    const design = randomUUID();
+    const copy = randomUUID();
+    await db.insert(issues).values([
+      { id: website, companyId, identifier: "COM-1", title: "Website", status: "backlog", priority: "medium" },
+      { id: design, companyId, identifier: "COM-2", title: "Design", status: "backlog", priority: "medium" },
+      // The intermediate issue's title must not appear: the caller may not be able to read it.
+      { id: copy, companyId, identifier: "COM-3", title: "Private launch copy", status: "backlog", priority: "medium" },
+    ]);
+    await svc.update(design, { blockedByIssueIds: [website] });
+
+    const direct = await svc
+      .update(website, { blockedByIssueIds: [design] })
+      .catch((error: unknown) => error);
+    expect(direct).toMatchObject({
+      status: 422,
+      message:
+        "Blocking relations cannot contain cycles: COM-2 waits for COM-1, so COM-1 cannot also wait for COM-2. " +
+        "No dependencies were changed and the existing ones are kept. " +
+        "Do not remove or reverse an existing dependency to make this fit; ask whoever requested the change which order they want and change dependencies only after they choose.",
+      details: {
+        code: "blocking_cycle",
+        issueId: website,
+        requestedBlockerIssueId: design,
+        existingChain: [
+          { id: website, identifier: "COM-1" },
+          { id: design, identifier: "COM-2" },
+        ],
+      },
+    });
+
+    await svc.update(copy, { blockedByIssueIds: [design] });
+    const transitive = await svc
+      .update(website, { blockedByIssueIds: [copy] })
+      .catch((error: unknown) => error);
+    expect((transitive as Error).message).toContain(
+      "COM-2 waits for COM-1, and COM-3 waits for COM-2, so COM-1 cannot also wait for COM-3.",
+    );
+    expect(JSON.stringify({ message: (transitive as Error).message, details: (transitive as { details?: unknown }).details }))
+      .not.toMatch(/Website|Design|Private launch copy/);
+
+    expect((await svc.getRelationSummaries(design)).blockedBy.map((relation) => relation.id)).toEqual([website]);
+    expect((await svc.getRelationSummaries(website)).blockedBy).toEqual([]);
+  });
+
   it("only returns dependents once every blocker is done", async () => {
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();
@@ -4664,7 +4781,7 @@ const dependencyTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ISSU
       startedAt: new Date("2026-05-23T22:05:00.000Z"),
     });
     expect(await svc.listWakeableBlockedDependents(blockerId)).toEqual([]);
-    const pendingDependent = (await svc.list(companyId, { status: "blocked" }))
+    const pendingDependent = (await svc.list(companyId, { status: "blocked" }) as IssueListRow[])
       .find((issue) => issue.id === dependentId);
     expect(pendingDependent?.blockerAttention).toMatchObject({
       state: "needs_attention",
@@ -4719,6 +4836,51 @@ const dependencyTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ISSU
       pendingFinalizeBlockerIssueIds: [],
     });
   });
+
+  it.each([
+    ["covered", "succeeded", true],
+    ["foreign-run", "succeeded", false],
+    ["unfinished", "succeeded", false],
+    ["failed-finalize", "succeeded", false],
+    ["late-finish", "running", false],
+    ["later-operation", "running", false],
+    ["late-finish", "succeeded", true],
+    ["later-operation", "succeeded", true],
+  ] as const)(
+    "requires a successful owning finalize to cover a nested snapshot: %s (run %s)", async (kind, runStatus, ready) => {
+      const f = await seedSharedWorkspaceDependency();
+      const runId = randomUUID(), foreignRunId = randomUUID();
+      await db.insert(heartbeatRuns).values([
+        { id: runId, companyId: f.companyId, agentId: f.assigneeAgentId, status: runStatus },
+        { id: foreignRunId, companyId: f.companyId, agentId: f.assigneeAgentId, status: "succeeded" },
+      ]);
+      const started = new Date("2026-05-23T22:00:00.000Z");
+      const finished = new Date("2026-05-23T22:00:02.000Z");
+      await db.insert(workspaceOperations).values([
+        { companyId: f.companyId, executionWorkspaceId: f.executionWorkspaceId, issueId: f.blockerId,
+          heartbeatRunId: runId, phase: "workspace_finalize",
+          status: kind === "failed-finalize" ? "failed" : "succeeded", startedAt: started, finishedAt: finished },
+        { companyId: f.companyId, executionWorkspaceId: f.executionWorkspaceId, issueId: f.blockerId,
+          heartbeatRunId: kind === "foreign-run" ? foreignRunId : runId, phase: "remote_workspace_snapshot",
+          status: kind === "unfinished" ? "running" : "succeeded",
+          startedAt: new Date(started.getTime() + 100),
+          finishedAt: kind === "unfinished" ? null : new Date(finished.getTime() + (kind === "late-finish" ? 100 : -100)) },
+        ...(kind === "later-operation" ? [{
+          companyId: f.companyId, executionWorkspaceId: f.executionWorkspaceId, issueId: f.blockerId,
+          heartbeatRunId: runId, phase: "worktree_prepare", status: "succeeded",
+          startedAt: new Date(finished.getTime() + 100), finishedAt: new Date(finished.getTime() + 200),
+        }] : []),
+      ]);
+      expect((await svc.listWakeableBlockedDependents(f.blockerId)).map(issue => issue.id))
+        .toEqual(ready ? [f.dependentId] : []);
+      await expect(svc.getDependencyReadiness(f.dependentId)).resolves.toMatchObject({
+        isDependencyReady: ready,
+        pendingFinalizeBlockerIssueIds: ready ? [] : [f.blockerId],
+      });
+      const listed = (await svc.list(f.companyId, { status: "blocked" }) as IssueListRow[]).find(issue => issue.id === f.dependentId);
+      expect(listed?.blockerAttention?.pendingFinalizeBlockerIssueIds ?? []).toEqual(ready ? [] : [f.blockerId]);
+    },
+  );
 
   it("reports dependency readiness for blocked issue chains", async () => {
     const companyId = randomUUID();
@@ -4926,7 +5088,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     await tempDb?.cleanup();
   });
 
-  it("preserves the parent project when a generic child create inherits workspace linkage", async () => {
+  it("preserves the parent project when a generic child create inherits workspace strategy", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const parentIssueId = randomUUID();
@@ -4981,7 +5143,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     expect(child.parentId).toBe(parentIssueId);
     expect(child.projectId).toBe(projectId);
     expect(child.projectWorkspaceId).toBe(projectWorkspaceId);
-    expect(child.executionWorkspaceId).toBe(executionWorkspaceId);
+    expect(child.executionWorkspaceId).toBeNull();
   });
 
   it("uses the target project's own workspaces for a cross-project child instead of inheriting the parent's", async () => {
@@ -5101,7 +5263,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     });
   });
 
-  it("inherits workspace linkage from an explicit source issue without creating a parent-child relationship", async () => {
+  it("inherits project and strategy, not the realized workspace, from an explicit source issue without creating a parent-child relationship", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const sourceIssueId = randomUUID();
@@ -5155,11 +5317,9 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     expect(followUp.parentId).toBeNull();
     expect(followUp.projectId).toBe(projectId);
     expect(followUp.projectWorkspaceId).toBe(projectWorkspaceId);
-    expect(followUp.executionWorkspaceId).toBe(executionWorkspaceId);
-    expect(followUp.executionWorkspacePreference).toBe("reuse_existing");
-    expect(followUp.executionWorkspaceSettings).toEqual({
-      mode: "operator_branch",
-    });
+    expect(followUp.executionWorkspaceId).toBeNull();
+    expect(followUp.executionWorkspacePreference).toBeNull();
+    expect(JSON.stringify(followUp.executionWorkspaceSettings ?? {})).not.toContain("operator_branch");
   });
 
   it("preserves projectless organization when an update adds workspace linkage", async () => {
@@ -5530,7 +5690,7 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
 
     await seedIssueCompany(db, companyId);
     await seedCodexCoder(db, companyId, agentId);
-    if (runId) {
+    if (runId && status) {
       await db.insert(heartbeatRuns).values({
         id: runId,
         companyId,
@@ -6958,5 +7118,14 @@ describeEmbeddedPostgres("issueService.addComment createdByRunId", () => {
       .from(issueComments)
       .where(eq(issueComments.createdByRunId, runId));
     expect(duplicates).toHaveLength(1);
+  });
+
+  it("stores an agent's made-up-host board link as a relative route, and a person's as written", async () => {
+    const [{ issuePrefix }] = await db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, companyId));
+    const written = `I updated [Morgan](https://paperclip.local/${issuePrefix}/agents/${agentId}); see [docs](https://docs.github.com/a).`;
+    const agentComment = await svc.addComment(issueId, written, { agentId });
+    expect(agentComment.body).toBe(`I updated [Morgan](/${issuePrefix}/agents/${agentId}); see [docs](https://docs.github.com/a).`);
+    const userComment = await svc.addComment(issueId, written, { userId: "board-user" });
+    expect(userComment.body).toBe(written);
   });
 });

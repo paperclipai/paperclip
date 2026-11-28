@@ -1,4 +1,5 @@
 import type { CompanySecret, EnvBinding, SecretVersionSelector, UserSecretDefinition } from "@paperclipai/shared";
+import { ENV_VAR_NAME_RE, looksLikeCredentialToken } from "@paperclipai/shared";
 
 export type RowSource = "text" | "secret" | "user_secret";
 
@@ -161,7 +162,7 @@ export function buildFixedClaudeOAuthBinding(): Record<string, EnvBinding> {
 }
 
 
-export const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+export const ENV_NAME_RE = ENV_VAR_NAME_RE;
 
 export type NameIssueLevel = "error" | "warn";
 export interface NameIssue {
@@ -180,6 +181,12 @@ export function validateName(
 ): NameIssue | null {
   const trimmed = name.trim();
   if (!trimmed) return null;
+  if (looksLikeCredentialToken(trimmed)) {
+    return {
+      level: "error",
+      message: "Looks like a secret value — put the variable name here (e.g. GH_TOKEN) and store the token in Value",
+    };
+  }
   if (!ENV_NAME_RE.test(trimmed)) {
     return { level: "error", message: "Invalid name — use letters, digits and _" };
   }

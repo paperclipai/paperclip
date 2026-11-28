@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { redactSensitiveText } from "../redaction.js";
-import { initializeMcpHttpSession, mcpHttpRequestHeaders, parseMcpHttpResponseBody } from "./mcp-http.js";
+import { initializeMcpHttpSession, mcpHttpRequestInit, parseMcpHttpResponseBody } from "./mcp-http.js";
 
 export const RAILWAY_MCP_URL = "https://mcp.railway.com";
 export const RAILWAY_API_URL = "https://backboard.railway.com/graphql/v2";
@@ -135,7 +135,7 @@ const instanceFields = "id environmentId serviceId serviceName source { repo } l
 export const RAILWAY_QUERIES = {
   projects: `query PaperclipRailwayProjects($workspaceId:String!,$first:Int!,$after:String) { projects(workspaceId:$workspaceId,first:$first,after:$after) { edges { node { id name workspaceId } } ${pageInfo} } }`,
   services: `query PaperclipRailwayServices($projectId:String!,$first:Int!,$after:String) { project(id:$projectId) { id services(first:$first,after:$after) { edges { node { id name projectId } } ${pageInfo} } } }`,
-  environments: `query PaperclipRailwayEnvironments($projectId:String!,$first:Int!,$after:String) { project(id:$projectId) { id environments(first:$first,after:$after) { edges { node { id name projectId } } ${pageInfo} } } }`,
+  environments: `query PaperclipRailwayEnvironments($projectId:String!,$first:Int!,$after:String) { project(id:$projectId) { id environments(first:$first,after:$after) { edges { node { id name projectId canAccess } } ${pageInfo} } } }`,
   target: `query PaperclipRailwayTarget($projectId:String!,$environmentId:String!,$serviceId:String!) { project(id:$projectId) { id } environment(id:$environmentId) { id projectId } service(id:$serviceId) { id projectId } serviceInstance(environmentId:$environmentId,serviceId:$serviceId) { ${instanceFields} } }`,
   deployment: `query PaperclipRailwayDeployment($deploymentId:String!) { deployment(id:$deploymentId) { ${deploymentFields} instances { id } } }`,
   deployments: `query PaperclipRailwayDeployments($input:DeploymentListInput!,$first:Int!,$after:String) { deployments(input:$input,first:$first,after:$after) { edges { node { ${deploymentFields} } } ${pageInfo} } }`,
@@ -172,10 +172,9 @@ async function boundedResponseText(response: Response, signal: AbortSignal): Pro
 export async function discoverRailwayWorkspace(options: RailwayClientOptions): Promise<string> {
   const send = (init: RequestInit) => options.request(RAILWAY_MCP_URL, { ...init, redirect: "error", signal: options.signal });
   const headers = { Authorization: options.authorization };
-  const list = (requestHeaders: Record<string, string>) => send({
-    method: "POST", headers: mcpHttpRequestHeaders(requestHeaders),
-    body: JSON.stringify({ jsonrpc: "2.0", id: "paperclip-railway-workspace-probe", method: "tools/call", params: { name: "list-workspaces", arguments: {} } }),
-  });
+  const list = (requestHeaders: Record<string, string>) => send(mcpHttpRequestInit(requestHeaders, {
+    id: "paperclip-railway-workspace-probe", method: "tools/call", params: { name: "list-workspaces", arguments: {} },
+  }));
   let response = await list(headers);
   if (response.status === 400) {
     await response.body?.cancel();
@@ -235,8 +234,35 @@ export function createRailwayClient(options: RailwayClientOptions) {
     return payload.data;
   }
 
+  async function environmentRestricted(args: Record<string, any>): Promise<boolean> {
+    try {
+      let after: string | undefined;
+      for (let page = 0; page < 10; page++) {
+        const data = await query(RAILWAY_QUERIES.environments, { projectId: args.projectId, first: 100, after });
+        const environments = record(record(data.project).environments);
+        const match = Array.isArray(environments.edges) ? environments.edges.find((edge) => edge?.node?.id === args.environmentId) : undefined;
+        if (match) return match.node.canAccess === false;
+        const pageInfo = record(environments.pageInfo);
+        if (!pageInfo.hasNextPage || typeof pageInfo.endCursor !== "string") return false;
+        after = pageInfo.endCursor;
+      }
+      return false;
+    } catch (error) {
+      if (options.signal.aborted) throw error;
+      return false;
+    }
+  }
+
   async function validateTarget(args: Record<string, any>) {
-    const data = await query(RAILWAY_QUERIES.target, { projectId: args.projectId, environmentId: args.environmentId, serviceId: args.serviceId });
+    let data: Record<string, any>;
+    try {
+      data = await query(RAILWAY_QUERIES.target, { projectId: args.projectId, environmentId: args.environmentId, serviceId: args.serviceId });
+    } catch (error) {
+      if (error instanceof RailwayError && error.code === "railway_api_authorization_required" && error.status === 403 && await environmentRestricted(args)) {
+        throw new RailwayError("railway_environment_restricted", "This Railway environment is restricted. The connected account can see it but cannot read its services, deployments, or logs. Ask a Railway project admin for access to the environment, or use an environment the account can access. Reconnecting does not change this.", 403);
+      }
+      throw error;
+    }
     if (data.project?.id !== args.projectId || data.environment?.id !== args.environmentId || data.environment?.projectId !== args.projectId || data.service?.id !== args.serviceId || data.service?.projectId !== args.projectId || data.serviceInstance?.environmentId !== args.environmentId || data.serviceInstance?.serviceId !== args.serviceId) {
       throw new RailwayError("railway_target_mismatch", "The service and environment do not belong to the selected Railway project.", 403);
     }

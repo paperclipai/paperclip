@@ -4,10 +4,12 @@ import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DecisionOutcome } from "../api/decisions";
+import { replayLeaks } from "@/lib/analytics/replay-recording.test-utils";
 
 const state = vi.hoisted(() => ({ issueStatus: "todo", queriedIssueIds: [] as string[] }));
 
-vi.mock("@tanstack/react-query", () => ({
+vi.mock("@tanstack/react-query", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@tanstack/react-query")>(),
   useQueryClient: () => ({ invalidateQueries: vi.fn(), setQueryData: vi.fn() }),
   useMutation: () => ({ isPending: false, error: null, mutate: vi.fn() }),
   useQuery: ({ queryKey }: { queryKey: readonly string[] }) => queryKey[1] === "detail"
@@ -19,7 +21,7 @@ vi.mock("@tanstack/react-query", () => ({
           originIssueId: "origin-1",
           status: "open",
           targetSnapshots: { "target-1": { updatedAt: "2026-07-31T00:00:00.000Z" } },
-          options: [{ id: "yes", label: "Yes", effects: [
+          options: [{ id: "yes", label: "Yes", description: "Send the Globex renewal reply", effects: [
             {
               type: "create_issue",
               targetIssueId: "target-1",
@@ -120,6 +122,15 @@ describe("DecisionResolver", () => {
       "removed-blocker-1",
     ]));
 
+    flushSync(() => root.unmount());
+  });
+
+  it("keeps the compact view's option text out of session replay", () => {
+    const root = createRoot(container);
+    flushSync(() => root.render(<DecisionResolver companyId="company-1" decisionId="decision-1" leading={<span>Lead</span>} />));
+    expect(container.querySelector('[data-testid="decision-status"]')).toBeNull();
+    expect(replayLeaks("Yes", container).recorded).toBe(false);
+    expect(replayLeaks("Yes", container).rendered).toBe(true);
     flushSync(() => root.unmount());
   });
 });

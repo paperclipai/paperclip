@@ -10,6 +10,7 @@ globalThis.fetch = (url, init) => {
   if (String(url) !== "https://auth.openai.com/oauth/token") throw new Error("Unexpected fixture network request");
   return request(provider, init);
 };
+process.stdout.write("ready\n");
 try {
   const service = aiConnectionService(db);
   const [row] = await service.quotaAccounts(process.env.CREDENTIAL_TEST_COMPANY_ID!, process.env.CREDENTIAL_TEST_OWNER!);

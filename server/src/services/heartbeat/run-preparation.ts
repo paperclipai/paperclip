@@ -1,6 +1,8 @@
+import { isUniqueViolation } from "../../db-errors.js";
 import { skillPackageStore, skillVersionMetadataColumns } from "../skill-package-store.js";
 import { skillAccessService } from "../skill-access.js";
 import { buildReviewPathRecoveryDisposition } from "../recovery/review-path-recovery.js";
+import { readByEarlierTurnCommentIds } from "../queued-comment-delivery.js";
 import type { AuthorizationActor } from "../authorization.js";
 import { spekoToolsForSession } from "../voice/speko-agent-tools.js";
 import { githubConfiguredInstructionSources } from "../chat-github-review-policy.js";
@@ -69,6 +71,8 @@ import {
   toolProfiles,
 } from "@paperclipai/db";
 import { HttpError } from "../../errors.js";
+import { isAiConnectionIncompatible } from "../ai-connection-runtime.js";
+import { ReviewedChatBindingNotReadyError, type ReviewedChatBindingDenialReason } from "../reviewed-chat-binding-diagnostics.js";
 import { filterResolvedGitHubConnectionsForRun } from "../git-credentials.js";
 import type {
   AdapterRuntimeMcpAccess,
@@ -161,6 +165,13 @@ export class ConfigurationIncompleteFailure extends Error {
   }
 }
 
+export function classifyManagedProjectAuthFailure(error: unknown, agentId: string): unknown {
+  if (!isAiConnectionIncompatible(error)) return error;
+  return new ConfigurationIncompleteFailure(error.message, {
+    configurationIncomplete: { reason: "ai_connection_incompatible", actionUrl: `/agents/${agentId}/runtime` },
+  });
+}
+
 const ISSUE_RESPONSIBLE_USER_WAKE_REASONS = new Set([
   "issue_assigned",
   "issue_checked_out",
@@ -169,6 +180,7 @@ const ISSUE_RESPONSIBLE_USER_WAKE_REASONS = new Set([
   "issue_reopened_via_comment",
   "issue_blockers_resolved",
   "issue_children_completed",
+  "issue_blocker_stalled",
   "issue_status_changed",
   "issue_tree_restored",
   "issue_recovery_action_restored",
@@ -786,6 +798,8 @@ export interface WakeupOptions {
   durableCaseHandoffRequest?: { handoffId: string; wakeupRequestId: string; issueId: string; expectedIssueStatusVersion: number };
   /** Set only by authenticated board wake routes; never copied from caller payloads. */
   manualUserWake?: boolean;
+  /** Optional observer called with the exact skip reason when this wake is skipped. */
+  onSkip?: (reason: string) => void;
   /** Internal resume of a queue with persisted board interruption intent. */
   queuedCommentInterruptId?: string;
   /** Internal delivery of an existing undelivered user comment. */
@@ -818,6 +832,7 @@ export interface WakeupOptions {
   idempotencyKey?: string | null;
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
+  requestedByActorCompanyId?: string;
   contextSnapshot?: Record<string, unknown>;
   issueStateGuard?: {
     statuses: string[];
@@ -825,11 +840,15 @@ export interface WakeupOptions {
     statusVersion?: number;
     monitorNextCheckAt?: string;
     monitorWakeRequestedAt?: string;
+    /** Skip when a wake or run that continues this run already exists. */
+    withoutSuccessorOfRunId?: string;
     /** Internal diagnostic only; the callback cannot grant admission. */
-    onExecutionDeferred?: (blockerCause: string) => void;
+    onExecutionDeferred?: (blockerCause: string, recoveryActionId?: string | null) => void;
   };
   /** Keep causally distinct external chat continuations out of an existing run. */
   allowRunCoalescing?: boolean;
+  /** Durable deferred wake request already saved with the triggering domain write. */
+  executionWaitRequestId?: string;
 }
 
 function sanitizeAgentSessionMessageText(value: unknown): string | null {
@@ -970,7 +989,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
     .filter(
       (connection) =>
         (connection.transport === "mcp_remote" ||
-          connection.transport === "local_stdio" || isBrowserUseConnection(connection) || restConnectorFor(connection)) &&
+          connection.transport === "local_stdio" || connection.transport === "plugin" || isBrowserUseConnection(connection) || restConnectorFor(connection)) &&
         !allInstalledConnectionIds.has(connection.id),
     )
     .map(({ id, name }) => ({ id, name }))
@@ -994,9 +1013,15 @@ export async function buildPaperclipRuntimeMcpServers(input: {
         (connection.config?.sourceTemplateKey === "github" ||
           connection.transportConfig?.sourceTemplateKey === "github")) ||
         connection.credentialPolicy === "per_user" ||
+        // A plugin connection's health mostly reflects its worker, which the
+        // host restarts; calls fail retryably while it is down. Match the
+        // gateway, which keeps these tools discoverable.
+        connection.transport === "plugin" ||
         !isToolConnectionAttentionHealth(connection.healthStatus)) &&
+      // Keep this transport list equal to the native runtime assignment
+      // digest in native-runtime/runtime-context.ts.
       (connection.transport === "mcp_remote" ||
-        connection.transport === "local_stdio" || isBrowserUseConnection(connection) || restConnectorFor(connection) || githubBotConnectionIds.has(connection.id) || spekoConnectionIds.has(connection.id)),
+        connection.transport === "local_stdio" || connection.transport === "plugin" || isBrowserUseConnection(connection) || restConnectorFor(connection) || githubBotConnectionIds.has(connection.id) || spekoConnectionIds.has(connection.id)),
   );
   const assignedConnectionIds = new Set(
     assignedConnections.map((connection) => connection.id),
@@ -1032,7 +1057,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
     return [];
   }
   const profileKey = `native:${input.agent.id}:${assignmentDigest}`;
-  let [profile] = await input.db
+  const findProfile = () => input.db
     .select()
     .from(toolProfiles)
     .where(
@@ -1042,6 +1067,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
       ),
     )
     .limit(1);
+  let [profile] = await findProfile();
 
   if (!profile) {
     const fullConnectionIds = new Set(
@@ -1078,7 +1104,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
     // selector here: truncating or replacing them with connection-wide grants
     // would either lose assigned tools or authorize tools outside this snapshot.
     try {
-      const created = await access.createProfile(input.agent.companyId, {
+      profile = await access.createProfileRow(input.agent.companyId, {
         profileKey,
         name: `Native ${input.agent.id.slice(0, 8)} ${assignmentDigest.slice(0, 12)}`,
         description: "Immutable Paperclip Runner MCP assignment profile.",
@@ -1091,22 +1117,10 @@ export async function buildPaperclipRuntimeMcpServers(input: {
         },
         entries,
       });
-      [profile] = await input.db
-        .select()
-        .from(toolProfiles)
-        .where(eq(toolProfiles.id, created.id))
-        .limit(1);
     } catch (error) {
-      [profile] = await input.db
-        .select()
-        .from(toolProfiles)
-        .where(
-          and(
-            eq(toolProfiles.companyId, input.agent.companyId),
-            eq(toolProfiles.profileKey, profileKey),
-          ),
-        )
-        .limit(1);
+      if (!isUniqueViolation(error, "tool_profiles_company_key_uq") &&
+          !isUniqueViolation(error, "tool_profiles_company_name_uq")) throw error;
+      [profile] = await findProfile();
       if (!profile) throw error;
     }
   }
@@ -1775,7 +1789,12 @@ function normalizeInteractionContinuationWakeContext(
   contextSnapshot: Record<string, unknown>,
   payload: Record<string, unknown> | null | undefined,
 ) {
-  if (isInteractionResolutionWakePayload(payload)) return;
+  if (isInteractionResolutionWakePayload(payload)) {
+    if (contextSnapshot.interactionKind === "ask_user_questions") {
+      contextSnapshot.mutation = "interaction";
+    }
+    return;
+  }
   clearInteractionContinuationWakeContext(contextSnapshot);
 }
 
@@ -2023,6 +2042,15 @@ export async function resolveExternalChatWakeProvider(input: {
 }
 
 /** Bind an already-claimed chat/reply turn without checking out or approving it. */
+const CHAT_ATTACHMENT_DENIAL_REASONS: ReadonlyMap<
+  string,
+  ReviewedChatBindingDenialReason
+> = new Map<string, ReviewedChatBindingDenialReason>([
+  ["paperclip_runner_chat_attachment_binding_denied", "binding_denied"],
+  ["paperclip_runner_chat_attachment_destination_denied", "destination_denied"],
+  ["paperclip_runner_chat_attachment_principal_denied", "principal_denied"],
+]);
+
 export async function attestReviewedExternalChatRun(input: {
   db: Db;
   companyId: string;
@@ -2032,12 +2060,19 @@ export async function attestReviewedExternalChatRun(input: {
   contextSnapshot: Record<string, unknown>;
   /** Diagnostic-only value from the committed, authorized answer; never a wake field. */
   onQuestionResponseAttested?: (answeredAtMs: number) => void;
+  /** Receives the closed label of the first failed check when attestation is denied. */
+  onDenied?: (reason: ReviewedChatBindingDenialReason) => void;
 }): Promise<boolean> {
   const attempt = () =>
     input.db.transaction(
       async (
         transaction,
-      ): Promise<boolean | "pending_delivery" | { answeredAtMs: number }> => {
+      ): Promise<
+        | true
+        | { denied: ReviewedChatBindingDenialReason }
+        | "pending_delivery"
+        | { answeredAtMs: number }
+      > => {
         const tx = transaction as unknown as Db;
         const [issue] = await tx
           .select()
@@ -2073,25 +2108,27 @@ export async function attestReviewedExternalChatRun(input: {
           )
           .for("update", { noWait: true })
           .limit(1);
+        if (!issue || !run || !actor) return { denied: "binding_missing" };
         if (
-          !issue ||
-          !run ||
-          !actor ||
           !(
             issue.status === "in_review" ||
             (input.contextSnapshot.source === "issue.interaction.respond" &&
               issue.status === "in_progress")
-          ) ||
-          issue.assigneeAgentId !== input.agentId ||
-          issue.executionRunId !== input.runId ||
-          run.status !== "running" ||
-          (run.nativeIssueId !== null && run.nativeIssueId !== input.issueId) ||
-          // This attestation precedes execution-start's transition to running.
-          // A prior run's error projection is invokable, unlike an operator
-          // pause, termination, or pending approval; all binding checks remain.
-          DIRECT_NON_INVOKABLE_STATUSES.has(actor.status)
+          )
         )
-          return false;
+          return { denied: "issue_status" };
+        if (issue.assigneeAgentId !== input.agentId)
+          return { denied: "assignee_mismatch" };
+        if (issue.executionRunId !== input.runId)
+          return { denied: "owner_mismatch" };
+        if (run.status !== "running") return { denied: "run_not_running" };
+        if (run.nativeIssueId !== null && run.nativeIssueId !== input.issueId)
+          return { denied: "native_issue_mismatch" };
+        // This attestation precedes execution-start's transition to running.
+        // A prior run's error projection is invokable, unlike an operator
+        // pause, termination, or pending approval; all binding checks remain.
+        if (DIRECT_NON_INVOKABLE_STATUSES.has(actor.status))
+          return { denied: "agent_not_invokable" };
         const admittedContext = parseObject(run.contextSnapshot);
         const admittedIds = extractWakeCommentIds(admittedContext);
         const suppliedIds = extractWakeCommentIds(input.contextSnapshot);
@@ -2103,8 +2140,8 @@ export async function attestReviewedExternalChatRun(input: {
           admittedIds.length !== suppliedIds.length ||
           admittedIds.some((id, index) => id !== suppliedIds[index])
         )
-          return false;
-        try {
+          return { denied: "context_mismatch" };
+        const authorize = async (): Promise<true | { answeredAtMs: number } | { denied: "question_response_missing" }> => {
           const answer =
             admittedContext.source === "issue.interaction.respond"
               ? await resolveExternalChatQuestionResponse(
@@ -2116,7 +2153,7 @@ export async function attestReviewedExternalChatRun(input: {
                 )
               : null;
           if (admittedContext.source === "issue.interaction.respond" && !answer)
-            return false;
+            return { denied: "question_response_missing" };
           // The marker is built here only after proving the real execution owner.
           // The shared boundary then verifies current provider/resource/principal
           // access for every admitted message; no lifecycle state is mutated.
@@ -2134,7 +2171,11 @@ export async function attestReviewedExternalChatRun(input: {
             input.contextSnapshot[EXTERNAL_CHAT_QUESTION_RESPONSE_KEY] =
               answer.marker;
           return answer ? { answeredAtMs: answer.answeredAtMs } : true;
+        };
+        try {
+          return await authorize();
         } catch (error) {
+          let authorizationError = error;
           if (
             error instanceof Error &&
             error.message === "paperclip_runner_chat_attachment_binding_denied"
@@ -2179,17 +2220,25 @@ export async function attestReviewedExternalChatRun(input: {
             ) {
               return "pending_delivery";
             }
+            if (
+              admittedIds.every((id) =>
+                links.some((link) => link.commentId === id),
+              ) &&
+              links.every((link) => link.state === "processed")
+            ) {
+              try {
+                return await authorize();
+              } catch (retryError) {
+                authorizationError = retryError;
+              }
+            }
           }
-          if (
-            error instanceof Error &&
-            [
-              "paperclip_runner_chat_attachment_binding_denied",
-              "paperclip_runner_chat_attachment_destination_denied",
-              "paperclip_runner_chat_attachment_principal_denied",
-            ].includes(error.message)
-          )
-            return false;
-          throw error;
+          const denied =
+            authorizationError instanceof Error
+              ? CHAT_ATTACHMENT_DENIAL_REASONS.get(authorizationError.message)
+              : undefined;
+          if (denied) return { denied };
+          throw authorizationError;
         }
       },
     );
@@ -2199,6 +2248,10 @@ export async function attestReviewedExternalChatRun(input: {
   for (let attemptNumber = 0; attemptNumber < 51; attemptNumber += 1) {
     try {
       const result = await attempt();
+      if (typeof result === "object" && "denied" in result) {
+        input.onDenied?.(result.denied);
+        return false;
+      }
       if (typeof result === "object") {
         // The transaction (including COMMIT) must succeed before any attempt-
         // local timing is accepted. A retry/rollback cannot publish this value.
@@ -2212,7 +2265,7 @@ export async function attestReviewedExternalChatRun(input: {
     if (attemptNumber < 50)
       await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new Error("reviewed_chat_execution_binding_not_ready");
+  throw new ReviewedChatBindingNotReadyError();
 }
 
 export async function readHeartbeatWakeComments(db: Db, companyId: string, issueId: string | null, commentIds: string[]) {
@@ -2283,6 +2336,15 @@ export async function buildPaperclipWakePayload(input: {
   const annotationCommentId = readNonEmptyString(
     input.contextSnapshot.annotationCommentId,
   );
+  const annotationReaction = readNonEmptyString(
+    input.contextSnapshot.annotationReaction,
+  );
+  const annotationReactionUserId = readNonEmptyString(
+    input.contextSnapshot.annotationReactionUserId,
+  );
+  const annotationReactionAuthor = annotationReactionUserId
+    ? { type: "user", id: annotationReactionUserId }
+    : null;
   const issueId = readNonEmptyString(input.contextSnapshot.issueId);
   const conversationMode = input.contextSnapshot.conversationMode === true;
   const continuationSummary = conversationMode ? null : input.continuationSummary ?? null;
@@ -2325,6 +2387,11 @@ export async function buildPaperclipWakePayload(input: {
   const commentsById = new Map(
     commentRows.map((comment) => [comment.id, comment]),
   );
+  const readByEarlierTurn = issueId && input.agentId
+    ? await readByEarlierTurnCommentIds(input.db, { companyId: input.companyId, issueId, agentId: input.agentId,
+      commentIds: commentRows.filter(row => !row.deletedAt).map(row => row.id), currentRunId: input.runId ?? null })
+      .catch(() => new Set<string>())
+    : new Set<string>();
   const issueDescription = conversationMode ? null : issueSummary?.description ?? null;
   const issueDescriptionTruncated =
     issueDescription !== null &&
@@ -2393,6 +2460,7 @@ export async function buildPaperclipWakePayload(input: {
       deletedByRunId: deletedAt ? (row.deletedByRunId ?? null) : null,
       sourceTrust: row.sourceTrust ?? null,
       createdAt: row.createdAt.toISOString(),
+      ...(readByEarlierTurn.has(row.id) ? { readByEarlierTurn: true } : {}),
       author: row.authorAgentId
         ? { type: "agent", id: row.authorAgentId }
         : row.authorUserId
@@ -2534,6 +2602,9 @@ export async function buildPaperclipWakePayload(input: {
                 : row.authorUserId
                   ? { type: "user", id: row.authorUserId }
                   : { type: row.authorType, id: null },
+              reaction: annotationReaction
+                ? { name: annotationReaction, author: annotationReactionAuthor }
+                : null,
             })),
           )
       : [];
@@ -2720,6 +2791,7 @@ export async function buildPaperclipWakePayload(input: {
       : [],
     childIssueSummaryTruncated:
       input.contextSnapshot.childIssueSummaryTruncated === true,
+    blockerStall: input.contextSnapshot.blockerStall ?? null,
     dispositionRepair:
       buildReviewPathRecoveryDisposition(input.contextSnapshot) ??
       (input.contextSnapshot.legacyDispositionEpisode ? {

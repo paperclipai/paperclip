@@ -121,7 +121,6 @@ describe("reused target ownership", () => {
     const setup = parseGitHubReviewJourneyConfig(config());
     const company = { id: setup.target.companyId, issuePrefix: "QA" };
     const rows: Record<string, unknown> = {
-      "/api/instance/settings/experimental": { enableGitHubReviewBots: true },
       [`/api/companies/${company.id}`]: company,
       [`/api/agents/${setup.agent.id}`]: { companyId: company.id, name: setup.agent.name, status: "idle", defaultEnvironmentId: null, adapterConfig: { model: setup.agent.model } },
       [`/api/environments/${setup.target.environmentId}`]: { id: setup.target.environmentId, driver: "local", status: "active", config: {} },

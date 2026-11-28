@@ -29,6 +29,7 @@ import type {
   CompanySkillVersionSummary,
 } from "@paperclipai/shared";
 import { companySkillsApi } from "../api/companySkills";
+import { ConnectedAppSkills } from "../components/skills/ConnectedAppSkills";
 import { foldersApi } from "../api/folders";
 import { agentsApi } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
@@ -41,6 +42,7 @@ import { EmptyState } from "../components/EmptyState";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { MarkdownEditor } from "../components/MarkdownEditor";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { QueryErrorState, useQueryView, type QueryViewSource } from "@/components/QueryView";
 import { CopyText } from "../components/CopyText";
 import { Identity } from "../components/Identity";
 import { AgentMultiSelect } from "../components/AgentMultiSelect";
@@ -178,6 +180,8 @@ import {
 } from "lucide-react";
 import { GithubIcon } from "../components/icons/github-icon";
 import type { FolderListItem, FolderListResult } from "@paperclipai/shared";
+import { describeError } from "@/api/errors";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 type SkillTreeNode = {
   name: string;
@@ -1042,6 +1046,8 @@ export function DiscoveryGrid({
   onOpenCard,
   loading,
   error,
+  onRetry,
+  retrying = false,
   totalCount,
   onCreate,
   onImport,
@@ -1089,7 +1095,10 @@ export function DiscoveryGrid({
   cards: DiscoveryCard[];
   onOpenCard: (card: DiscoveryCard) => void;
   loading: boolean;
-  error: string | null;
+  /** The query error when the skill list could not load; null while data (even stale) is available. */
+  error: unknown;
+  onRetry?: () => void;
+  retrying?: boolean;
   totalCount: number;
   onCreate: () => void;
   onImport: () => void;
@@ -1314,10 +1323,12 @@ export function DiscoveryGrid({
               />
             </div>
           ) : null}
-          {loading ? (
+          {error ? (
+            <div className="py-6">
+              <QueryErrorState error={error} action="load skills" onRetry={onRetry} retrying={retrying} />
+            </div>
+          ) : loading ? (
             <PageSkeleton variant="list" />
-          ) : error ? (
-            <div className="py-6 text-sm text-destructive">{error}</div>
           ) : sourceFilteredCards.length === 0 ? (
             <div className="py-12">
               <EmptyState
@@ -1787,13 +1798,14 @@ function CatalogDetailPane({
   packageVersion: string | null;
   installedSkill: CompanySkillListItem | null;
   installedSkillId: string | null;
-  fileQuery: { data: CatalogSkillFileDetail | undefined; isLoading: boolean; error: unknown };
+  fileQuery: QueryViewSource<CatalogSkillFileDetail> & { isLoading: boolean };
   selectedPath: string;
   onInstall: () => void;
   onUpdate: () => void;
   onOpenInstalled: (skillId: string) => void;
   loadingPrimaryAction: boolean;
 }) {
+  const fileView = useQueryView(fileQuery);
   if (!skill) {
     return <EmptyState icon={Boxes} message="Select a catalog skill to inspect." />;
   }
@@ -1917,16 +1929,16 @@ function CatalogDetailPane({
       </div>
 
       <div className="min-h-(--sz-400px) px-5 py-5">
-        {fileQuery.isLoading ? (
+        {fileQuery.isLoading || fileView.kind === "reconnecting" ? (
           <PageSkeleton variant="detail" />
-        ) : fileQuery.error ? (
-          <div className="text-sm text-destructive">{fileQuery.error instanceof Error ? fileQuery.error.message : "Failed to load file"}</div>
+        ) : fileView.kind === "error" ? (
+          <QueryErrorState error={fileQuery.error} action="load the file" onRetry={fileView.retry} retrying={fileView.isFetching} />
         ) : !fileQuery.data ? (
           <div className="text-sm text-muted-foreground">Select a file to inspect.</div>
         ) : fileQuery.data.markdown ? (
           <MarkdownBody softBreaks={false} linkIssueReferences={false}>{body}</MarkdownBody>
         ) : (
-          <pre className="overflow-x-auto whitespace-pre-wrap wrap-break-word border-0 bg-transparent p-0 font-mono text-sm text-foreground">
+          <pre className={cn("overflow-x-auto whitespace-pre-wrap wrap-break-word border-0 bg-transparent p-0 font-mono text-sm text-foreground", ANALYTICS_MASK_CLASS)}>
             <code>{fileQuery.data.content}</code>
           </pre>
         )}
@@ -2577,12 +2589,12 @@ function SkillVersionDiffDialog({
             {(leftQuery.isLoading || rightQuery.isLoading) && <p className="text-sm text-muted-foreground">Loading selected versions…</p>}
           </DialogHeader>
           <div className="flex flex-wrap items-center gap-3 text-xs">
-            <label className="flex items-center gap-2">
+            <label className="flex min-w-0 items-center gap-2">
               <Badge variant="outline" className="border-red-500/30 bg-red-500/10 uppercase tracking-wider text-red-400">Old</Badge>
               <select
                 value={leftVersionId ?? ""}
                 onChange={(event) => onLeftVersionChange(event.target.value || null)}
-                className="h-8 w-44 rounded-md border border-border bg-background px-2 text-xs"
+                className="h-8 w-full max-w-44 rounded-md border border-border bg-background px-2 text-xs sm:w-44"
               >
                 <option value="">Initial</option>
                 {sorted.map((version) => (
@@ -2590,12 +2602,12 @@ function SkillVersionDiffDialog({
                 ))}
               </select>
             </label>
-            <label className="flex items-center gap-2">
+            <label className="flex min-w-0 items-center gap-2">
               <Badge variant="outline" className="border-green-500/30 bg-green-500/10 uppercase tracking-wider text-green-400">New</Badge>
               <select
                 value={right?.id ?? ""}
                 onChange={(event) => onRightVersionChange(event.target.value || null)}
-                className="h-8 w-44 rounded-md border border-border bg-background px-2 text-xs"
+                className="h-8 w-full max-w-44 rounded-md border border-border bg-background px-2 text-xs sm:w-44"
               >
                 {sorted.map((version) => (
                   <option key={version.id} value={version.id}>{versionLabel(version)}</option>
@@ -2604,6 +2616,23 @@ function SkillVersionDiffDialog({
             </label>
           </div>
         </div>
+        {allPaths.length > 0 ? (
+          <div className="md:hidden">
+            <label className="flex items-center gap-2 text-xs">
+              <span className="shrink-0 text-muted-foreground">File</span>
+              <select
+                aria-label="Diff file"
+                value={effectivePath}
+                onChange={(event) => setSelectedPath(event.target.value)}
+                className="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 font-mono text-xs text-foreground"
+              >
+                {allPaths.map((path) => (
+                  <option key={path} value={path}>{path}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+        ) : null}
         <div className="flex min-h-0 flex-1 gap-3">
           <aside className="hidden w-56 shrink-0 overflow-auto border-r border-border pr-3 md:block">
             {allPaths.map((path) => (
@@ -2642,7 +2671,7 @@ function SkillVersionDiffDialog({
                     <span className="select-none border-r border-border/30 pr-3 text-right text-muted-foreground">{row.oldLineNumber ?? ""}</span>
                     <span className="select-none border-r border-border/30 px-3 text-right text-muted-foreground">{row.newLineNumber ?? ""}</span>
                     <span className="select-none px-3 text-center text-muted-foreground">{markerByKind[row.kind]}</span>
-                    <pre className="overflow-x-auto whitespace-pre-wrap break-words px-3 py-0 text-inherit">{row.text.length > 0 ? row.text : " "}</pre>
+                    <pre className={cn("overflow-x-auto whitespace-pre-wrap break-words px-3 py-0 text-inherit", ANALYTICS_MASK_CLASS)}>{row.text.length > 0 ? row.text : " "}</pre>
                   </div>
                 ))}
               </div>
@@ -2887,7 +2916,7 @@ export function SkillDetailPage({
 
   // Track unsaved edits so we can float a save bar and warn before the page is
   // unloaded with a dirty draft (PAP-10907 J).
-  const savedFileContent = file?.content ?? "";
+  const savedFileContent = file?.markdown ? splitFrontmatter(file.content).body : file?.content ?? "";
   const isDirty = editMode && Boolean(file?.editable) && draft !== savedFileContent;
   useEffect(() => {
     if (!isDirty) return;
@@ -2991,7 +3020,7 @@ export function SkillDetailPage({
                 editMode ? (
                   <>
                     <Button variant="ghost" size="sm" onClick={() => setEditMode(false)} disabled={savePending}>Cancel</Button>
-                    <Button size="sm" onClick={onSave} disabled={savePending}>
+                    <Button size="sm" onClick={onSave} disabled={savePending || !isDirty}>
                       <Save className="mr-1.5 h-3.5 w-3.5" />
                       {savePending ? "Saving..." : "Save"}
                     </Button>
@@ -3038,7 +3067,7 @@ export function SkillDetailPage({
               {body}
             </MarkdownBody>
           ) : (
-            <pre className="overflow-x-auto whitespace-pre-wrap wrap-break-word border-0 bg-transparent p-0 font-mono text-sm text-foreground">
+            <pre className={cn("overflow-x-auto whitespace-pre-wrap wrap-break-word border-0 bg-transparent p-0 font-mono text-sm text-foreground", ANALYTICS_MASK_CLASS)}>
               <code>{file.content}</code>
             </pre>
           )}
@@ -3516,7 +3545,7 @@ export function SkillDetailPage({
       {/* Floating save bar: stays visible while a file edit is dirty so the
           unsaved state is obvious (PAP-10907 J). */}
       {isDirty ? (
-        <div className="fixed bottom-6 left-1/2 z-40 flex -translate-x-1/2 items-center gap-3 rounded-full border border-border bg-background/95 px-4 py-2 shadow-lg backdrop-blur">
+        <div className="fixed bottom-(--sz-calc-14) left-1/2 z-40 flex max-w-(--sz-calc-4) -translate-x-1/2 flex-wrap items-center justify-center gap-3 rounded-2xl border border-border bg-background/95 px-4 py-2 shadow-lg backdrop-blur sm:rounded-full md:bottom-6">
           <span className="text-sm text-muted-foreground">Unsaved changes</span>
           <Button
             variant="ghost"
@@ -3925,7 +3954,7 @@ function SkillPane({
         ) : file.markdown && viewMode === "preview" ? (
           <MarkdownBody softBreaks={false} linkIssueReferences={false}>{body}</MarkdownBody>
         ) : (
-          <pre className="overflow-x-auto whitespace-pre-wrap wrap-break-word border-0 bg-transparent p-0 font-mono text-sm text-foreground">
+          <pre className={cn("overflow-x-auto whitespace-pre-wrap wrap-break-word border-0 bg-transparent p-0 font-mono text-sm text-foreground", ANALYTICS_MASK_CLASS)}>
             <code>{file.content}</code>
           </pre>
         )}
@@ -3948,13 +3977,13 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
   // Route a failed skill mutation to the persistent policy banner when it is an
   // explicit-policy (State B) or platform-safety (State C) denial; otherwise keep
   // the existing transient error toast. This is the core "actionable denial only
-  // for real restrictions" behavior from §9.10 (PAP-13865).
+  // for real restrictions" behavior from `doc/company-skill-policy.md` (PAP-13865).
   const reportSkillError = (error: unknown, title: string, fallbackBody: string, actionLabel?: string) => {
     if (policyDenial.capture(error, actionLabel)) return;
     pushToast({
       tone: "error",
       title,
-      body: error instanceof Error && error.message ? error.message : fallbackBody,
+      body: error instanceof Error ? describeError(error).body : fallbackBody,
     });
   };
   const [skillFilter, setSkillFilter] = useState("");
@@ -4160,6 +4189,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
     enabled: Boolean(selectedCompanyId && ((isDiscovery && effectiveDiscoveryTab === "installed") || routeSkillToken)),
   });
 
+  const skillsView = useQueryView(skillsQuery);
   const installedSkills = skillsQuery.data ?? [];
   const routeResolution = useMemo(
     () => resolveSkillRouteToken(routeSkillToken, installedSkills),
@@ -4175,6 +4205,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
     queryFn: () => companySkillsApi.detail(selectedCompanyId!, selectedSkillId!),
     enabled: Boolean(selectedCompanyId && selectedSkillId),
   });
+  const detailView = useQueryView(detailQuery);
 
   const fileQuery = useQuery({
     queryKey: queryKeys.companySkills.file(selectedCompanyId ?? "", selectedSkillId ?? "", selectedPath),
@@ -4399,7 +4430,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
       });
     },
     onError: (error) => {
-      const message = error instanceof Error ? error.message : "Failed to create skill.";
+      const message = describeError(error).body;
       setCreateError(message);
       reportSkillError(error, "Skill creation failed", "Failed to create skill.", "Creating a skill");
     },
@@ -4430,7 +4461,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
       pushToast({
         tone: "error",
         title: "Save failed",
-        body: error instanceof Error ? error.message : "Failed to save skill file.",
+        body: describeError(error).body,
       });
     },
   });
@@ -4453,7 +4484,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
       pushToast({
         tone: "error",
         title: "Star failed",
-        body: error instanceof Error ? error.message : "Failed to update star.",
+        body: describeError(error).body,
       });
     },
   });
@@ -4480,7 +4511,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
       pushToast({
         tone: "error",
         title: "Skill settings update failed",
-        body: error instanceof Error ? error.message : "Failed to update skill settings.",
+        body: describeError(error).body,
       });
     },
   });
@@ -4512,6 +4543,8 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
     enabled: Boolean(selectedCompanyId),
     staleTime: 60_000,
   });
+  const catalogListView = useQueryView(catalogListQuery);
+  const discoveryFailure = [skillsView, catalogListView].find((view) => view.kind === "error");
 
   const catalogDetailQuery = useQuery({
     queryKey: queryKeys.companySkills.catalogDetail(selectedCatalogRef ?? ""),
@@ -4519,6 +4552,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
     enabled: Boolean(selectedCompanyId && selectedCatalogRef),
     staleTime: 60_000,
   });
+  const catalogDetailView = useQueryView(catalogDetailQuery);
 
   const catalogFileQuery = useQuery({
     queryKey: queryKeys.companySkills.catalogFile(selectedCatalogRef ?? "", catalogSelectedPath),
@@ -4679,7 +4713,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
       }
     },
     onError: (error) => {
-      const message = error instanceof Error ? error.message : "Failed to install catalog skill.";
+      const message = describeError(error).body;
       setInstallDialogState((current) => ({ ...current, error: message }));
       // Also surface explicit-policy / platform denials in the persistent banner
       // so the reason stays visible after the dialog closes.
@@ -4709,7 +4743,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
           pushToast({
             tone: "error",
             title: "Folder created, move failed",
-            body: moveError instanceof Error ? moveError.message : "Failed to move the selected skills.",
+            body: describeError(moveError).body,
           });
           return;
         }
@@ -4722,7 +4756,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
       pushToast({
         tone: "error",
         title: "Folder save failed",
-        body: error instanceof Error ? error.message : "Failed to save folder.",
+        body: describeError(error).body,
       });
     },
   });
@@ -4738,7 +4772,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
       pushToast({
         tone: "error",
         title: "Folder save failed",
-        body: error instanceof Error ? error.message : "Failed to update folder.",
+        body: describeError(error).body,
       });
     },
   });
@@ -4758,7 +4792,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
       pushToast({
         tone: "error",
         title: "Folder move failed",
-        body: error instanceof Error ? error.message : "Failed to move folder.",
+        body: describeError(error).body,
       });
     },
   });
@@ -4777,7 +4811,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
       pushToast({
         tone: "error",
         title: "Folder delete failed",
-        body: error instanceof Error ? error.message : "Failed to delete folder.",
+        body: describeError(error).body,
       });
     },
   });
@@ -4794,7 +4828,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
       pushToast({
         tone: "error",
         title: "Move failed",
-        body: error instanceof Error ? error.message : "Failed to move skill.",
+        body: describeError(error).body,
       });
     },
   });
@@ -4815,7 +4849,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
       pushToast({
         tone: "error",
         title: "Failed to move skills",
-        body: moveError instanceof Error ? moveError.message : "Failed to move the selected skills.",
+        body: describeError(moveError).body,
       });
     }
   }
@@ -4831,7 +4865,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
       pushToast({
         tone: "error",
         title: "Couldn't open My Skills",
-        body: error instanceof Error ? error.message : "Failed to create your personal folder.",
+        body: describeError(error).body,
       });
     },
   });
@@ -4890,7 +4924,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
       pushToast({
         tone: "error",
         title: "Folder create failed",
-        body: error instanceof Error ? error.message : "Failed to create folder.",
+        body: describeError(error).body,
       });
       return null;
     }
@@ -4923,7 +4957,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
       pushToast({
         tone: "error",
         title: "Move failed",
-        body: moveError instanceof Error ? moveError.message : "Failed to move.",
+        body: describeError(moveError).body,
       });
     }
   }
@@ -4992,7 +5026,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
       }
       pushToast({ tone: "success", title: "Agents updated", body: `${nextAgentIds.length} agent(s) attached.` });
     } catch (error) {
-      pushToast({ tone: "error", title: "Update failed", body: error instanceof Error ? error.message : "Failed to update agent skills." });
+      pushToast({ tone: "error", title: "Update failed", body: describeError(error).body });
     }
   }
 
@@ -5404,6 +5438,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
             </Tabs>
           </div>
         ) : null}
+        {collectionView !== "authored" ? <ConnectedAppSkills companyId={selectedCompanyId} /> : null}
         <DiscoveryGrid
           collectionView={collectionView}
           navigation={streamlinedUiEnabled ? <SkillsNavigationTabs activeView={collectionView ?? effectiveDiscoveryTab} /> : undefined}
@@ -5418,8 +5453,10 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
           onSortChange={setDiscoverySort}
           cards={visibleDiscoveryCards}
           onOpenCard={openDiscoveryCard}
-          loading={skillsQuery.isLoading || catalogListQuery.isLoading}
-          error={skillsQuery.error?.message ?? catalogListQuery.error?.message ?? null}
+          loading={skillsQuery.isLoading || catalogListQuery.isLoading || skillsView.kind === "reconnecting" || catalogListView.kind === "reconnecting"}
+          error={discoveryFailure?.error}
+          onRetry={discoveryFailure?.retry}
+          retrying={discoveryFailure?.isFetching}
           totalCount={discoveryTabCards.length}
           onCreate={() => void openNewSkill()}
           onImport={() => setImportDialogOpen(true)}
@@ -5499,7 +5536,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
           folderDisplayPath={activeSkillFolderDisplayPath}
           catalogSource={catalogSourceForDetail}
           routeSkills={installedSkills}
-          loading={skillsQuery.isLoading || detailQuery.isLoading}
+          loading={skillsQuery.isLoading || detailQuery.isLoading || skillsView.kind === "reconnecting" || detailView.kind === "reconnecting"}
           activeTab={detailTab}
           onTabChange={setDetailTab}
           selectedPath={selectedPath}
@@ -5567,7 +5604,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
               Back to store
             </Link>
           </div>
-          {catalogListQuery.isLoading || catalogDetailQuery.isLoading ? (
+          {catalogListQuery.isLoading || catalogDetailQuery.isLoading || catalogListView.kind === "reconnecting" || catalogDetailView.kind === "reconnecting" ? (
             <PageSkeleton variant="detail" />
           ) : !selectedCatalogSkill ? (
             <EmptyState icon={Boxes} message="Catalog skill not found." />
@@ -5612,7 +5649,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
         </div>
       ) : (
         <div className="min-h-(--sz-calc-30)">
-          {skillsQuery.isLoading ? (
+          {skillsQuery.isLoading || skillsView.kind === "reconnecting" ? (
             <PageSkeleton variant="detail" />
           ) : (
             <EmptyState icon={Boxes} message="Skill not found." />
