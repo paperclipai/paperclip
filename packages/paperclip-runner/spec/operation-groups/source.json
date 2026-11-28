@@ -19,7 +19,7 @@
     "attention": "Continuation and attention routing lifecycle.",
     "work": "Recorded work-assessment evidence.",
     "issue": "Issue-status decision proposal outcome and application evidence.",
-    "plan": "Complete provider-authored within-turn checklist snapshots, separate from durable Paperclip Plan documents.",
+    "plan": "Complete provider-authored within-turn checklist snapshots, and provider-proposed plan documents that Paperclip may synchronize into the durable Plan document for approval.",
     "tool": "Provider-neutral process, MCP, dynamic, and built-in execution activity.",
     "research": "Provider-reported search, page-open, and in-page research activity.",
     "delegation": "Child-agent delegation lifecycle and aggregate status.",
@@ -113,6 +113,23 @@
       ]
     },
     {
+      "id": "responsibilities",
+      "description": "Read and change a person's areas and responsibilities and file work under them, through the live company/run authority. Acting for the person the run works for, an agent may do what that person could; each change is an undoable Dashboard version and a permanent delete waits for the person's confirmation card. Hidden while the instance has Responsibilities off.",
+      "operationIds": [
+        "list_responsibilities",
+        "get_responsibility",
+        "find_responsibilities_for",
+        "create_area",
+        "update_area",
+        "delete_area",
+        "create_responsibility",
+        "update_responsibility",
+        "delete_responsibility",
+        "file_under_responsibility",
+        "remove_from_responsibility"
+      ]
+    },
+    {
       "id": "workspace_runtime",
       "description": "Inspect and select task workspaces, prepare repositories, and control workspace runtime services.",
       "operationIds": [
@@ -134,10 +151,11 @@
     },
     {
       "id": "routines",
-      "description": "Inspect or manage company routines.",
+      "description": "List routines and change them (title, instructions, agent, project, status, priority, schedule, filing) through the live company/run authority; manage_routine remains a scenario mock.",
       "operationIds": [
         "list_routines",
-        "manage_routine"
+        "manage_routine",
+        "update_routine"
       ]
     },
     {
@@ -147,7 +165,8 @@
         "create_skill",
         "update_skill",
         "list_company_skills",
-        "sync_company_skills"
+        "sync_company_skills",
+        "update_skill_details"
       ]
     },
     {
@@ -290,19 +309,23 @@
         "get_agent",
         "list_projects",
         "list_goals",
-        "list_project_repositories"
+        "list_project_repositories",
+        "list_responsibilities",
+        "get_responsibility",
+        "find_responsibilities_for"
       ],
       "controlPlaneOperationIds": [],
-      "realSurface": "company issue search and agent/project/goal list/get routes",
+      "realSurface": "company issue search, agent/project/goal list/get routes, and responsibility list/detail/lookup routes",
       "mockStateDomains": [
         "company",
         "task",
         "actor",
         "project",
-        "goal"
+        "goal",
+        "responsibility"
       ],
       "prpEvidence": "bounded redacted read projections through tool-result item events",
-      "gap": "Goal operations remain scenario-only. Project and repository discovery contracts are delivered by the live server authority; they are not implemented by the mock command dispatcher."
+      "gap": "Goal operations remain scenario-only. Project and repository discovery contracts are delivered by the live server authority; they are not implemented by the mock command dispatcher. Responsibility discovery is likewise live-only and hidden while the instance has Responsibilities off."
     },
     {
       "id": "su",
@@ -509,8 +532,10 @@
         "update_workflow",
         "list_routines",
         "manage_routine",
+        "update_routine",
         "create_skill",
         "update_skill",
+        "update_skill_details",
         "list_company_skills",
         "sync_company_skills",
         "list_secret_metadata",
@@ -526,12 +551,20 @@
         "get_agent_instruction_history",
         "restore_agent_instructions",
         "submit_complaint",
-        "submit_suggestion"
+        "submit_suggestion",
+        "create_area",
+        "update_area",
+        "delete_area",
+        "create_responsibility",
+        "update_responsibility",
+        "delete_responsibility",
+        "file_under_responsibility",
+        "remove_from_responsibility"
       ],
       "controlPlaneOperationIds": [
         "append_audit_record"
       ],
-      "realSurface": "agent instruction revisions, project, case, routine, company-skill, secret, portability, and administration services, and run-attributed agent commentary",
+      "realSurface": "agent instruction revisions, project, case, routine, company-skill, secret, portability, and administration services, and run-attributed agent commentary; responsibility and area routes",
       "mockStateDomains": [
         "company",
         "cases",
@@ -542,7 +575,7 @@
         "fault"
       ],
       "prpEvidence": "bounded domain projections, redacted broker receipts, company diffs, and audit references",
-      "gap": "Instruction read/update/history/restore require the live canonical revision service, current responsible-user permissions, and pinned base revisions for writes. Their service, authority, and product E2E tests are separate from the legacy mock scenarios. Project and skill creation and API tools require the live server authority; generic_api_request is test-only. Workflow definition tools are live-only company-scoped prompt authoring and bounded retrieval under the Cases flag. create_case, read_case and update_case are live-only authorized case creation, projections and fact mutations; list_cases and upsert_case remain scenario mocks. Other domain operations remain scenario-only. Broad administer_company is deferred and cannot claim product coverage. Production API and paired dedicated-tool regressions are recorded separately in paperclip-evals/evals/runner-api-tools; the legacy scenario count is not evidence of that coverage. Feedback actions are live-only: shared persistence, authority, API, and actual Codex smoke tests cover them; the legacy scenario count does not claim feedback coverage."
+      "gap": "Instruction read/update/history/restore require the live canonical revision service, current responsible-user permissions, and pinned base revisions for writes. Their service, authority, and product E2E tests are separate from the legacy mock scenarios. Project and skill creation and API tools require the live server authority; generic_api_request is test-only. Workflow definition tools are live-only company-scoped prompt authoring and bounded retrieval under the Cases flag. create_case, read_case and update_case are live-only authorized case creation, projections and fact mutations; list_cases and upsert_case remain scenario mocks. list_routines and update_routine are live through the routine routes for the agent's own routines and its person's; manage_routine and other domain operations remain scenario-only. Broad administer_company is deferred and cannot claim product coverage. Production API and paired dedicated-tool regressions are recorded separately in paperclip-evals/evals/runner-api-tools; the legacy scenario count is not evidence of that coverage. Feedback actions are live-only: shared persistence, authority, API, and actual Codex smoke tests cover them; the legacy scenario count does not claim feedback coverage. Responsibility and area changes are live-only and bound to the person the run works for; the mock dispatcher does not implement them."
     },
     {
       "id": "mh",

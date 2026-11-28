@@ -1087,6 +1087,9 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     expect(withSummary.body[0]).toMatchObject({
       id: rootIssueId,
       liveDescendantCount: 1,
+      // The live grandchild's run is queued and never started: it covers the
+      // blocked parent but is not running below it.
+      runningDescendantCount: 0,
     });
   });
 

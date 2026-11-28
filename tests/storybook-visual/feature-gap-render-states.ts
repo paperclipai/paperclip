@@ -185,7 +185,7 @@ const states: Record<string, Record<string, State>> = {
   },
   "feature-plugin-management": {
     installed: { text: "Preview plugin" },
-    empty: { text: "No plugins installed" },
+    empty: { text: "No system plugins installed" },
     loading: { text: "Loading plugins..." },
     failed: { text: "Failed to load plugins." },
     "permission-denied": { text: "Failed to load plugins." },
@@ -198,9 +198,9 @@ const states: Record<string, Record<string, State>> = {
   },
   "feature-secret-proposal-review": {
     pending: { text: "dev/github/token" },
-    loading: { text: "Loading proposals…" },
-    empty: { text: "No pending proposals" },
-    failed: { text: "Couldn’t load proposals. Try again." },
+    loading: { text: "Loading requests…" },
+    empty: { text: "Nothing to review" },
+    failed: { text: "Couldn’t load requests. Try again." },
   },
   "feature-skill-test-runs": {
     "completed-test": { text: "succeeded" },

@@ -68,7 +68,8 @@ describe("canonical operation-groups specification", () => {
     expect(input.source.behaviorGroups).toHaveLength(16);
     expect(input.scenarios).toHaveLength(106);
     expect(new Set(input.scenarios.map((scenario) => scenario.id)).size).toBe(106);
-    expect(input.eventTypes).toHaveLength(107);
+    expect(input.eventTypes).toHaveLength(108);
+    expect(input.eventTypes).toContain("plan.proposed");
     expect(input.eventTypes).toContain("runtime.activity.recorded");
     expect(input.source.prpEventFamilyDescriptions.runtime).toBe("Runner phase transitions and run-scoped reported activity.");
     expect(input.commandTypes).toHaveLength(18);

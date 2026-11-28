@@ -412,6 +412,31 @@ describeWithPostgres("startEmbeddedPostgresTestDatabase template path", () => {
     }
   });
 
+  it.each([
+    { mode: "template", setting: undefined },
+    { mode: "fresh", setting: "0" },
+  ])("hides NOTICE messages from new clients on the $mode path", { timeout: EMBEDDED_POSTGRES_TEST_TIMEOUT_MS }, async ({ mode, setting }) => {
+    if (setting === undefined) delete process.env.PAPERCLIP_TEST_POSTGRES_TEMPLATE;
+    else process.env.PAPERCLIP_TEST_POSTGRES_TEMPLATE = setting;
+    const database = await startEmbeddedPostgresTestDatabase("paperclip-quiet-notices-");
+    try {
+      expect(lastStartMode()).toBe(mode);
+      const notices: unknown[] = [];
+      const sql = postgres(database.connectionString, { max: 1, onnotice: (notice) => notices.push(notice) });
+      try {
+        expect((await sql`show client_min_messages`)[0]?.client_min_messages).toBe("warning");
+        await sql`create table quiet_parent (id int primary key)`;
+        await sql`create table quiet_child (parent_id int references quiet_parent (id))`;
+        await sql`truncate quiet_parent cascade`;
+        expect(notices).toEqual([]);
+      } finally {
+        await sql.end();
+      }
+    } finally {
+      await database.cleanup();
+    }
+  });
+
   describeOnPosix("cache root safety", () => {
     it("uses fresh clusters when the cache root is not a private directory of this user", { timeout: EMBEDDED_POSTGRES_TEST_TIMEOUT_MS }, async () => {
       delete process.env.PAPERCLIP_TEST_POSTGRES_TEMPLATE;

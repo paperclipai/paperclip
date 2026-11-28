@@ -11,12 +11,14 @@ import { antigravityMetadataEnvironment, createAntigravityMetadataRpc } from "./
 
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
 const response = {
-  protocolVersion: 1, agentInfo: { name: "antigravity-acp", title: "private-provider-text 🛰", version: "1.4.3" },
+  protocolVersion: 1, agentInfo: { name: "antigravity-acp", title: "private-provider-text 🛰", version: "1.5.2" },
   agentCapabilities: { loadSession: true, promptCapabilities: { image: true }, mcpCapabilities: { http: true }, sessionCapabilities: { list: {} }, auth: { logout: {} }, _meta: { antigravity: { tier: true, systemPrompt: { append: true }, paperclipAdmission: 1 } } },
   authMethods: [{ id: "oauth-personal", name: "private-provider-text" }, { id: "untrusted-auth-method", name: "private-provider-text" }],
 };
 
-async function fixture(t, behavior = "success") {
+async function fixture(t, behavior = "success", { platform = "darwin", architecture = "arm64" } = {}) {
+  const target = `${platform}-${architecture}`;
+  const args = platform === "linux" ? ["--uid="] : [];
   const root = await mkdtemp(join(tmpdir(), "paperclip-antigravity-probe-test-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const scripts = join(root, "scripts");
@@ -25,7 +27,7 @@ async function fixture(t, behavior = "success") {
   const admissionSource = "# trusted test admission source\n";
   const admissionSourceSha256 = hash(admissionSource);
   await writeFile(join(scripts, "patch-antigravity-runtime.admission.py"), admissionSource);
-  await writeFile(join(scripts, "patch-antigravity-runtime.mjs"), "export const ANTIGRAVITY_PATCH_VERSION='1.4.3-paperclip.1'; export function patchAntigravityRuntime(){throw new Error('Metadata must never patch or install');}");
+  await writeFile(join(scripts, "patch-antigravity-runtime.mjs"), "export const ANTIGRAVITY_PATCH_VERSION='1.5.2-paperclip.2'; export function patchAntigravityRuntime(){throw new Error('Metadata must never patch or install');}");
   const auditPath = join(root, "audit.json");
   const script = `#!${process.execPath}
 const { writeFileSync } = require('node:fs');
@@ -38,7 +40,7 @@ process.stdin.on('data',chunk=>{
  buffer+=chunk;
  if(!buffer.includes('\\n'))return;
  const requests=buffer.trim().split('\\n').map(line=>JSON.parse(line));
- writeFileSync(${JSON.stringify(auditPath)},JSON.stringify({pid:process.pid,home:process.env.HOME,geminiHome:process.env.GEMINI_HOME,cwd:process.cwd(),env:process.env,requests}));
+ writeFileSync(${JSON.stringify(auditPath)},JSON.stringify({pid:process.pid,argv:process.argv.slice(2),home:process.env.HOME,geminiHome:process.env.GEMINI_HOME,cwd:process.cwd(),env:process.env,requests}));
  if(requests.length!==1||requests[0].method!=='initialize')process.exit(41);
  if(behavior==='timeout')return;
  if(behavior==='malformed')return process.stdout.write('not-json\\n');
@@ -67,17 +69,17 @@ process.stdin.on('end',()=>{if(behavior!=='ignore-stop')process.exit(0)});
   ];
   const entries = nativeFiles.map(file => ({ path: file.path, sha256: hash(file.content), size: file.content.length, executable: true }));
   const closureSha256 = hash(JSON.stringify(entries));
-  const item = { url: "https://dl.google.com/agy-extensions/releases/macos/fixture.zip", archiveSha256: "a".repeat(64), closureSha256, vendorClosureSha256: closureSha256, vendorEntries: entries, patchVersion: "1.4.3-paperclip.1", admissionSourceSha256, provisioning: "verified-closure", executable: "agy_acp_server.par", args: [], entries };
-  await writeFile(join(root, "antigravity-distributions.json"), JSON.stringify({ schema: "paperclip.antigravity_distribution.v1", version: "1.4.3", platforms: { "darwin-arm64": item } }));
+  const item = { url: "https://dl.google.com/agy-extensions/releases/macos/fixture.zip", archiveSha256: "a".repeat(64), closureSha256, vendorClosureSha256: closureSha256, vendorEntries: entries, patchVersion: "1.5.2-paperclip.2", admissionSourceSha256, provisioning: "verified-closure", executable: "agy_acp_server.par", args, entries };
+  await writeFile(join(root, "antigravity-distributions.json"), JSON.stringify({ schema: "paperclip.antigravity_distribution.v1", version: "1.5.2", platforms: { [target]: item } }));
   const home = join(root, "operator-home");
-  const runtime = join(home, ".paperclip/runtimes/antigravity/darwin-arm64", closureSha256);
+  const runtime = join(home, ".paperclip/runtimes/antigravity", target, closureSha256);
   await mkdir(runtime, { recursive: true, mode: 0o700 });
   for (const file of nativeFiles) await writeFile(join(runtime, file.path), file.content, { mode: 0o500 });
-  await writeFile(join(runtime, ".paperclip-antigravity-closure.json"), JSON.stringify({ schema: "paperclip.antigravity_closure.v1", version: "1.4.3", patchVersion: item.patchVersion, admissionSourceSha256, archiveSha256: item.archiveSha256, vendorClosureSha256: closureSha256, closureSha256, entries }), { mode: 0o400 });
+  await writeFile(join(runtime, ".paperclip-antigravity-closure.json"), JSON.stringify({ schema: "paperclip.antigravity_closure.v1", version: "1.5.2", patchVersion: item.patchVersion, admissionSourceSha256, archiveSha256: item.archiveSha256, vendorClosureSha256: closureSha256, closureSha256, entries }), { mode: 0o400 });
   const api = await import(pathToFileURL(join(scripts, "probe-antigravity-metadata.mjs")));
   return {
     root, runtime, auditPath,
-    probe: options => api.probeAntigravityMetadata({ home, platform: "darwin", architecture: "arm64", startupTimeoutMs: 2_000, eofTimeoutMs: 60, terminateTimeoutMs: 60, killTimeoutMs: 250, ...options }),
+    probe: options => api.probeAntigravityMetadata({ home, platform, architecture, startupTimeoutMs: 2_000, eofTimeoutMs: 60, terminateTimeoutMs: 60, killTimeoutMs: 250, ...options }),
   };
 }
 
@@ -129,7 +131,7 @@ test("real stdio probe sends initialize only, sanitizes metadata and removes its
   await assert.rejects(readFile(join(audit.home, "anything")), { code: "ENOENT" });
   await assert.rejects(readFile(audit.cwd), { code: "ENOENT" });
   assert.deepEqual(output.authMethodIds, ["oauth-personal"]);
-  assert.equal(output.agentInfo.version, "1.4.3");
+  assert.equal(output.agentInfo.version, "1.5.2");
   assert.equal(output.promptRequestsSent, 0);
   assert.equal(output.shutdown.exitCode, 0);
   assert.equal(output.shutdown.method, "eof");
@@ -193,4 +195,15 @@ test("invalid startup or shutdown limits fail before any native process starts",
   const current = await fixture(t);
   for (const options of [{ startupTimeoutMs: 0 }, { startupTimeoutMs: 30_001 }, { maxBytes: 1024 * 1024 + 1 }, { eofTimeoutMs: -1 }, { killTimeoutMs: 5_001 }]) await assert.rejects(current.probe(options), /Invalid Antigravity metadata probe limits/);
   await assert.rejects(readFile(current.auditPath), { code: "ENOENT" });
+});
+
+test("a Linux closure probe starts the pinned executable with its declared arguments", async t => {
+  const current = await fixture(t, "success", { platform: "linux", architecture: "x64" });
+  const output = await current.probe();
+  const audit = JSON.parse(await readFile(current.auditPath, "utf8"));
+  assert.deepEqual(audit.argv, ["--uid="]);
+  assert.deepEqual(audit.requests.map(request => request.method), ["initialize"]);
+  assert.equal(output.platform, "linux");
+  assert.equal(output.architecture, "x64");
+  assert.equal(output.agentInfo.version, "1.5.2");
 });

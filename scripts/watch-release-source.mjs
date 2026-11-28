@@ -1,7 +1,9 @@
 import { appendFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { createActionsReader, readSourceVerification, SourceVerificationFailed, SourceVerificationDeferred } from "./cloud-source-verification.mjs";
-import { requestDeferredProducer, sourceAdmissionJob, migratorAdmissionJob, createReleaseRerunner } from "./cloud-release-admission.mjs";
+import { requestDeferredProducer, readMigratorPublication, sourceAdmissionJob, migratorAdmissionJob, createReleaseRerunner } from "./cloud-release-admission.mjs";
+import { createRunnerLossRetry } from "./cloud-readiness-runner-loss.mjs";
+import { GitHubActionsRateLimitError } from "./github-actions-reader.mjs";
 
 const repository = "paperclipai/paperclip";
 
@@ -35,7 +37,7 @@ async function cancelFailedVerification({ api, cancel, sha }, failure) {
   if (run.status !== "completed") await cancel(`/repos/${repository}/actions/runs/${failure.runId}/cancel`);
 }
 
-export async function watchReleaseSource({ sha, runId, attempt, api, cancel, rerun, now = Date.now,
+export async function watchReleaseSource({ sha, runId, attempt, api, cancel, rerun, retryRunnerLoss, now = Date.now,
   sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), log = console.log,
   timeoutMs = 40 * 60_000, intervalMs = 30_000, requireProof = false, summary = async () => {} }) {
   if (!/^[a-f0-9]{40}$/.test(sha ?? "") || !Number.isSafeInteger(runId) || runId < 1 ||
@@ -43,7 +45,6 @@ export async function watchReleaseSource({ sha, runId, attempt, api, cancel, rer
   const deadline = now() + timeoutMs;
   const warned = new Set();
   const requested = new Set();
-  let migratorAdmitted = !rerun;
   const reportWaits = async jobs => {
     for (const wait of runnerWaits(jobs, now())) {
       if (wait.seconds > 60 && !warned.has(wait.id)) {
@@ -54,21 +55,25 @@ export async function watchReleaseSource({ sha, runId, attempt, api, cancel, rer
     }
   };
   while (now() < deadline) {
-    if (!migratorAdmitted) {
-      migratorAdmitted = await requestDeferredProducer({ file: "cloud-migrator-artifacts.yml", sha, admissionJob: migratorAdmissionJob, api, rerun, requested }) !== "pending";
-    }
+    // Keep observing until publication, even after a build appeared admitted.
+    // GitHub may transiently label a job in progress before skipping it.
+    if (rerun) await requestDeferredProducer({ file: "cloud-migrator-artifacts.yml", sha, admissionJob: migratorAdmissionJob, api, rerun, requested });
     const batch = await api(`/repos/${repository}/actions/runs/${runId}/attempts/${attempt}/jobs?per_page=100`);
     if (!Array.isArray(batch.jobs) || batch.total_count > 100) throw new Error("Incomplete image job listing.");
     await reportWaits(batch.jobs);
     try {
       const proof = await readSourceVerification(sha, api, { failFast: true, onJobs: reportWaits });
-      if (proof && migratorAdmitted) {
+      if (proof && (!rerun || await readMigratorPublication(sha, api))) {
         await summary(`Exact source verified: ${sha}; readiness run ${proof.runId}, attempt ${proof.attempt}.\n`);
         return proof;
       }
     } catch (error) {
       if (error instanceof SourceVerificationDeferred && rerun) {
         await requestDeferredProducer({ file: "cloud-readiness.yml", sha, admissionJob: sourceAdmissionJob, api, rerun, requested });
+      } else if (error instanceof SourceVerificationFailed && retryRunnerLoss &&
+        await retryRunnerLoss({ sha, failure: error, api }) === "retrying") {
+        // A reclaimed Spot worker is retried, not treated as a failed source:
+        // keep this image attempt alive for the retried proof.
       } else {
         if (error instanceof SourceVerificationFailed) {
           await cancelFailedVerification({ api, cancel, sha }, error);
@@ -82,27 +87,36 @@ export async function watchReleaseSource({ sha, runId, attempt, api, cancel, rer
   // This early failure observer is not the publication deadline. Healthy
   // checks can outlive a Spot worker; a separate exact-source gate still
   // waits for proof before publishing any image.
-  if (requireProof) throw new Error("Exact-source verification did not become ready before the publication deadline.");
-  await summary("Source monitoring window ended; final publication still requires exact-source verification.\n");
+  if (requireProof) throw new Error("Exact-source verification and migrator publication did not become ready before the publication deadline.");
+  await summary("Source monitoring window ended; final publication still requires exact-source verification and migrator publication.\n");
   return undefined;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const token = process.env.GITHUB_TOKEN;
-  if (!token || process.env.GITHUB_REPOSITORY !== repository || process.env.GITHUB_REF !== "refs/heads/master") throw new Error("Canonical master token required.");
-  const requireProof = process.argv.includes("--require-proof");
-  const checkProof = process.argv.includes("--check-proof");
-  const api = createActionsReader({ token });
-  const proof = checkProof ? await readSourceVerification(process.env.GITHUB_SHA, api, { failFast: true }) : await watchReleaseSource({ requireProof, sha: process.env.GITHUB_SHA, runId: Number(process.env.GITHUB_RUN_ID), attempt: Number(process.env.GITHUB_RUN_ATTEMPT),
-    api,
-    rerun: createReleaseRerunner(token),
-    cancel: async path => {
-      const response = await fetch(`https://api.github.com${path}`, { method: "POST", redirect: "error",
-        headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" }, signal: AbortSignal.timeout(30_000) });
-      if (!response.ok) throw new Error(`Could not cancel failed-source image work: HTTP ${response.status}.`);
-    },
-    summary: text => process.env.GITHUB_STEP_SUMMARY ? appendFile(process.env.GITHUB_STEP_SUMMARY, text) : Promise.resolve(),
-  });
-  if (checkProof && !proof) throw new Error("Exact-source proof changed before publication.");
-  if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, `verified=${Boolean(proof)}\n`);
+  try {
+    const token = process.env.GITHUB_TOKEN;
+    if (!token || process.env.GITHUB_REPOSITORY !== repository || process.env.GITHUB_REF !== "refs/heads/master") throw new Error("Canonical master token required.");
+    const requireProof = process.argv.includes("--require-proof");
+    const checkProof = process.argv.includes("--check-proof");
+    const timeoutMs = checkProof ? 5 * 60_000 : 40 * 60_000;
+    const deadline = Date.now() + timeoutMs;
+    const api = createActionsReader({ token, tokenSource: process.env.GITHUB_TOKEN_SOURCE, deadlineAt: () => deadline, maxRetryAfterMs: timeoutMs });
+    const proof = checkProof ? await readSourceVerification(process.env.GITHUB_SHA, api, { failFast: true }) : await watchReleaseSource({ requireProof, timeoutMs, sha: process.env.GITHUB_SHA, runId: Number(process.env.GITHUB_RUN_ID), attempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+      api,
+      rerun: createReleaseRerunner(token),
+      retryRunnerLoss: createRunnerLossRetry({ token }),
+      cancel: async path => {
+        const response = await fetch(`https://api.github.com${path}`, { method: "POST", redirect: "error",
+          headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" }, signal: AbortSignal.timeout(30_000) });
+        if (!response.ok) throw new Error(`Could not cancel failed-source image work: HTTP ${response.status}.`);
+      },
+      summary: text => process.env.GITHUB_STEP_SUMMARY ? appendFile(process.env.GITHUB_STEP_SUMMARY, text) : Promise.resolve(),
+    });
+    if (checkProof && !proof) throw new Error("Exact-source proof changed before publication.");
+    if (checkProof && !await readMigratorPublication(process.env.GITHUB_SHA, api)) throw new Error("Exact-source migrator has not published.");
+    if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, `verified=${Boolean(proof)}\n`);
+  } catch (error) {
+    console.error(error instanceof GitHubActionsRateLimitError ? `::error title=GitHub API rate limited::${error.message}` : error.message);
+    process.exitCode = 1;
+  }
 }

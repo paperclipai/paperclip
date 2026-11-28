@@ -1,3 +1,4 @@
+import { isLegacyWorkspaceMigration } from "./legacy-workspace-migration.js";
 import { isRollingWebDeployment } from "./controller-rolling-deployment.js";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -37,7 +38,7 @@ it("admits pinned published plugin and resolved SDK graph without claiming a ful
 });
 it("admits all ten Copilot Daytona cells only with the pinned normal plugin graph", async () => {
   const f = await fixture();
-  const selected = runnerMatrix.filter(e => !isRollingWebDeployment(e) && e.profile.id === "runner-acpx-copilot" && e.environment.id === "daytona");
+  const selected = runnerMatrix.filter(e => !isRollingWebDeployment(e) && !isLegacyWorkspaceMigration(e) && e.profile.id === "runner-acpx-copilot" && e.environment.id === "daytona");
   expect(selected).toHaveLength(10);
   for (const selectedCell of selected) {
     expect(await verifyInstalledDaytonaPlugin(f.env, [selectedCell])).toMatchObject({ packageRoot: f.authority.plugin.root, sourceFallback: false, fullGraphVerified: false, completeGraphAuthorityRequired: true });

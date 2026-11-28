@@ -4,13 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { createAcpRuntime } from "acpx/runtime";
-import { createAntigravityAdmission } from "./antigravity-admission.js";
+import { ANTIGRAVITY_SAVED_STATE_INCOMPATIBLE, antigravitySavedStateIncompatible, createAntigravityAdmission } from "./antigravity-admission.js";
+import { typedTerminalTurnResult } from "./acpx-runtime-adapter.js";
+import { acpxSidecarErrorCode } from "../../cli/acpx-sidecar-input.js";
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 
 /** The real installed manager/stdio transport, with only the remote provider replaced. */
-async function fixture(behavior: "accept" | "missing" | "mismatch" | "question" | "family" | "family-change" = "accept") {
+async function fixture(behavior: "accept" | "missing" | "mismatch" | "question" | "family" | "family-change" | "reload-refused" | "reload-mismatch" | "quota" | "exit-mid-turn" = "accept") {
   const cwd = await mkdtemp(join(tmpdir(), "antigravity-acpx-contract-"));
   const requests: Array<Record<string, any>> = [];
   const nativeResponses: Array<Record<string, any>> = [];
@@ -60,10 +62,12 @@ async function fixture(behavior: "accept" | "missing" | "mismatch" | "question" 
         ]:null;
         readline.createInterface({input:process.stdin}).on('line',line=>{
           const m=JSON.parse(line);
-          if(m.method==='initialize') send({id:m.id,result:{protocolVersion:1,agentInfo:{name:'antigravity-acp',version:'1.4.3'},
+          if(m.method==='initialize') send({id:m.id,result:{protocolVersion:1,agentInfo:{name:'antigravity-acp',version:'1.5.2'},
             agentCapabilities:{loadSession:true,_meta:{antigravity:{paperclipAdmission:1}}},authMethods:[]}});
+          else if(${JSON.stringify(behavior)}==='reload-refused'&&m.method==='session/load') send({id:m.id,error:{code:-32602,
+            message:'Paperclip admission: managed reload requires a fresh exact content acknowledgment',data:{paperclipAdmission:'refused'}}});
           else if(['session/new','session/load','session/resume','session/set_config_option','session/set_model'].includes(m.method)) {
-            const a=m.params._meta.antigravity.paperclipAdmission;
+            const a={...m.params._meta.antigravity.paperclipAdmission,...(${JSON.stringify(behavior)}==='reload-mismatch'&&m.method==='session/load'?{digest:'sha256:'+'0'.repeat(64)}:{})};
             const model=${JSON.stringify(behavior)}==='mismatch'?'fallback':a.model;
             send({id:m.id,result:{...(!family||m.method==='session/new'?{sessionId:'native-session'}:{}),...(!family||['session/new','session/load','session/resume'].includes(m.method)?{modes:{currentModeId:'default'}}:{}),
               ...(!family||['session/new','session/load','session/resume'].includes(m.method)?{models:{currentModelId:model,availableModels:family?[{modelId:'gemini-3.8-flash-high',name:'Gemini 3.8 Flash (High)'},{modelId:'gemini-3.8-flash-medium',name:'Gemini 3.8 Flash (Medium)'},{modelId:'gemini-3.8-flash-low',name:'Gemini 3.8 Flash (Low)'}]:[{modelId:'advertised-only',name:'Advertised'}]}}:{}),
@@ -76,8 +80,15 @@ async function fixture(behavior: "accept" | "missing" | "mismatch" | "question" 
               const changed=nativeOptions();changed.find(o=>o.id==='thinking_level').currentValue='high';
               send({method:'session/update',params:{sessionId:'native-session',update:{sessionUpdate:'config_option_update',configOptions:changed}}});
             }
+            if(${JSON.stringify(behavior)}==='exit-mid-turn') process.exit(0);
+            if(${JSON.stringify(behavior)}==='quota') {
+              send({method:'session/update',params:{sessionId:'native-session',update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'You exceeded your current quota.'}}}});
+              send({id:m.id,result:{stopReason:'end_turn',_meta:{jetbrains:{air:{version:1,sessionFailure:{severity:'error',category:'request',title:'The selected model is not available for this connection.'}}},
+                paperclipAntigravityFailure:{schema:'paperclip.antigravity.turn_failure.v1',kind:'model_unavailable',httpStatus:429,status:'RESOURCE_EXHAUSTED',model:${JSON.stringify("caller-model-absent-from-catalog")},route:'api_key'}}}});
+              return;
+            }
             if(${JSON.stringify(behavior)}==='question') send({id:0,method:'session/request_permission',params:{sessionId:'native-session',
-              toolCall:{toolCallId:'interaction_choices',title:'Pick one',status:'pending',rawInput:{}},
+              toolCall:{toolCallId:'interaction_0a1b2c3d',title:'Pick one',status:'pending',rawInput:{}},
               options:[{optionId:'yes',name:'Yes',kind:'allow_once'},{optionId:'deny',name:'No',kind:'reject_once'}]}});
             else send({id:m.id,result:{stopReason:'end_turn'}});
           } else if(m.id===0 && m.result?.outcome) {
@@ -168,5 +179,52 @@ it("rejects an unacknowledged thinking-level change after a native family model 
   const f = await fixture("family-change"), owner = await f.open();
   const result = await f.turn(owner);
   expect(result.status).toBe("failed");
+  if (result.status !== "failed") throw new Error("turn did not fail");
   expect(result.error?.message).toMatch(/admission/i);
 });
+
+it.each(["reload-refused", "reload-mismatch"] as const)("names a %s reload as incompatible saved state, never a generic admission failure", async behavior => {
+  const f = await fixture(behavior); const first = await f.open();
+  expect((await f.turn(first)).status).toBe("completed");
+  await first.runtime.close({ handle: first.handle, reason: "provider restart" });
+  const prompts = f.requests.filter(message => message.method === "session/prompt").length;
+  // As the adapter's cold admission does: a reused saved record is reopened
+  // through the exact-model control, which forces session/load.
+  const second = await f.open();
+  const error = await second.runtime.setConfigOption!({ handle: second.handle, key: "model", value: f.model })
+    .then(() => null, (reason: unknown) => reason as Error);
+  expect(error).toBeInstanceOf(Error);
+  // ACPX reports it as a retryable "resume required"; the adapter surfaces the
+  // typed refusal it wraps, which the sidecar sends as a stable, final code.
+  const refused = antigravitySavedStateIncompatible(error);
+  expect(refused).not.toBeNull();
+  expect(refused!.retryable).toBe(false);
+  expect(acpxSidecarErrorCode(refused!)).toBe(ANTIGRAVITY_SAVED_STATE_INCOMPATIBLE);
+  expect(f.requests.some(message => message.method === "session/load")).toBe(true);
+  // Never a silent fresh conversation or a prompt on unadmitted state.
+  expect(f.requests.filter(message => message.method === "session/new")).toHaveLength(1);
+  expect(f.requests.filter(message => message.method === "session/prompt")).toHaveLength(prompts);
+});
+
+it("keeps a refused fresh session an admission failure, not saved-state incompatibility", async () => {
+  const f = await fixture("mismatch");
+  const error = await f.open().then(() => null, (reason: unknown) => reason as Error);
+  expect(error?.name).toBe("AntigravityAdmissionError");
+  expect(acpxSidecarErrorCode(error!)).not.toBe(ANTIGRAVITY_SAVED_STATE_INCOMPATIBLE);
+});
+
+it("fails a native end_turn that carries a classified provider failure", async () => {
+  const f = await fixture("quota"); const owner = await f.open();
+  const settled = await f.turn(owner);
+  // Installed ACPX passes the prompt response _meta through; the adapter fails the turn.
+  expect(settled).toMatchObject({ status: "completed" });
+  expect(typedTerminalTurnResult(settled)).toMatchObject({ status: "failed", error: { code: "antigravity_model_unavailable", retryable: false, route: "api_key" } });
+});
+
+it("settles an in-flight prompt deterministically when 1.5.2 exits without answering it", async () => {
+  const f = await fixture("exit-mid-turn"); const owner = await f.open();
+  const settled = await Promise.race([f.turn(owner).catch((error: unknown) => ({ status: "rejected", error })),
+    new Promise(resolve => setTimeout(() => resolve({ status: "hung" }), 10_000))]);
+  expect((settled as { status: string }).status).not.toBe("hung");
+  expect((settled as { status: string }).status).not.toBe("completed");
+}, 20_000);

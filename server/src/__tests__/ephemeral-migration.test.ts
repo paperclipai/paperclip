@@ -23,6 +23,16 @@ import { verifyAgentFileObjects } from "../services/agent-file-maintenance.js";
 import { getStorageService } from "../storage/index.js";
 import { resolveDecisionSigningSecret } from "../services/decision-signing.js";
 import { getRunLogStore } from "../services/run-log-store.js";
+import { companySkillService } from "../services/company-skills.js";
+import { skillPackageStore } from "../services/skill-package-store.js";
+import { skillInstallationMaintenance } from "../services/skill-installation-maintenance.js";
+import { migrateLocalSkillPackageObjects } from "../services/skill-package-storage-migration.js";
+import { companySkills, companySkillRepositorySnapshots, nativeRunFinalizations } from "@paperclipai/db";
+import { materializeAsset } from "../services/native-runtime/runtime-context.js";
+import { nativeRuntimeContextFixture } from "../services/native-runtime/runtime-context.test-fixture.js";
+import { canonicalNativeRuntimeContextDigest, parseNativeExecutionInput } from "../vendor/paperclip-runner/index.js";
+import { snapshotFile } from "../services/skill-snapshot.js";
+import { hasLocalRuntimeSkillObligations } from "../services/native-runtime/runtime-skill-preservation.js";
 
 // Explicit real-dependency qualification. Never contacts off-host storage in
 // the default test path; use a disposable S3-compatible service and PostgreSQL.
@@ -55,6 +65,8 @@ describe.skipIf(!process.env.PAPERCLIP_TEST_S3_ENDPOINT)("existing-volume enroll
     await db.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
     await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
     await db.delete(agents).where(eq(agents.companyId, companyId));
+    await db.delete(companySkills).where(eq(companySkills.companyId, companyId));
+    await db.delete(companySkillRepositorySnapshots).where(eq(companySkillRepositorySnapshots.companyId, companyId));
     await db.delete(companies).where(eq(companies.id, companyId));
     let token: string | undefined;
     do {
@@ -99,6 +111,46 @@ describe.skipIf(!process.env.PAPERCLIP_TEST_S3_ENDPOINT)("existing-volume enroll
     if (file.kind !== "file" || !file.objectKey) throw new Error("Missing object");
     await s3.send(new PutObjectCommand({ Bucket: bucket, Key: file.objectKey, Body: "corrupt" }));
     await expect(verifyAgentFileObjects(db, getStorageService(), AbortSignal.timeout(30_000))).rejects.toThrow(/agent_file_object_(size|digest)_mismatch/);
+  }, 120_000);
+  it("preserves original skill objects and identity when destination readback fails", async () => {
+    vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", "local_disk");
+    const skills = await companySkillService(db).list(companyId);
+    const local = getStorageService(), store = skillPackageStore(db, local);
+    const before = await Promise.all(skills.map(async skill => {
+      const version = await store.version(companyId, skill.id, skill.currentVersionId!);
+      return { skillId: skill.id, version: version!, files: await store.versionFiles(version!) };
+    }));
+    expect(before.length).toBeGreaterThan(0);
+    vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", "s3");
+    const remote = getStorageService();
+    await expect(migrateLocalSkillPackageObjects(db, { source: local, destination: { ...remote,
+      getObject: async () => { throw new Error("Synthetic destination readback failed"); } }, writersStopped: true,
+      signal: AbortSignal.timeout(30_000) })).rejects.toThrow("Synthetic destination readback failed");
+    for (const point of before) {
+      expect((await store.descriptor(companyId, point.version.packageSnapshotId!)).storage?.provider).toBe("local_disk");
+      expect(await store.versionFiles(point.version)).toEqual(point.files);
+    }
+  }, 120_000);
+  it("verifies bundled skill migration after removal of the old server home", async () => {
+    vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", "local_disk");
+    const skills = await companySkillService(db).list(companyId), local = skillPackageStore(db);
+    const before = await Promise.all(skills.map(async skill => {
+      const version = await local.version(companyId, skill.id, skill.currentVersionId!);
+      return { skillId: skill.id, version: version!, files: await local.versionFiles(version!) };
+    }));
+    vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", "s3");
+    const result = await migrate();
+    expect(result.eligibility.eligible).toBe(true);
+    expect(result.counts.skillObjects).toBe(before.length);
+    await fs.rm(home, { recursive: true, force: true });
+    const remote = skillPackageStore(db);
+    for (const point of before) {
+      const version = await remote.version(companyId, point.skillId, point.version.id);
+      expect(version?.packageSnapshotId).toBe(point.version.packageSnapshotId);
+      expect(await remote.versionFiles(version!)).toEqual(point.files);
+    }
+    expect((await skillInstallationMaintenance(db).verifyVersions({ companyId, limit: 50 })).results
+      .every(row => ["remote_storage", "database_release_snapshot"].includes(row.status))).toBe(true);
   }, 120_000);
   it("migrates overlapping task folders through maintenance and restores both from S3 after volume loss", async () => {
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "73".repeat(32));
@@ -253,4 +305,42 @@ describe.skipIf(!process.env.PAPERCLIP_TEST_S3_ENDPOINT)("existing-volume enroll
       .where(eq(agentInstructionWorkingCopies.runId, run!.id));
     expect((await migrate()).eligibility.eligible).toBe(true);
   });
+  // The original trigger: a retained runtime skill bundle whose bytes match a
+  // package snapshot still on the volume's local disk. Package phases must move
+  // that snapshot first, or the bundle's save reuses a local-disk receipt.
+  it("saves a retained runtime skill bundle that matches a local-disk package snapshot", async () => {
+    const owner = await agent(), issueId = randomUUID(), runId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Old native run" });
+    const content = Buffer.from("# legacy admitted skill\n");
+    vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", "local_disk");
+    await skillPackageStore(db, getStorageService()).prepare(companyId, [snapshotFile("SKILL.md", "skill", content)], true);
+    vi.stubEnv("PAPERCLIP_STORAGE_PROVIDER", "s3");
+    const bundle = await materializeAsset([{ path: "SKILL.md", content, mode: 0o400 }]);
+    const context = nativeRuntimeContextFixture();
+    context.skills = [{ key: "legacy", runtimeName: "legacy", versionId: null, bundle }];
+    context.aggregateDigest = canonicalNativeRuntimeContextDigest(context);
+    const execution = parseNativeExecutionInput({ schema: "paperclip.native-execution-input.v3",
+      binding: { companyId, runId, agentId: owner.id, issueId, executionWorkspaceId: runId },
+      task: { identifier: "MIG-1", title: "Old admission", description: null, prompt: "Use the skill", workMode: "standard" },
+      workspace: { cwd: "/tmp", repoUrl: null, repoRef: null, branchName: null },
+      session: { normalizedSessionId: null, driverKind: "codex_app_server", protocolVersion: 1, lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } },
+      provider: { kind: "codex", model: null },
+      completionContract: { id: "contract", sha256: "saved", schemaVersion: "paperclip.completion-contract.v1",
+        contract: { revision: "1", objective: "Use the skill", criteria: [{ id: "use", requirement: "Use skill" }] } },
+      interactionResponses: [], credentialBindings: [], executionMode: "default", planningContext: null, runtimeContext: context });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: owner.id, nativeIssueId: issueId, runtimeMode: "native",
+      status: "failed", finishedAt: new Date(), runnerProfileJson: { nativeExecutionInput: execution } });
+    await db.insert(nativeRunFinalizations).values({ companyId, runId, issueId, phase: "terminal_failure", recoveryState: "blocked" });
+    try {
+      expect(await hasLocalRuntimeSkillObligations(db)).toBe(true);
+      expect(await migrate()).toMatchObject({ eligibility: { eligible: true }, counts: { runtimeSkillAssets: 1 } });
+      expect(await hasLocalRuntimeSkillObligations(db)).toBe(false);
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      const receipt = run!.runnerProfileJson!.nativeRuntimeSkillPreservation as { assets: Array<{ packageSnapshotId: string }> };
+      expect((await skillPackageStore(db).descriptor(companyId, receipt.assets[0]!.packageSnapshotId)).storage)
+        .toMatchObject({ provider: "s3", durable: true });
+    } finally {
+      await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+    }
+  }, 120_000);
 });

@@ -5,6 +5,12 @@ products](../feature-map/documents-artifacts.md).
 
 Feature ID: `documents-artifacts`.
 
+[Agent interaction restrictions](../../doc/agent-interaction-permissions.md)
+apply to task document, attachment and work-product mutations, and to annotation
+comments. Newly submitted or changed structured mentions are checked separately.
+Initial content on a new task uses assignment authority. Existing read access
+and historical content remain unchanged.
+
 Review date: 2026-10-12. Source commit: `f981fa3cc10cb8663a87dec60345fbff46d54d0a`.
 
 This is a source-reviewed baseline of representative operations and known gaps.

@@ -1,16 +1,22 @@
+import { loadConfig } from "../config.js";
+import { createStorageService } from "../storage/service.js";
+import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
+import { migrateLocalSkillPackageObjects } from "../services/skill-package-storage-migration.js";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
 import { offlineMigrationExecutionWhere } from "../services/offline-migration-execution.js";
 import { getStorageService } from "../storage/index.js";
 import { migrateAgentFiles, verifyAgentFileObjects } from "../services/agent-file-maintenance.js";
-import { readEphemeralServerDataEligibility } from "../services/ephemeral-server-contract.js";
+import { readEphemeralServerDataEligibility, RUNTIME_SKILL_ASSETS_BLOCKER } from "../services/ephemeral-server-contract.js";
 import { migrateRunEvidence } from "../services/run-evidence-migration.js";
 import { skillInstallationMaintenance } from "../services/skill-installation-maintenance.js";
 import { skillPackageMaintenance } from "../services/skill-package-maintenance.js";
 import { hasUnsettledLocalInstructionCopies } from "../services/agent-instruction-working-copies.js";
 import { providerTraceStore } from "../services/provider-trace-store.js";
+import { reconcileOfflineWorkspaceOperations } from "../services/offline-workspace-operation-reconciliation.js";
 import { migrateWorkspaceTrees } from "../services/remote-workspace-migration-batch.js";
 import { migrateNativeHarnessBackups } from "../services/native-runtime/native-harness-backup-migration.js";
 import { migrateNativeControllers } from "../services/native-runtime/native-controller-migration.js";
+import { preserveLocalRuntimeSkillObligations } from "../services/native-runtime/runtime-skill-preservation.js";
 
 /** Runs only in the maintenance process after Cloud has confirmed all legacy
  * deployments stopped. Each owner retains its own migration/publication rules;
@@ -29,6 +35,7 @@ export async function migrateEphemeralServerData(db: Db, input: {
     "agent_files_require_migration", "run_logs_require_migration", "provider_traces_require_migration", "skills_require_migration", "workspaces_require_migration",
     "native_harness_backups_require_migration",
     "native_controllers_require_migration",
+    RUNTIME_SKILL_ASSETS_BLOCKER,
   ].includes(blocker));
   if (unsupported.length) throw new Error(unsupported[0]);
 
@@ -40,8 +47,13 @@ export async function migrateEphemeralServerData(db: Db, input: {
   counts.nativeControllersUnchanged = controllers.unchanged;
   counts.nativeControllerSourcesAlreadyAbsent = controllers.sourceAlreadyAbsent;
   counts.nativeControllersArchivedFailed = controllers.archivedFailed;
+  counts.nativeControllersPreservedFailed = controllers.preservedFailed;
   phase("native_harness_backups");
   counts.nativeHarnessBackups = await migrateNativeHarnessBackups(db, { storage, writersStopped: true, signal });
+  phase("workspace_operation_receipts");
+  const operations = await reconcileOfflineWorkspaceOperations(db, { writersStopped: true, signal });
+  counts.workspaceOperationsReconciled = operations.reconciled;
+  counts.workspaceOperationsHeld = operations.held.length;
   phase("workspaces");
   counts.workspaces = await migrateWorkspaceTrees(db, { storage, signal, phase });
 
@@ -73,6 +85,15 @@ export async function migrateEphemeralServerData(db: Db, input: {
 
   const packages = skillPackageMaintenance(db);
   const skills = skillInstallationMaintenance(db);
+  phase("skill_objects");
+  const localSkillStorage = createStorageService(createLocalDiskStorageProvider(loadConfig().storageLocalDiskBaseDir));
+  after = undefined;
+  for (;;) {
+    const page = await migrateLocalSkillPackageObjects(db, { source: localSkillStorage, destination: storage, writersStopped: true, signal, after });
+    counts.skillObjects = (counts.skillObjects ?? 0) + page.migrated;
+    if (page.inspected < 50 || !page.after) break;
+    after = page.after;
+  }
   for (const [name, migrate] of [["skill_packages", packages.migrateSnapshots], ["skill_versions", packages.migrateVersions]] as const) {
     phase(name);
     after = undefined;
@@ -84,13 +105,22 @@ export async function migrateEphemeralServerData(db: Db, input: {
       after = page.after;
     }
   }
+  // After the package phases: a bundle whose bytes match a package snapshot
+  // reuses that snapshot, which must already live in shared storage.
+  phase("runtime_skill_assets");
+  // The volume is still attached here, so every retained bundle must be on it.
+  const runtimeSkills = await preserveLocalRuntimeSkillObligations(db, { signal }, storage);
+  if (runtimeSkills.unsaved.length) throw new Error("runtime_skill_asset_migration_blocked");
+  counts.runtimeSkillAssets = runtimeSkills.bundles;
   phase("skill_installations");
   after = undefined;
   for (;;) {
     signal.throwIfAborted();
-    const page = await skills.installations({ apply: true, writersStopped: true, after, limit: 50, signal });
-    if (page.results.some(row => !["converted", "unchanged"].includes(row.status))) throw new Error("skill_installation_migration_blocked");
+    const page = await skills.installations({ apply: true, writersStopped: true, settleUnavailableSources: true, after, limit: 50, signal });
+    if (page.results.some(row => !["converted", "unchanged", "source_unavailable"].includes(row.status))) throw new Error("skill_installation_migration_blocked");
     counts.skillInstallations = (counts.skillInstallations ?? 0) + page.inspected;
+    counts.skillInstallationsReconstructed = (counts.skillInstallationsReconstructed ?? 0) + page.results.filter(row => row.reconstructed).length;
+    counts.skillInstallationsSourceUnavailable = (counts.skillInstallationsSourceUnavailable ?? 0) + page.results.filter(row => row.status === "source_unavailable").length;
     if (page.inspected < 50 || !page.after) break;
     after = page.after;
   }
@@ -102,7 +132,7 @@ export async function migrateEphemeralServerData(db: Db, input: {
   for (;;) {
     signal.throwIfAborted();
     const page = await skills.verifyVersions({ after, limit: 50, signal });
-    if (page.results.some(row => !["remote_storage", "database_release_snapshot", "database_snapshot", "expired_git_history"].includes(row.status))) {
+    if (page.results.some(row => !["remote_storage", "database_release_snapshot", "database_snapshot", "expired_git_history", "source_unavailable"].includes(row.status))) {
       throw new Error("skill_version_verification_failed");
     }
     counts.verifiedSkillVersions = (counts.verifiedSkillVersions ?? 0) + page.inspected;

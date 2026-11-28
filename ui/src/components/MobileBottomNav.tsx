@@ -9,7 +9,6 @@ import {
   Users,
   MessageCircle,
   Inbox,
-  Bell,
 } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
@@ -18,6 +17,8 @@ import { cn } from "../lib/utils";
 import { useInboxBadge } from "../hooks/useInboxBadge";
 import { useAgentChatEnabled } from "@/hooks/useAgentChatEnabled";
 import { useCombinedInboxTasksEnabled } from "@/hooks/useCombinedInboxTasksEnabled";
+import { useCompanyHomePath } from "@/hooks/useCompanyHomePath";
+import { useResponsibilitiesEnabled } from "@/hooks/useResponsibilitiesEnabled";
 import { Badge } from "@/components/ui/badge";
 
 interface MobileBottomNavProps {
@@ -50,6 +51,10 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
   const inboxBadge = useInboxBadge(coordinatorWorkspaceEnabled ? null : selectedCompanyId);
   const { enabled: combinedInboxTasksEnabled } = useCombinedInboxTasksEnabled();
   const attentionCount = useCoordinatorAttentionCount(selectedCompanyId, coordinatorWorkspaceEnabled);
+  // Home is the company home (Responsibilities when that experiment is on).
+  // Coordinator has no Home tab; it gains one only while Responsibilities is home.
+  const { path: homePath } = useCompanyHomePath();
+  const { enabled: responsibilitiesHome } = useResponsibilitiesEnabled();
 
   // PAP-670: with both flags off the bar is the original Home · Tasks · + ·
   // Agents · Inbox. Agent Chat adds Chat in the second slot (Home · Chat · + ·
@@ -58,12 +63,15 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
   // tracks the live count, so the bar stays evenly divided in every mix.
   const items = useMemo<MobileNavItem[]>(
     () => coordinatorWorkspaceEnabled ? [
+      ...(responsibilitiesHome
+        ? [{ type: "link", to: homePath, label: "Home", icon: House } as MobileNavItem]
+        : []),
       { type: "link", to: "/chats", label: "Chat", icon: MessageCircle },
       { type: "link", to: "/issues", label: "Tasks", icon: CircleCheck },
-      { type: "link", to: "/decisions", label: "Needs you", icon: Bell, badge: attentionCount },
+      { type: "link", to: "/decisions", label: "Inbox", icon: Inbox, badge: attentionCount },
       { type: "action", label: "New task", icon: SquarePen, onClick: () => openNewIssue() },
     ] : !agentChatEnabled && !combinedInboxTasksEnabled ? [
-      { type: "link", to: "/dashboard", label: "Home", icon: House },
+      { type: "link", to: homePath, label: "Home", icon: House },
       { type: "link", to: "/issues", label: "Tasks", icon: CircleCheck },
       { type: "action", label: "New Task", icon: SquarePen, onClick: () => openNewIssue() },
       { type: "link", to: "/agents/all", label: "Agents", icon: Users },
@@ -75,7 +83,7 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
         badge: inboxBadge.inbox,
       },
     ] : [
-      { type: "link", to: "/dashboard", label: "Home", icon: House },
+      { type: "link", to: homePath, label: "Home", icon: House },
       ...(agentChatEnabled
         ? [{ type: "link", to: "/chats", label: "Chat", icon: MessageCircle } as MobileNavItem]
         : []),
@@ -92,7 +100,7 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
         ? [{ type: "link", to: "/inbox", label: "Inbox", icon: Inbox, badge: inboxBadge.inbox } as MobileNavItem]
         : []),
     ],
-    [openNewIssue, inboxBadge.inbox, agentChatEnabled, combinedInboxTasksEnabled, coordinatorWorkspaceEnabled, attentionCount],
+    [openNewIssue, inboxBadge.inbox, agentChatEnabled, combinedInboxTasksEnabled, coordinatorWorkspaceEnabled, attentionCount, homePath, responsibilitiesHome],
   );
 
   return (
@@ -147,10 +155,14 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
             >
               {({ isActive }) => (
                 <>
-                  <span className="relative">
+                  <span className="relative inline-flex items-center justify-center">
                     <Icon className={cn("h-(--sz-18px) w-(--sz-18px)", isActive && "stroke-(length:--sw-2_3)")} />
                     {item.badge != null && item.badge > 0 && (
-                      <Badge variant="ghost" className="absolute -right-2 -top-2 bg-primary px-1.5 text-(length:--text-nano) leading-none text-primary-foreground">
+                      <Badge
+                        variant="ghost"
+                        data-slot="mobile-nav-badge"
+                        className="pointer-events-none absolute -top-1.5 left-3 min-w-4 bg-primary px-1 py-0.5 text-(length:--text-nano) leading-none tabular-nums text-primary-foreground"
+                      >
                         {item.badge > 99 ? "99+" : item.badge}
                       </Badge>
                     )}

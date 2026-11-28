@@ -145,6 +145,7 @@ function structuredProviderErrors(error: unknown): StructuredProviderError[] {
 export function classifyChatPublicationError(
   error: unknown,
   attempt: number,
+  providerInvocation: "possible" | "not_started" = "possible",
 ): ChatPublicationErrorDisposition {
   const values = structuredProviderErrors(error);
   const firstNumber = (select: (value: StructuredProviderError) => unknown) =>
@@ -399,5 +400,8 @@ export function classifyChatPublicationError(
   // Adapter NetworkError and ordinary fetch/transport errors are ambiguous:
   // the request may have reached the provider even when no response reached
   // Paperclip. An operator must inspect the native conversation before replay.
+  if (providerInvocation === "not_started") {
+    return { kind: "retry", retryAfterMs: Math.min(60_000, 2 ** Math.max(0, attempt) * 1_000), reason };
+  }
   return { kind: "delivery_unknown", reason };
 }

@@ -2068,7 +2068,7 @@ export function DesignGuide() {
             ["[", "Toggle Sidebar"],
             ["]", "Toggle Properties Panel"],
 
-            ["Cmd+Enter / Ctrl+Enter", "Submit markdown comment"],
+            ["Enter / Shift+Enter", "Submit task message / add a new line (Command/Ctrl+Enter is available in Experimental settings)"],
           ].map(([key, desc]) => (
             <div key={key} className="flex items-center justify-between px-4 py-2">
               <span className="text-muted-foreground">{desc}</span>

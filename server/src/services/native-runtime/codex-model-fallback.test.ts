@@ -24,10 +24,22 @@ describe("bounded Codex model fallback", () => {
     expect(unavailable.mock.calls).toEqual([["gpt-6-sol"], ["gpt-5.6-sol"]]);
   });
 
+  it("moves GPT-6.2 to the newest same-class model an older 0.160.0 CLI accepts", () => {
+    expect(codexModelFallbackCandidates("gpt-6.2-sol")).toEqual(["gpt-6.1-sol", "gpt-6-sol", "gpt-5.6-sol"]);
+    expect(codexModelFallbackCandidates("gpt-6.2-astra")).toEqual(["gpt-6-astra", "gpt-5.6-sol"]);
+    expect(compatibleCodexModel("gpt-6.2-sol", "0.160.0")).toBe("gpt-6.1-sol");
+    expect(compatibleCodexModel("gpt-6.2-astra", "0.160.0")).toBe("gpt-6-astra");
+  });
+
+  it("keeps GPT-6.2 on the pinned 0.170.0 CLI", () => {
+    expect(compatibleCodexModel("gpt-6.2-sol", "0.170.0")).toBe("gpt-6.2-sol");
+    expect(compatibleCodexModel("gpt-6.2-astra", "0.170.0")).toBe("gpt-6.2-astra");
+  });
+
   it.each([
     ["gpt-6.1-sol", "0.159.0"], ["gpt-6-sol", "0.157.0"], ["gpt-5.6-sol", "0.156.0"],
     ["team-model", "0.156.0"], [null, "0.156.0"], ["gpt-6.1-sol", null],
-    ["gpt-6.1-sol", "0.148.9"], ["gpt-6.1-sol", "0.161.0"], ["gpt-6.1-sol", "0.160.0-alpha.1"],
+    ["gpt-6.1-sol", "0.148.9"], ["gpt-6.1-sol", "0.171.0"], ["gpt-6.1-sol", "0.160.0-alpha.1"],
   ])("preserves %s on %s when no safe startup substitution applies", (model, version) => {
     expect(compatibleCodexModel(model, version)).toBe(model);
   });
@@ -79,7 +91,7 @@ describe("remote model compatibility preflight", () => {
   });
 
   it.each([
-    ["codex-cli 0.148.9", {}], ["codex-cli 0.161.0", {}], ["codex-cli 0.160.0-alpha.1", {}],
+    ["codex-cli 0.148.9", {}], ["codex-cli 0.171.0", {}], ["codex-cli 0.160.0-alpha.1", {}],
     ["codex-cli 0.156.0\ncodex-cli 0.160.0", {}], ["codex-cli 0.156.0", { timedOut: true }],
     ["codex-cli 0.156.0", { exitCode: 1 }],
   ])("keeps the launch verifier authoritative for invalid probes: %s %j", async (stdout, overrides) => {
