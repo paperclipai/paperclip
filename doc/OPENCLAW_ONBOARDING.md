@@ -16,11 +16,18 @@ OPENCLAW_RESET_STATE=1 OPENCLAW_BUILD=1 ./scripts/smoke/openclaw-docker-ui.sh
 ```
 Open the printed `Dashboard URL` (includes `#token=...`) in your browser.
 
-3. In Paperclip UI, go to `http://127.0.0.1:3100/CLA/company/settings`.
+3. Find your company id.
+```bash
+npx paperclipai company list --json
+```
 
 4. Use the OpenClaw invite prompt flow.
-- In the Invites section, click `Generate OpenClaw Invite Prompt`.
-- Copy the generated prompt from `OpenClaw Invite Prompt`.
+- The Invites tab only creates human invites, and `openclaw_gateway` is not listed in the new-agent picker. Create the OpenClaw invite from the CLI:
+```bash
+npx paperclipai openclaw invite-prompt --company-id <company-id> --payload-json '{}' --json
+```
+- The same invite is available as `POST /api/companies/{companyId}/openclaw/invite-prompt` with body `{}`.
+- Open the returned `onboardingTextUrl` and copy the text, or copy `inviteMessage` when it is set.
 - Paste it into OpenClaw main chat as one message.
 - If it stalls, send one follow-up: `How is onboarding going? Continue setup now.`
 
