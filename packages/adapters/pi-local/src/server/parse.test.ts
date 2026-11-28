@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parsePiJsonl, isPiUnknownSessionError } from "./parse.js";
+import { createPiJsonlParser, parsePiJsonl, isPiUnknownSessionError } from "./parse.js";
 
 describe("parsePiJsonl", () => {
   it("parses agent lifecycle and messages", () => {
@@ -286,6 +286,115 @@ describe("terminal provider failures", () => {
   it("reports an error even when the provider omitted its message", () => {
     expect(parsePiJsonl(JSON.stringify({ type: "turn_end", message: { role: "assistant", stopReason: "error" } })).errors)
       .toEqual(["Pi provider request failed."]);
+  });
+
+  it("does not fail a run whose failed attempt a model fallback recovered", () => {
+    const failed = {
+      role: "assistant",
+      provider: "provider-a",
+      model: "model-a",
+      content: [],
+      stopReason: "error",
+      errorMessage: "400 unknown provider for model model-a",
+    };
+    const answered = {
+      role: "assistant",
+      provider: "provider-b",
+      model: "model-b",
+      content: [{ type: "text", text: "done" }],
+      stopReason: "stop",
+    };
+    const parsed = parsePiJsonl([
+      { type: "message_end", message: failed },
+      { type: "turn_end", message: failed },
+      { type: "retry_fallback_applied", from: "provider-a/model-a", to: "provider-b/model-b" },
+      { type: "auto_retry_start", attempt: 1, errorMessage: failed.errorMessage },
+      { type: "message_end", message: answered },
+      { type: "retry_fallback_succeeded", model: "provider-b/model-b" },
+      { type: "turn_end", message: answered },
+      { type: "agent_end", messages: [failed, answered] },
+    ].map(event => JSON.stringify(event)).join("\n"));
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.finalMessage).toBe("done");
+    expect({ provider: parsed.provider, model: parsed.model }).toEqual({ provider: "provider-b", model: "model-b" });
+  });
+
+  it("does not fail a run whose failed attempt a successful auto-retry recovered", () => {
+    const failed = { role: "assistant", provider: "provider-a", model: "model-a", stopReason: "error", errorMessage: "429 rate limited" };
+    const answered = { role: "assistant", provider: "provider-a", model: "model-a", content: "done", stopReason: "stop" };
+    const parsed = parsePiJsonl([
+      { type: "message_end", message: failed },
+      { type: "turn_end", message: failed },
+      { type: "auto_retry_start", attempt: 1, errorMessage: failed.errorMessage },
+      { type: "turn_end", message: answered },
+      { type: "auto_retry_end", success: true, attempt: 1 },
+      { type: "agent_end", messages: [failed, answered] },
+    ].map(event => JSON.stringify(event)).join("\n"));
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.finalMessage).toBe("done");
+  });
+
+  it("lets a recovery in a later stream chunk supersede an error reported by an earlier chunk", () => {
+    const failed = { role: "assistant", provider: "provider-a", model: "model-a", stopReason: "error", errorMessage: "timed out" };
+    const answered = { role: "assistant", provider: "provider-b", model: "model-b", content: "done", stopReason: "stop" };
+    const consume = createPiJsonlParser();
+    expect(consume(JSON.stringify({ type: "turn_end", message: failed })).errors).toEqual(["timed out"]);
+    const parsed = consume([
+      { type: "retry_fallback_succeeded", model: "provider-b/model-b" },
+      { type: "turn_end", message: answered },
+      { type: "agent_end", messages: [failed, answered] },
+    ].map(event => JSON.stringify(event)).join("\n"));
+    expect(parsed.errors).toEqual([]);
+    expect({ provider: parsed.provider, model: parsed.model }).toEqual({ provider: "provider-b", model: "model-b" });
+  });
+
+  it("splits usage and cost by the provider that billed each turn", () => {
+    const usage = (input: number, output: number, cost: number) => ({ input, output, cacheRead: 0, cost: { total: cost } });
+    const first = { role: "assistant", provider: "provider-a", model: "model-a", content: "step", stopReason: "toolUse", usage: usage(100, 10, 0.3) };
+    const failed = { role: "assistant", provider: "provider-a", model: "model-a", stopReason: "error", errorMessage: "timed out", usage: usage(50, 0, 0.1) };
+    const answered = { role: "assistant", provider: "provider-b", model: "model-b", content: "done", stopReason: "stop", usage: usage(200, 20, 0.6) };
+    const parsed = parsePiJsonl([
+      { type: "turn_end", message: first },
+      { type: "turn_end", message: failed },
+      { type: "retry_fallback_succeeded", model: "provider-b/model-b" },
+      { type: "turn_end", message: answered },
+    ].map(event => JSON.stringify(event)).join("\n"));
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.usage.costUsd).toBeCloseTo(1.0);
+    expect(parsed.billedUsage.map(({ provider, model, inputTokens, outputTokens, costUsd }) =>
+      ({ provider, model, inputTokens, outputTokens, costUsd: Number(costUsd.toFixed(6)) }))).toEqual([
+      { provider: "provider-a", model: "model-a", inputTokens: 150, outputTokens: 10, costUsd: 0.4 },
+      { provider: "provider-b", model: "model-b", inputTokens: 200, outputTokens: 20, costUsd: 0.6 },
+    ]);
+  });
+
+  it("still fails when every fallback attempt failed", () => {
+    const first = { role: "assistant", provider: "provider-a", model: "model-a", stopReason: "error", errorMessage: "timed out" };
+    const second = { role: "assistant", provider: "provider-b", model: "model-b", stopReason: "error", errorMessage: "not logged in" };
+    const parsed = parsePiJsonl([
+      { type: "turn_end", message: first },
+      { type: "retry_fallback_applied", from: "provider-a/model-a", to: "provider-b/model-b" },
+      { type: "turn_end", message: second },
+      { type: "auto_retry_end", success: false, finalError: "not logged in" },
+      { type: "agent_end", messages: [second] },
+    ].map(event => JSON.stringify(event)).join("\n"));
+    expect([...parsed.errors].sort()).toEqual(["not logged in", "timed out"]);
+    expect(parsed.provider).toBeNull();
+  });
+
+  it("fails on an error that follows a recovered fallback", () => {
+    const failed = { role: "assistant", provider: "provider-a", model: "model-a", stopReason: "error", errorMessage: "timed out" };
+    const answered = { role: "assistant", provider: "provider-b", model: "model-b", content: "ok", stopReason: "stop" };
+    const later = { role: "assistant", provider: "provider-b", model: "model-b", stopReason: "error", errorMessage: "context limit" };
+    const parsed = parsePiJsonl([
+      { type: "turn_end", message: failed },
+      { type: "retry_fallback_succeeded", model: "provider-b/model-b" },
+      { type: "turn_end", message: answered },
+      { type: "turn_end", message: later },
+      { type: "agent_end", messages: [failed, answered, later] },
+    ].map(event => JSON.stringify(event)).join("\n"));
+    expect(parsed.errors).toEqual(["context limit"]);
+    expect({ provider: parsed.provider, model: parsed.model }).toEqual({ provider: "provider-b", model: "model-b" });
   });
 });
 

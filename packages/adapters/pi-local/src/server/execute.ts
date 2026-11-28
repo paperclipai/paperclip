@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult, type AdapterModelUsage } from "@paperclipai/adapter-utils";
 import {
   managedRemoteHomeEnvironment,
   adapterExecutionTargetIsRemote,
@@ -57,7 +57,7 @@ import {
   sanitizeInheritedPaperclipEnv,
 } from "@paperclipai/adapter-utils/server-utils";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
-import { isPiUnknownSessionError, parsePiJsonl, createPiJsonlParser } from "./parse.js";
+import { isPiUnknownSessionError, parsePiJsonl, createPiJsonlParser, type ParsedPiOutput } from "./parse.js";
 import { createPiStdoutCompactor, resolvePiStdoutLogMode } from "./stdout-compaction.js";
 import { ensurePiModelConfiguredAndAvailable } from "./models.js";
 import { preparePiRuntimeConfig } from "./runtime-config.js";
@@ -68,6 +68,7 @@ const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
 const PAPERCLIP_SESSIONS_DIR = path.join(os.homedir(), ".pi", "paperclips");
 const PI_AGENT_SKILLS_DIR = path.join(os.homedir(), ".pi", "agent", "skills");
+const DEFAULT_PI_TOOLS = "read,bash,edit,write,grep,find,ls";
 
 function firstNonEmptyLine(text: string): string {
   return (
@@ -147,6 +148,47 @@ async function buildPiSkillsDir(config: Record<string, unknown>): Promise<string
 
 function resolvePiBiller(env: Record<string, string>, provider: string | null): string {
   return provider === "openai" ? inferOpenAiCompatibleBiller(env, "openai") ?? "unknown" : provider ?? "unknown";
+}
+
+const roundUsd = (value: number) => Math.round(value * 1e9) / 1e9;
+
+/**
+ * Billing identity for a run. A fallback-capable CLI can answer with another
+ * provider/model than configured, so the run records the one that answered. When
+ * any billed usage belongs to another provider/model (a turn before the fallback,
+ * or a failed attempt that was still billed), `usageByModel` splits usage and cost
+ * per provider/model so the ledger charges each provider for its own share.
+ */
+function resolvePiBilling(
+  parsed: Pick<ParsedPiOutput, "provider" | "model" | "usage" | "billedUsage">,
+  configuredProvider: string | null,
+  configuredModel: string,
+  env: Record<string, string>,
+) {
+  const provider = parsed.provider ?? configuredProvider;
+  const model = parsed.provider && parsed.model ? `${parsed.provider}/${parsed.model}` : configuredModel;
+  const billing = { provider, biller: resolvePiBiller(env, provider), model, costUsd: parsed.usage.costUsd };
+  // Unknown cost cannot be split; the ledger records it unpriced on the run's provider.
+  if (parsed.usage.costUsd === null) return billing;
+  const parts: AdapterModelUsage[] = [];
+  for (const entry of parsed.billedUsage) {
+    const partProvider = entry.provider ?? configuredProvider ?? "unknown";
+    const partModel = entry.provider && entry.model ? `${entry.provider}/${entry.model}` : configuredModel || "unknown";
+    let part = parts.find((candidate) => candidate.provider === partProvider && candidate.model === partModel);
+    if (!part) {
+      part = { provider: partProvider, biller: resolvePiBiller(env, partProvider), model: partModel, usage: { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 }, costUsd: 0 };
+      parts.push(part);
+    }
+    part.usage.inputTokens += entry.inputTokens;
+    part.usage.outputTokens += entry.outputTokens;
+    part.usage.cachedInputTokens = (part.usage.cachedInputTokens ?? 0) + entry.cachedInputTokens;
+    part.costUsd += entry.costUsd;
+  }
+  if (parts.length === 0 || (parts.length === 1 && parts[0]!.provider === (provider ?? "unknown") && parts[0]!.model === model)) return billing;
+  // Round each share once and report their sum as the run cost, so the ledger's
+  // exact check that parts add up to the total holds.
+  for (const part of parts) part.costUsd = roundUsd(part.costUsd);
+  return { ...billing, costUsd: roundUsd(parts.reduce((sum, part) => sum + part.costUsd, 0)), usageByModel: parts };
 }
 
 async function ensureSessionsDir(): Promise<string> {
@@ -245,6 +287,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const command = asString(config.command, "pi");
   const model = asString(config.model, "").trim();
   const thinking = asString(config.thinking, "").trim();
+  const configuredTools = asStringArray(config.tools).map((tool) => tool.trim()).filter(Boolean);
+  const tools = configuredTools.length > 0 ? configuredTools.join(",") : DEFAULT_PI_TOOLS;
   const stdoutLogMode = resolvePiStdoutLogMode(config);
 
   // Parse model into provider and model id
@@ -675,7 +719,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         if (modelId) args.push("--model", modelId);
         if (thinking) args.push("--thinking", thinking);
 
-        args.push("--tools", "read,bash,edit,write,grep,find,ls");
+        args.push("--tools", tools);
         args.push("--session", sessionFile);
         args.push("--skill", remoteSkillsDir ?? PI_AGENT_SKILLS_DIR);
 
@@ -774,7 +818,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         const accountingLog = createUsageCheckpointLog(bufferedOnLog, ctx.onUsage ?? (async () => {}), stdout => {
           hasAccounting = true;
           const parsed = consumeAccounting(stdout);
-          return { usage: parsed.usage, costUsd: parsed.usage.costUsd, usageBasis: "per_run", provider, biller: resolvePiBiller(runtimeEnv, provider), billingType: "unknown", model, complete: parsed.sawAgentEnd };
+          return { usage: parsed.usage, usageBasis: "per_run", ...resolvePiBilling(parsed, provider, model, runtimeEnv), billingType: "unknown", complete: parsed.sawAgentEnd };
         });
         const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
           onProcessStopped: providerStop.beginInvocation(),
@@ -795,13 +839,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           await emitCompacted(stdoutBuffer, "");
         }
 
-        // Display output is capped by the process transport. Keep accounting
-        // from the full stream, including when no checkpoint callback is installed.
+        // Display output is capped by the process transport. Keep accounting and the
+        // provider/model that answered from the full stream, including when no
+        // checkpoint callback is installed.
         const parsed = parsePiJsonl(proc.stdout);
         if (hasAccounting) {
           const retained = consumeAccounting("");
           parsed.usage = retained.usage;
+          parsed.billedUsage = retained.billedUsage;
           parsed.sawAgentEnd = retained.sawAgentEnd;
+          parsed.provider = retained.provider;
+          parsed.model = retained.model;
         }
         return { proc, rawStderr: proc.stderr, parsed };
       };
@@ -810,7 +858,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         attempt: {
           proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string; errorCode?: string | null };
           rawStderr: string;
-          parsed: ReturnType<typeof parsePiJsonl>;
+          parsed: ParsedPiOutput;
         },
         clearSessionOnMissingSession = false,
       ): AdapterExecutionResult => {
@@ -820,7 +868,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             signal: attempt.proc.signal,
             timedOut: true,
             usageComplete: attempt.parsed.sawAgentEnd,
-          usage: attempt.parsed.usage, usageBasis: "per_run", provider, biller: resolvePiBiller(runtimeEnv, provider), model, billingType: "unknown", costUsd: attempt.parsed.usage.costUsd,
+          usage: attempt.parsed.usage, usageBasis: "per_run", ...resolvePiBilling(attempt.parsed, provider, model, runtimeEnv), billingType: "unknown",
             errorMessage: `Timed out after ${timeoutSec}s`,
             clearSession: clearSessionOnMissingSession,
           };
@@ -867,11 +915,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           sessionId: resolvedSessionId,
           sessionParams: resolvedSessionParams,
           sessionDisplayId: resolvedSessionId,
-          provider: provider,
-          biller: resolvePiBiller(runtimeEnv, provider),
-          model: model,
+          // A fallback-capable CLI can answer with another provider/model than configured;
+          // record the one that answered and split cost per provider/model that billed it.
+          ...resolvePiBilling(attempt.parsed, provider, model, runtimeEnv),
           billingType: "unknown",
-          costUsd: attempt.parsed.usage.costUsd,
           resultJson: {
             stdout: attempt.proc.stdout,
             stderr: attempt.proc.stderr,
