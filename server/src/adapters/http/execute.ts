@@ -1,5 +1,5 @@
 import type { AdapterExecutionContext, AdapterExecutionResult } from "../types.js";
-import { asString, asNumber, parseObject } from "../utils.js";
+import { asString, asNumber, asBoolean, parseObject } from "../utils.js";
 import { guardedHttpAdapterFetch } from "./remote-fetch.js";
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
@@ -18,6 +18,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     context,
     connectionInstructions: context.connectionInstructions ?? null,
     ...(ctx.runtimeTools ? { paperclipRuntimeTools: ctx.runtimeTools } : {}),
+    // Opt-in per agent (config.forwardAuthToken): joins the same run JWT
+    // already minted for local adapters, so the remote endpoint can act on
+    // this run's task on this agent's behalf. Absent or false leaves the
+    // body exactly as before.
+    ...(asBoolean(config.forwardAuthToken, false) && ctx.authToken
+      ? { authToken: ctx.authToken }
+      : {}),
   };
 
   const controller = new AbortController();
