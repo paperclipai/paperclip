@@ -1,3 +1,4 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { and, asc, desc, eq, inArray, isNull, isNotNull, lte, or, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -155,6 +156,7 @@ export function grokRoutineService(db: Db, deliver: Delivery = deliverGrokRoutin
         await tx.update(routines).set({ verifiedAt: null, verifiedGrantId: null, updatedAt: new Date() }).where(eq(routines.id, routine.id));
         await tx.update(bindings).set({ status: "connected", readyAt: null, updatedAt: new Date() }).where(eq(bindings.id, binding.id));
       }
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.grokDispatch);
       const [row] = await tx.insert(dispatches).values({ id: correlationId, companyId: input.companyId, routineId: routine.id,
         bindingId: binding.id, bindingGeneration: binding.generation, grantId: grant.id, routineRevision: routine.revision,
         sourceEventId: z.string().min(1).max(240).parse(input.sourceEventId), kind: input.kind,

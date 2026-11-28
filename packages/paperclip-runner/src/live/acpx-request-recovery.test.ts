@@ -76,7 +76,7 @@ describe("live ACP request recovery", () => {
       recovered = await original.snapshot();
       expect(recovered.pendingRuntimeRequests).toHaveLength(2);
     } finally {
-      await original.close();
+      await original.close({ reason: "test complete" });
     }
     class AdoptedTransport extends FakeCodexTransport {
       takeRestoredRuntimeRequests(): CodexRpcServerRequest[] { return requests; }
@@ -99,7 +99,7 @@ describe("live ACP request recovery", () => {
       await expect(session.resolveRuntimeRequest?.({ requestId, turnId: "turn-1", resolution })).rejects.toThrow("no longer pending");
       expect(deliver).toHaveBeenCalledTimes(1);
     } finally {
-      await session.close(); await drained;
+      await session.close({ reason: "test complete" }); await drained;
       expect(recoveredEvents.map(event => event.eventType)).not.toContain("runtime_request.created");
       expect(recoveredEvents.filter(event => event.eventType === "runtime_request.expired").map(event => event.payload.requestId)).not.toContain(requestId);
     }

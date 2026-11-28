@@ -60,7 +60,7 @@ export interface EvalSessionAgentCoreProfile {
   timeoutSeconds: number;
 }
 
-export type EvalCandidateProfile = "pi" | "cursor" | "copilot";
+export type EvalCandidateProfile = "pi" | "cursor" | "copilot" | "kimi";
 
 export interface EvalSessionRequest {
   schema: typeof EVAL_SESSION_REQUEST_SCHEMA;
@@ -94,6 +94,7 @@ export interface EvalSessionUsage {
   cachedInputTokens: number;
   reasoningTokens: number;
   providerReportedCostNanodollars: number | null;
+  legacyLedgerCostNanodollars?: number;
   providerReportedCostProvenance: "legacy_runner_usage_ledger" | "unavailable";
   estimatedCostNanodollars: number | null;
   pricingVersion: EstimatedModelCost["pricingVersion"] | null;
@@ -254,7 +255,7 @@ export function parseEvalSessionRequest(
     acpxAgent !== undefined &&
     acpxAgent !== "codex" &&
     acpxAgent !== "claude" && acpxAgent !== "grok" &&
-    acpxAgent !== "pi" && acpxAgent !== "cursor" && acpxAgent !== "copilot"
+    acpxAgent !== "pi" && acpxAgent !== "cursor" && acpxAgent !== "copilot" && acpxAgent !== "kimi"
   ) {
     throw new Error("eval-session acpxAgent must be a registered ACPX profile");
   }
@@ -262,7 +263,7 @@ export function parseEvalSessionRequest(
     throw new Error("eval-session acpxAgent requires provider acpx");
   }
   const piThinkingLevel = resolvePiThinkingLevel(provider === "acpx" ? String(acpxAgent) : "", input.piThinkingLevel);
-  const candidate = acpxAgent === "pi" || acpxAgent === "cursor" || acpxAgent === "copilot";
+  const candidate = acpxAgent === "pi" || acpxAgent === "cursor" || acpxAgent === "copilot" || acpxAgent === "kimi";
   if (options.candidateProfile !== undefined && (provider !== "acpx" || acpxAgent !== options.candidateProfile || !candidate)) {
     throw new Error("--candidate-profile must match the request's registered candidate ACPX agent");
   }
@@ -400,7 +401,9 @@ export function evalSessionUsage(
     throw new Error("completed turn omitted usage accounting");
   }
   const candidate = snapshot.config?.provider === "acpx"
-    && ["pi", "cursor", "copilot"].includes(snapshot.config.acpxAgent ?? "");
+    && ["pi", "cursor", "copilot", "kimi"].includes(snapshot.config.acpxAgent ?? "");
+  const codex = snapshot.config?.provider === "codex";
+  const providerCostUnavailable = candidate || codex;
   let estimate: EstimatedModelCost | null;
   try {
     estimate = estimateModelCostNanodollars(model, totals);
@@ -413,14 +416,12 @@ export function evalSessionUsage(
   }
   return {
     ...totals,
-    // Candidate ACP adapters do not supply authenticated USD receipts. The
-    // shared legacy ledger fills absent cost with zero, so its numeric value
-    // cannot establish an invoice amount for these profiles.
-    providerReportedCostNanodollars: candidate ? null : totals.providerReportedCostNanodollars,
-    providerReportedCostProvenance: candidate ? "unavailable" : "legacy_runner_usage_ledger",
+    ...(codex ? { legacyLedgerCostNanodollars: totals.providerReportedCostNanodollars } : {}),
+    providerReportedCostNanodollars: providerCostUnavailable ? null : totals.providerReportedCostNanodollars,
+    providerReportedCostProvenance: providerCostUnavailable ? "unavailable" : "legacy_runner_usage_ledger",
     estimatedCostNanodollars: estimate?.estimatedCostNanodollars ?? null,
     pricingVersion: estimate?.pricingVersion ?? null,
     ratesUsdPerMillionTokens: estimate?.ratesUsdPerMillionTokens ?? null,
-    costCoverage: candidate ? (estimate === null ? "unpriced" : "estimated") : "legacy_ledger_and_estimate",
+    costCoverage: providerCostUnavailable ? (estimate === null ? "unpriced" : "estimated") : "legacy_ledger_and_estimate",
   };
 }

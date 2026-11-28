@@ -1,3 +1,5 @@
+import { verifiedResourceCleanup } from "./cleanup-verification-proof.js";
+
 /** Fixed SQL aliases only. These predicates do not accept request input. */
 export function finishedIdleRun(alias: string): string {
   return `${alias}.status IN ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted')
@@ -124,4 +126,31 @@ export function passiveBoardRecovery(alias: string): string {
         AND recovery_source.monitor_next_check_at IS NULL AND recovery_source.monitor_wake_requested_at IS NULL
         AND (recovery_source.execution_state IS NULL OR recovery_source.execution_state->>'status' = 'idle')
         AND COALESCE(recovery_source.execution_policy->'monitor', 'null'::jsonb) = 'null'::jsonb)`;
+}
+
+export function finishedFailedIdleLease(alias: string): string {
+  const receipt = `${alias}.metadata->'remoteExecutionTermination'`;
+  return `${alias}.status = 'failed' AND ${alias}.lease_policy = 'ephemeral'
+    AND ${alias}.released_at IS NOT NULL
+    AND COALESCE(${alias}.metadata->>'pendingCleanupInFlight', 'false') = 'false'
+    AND NOT (COALESCE(${alias}.metadata, '{}'::jsonb) ?| ARRAY['nativeWorkspaceExportResume', 'sandboxStopAndRetain'])
+    AND (( ${alias}.provider = 'local' AND ${alias}.provider_lease_id IS NULL
+      AND ${alias}.metadata->>'driver' = 'local'
+      AND ${receipt} IS NULL
+      AND EXISTS (SELECT 1 FROM environments local_environment
+        WHERE local_environment.id = ${alias}.environment_id AND local_environment.driver = 'local'))
+    OR (${alias}.cleanup_status = 'success' AND ${alias}.provider IS NOT NULL AND ${alias}.provider <> 'local'
+      AND ${alias}.provider_lease_id IS NOT NULL AND ${alias}.provider_lease_id <> ''
+      AND ((${receipt}->>'schema' = 'paperclip.remote-termination.v1'
+      AND ${receipt}->>'companyId' = ${alias}.company_id::text
+      AND ${receipt}->>'runId' = ${alias}.heartbeat_run_id::text
+      AND ${receipt}->>'leaseId' = ${alias}.id::text
+      AND ${receipt}->>'provider' = ${alias}.provider
+      AND ${receipt}->>'providerLeaseId' = ${alias}.provider_lease_id
+      AND ${receipt}->>'state' IN ('stopped', 'destroyed'))
+        OR (${verifiedResourceCleanup(alias, 'lease')}))))
+    AND ((${alias}.heartbeat_run_id IS NULL AND ${alias}.provider <> 'local'
+      AND (${verifiedResourceCleanup(alias, 'lease')})) OR EXISTS (SELECT 1 FROM heartbeat_runs r WHERE r.id = ${alias}.heartbeat_run_id
+      AND r.company_id = ${alias}.company_id
+      AND ${finishedIdleRun("r")}))`;
 }

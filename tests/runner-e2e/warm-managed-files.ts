@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { RunnerApi } from "./api.js";
+import { collectRunEvents } from "./run-observations.js";
 
 const record = (v: unknown): Record<string, unknown> => v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};
 export function gradeWarmManagedFiles(input: {
@@ -26,7 +27,12 @@ export async function warmManagedFileEvidence(api: RunnerApi, agentId: string, r
   const binary = await api.request.get(`${base}notes%2Funchanged.bin&download=true`);
   if (!binary.ok()) throw new Error(`Managed binary download failed: ${binary.status()}`);
   const deleted = await api.request.get(`${base}notes%2Fdelete-me.txt&download=true`);
-  const run = await api.get<{ resultJson?: unknown }>(`/api/heartbeat-runs/${runId}`);
-  return gradeWarmManagedFiles({ turn, nonce, content: note.content, binary: await binary.body(), deletedStatus: deleted.status(),
-    save: record(run.resultJson).instructionSave, native });
+  const events = await collectRunEvents<{ seq: number; runId: string; eventType: string; payload?: unknown }>((afterSeq, limit) =>
+    api.get(`/api/heartbeat-runs/${encodeURIComponent(runId)}/events?afterSeq=${afterSeq}&limit=${limit}`));
+  if (events.some(event => event.runId !== runId)) throw new Error("Managed file evidence returned events for a different run");
+  // The durable run-log event is authoritative. Terminal result metadata may
+  // omit this receipt, and an older success must not hide a later failed save.
+  const receipt = events.filter(event => event.eventType === "instruction_save").at(-1);
+  return { ...gradeWarmManagedFiles({ turn, nonce, content: note.content, binary: await binary.body(), deletedStatus: deleted.status(),
+    save: receipt?.payload, native }), saveEventSeq: receipt?.seq ?? null };
 }

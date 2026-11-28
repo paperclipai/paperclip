@@ -1,10 +1,12 @@
 import { isAcpxCanonicalInputMethod } from "../acpx/profile-extensions.js";
+import { resolveCompletionContinuation } from "../completion-continuation.js";
 import { isSemanticToolOutcomeUnknownError } from "../../contracts/native-session-backend.js";
 import type { HarnessRuntimeRequest, PaperclipQuestionSet } from "../../contracts/harness-driver.js";
 import {
   CODEX_BLOCK_TOOL_NAME,
 } from "../../contracts/codex.js";
 import { validatePrpStructuredRunResult } from "../../protocol/replay-contract.js";
+import { prpSemanticResultConflictMessage } from "../../contracts/completion-result.js";
 import type { CodexRpcServerRequest } from "./app-server-transport.js";
 import {
   boundedCodexValue,
@@ -185,9 +187,19 @@ async function handleServerRequestBody(
           "Semantic result exceeded the retained payload limit.",
         );
       }
-      const validation = validatePrpStructuredRunResult(
-        request.params.arguments,
-      );
+      let completionInput: unknown;
+      try {
+        completionInput = await resolveCompletionContinuation(request.params.arguments, state.runId,
+          state.dynamicToolHandler ? () => state.dynamicToolHandler!({
+            tool: "get_task_context", callId: `${callId}:continuation`, threadId, turnId, arguments: {},
+          }) : undefined);
+      } catch (error) {
+        return rejectedToolCall(boundedText(error instanceof Error ? error.message : error));
+      }
+      if (state.terminal || state.activeTurnId !== turnId) {
+        return rejectedToolCall("The turn ended while resolving completion. The result was not accepted.");
+      }
+      const validation = validatePrpStructuredRunResult(completionInput);
       if (!validation.ok) {
         return {
           success: false,
@@ -197,7 +209,7 @@ async function handleServerRequestBody(
         };
       }
       if (
-        !toolAcceptsResult(tool, validation.result)
+        !toolAcceptsResult(tool, validation.result, completionInput !== request.params.arguments)
       ) {
         return {
           success: false,
@@ -207,7 +219,7 @@ async function handleServerRequestBody(
               text:
                 tool === CODEX_BLOCK_TOOL_NAME
                   ? "paperclip_block requires reportedWorkDisposition=blocked."
-                  : "paperclip_finish accepts done, needs_review, or yielded with a response_wake or persisted monitor continuation.",
+                  : "paperclip_finish accepts done, needs_review, or yielded with a response, monitor, handoff, or server-resolved workspace continuation.",
             },
           ],
         };
@@ -224,9 +236,7 @@ async function handleServerRequestBody(
       }
       const admission = admitResult(state, validation.result, callId, turnId);
       if (admission === "conflict") {
-        return rejectedToolCall(
-          "A different semantic result was already committed.",
-        );
+        return rejectedToolCall(prpSemanticResultConflictMessage(state.result));
       }
       return {
         success: true,

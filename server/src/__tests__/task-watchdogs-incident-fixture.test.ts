@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import incident from "./fixtures/watchdog-confirmation-incident-8bef17ef.json";
+import incident from "./fixtures/watchdog-confirmation-incident-8bef17ef.json" with { type: "json" };
 
 describe("historical watchdog confirmation incident fixture", () => {
   it("reproduces the material stop fingerprint", () => {

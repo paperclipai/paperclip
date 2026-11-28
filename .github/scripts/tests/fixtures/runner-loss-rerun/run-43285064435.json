@@ -1,0 +1,360 @@
+{
+  "source": "GET /repos/paperclipai/paperclip/actions/runs/43285064435/attempts/1 (+ jobs, annotations and job-log error lines), trimmed",
+  "run": {
+    "id": 43285064435,
+    "name": "PR",
+    "head_sha": "cd287efba2ff0c557f0c63fc78d5ad1d48f192e8",
+    "path": ".github/workflows/pr.yml",
+    "event": "pull_request",
+    "status": "completed",
+    "conclusion": "cancelled",
+    "html_url": "https://github.com/paperclipai/paperclip/actions/runs/43285064435",
+    "run_attempt": 1,
+    "repository": {
+      "id": 1170821064,
+      "full_name": "paperclipai/paperclip"
+    },
+    "head_repository": {
+      "id": 1170821064,
+      "full_name": "paperclipai/paperclip"
+    }
+  },
+  "jobs": [
+    {
+      "id": 131416164450,
+      "name": "ci / gate / Select trusted runner",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416492147,
+      "name": "ci / policy",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416492206,
+      "name": "ci / Typecheck + Release Registry",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416492248,
+      "name": "ci / Verify Paperclip Runner (static checks)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416492288,
+      "name": "ci / Runner support suite",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416492337,
+      "name": "ci / Verify Paperclip Runner (rust)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416492390,
+      "name": "ci / Build",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416492402,
+      "name": "ci / Canary Dry Run",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416492420,
+      "name": "ci / Verify Paperclip Runner (vitest package (3/3))",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416492421,
+      "name": "ci / Sandbox provider tests",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416492424,
+      "name": "ci / Docker context integrity",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416492430,
+      "name": "ci / Verify Paperclip Runner (vitest native server)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416492442,
+      "name": "ci / Verify Paperclip Runner (vitest package (2/3))",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416492489,
+      "name": "ci / Verify Paperclip Runner (vitest package (1/3))",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416492538,
+      "name": "ci / e2e shard (5/8)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416492565,
+      "name": "ci / e2e shard (1/8)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416492568,
+      "name": "ci / e2e shard (2/8)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416492582,
+      "name": "ci / e2e shard (6/8)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416492588,
+      "name": "ci / e2e shard (7/8)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416492592,
+      "name": "ci / e2e shard (4/8)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416492708,
+      "name": "ci / e2e shard (3/8)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416493348,
+      "name": "ci / e2e shard (8/8)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416493582,
+      "name": "ci / Verify serialized server suites (3/9)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416493601,
+      "name": "ci / Verify serialized server suites (4/9)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416493630,
+      "name": "ci / Verify serialized server suites (2/9)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416493633,
+      "name": "ci / Verify serialized server suites (1/9)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416493669,
+      "name": "ci / Verify serialized server suites (5/9)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416493759,
+      "name": "ci / Verify serialized server suites (7/9)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416493766,
+      "name": "ci / Verify serialized server suites (9/9)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416493829,
+      "name": "ci / Verify serialized server suites (8/9)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416493947,
+      "name": "ci / General tests (server (5/12))",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416494052,
+      "name": "ci / General tests (server (1/12))",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416494077,
+      "name": "ci / General tests (server (3/12))",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416494102,
+      "name": "ci / General tests (server (7/12))",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416494186,
+      "name": "ci / General tests (server (4/12))",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416494194,
+      "name": "ci / General tests (workspaces-c)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416494201,
+      "name": "ci / General tests (chat (3/3))",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416494251,
+      "name": "ci / General tests (server (12/12))",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416494281,
+      "name": "ci / General tests (server (2/12))",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416494286,
+      "name": "ci / General tests (chat (1/3))",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416494333,
+      "name": "ci / General tests (workspaces-a (1/2))",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416494339,
+      "name": "ci / General tests (server (10/12))",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416494340,
+      "name": "ci / General tests (server (9/12))",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416494376,
+      "name": "ci / General tests (chat (2/3))",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416494446,
+      "name": "ci / General tests (server (6/12))",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416494459,
+      "name": "ci / General tests (server (8/12))",
+      "status": "completed",
+      "conclusion": "cancelled"
+    },
+    {
+      "id": 131416494489,
+      "name": "ci / General tests (workspaces-b)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416494538,
+      "name": "ci / Verify serialized server suites (6/9)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416494546,
+      "name": "ci / General tests (server (11/12))",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416494552,
+      "name": "ci / General tests (workspaces-a (2/2))",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131416494939,
+      "name": "ci / Select Vitest files",
+      "status": "completed",
+      "conclusion": "skipped"
+    },
+    {
+      "id": 131421415244,
+      "name": "ci / e2e",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 131424041299,
+      "name": "ci / verify",
+      "status": "completed",
+      "conclusion": "failure"
+    }
+  ],
+  "annotations": {
+    "131416494459": [
+      {
+        "annotation_level": "failure",
+        "message": "The operation was canceled."
+      }
+    ],
+    "131424041299": [
+      {
+        "annotation_level": "failure",
+        "message": "Process completed with exit code 1."
+      }
+    ]
+  },
+  "logs": {
+    "131416494459": "2026-11-12T19:03:20.1001059Z ##[error]The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.\n2026-11-12T19:03:32.6527460Z ##[error]The operation was canceled.\n"
+  },
+  "total_count": 53
+}

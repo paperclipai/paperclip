@@ -1,3 +1,5 @@
+import { notifyChatConnectionHealth } from "./connection-health-notifications.js";
+import type { ConnectionManagementContext } from "../connection-management.js";
 import type { EndpointRow, DbOrTransaction } from "./runtime-types.js";
 
 import { notifyChatEndpointWork } from "../chat-work-notifications.js";
@@ -94,7 +96,8 @@ export function createSetupProbes(db: Db, options: SetupProbesOptions) {
     return { messageReceivedAt: at?.toISOString() ?? null };
   }
 
-  async function test(endpointId: string, finishOptions?: { optionalSlackTestForUser: string }) {
+  async function test(endpointId: string, finishOptions?: { optionalSlackTestForUser: string }, managementContext?: ConnectionManagementContext) {
+    await managementContext?.reauthorize();
     const initial = await endpointRecord(endpointId);
     if (!initial) throw notFound("Chat endpoint not found");
     return withCredentialMutationLease(
@@ -122,11 +125,17 @@ export function createSetupProbes(db: Db, options: SetupProbesOptions) {
           : null;
         const optionalSlackTest = Boolean(finishOptions?.optionalSlackTestForUser);
         if (optionalSlackTest) {
-          if (!["slack", "github"].includes(endpoint.provider) || !endpoint.setup.webhookVerifiedAt || !endpoint.providerAccountId) {
-            throw conflict("Verify the connection before finishing setup");
+          if (endpoint.provider === "speko") {
+            if (!endpoint.providerAccountId || !endpoint.botExternalId || runtimeGeneration(endpoint.setup) < 1) {
+              throw conflict("Verify the Speko connection before finishing setup");
+            }
+          } else {
+            if (!["slack", "github"].includes(endpoint.provider) || !endpoint.setup.webhookVerifiedAt || !endpoint.providerAccountId) {
+              throw conflict("Verify the connection before finishing setup");
+            }
+            const linked = await findAuthorizedIdentityLink(endpoint, finishOptions!.optionalSlackTestForUser);
+            if (!linked) throw forbidden("Connect your account before finishing setup");
           }
-          const linked = await findAuthorizedIdentityLink(endpoint, finishOptions!.optionalSlackTestForUser);
-          if (!linked) throw forbidden("Connect your account before finishing setup");
         }
         if (!optionalSlackTest) {
           if (
@@ -287,16 +296,17 @@ export function createSetupProbes(db: Db, options: SetupProbesOptions) {
           }
         }
         await options.setupTestActivationBarrier?.();
+        await managementContext?.reauthorize();
         const expectedGeneration = runtimeGeneration(endpoint.setup);
         await db.transaction(async (tx) => {
           await credentialLease.assertOwned(tx);
-          if (optionalSlackTest) {
+          if (optionalSlackTest && endpoint.provider !== "speko") {
             const linked = await tx.select({ principalId: chatIdentityLinks.principalId }).from(chatIdentityLinks).where(and(
               eq(chatIdentityLinks.endpointId, endpoint.id), eq(chatIdentityLinks.paperclipUserId, finishOptions!.optionalSlackTestForUser), eq(chatIdentityLinks.status, "linked"),
             )).limit(1).then((rows) => rows[0]);
             if (!linked || !(await lockCurrentPrincipalAuthorization(tx, endpoint, linked.principalId)).allowed) throw forbidden("Your connected account is no longer authorized");
           }
-          await notifyChatEndpointWork(tx, endpoint.connectionId);
+          await notifyChatEndpointWork(tx, endpoint.connectionId, endpoint.companyId);
           const [activated] = await tx
             .update(chatEndpoints)
             .set({
@@ -326,6 +336,7 @@ export function createSetupProbes(db: Db, options: SetupProbesOptions) {
               code: "chat_endpoint_test_superseded",
             });
           }
+          await notifyChatConnectionHealth(tx, endpoint);
           await tx
             .update(toolConnections)
             .set({
@@ -339,7 +350,7 @@ export function createSetupProbes(db: Db, options: SetupProbesOptions) {
             })
             .where(eq(toolConnections.id, endpoint.connectionId));
           if (optionalSlackTest) await logActivity(tx as unknown as Db, {
-            companyId: endpoint.companyId, actorType: "user", actorId: finishOptions!.optionalSlackTestForUser,
+            companyId: endpoint.companyId, ...(managementContext?.audit ?? { actorType: "user" as const, actorId: finishOptions!.optionalSlackTestForUser }),
             action: "chat.setup_completed", entityType: "chat_endpoint", entityId: endpointId,
             details: { conversationTestOptional: true },
           });
