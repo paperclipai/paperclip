@@ -208,7 +208,7 @@ describeAttentionEmbeddedPostgres("attention service: blockers and feed", () => 
     expect(rows[0]).toMatchObject({
       subject: { id: terminalId, identifier: "ATC-1", title: "Choose migration owner" },
       relatedIssue: { id: blockedId },
-      whyNow: "Blocks 3 tasks and needs human attention.",
+      whyNow: "Has no assignee. Blocks 3 tasks.",
       detail: { kind: "blocker", blockingIssue: null, blockedTaskCount: 3 },
     });
     expect(rows[0]?.subject.id).not.toBe(blockedId);

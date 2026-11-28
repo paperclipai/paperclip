@@ -111,8 +111,9 @@ export function createAttentionServiceHarness() {
     executionState?: Record<string, unknown> | null;
     updatedAt?: Date;
     createdAt?: Date;
-    unblockDescriptor?: { owner: { userId: string } | "board"; action: string } | null;
+    unblockDescriptor?: { owner: { userId: string } | { agentId: string } | "board"; action: string } | null;
     blockedTransitionAt?: Date | null;
+    blockedOwnerNotifiedAt?: Date | null;
     visibility?: "open" | "private";
     privacyRootIssueId?: string | null;
     responsibleUserId?: string | null;
@@ -139,6 +140,7 @@ export function createAttentionServiceHarness() {
       executionState: input.executionState ?? null,
       unblockDescriptor: input.unblockDescriptor ?? null,
       blockedTransitionAt: input.blockedTransitionAt ?? null,
+      blockedOwnerNotifiedAt: input.blockedOwnerNotifiedAt ?? null,
       visibility: input.visibility ?? "open",
       privacyRootIssueId: input.privacyRootIssueId ?? null,
       responsibleUserId: input.responsibleUserId ?? null,
