@@ -165,7 +165,7 @@ import {
   buildIssueBlockersResolvedWakeStateKey,
   findExistingIssueBlockersResolvedWakeForReadyState,
 } from "../issue-dependency-wakeups.js";
-import { evaluateAgentInvokabilityFromDb, type AgentOrgRow } from "../agent-invokability.js";
+import { DIRECT_NON_INVOKABLE_STATUSES, evaluateAgentInvokabilityFromDb, type AgentOrgRow } from "../agent-invokability.js";
 import { createRecoveryPassReads, type RecoveryPassReads } from "./pass-reads.js";
 import { isHeartbeatWakeOnDemandEnabled } from "../heartbeat-policy.js";
 import {
@@ -6287,6 +6287,7 @@ export function recoveryService(
         isNull(issues.conversationAgentId),
         visibleIssueCondition(),
         sql`${issues.assigneeAgentId} is not null`,
+        notInArray(agents.status, [...DIRECT_NON_INVOKABLE_STATUSES]),
       ];
       if (opts?.companyId) filters.push(eq(issues.companyId, opts.companyId));
       if (opts?.issueId) filters.push(eq(issues.id, opts.issueId));
@@ -6310,6 +6311,7 @@ export function recoveryService(
           })
           .from(issueRelations)
           .innerJoin(issues, eq(issueRelations.relatedIssueId, issues.id))
+          .innerJoin(agents, eq(agents.id, issues.assigneeAgentId))
           .where(and(...filters))
           .orderBy(asc(issues.id))
           .limit(RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT);
@@ -6325,6 +6327,7 @@ export function recoveryService(
           totalCount: sql<number>`count(*) over()::int`,
         })
         .from(issues)
+        .innerJoin(agents, eq(agents.id, issues.assigneeAgentId))
         .where(and(...filters))
         .orderBy(asc(issues.id))
         .limit(RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT);
