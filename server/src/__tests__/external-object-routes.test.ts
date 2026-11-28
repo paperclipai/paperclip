@@ -281,6 +281,10 @@ describe("external object routes", () => {
   });
 
   it("requires active checkout ownership for agent manual refresh", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      checkoutRunId: ownerRunId,
+      executionRunId: ownerRunId,
+    }));
     const app = await createApp(peerActor());
 
     const res = await request(app)

@@ -1004,6 +1004,11 @@ describe("agent issue mutation checkout ownership", () => {
     ],
     ["attachment delete", (app: express.Express) => request(app).delete("/api/attachments/attachment-1")],
   ])("rejects peer agent %s on another agent's active checkout", async (_name, sendRequest) => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      checkoutRunId: ownerRunId,
+      executionRunId: ownerRunId,
+    }));
+    mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
     const res = await sendRequest(await createApp(peerActor()));
 
     expect(res.status, JSON.stringify(res.body)).toBe(409);
@@ -1791,8 +1796,11 @@ describe("agent issue mutation checkout ownership", () => {
   it.each([
     ["todo", "patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Todo update" })],
     ["blocked", "patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Blocked update" })],
+    // HER-19: a stranded in_progress issue has no checkout/execution run to hold
+    // the lock, so the idle path must stay open instead of deadlocking writes.
+    ["in_progress", "patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Stranded update" })],
   ])("allows peer agent %s issue %s updates outside active checkout ownership", async (status, _kind, sendRequest) => {
-    mockIssueService.getById.mockResolvedValue(makeIssue({ status: status as "todo" | "blocked", assigneeAgentId: ownerAgentId }));
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: status as string, assigneeAgentId: ownerAgentId }));
 
     const res = await sendRequest(await createApp(peerActor()));
 

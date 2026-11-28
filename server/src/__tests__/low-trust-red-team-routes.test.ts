@@ -832,6 +832,25 @@ async function seedLowTrustFixture(db: Db) {
     linkedByAgentId: standard!.id,
   });
 
+  const [ctoRun] = await db
+    .insert(heartbeatRuns)
+    .values({
+      companyId: company!.id,
+      agentId: cto!.id,
+      // HER-19: a checkout run id is what holds the field-write lock; the run
+      // itself is finished so it cannot block the wakeup path under test.
+      status: "succeeded",
+      finishedAt: new Date(),
+      contextSnapshot: { issueId: reviewRoot!.id },
+    })
+    .returning();
+  await db
+    .update(issues)
+    .set({ checkoutRunId: ctoRun!.id, executionRunId: ctoRun!.id })
+    .where(eq(issues.id, reviewRoot!.id));
+  reviewRoot!.checkoutRunId = ctoRun!.id;
+  reviewRoot!.executionRunId = ctoRun!.id;
+
   return {
     company: company!,
     agents: {

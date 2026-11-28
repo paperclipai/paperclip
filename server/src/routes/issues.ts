@@ -5962,6 +5962,8 @@ export function issueRoutes(
       status: string;
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
+      checkoutRunId?: string | null;
+      executionRunId?: string | null;
       reviewPolicy?: IssueReviewPolicy | null;
       /** Used only to name the task in denial copy (plan §6). */
       identifier?: string | null;
@@ -6037,9 +6039,14 @@ export function issueRoutes(
       ) {
         return true;
       }
-      if (issue.status === "in_progress") {
+      if (
+        issue.status === "in_progress" &&
+        (issue.checkoutRunId || issue.executionRunId)
+      ) {
         // Run/checkout ownership stays assignee-scoped even though writes are
-        // open, so this lock clears on its own — the copy routes to comments.
+        // open. The lock only holds while a checkout or execution run actually
+        // exists; a stranded in_progress issue with no run falls through to the
+        // idle path instead of deadlocking field writes.
         return denyIssueWrite(
           req,
           res,
