@@ -16,6 +16,7 @@ import { chatEndpoints, dedicatedDbConnectionStats } from "@paperclipai/db";
 import { fastResponseRoutes } from "./routes/fast-responses.js";
 import { fastResponseService } from "./services/fast-responses.js";
 import { createDeliveryWorkCoordinator } from "./services/delivery-work-coordinator.js";
+import { registerRunLineageSampling } from "./services/heartbeat/run-descendant-reaper.js";
 import { DELIVERY_QUEUES } from "./services/delivery-work-notifications.js";
 import { createLifecycleDriver } from "./services/agent-lifecycle-driver.js";
 import { startAgentLifecycle } from "./services/agent-lifecycle.js";
@@ -1415,6 +1416,7 @@ export async function createApp(
   const importSpoolCleanup = registerImportSpoolCleanupWork(db, deliveryWork,
     resolveDefaultImportTransferSpoolRoot(), () => !isWarmStandby() && !isIdleTaskDrainActive());
   registerBrowserUseCleanup(deliveryWork, browserUse, () => !isIdleTaskDrainActive());
+  registerRunLineageSampling(deliveryWork);
 
 
   void companyTransferRunService

@@ -134,6 +134,7 @@ export const DELIVERY_QUEUES = {
   chatRunMilestones: "chat-run-milestones",
   chatReceipts: "chat-slack-receipts",
   browser: "browser-use",
+  runLineage: "run-lineage",
   email: "email-channels",
   museMaintenance: "muse-maintenance",
   mergedPullRequestConfirmations: "merged-pull-request-confirmations",
