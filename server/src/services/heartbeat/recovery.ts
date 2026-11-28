@@ -316,6 +316,11 @@ function isTrackedLocalChildProcessAdapter(adapterType: string) {
   return SESSIONED_LOCAL_ADAPTERS.has(adapterType);
 }
 
+// Freshly-started local runs can briefly lack persisted PID metadata — the
+// spawn path writes processPid after the row flips to running. Give such runs
+// a grace window before the orphan reaper may treat them as dead.
+const LOCAL_CHILD_METADATA_GRACE_MS = 20 * 60 * 1000;
+
 // A positive liveness check means some process currently owns the PID.
 // On Linux, PIDs can be recycled, so this is a best-effort signal rather
 // than proof that the original child is still alive.
@@ -2532,10 +2537,11 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
   }
 
   async function recoverActiveExecutions(scope: RecoveryScope = {}, options: {
-    staleThresholdMs?: number; resumedRunIds?: Set<string>;
+    staleThresholdMs?: number; metadataMissingGraceMs?: number; resumedRunIds?: Set<string>;
   } = {}) {
     const now = new Date();
     const staleThresholdMs = options.staleThresholdMs ?? 5 * 60_000;
+    const metadataGraceMs = options.metadataMissingGraceMs ?? LOCAL_CHILD_METADATA_GRACE_MS;
     const resumedRunIds = options.resumedRunIds ?? new Set<string>();
     // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
     const activeRuns = await db
@@ -2790,6 +2796,20 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         isTrackedLocalChildProcessAdapter(adapterType);
       const tracksLegacyLocalChild =
         run.runtimeMode !== "native" && currentAdapterTracksLocalChild;
+      // A local run with no persisted PID yet may simply not have written its
+      // process metadata — give it the grace window before reaping. This only
+      // holds while the owning controller is not proven gone: a dead controller
+      // cannot still be mid-spawn, so its run is a genuine orphan and settles at
+      // once through the lease prover above, never waiting out this window.
+      if (tracksLegacyLocalChild && !run.processPid && !legacyControllerGone) {
+        const startedRef = run.startedAt ? new Date(run.startedAt).getTime() : 0;
+        const updatedRef = run.updatedAt ? new Date(run.updatedAt).getTime() : 0;
+        const refTime = Math.max(startedRef, updatedRef, 0);
+        if (refTime > 0 && now.getTime() - refTime < metadataGraceMs) {
+          scope.onDeferredDeadline?.(refTime + metadataGraceMs);
+          continue;
+        }
+      }
       // Native runner processes also persist child metadata, but they must not
       // inherit legacy retry or termination authority. Use their PID/group only
       // for a read-only liveness check so a lost in-memory handle cannot cause
@@ -3072,7 +3092,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
 
   let settledProcessesDiscovered = false;
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; skipNativeStatusWakeIntents?: boolean; skipScheduledRetryCancellation?: boolean; skipCapturedInstructionCommit?: boolean; skipInstructionDirectoryCleanup?: boolean; skipStoppedInstructionCollection?: boolean; skipCancelledWorkspacePreservation?: boolean; skipObsoletePolicyReviews?: boolean; skipAutomaticCompletionReviews?: boolean; skipUnsafeWorkspaceExports?: boolean; skipNativePendingEffects?: boolean; skipNativeResponsePresentation?: boolean; skipNativeReviewResponse?: boolean; skipNativeStatusReassessment?: boolean; skipRetainedNativeSessionCleanup?: boolean; skipNativeWorkspaceFinalization?: boolean; skipNativeResultCommit?: boolean; skipNativeRunProjection?: boolean; skipNativeRecoveryNotices?: boolean; skipExternalConversationSettlement?: boolean; skipExternalAgentSettlement?: boolean; skipNativeEnvironmentSettlement?: boolean }) {
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; metadataMissingGraceMs?: number; skipNativeStatusWakeIntents?: boolean; skipScheduledRetryCancellation?: boolean; skipCapturedInstructionCommit?: boolean; skipInstructionDirectoryCleanup?: boolean; skipStoppedInstructionCollection?: boolean; skipCancelledWorkspacePreservation?: boolean; skipObsoletePolicyReviews?: boolean; skipAutomaticCompletionReviews?: boolean; skipUnsafeWorkspaceExports?: boolean; skipNativePendingEffects?: boolean; skipNativeResponsePresentation?: boolean; skipNativeReviewResponse?: boolean; skipNativeStatusReassessment?: boolean; skipRetainedNativeSessionCleanup?: boolean; skipNativeWorkspaceFinalization?: boolean; skipNativeResultCommit?: boolean; skipNativeRunProjection?: boolean; skipNativeRecoveryNotices?: boolean; skipExternalConversationSettlement?: boolean; skipExternalAgentSettlement?: boolean; skipNativeEnvironmentSettlement?: boolean }) {
     if (!opts?.skipCancelledWorkspacePreservation) await preserveCancelledNativeWorkspaces(db);
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
@@ -3158,7 +3178,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     });
 
     await recoverQuestionCancellationRequests();
-    const reaped = await recoverActiveExecutions({}, { staleThresholdMs, resumedRunIds });
+    const reaped = await recoverActiveExecutions({}, { staleThresholdMs, metadataMissingGraceMs: opts?.metadataMissingGraceMs, resumedRunIds });
 
     // Recover an active lease whose run already ended before the same-tick
     // pending_cleanup sweep, so this tick can stop the recovered sandbox.
