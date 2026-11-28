@@ -1,5 +1,8 @@
 import { createAgentLifecycle } from "../services/agent-lifecycle.js";
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { activityLog, agents, companies, companyMemberships, createDb, principalPermissionGrants } from "@paperclipai/db";
@@ -8,6 +11,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { agentService } from "../services/agents.js";
 import { authorizationService } from "../services/authorization.js";
 import { accessService } from "../services/access.js";
+import { builtInAgentService } from "../services/built-in-agents.js";
 import { agentJoinGrantsFromDefaults } from "../services/invite-grants.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -184,6 +188,91 @@ describeDatabase("new agent configuration defaults", () => {
     await db.delete(agents).where(eq(agents.companyId, companyId));
     await db.delete(activityLog).where(eq(activityLog.companyId, companyId));
     await db.delete(companies).where(eq(companies.id, companyId));
+  });
+
+  it("backfills change grants once for a sole non-CEO root agent without widening operator choices", async () => {
+    const migration = await readFile(path.resolve(path.dirname(fileURLToPath(import.meta.url)),
+      "../../../packages/db/src/migrations/0511_root_agent_change_grants.sql"), "utf8");
+    const seed = async (roots: Array<{ role: string; permissions?: Record<string, unknown>; grants?: Array<{ permissionKey: string; scope: Record<string, unknown> | null }> }>) => {
+      const companyId = randomUUID();
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Root grant backfill",
+        issuePrefix: `PR${companyId.slice(0, 6).toUpperCase()}`,
+      });
+      const rootRows = await db.insert(agents).values(roots.map((root, index) => ({
+        companyId, name: `Root ${index}`, role: root.role, permissions: root.permissions ?? {}, adapterType: "process", adapterConfig: {}, runtimeConfig: {},
+      }))).returning();
+      const [report] = await db.insert(agents).values({
+        companyId, name: "Report", role: "engineer", reportsTo: rootRows[0]!.id, permissions: {}, adapterType: "process", adapterConfig: {}, runtimeConfig: {},
+      }).returning();
+      await db.insert(companyMemberships).values([...rootRows, report!].map((agent) => ({
+        companyId, principalType: "agent", principalId: agent.id, status: "active", membershipRole: "member",
+      })));
+      const grantRows = roots.flatMap((root, index) => (root.grants ?? []).map((grant) => ({
+        companyId, principalType: "agent", principalId: rootRows[index]!.id, permissionKey: grant.permissionKey, scope: grant.scope,
+      })));
+      if (grantRows.length > 0) await db.insert(principalPermissionGrants).values(grantRows);
+      return { companyId, rootIds: rootRows.map((row) => row.id), reportId: report!.id };
+    };
+    const grantsFor = async (agentId: string) => (await db.select().from(principalPermissionGrants)
+      .where(eq(principalPermissionGrants.principalId, agentId)))
+      .map((grant) => ({ permissionKey: grant.permissionKey, scope: grant.scope }))
+      .sort((left, right) => left.permissionKey.localeCompare(right.permissionKey));
+    const migrationEntries = async (companyId: string) => (await db.select().from(activityLog)
+      .where(eq(activityLog.companyId, companyId)))
+      .filter((entry) => entry.actorId === "migration:root-agent-change-grants");
+
+    const generalRoot = await seed([{ role: "general" }]);
+    const ceoAmongRoots = await seed([{ role: "general" }, { role: "CEO" }]);
+    const twoRoots = await seed([{ role: "general" }, { role: "engineer" }]);
+    const scopedRoot = await seed([{ role: "general", grants: [{ permissionKey: "agents:configure", scope: { agentIds: [randomUUID()] } }] }]);
+    const partialRoot = await seed([{ role: "general", grants: [{ permissionKey: "skills:create", scope: null }] }]);
+    const lowTrustRoot = await seed([{ role: "general", permissions: { trustPreset: LOW_TRUST_REVIEW_PRESET } }]);
+    const fixtures = [generalRoot, ceoAmongRoots, twoRoots, scopedRoot, partialRoot, lowTrustRoot];
+
+    await db.$client.unsafe(migration);
+
+    expect(await grantsFor(generalRoot.rootIds[0]!)).toEqual([
+      { permissionKey: "agents:configure", scope: null },
+      { permissionKey: "skills:create", scope: null },
+    ]);
+    expect(await grantsFor(generalRoot.reportId)).toEqual([]);
+    expect(await migrationEntries(generalRoot.companyId)).toEqual([expect.objectContaining({
+      action: "agent.permissions_updated",
+      entityId: generalRoot.rootIds[0],
+      details: { added: ["agents:configure", "skills:create"], source: "migration" },
+    })]);
+    for (const fixture of [ceoAmongRoots, twoRoots, lowTrustRoot]) {
+      for (const rootId of fixture.rootIds) expect(await grantsFor(rootId)).toEqual([]);
+      expect(await migrationEntries(fixture.companyId)).toEqual([]);
+    }
+    expect(await grantsFor(scopedRoot.rootIds[0]!)).toEqual([
+      { permissionKey: "agents:configure", scope: { agentIds: [expect.any(String)] } },
+    ]);
+    expect(await migrationEntries(scopedRoot.companyId)).toEqual([]);
+    expect(await grantsFor(partialRoot.rootIds[0]!)).toEqual([
+      { permissionKey: "agents:configure", scope: null },
+      { permissionKey: "skills:create", scope: null },
+    ]);
+    expect((await migrationEntries(partialRoot.companyId)).map((entry) => entry.details))
+      .toEqual([{ added: ["agents:configure"], source: "migration" }]);
+
+    await db.$client.unsafe(migration);
+    expect(await migrationEntries(generalRoot.companyId)).toHaveLength(1);
+    expect(await migrationEntries(partialRoot.companyId)).toHaveLength(1);
+
+    await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.principalId, generalRoot.rootIds[0]!));
+    await builtInAgentService(db).ensureCompanyDefaultAgentGrants(generalRoot.companyId);
+    expect(await grantsFor(generalRoot.rootIds[0]!)).toEqual([]);
+
+    for (const { companyId } of fixtures) {
+      await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, companyId));
+      await db.delete(companyMemberships).where(eq(companyMemberships.companyId, companyId));
+      await db.delete(agents).where(eq(agents.companyId, companyId));
+      await db.delete(activityLog).where(eq(activityLog.companyId, companyId));
+      await db.delete(companies).where(eq(companies.id, companyId));
+    }
   });
 
   it("adds the default grant when a standard pending hire is approved", async () => {
