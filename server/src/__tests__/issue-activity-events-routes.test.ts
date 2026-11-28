@@ -1,7 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { getTableName } from "drizzle-orm";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildIssueChanges } from "../services/issue-change-receipt.ts";
 import { normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.ts";
 
@@ -156,11 +156,10 @@ function createEmptyRelationReadDb() {
   };
 }
 
+let loadedIssueRoutes!: (typeof import("../routes/issues.js"))["issueRoutes"];
+let loadedErrorHandler!: (typeof import("../middleware/index.js"))["errorHandler"];
+
 async function createApp(db: unknown = createEmptyRelationReadDb()) {
-  const [{ issueRoutes }, { errorHandler }] = await Promise.all([
-    vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -173,8 +172,8 @@ async function createApp(db: unknown = createEmptyRelationReadDb()) {
     };
     next();
   });
-  app.use("/api", issueRoutes(db as any, {} as any));
-  app.use(errorHandler);
+  app.use("/api", loadedIssueRoutes(db as any, {} as any));
+  app.use(loadedErrorHandler);
   return app;
 }
 
@@ -218,7 +217,7 @@ function issueUpdateWithReceipt(issue: ReturnType<typeof makeIssue>, patch: Reco
 }
 
 describe("issue activity event routes", () => {
-  beforeEach(() => {
+  beforeAll(async () => {
     vi.resetModules();
     vi.doUnmock("../services/access.js");
     vi.doUnmock("../services/activity-log.js");
@@ -232,6 +231,15 @@ describe("issue activity event routes", () => {
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
+    const [{ issueRoutes }, { errorHandler }] = await Promise.all([
+      vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
+      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    ]);
+    loadedIssueRoutes = issueRoutes;
+    loadedErrorHandler = errorHandler;
+  }, 30_000);
+
+  beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
