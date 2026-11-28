@@ -73,6 +73,7 @@ import { isConversationAdapter } from "../conversation-continuation.js";
 import { recordExecutionWait } from "../execution-wait.js";
 import {
   getNativeReviewAssignment,
+  getNativeReviewAssignmentStatus,
   readNativeReviewAssignmentContext,
 } from "../native-runtime/native-review-participant.js";
 import { claimQueuedNativeReviewRun } from "../native-runtime/native-review-dispatch.js";
@@ -1510,6 +1511,34 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       });
     }
     const nativeReviewContext = readNativeReviewAssignmentContext(context);
+    if (nativeReviewContext) {
+      const assignment = issueId
+        ? await getNativeReviewAssignmentStatus(db, {
+            companyId: run.companyId, issueId, agentId: run.agentId,
+            contextSnapshot: context,
+          })
+        : ({ kind: "gone" } as const);
+      if (assignment.kind === "gone") {
+        const errorCode = "native_review_assignment_no_longer_available";
+        const error = "The native review assignment this run was queued for is no longer available.";
+        const cancelled = await cancelRunIfStillQueued(run.id, {
+          finishedAt: new Date(), error, errorCode,
+        });
+        if (cancelled) {
+          await setWakeupStatus(run.wakeupRequestId, "skipped", {
+            finishedAt: cancelled.finishedAt ?? new Date(), error: errorCode,
+          });
+          await appendRunEvent(cancelled, {
+            eventType: "lifecycle", stream: "system", level: "warn",
+            message: error, payload: { code: errorCode },
+          });
+          await releaseIssueExecutionAndPromote(cancelled, {
+            suppressImmediateRecovery: true, deferredPostCommitEffects,
+          });
+        }
+        return null;
+      }
+    }
     const queuedCommentIds = queuedCommentIdsFromRunContext(context);
     if (
       issueId &&

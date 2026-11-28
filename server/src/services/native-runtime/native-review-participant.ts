@@ -141,18 +141,17 @@ export function validateNativeReviewAssignmentFacts(input: NativeReviewAssignmen
     && interaction.resolvedByAgentId === input.agentId;
 }
 
-export async function getNativeReviewAssignment(
-  db: Db,
-  input: {
-    companyId: string;
-    issueId: string;
-    agentId: string;
-    contextSnapshot: unknown;
-    actingRunId?: string;
-    issueExecutionRunId?: string | null;
-    allowResolvedByRunId?: string;
-  },
-): Promise<NativeReviewAssignment | null> {
+type NativeReviewAssignmentInput = {
+  companyId: string;
+  issueId: string;
+  agentId: string;
+  contextSnapshot: unknown;
+  actingRunId?: string;
+  issueExecutionRunId?: string | null;
+  allowResolvedByRunId?: string;
+};
+
+async function loadNativeReviewAssignmentRows(db: Db, input: NativeReviewAssignmentInput) {
   const context = readNativeReviewAssignmentContext(input.contextSnapshot);
   if (!context) return null;
   const issue = await db.select().from(issues).where(and(
@@ -188,33 +187,72 @@ export async function getNativeReviewAssignment(
       )).limit(1).then((rows) => rows[0] ?? null)
     : undefined;
   if (input.actingRunId && !actingRun) return null;
-  const invokability = await evaluateAgentInvokabilityFromDb(db, agent);
-  const valid = validateNativeReviewAssignmentFacts({
+  return { issue, agent, interaction, decision, sourceRun, actingRun };
+}
+
+function nativeReviewAssignmentFacts(
+  input: NativeReviewAssignmentInput,
+  loaded: NonNullable<Awaited<ReturnType<typeof loadNativeReviewAssignmentRows>>>,
+  agentInvokable: boolean,
+): NativeReviewAssignmentFacts {
+  return {
     companyId: input.companyId,
     issueId: input.issueId,
     agentId: input.agentId,
-    issueStatus: issue.status,
-    issueStatusVersion: Number(issue.statusVersion),
-    issueLastStatusDecisionId: issue.lastStatusDecisionId,
-    issueAssigneeAgentId: issue.assigneeAgentId,
-    interaction: interaction as InteractionFacts,
-    decision,
-    sourceRun,
-    agentInvokable: invokability.invokable,
-    actingRun: actingRun
+    issueStatus: loaded.issue.status,
+    issueStatusVersion: Number(loaded.issue.statusVersion),
+    issueLastStatusDecisionId: loaded.issue.lastStatusDecisionId,
+    issueAssigneeAgentId: loaded.issue.assigneeAgentId,
+    interaction: loaded.interaction as InteractionFacts,
+    decision: loaded.decision,
+    sourceRun: loaded.sourceRun,
+    agentInvokable,
+    actingRun: loaded.actingRun
       ? {
-          id: actingRun.id,
-          companyId: actingRun.companyId,
-          agentId: actingRun.agentId,
-          status: actingRun.status,
-          nativeIssueId: actingRun.nativeIssueId,
-          contextSnapshot: actingRun.contextSnapshot,
+          id: loaded.actingRun.id,
+          companyId: loaded.actingRun.companyId,
+          agentId: loaded.actingRun.agentId,
+          status: loaded.actingRun.status,
+          nativeIssueId: loaded.actingRun.nativeIssueId,
+          contextSnapshot: loaded.actingRun.contextSnapshot,
         }
       : undefined,
     issueExecutionRunId: input.issueExecutionRunId,
     allowResolvedByRunId: input.allowResolvedByRunId,
-  });
-  return valid ? { interaction, sourceDecision: decision, sourceRun } : null;
+  };
+}
+
+export type NativeReviewAssignmentStatus =
+  | { kind: "assigned"; assignment: NativeReviewAssignment }
+  | { kind: "agent_uninvokable" }
+  | { kind: "gone" };
+
+export async function getNativeReviewAssignmentStatus(
+  db: Db,
+  input: NativeReviewAssignmentInput,
+): Promise<NativeReviewAssignmentStatus> {
+  const loaded = await loadNativeReviewAssignmentRows(db, input);
+  if (!loaded) return { kind: "gone" };
+  if (!validateNativeReviewAssignmentFacts(nativeReviewAssignmentFacts(input, loaded, true)))
+    return { kind: "gone" };
+  const invokability = await evaluateAgentInvokabilityFromDb(db, loaded.agent);
+  if (!invokability.invokable) return { kind: "agent_uninvokable" };
+  return {
+    kind: "assigned",
+    assignment: {
+      interaction: loaded.interaction,
+      sourceDecision: loaded.decision,
+      sourceRun: loaded.sourceRun,
+    },
+  };
+}
+
+export async function getNativeReviewAssignment(
+  db: Db,
+  input: NativeReviewAssignmentInput,
+): Promise<NativeReviewAssignment | null> {
+  const status = await getNativeReviewAssignmentStatus(db, input);
+  return status.kind === "assigned" ? status.assignment : null;
 }
 
 

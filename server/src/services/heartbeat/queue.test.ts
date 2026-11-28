@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { contextCompactionService } from "../context-compaction.js";
 import { claimNativeSessionResumptions } from "../native-runtime/native-finalization-reconciler.js";
+import { getNativeReviewAssignmentStatus } from "../native-runtime/native-review-participant.js";
 import type { Db } from "@paperclipai/db";
-import { authUsers, agents, agentTaskSessions, agentWakeupRequests, budgetIncidents, budgetPolicies, caseHandoffs, cases, chatCompletionDeliveries, companies, companyMemberships, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, heartbeatRuns, issueComments, issueRecoveryActions, issueThreadInteractions, issues, nativeRunFinalizations, routines, routineRuns } from "@paperclipai/db";
+import { authUsers, agents, agentTaskSessions, agentWakeupRequests, budgetIncidents, budgetPolicies, caseHandoffs, cases, chatCompletionDeliveries, companies, companyMemberships, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, heartbeatRuns, issueComments, issueRecoveryActions, issueThreadInteractions, issues, nativeRunFinalizations, routines, routineRuns, statusDecisions } from "@paperclipai/db";
 import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
@@ -1633,6 +1634,107 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect(deps.releaseIssueExecutionAndPromote).toHaveBeenCalledWith(cancelled, { suppressImmediateRecovery: true });
     expect(deps.treeControlSvc.getActivePauseHoldGate).not.toHaveBeenCalled();
     expect(deps.executeRun).not.toHaveBeenCalled();
+  });
+
+  async function nativeReviewQueuedRunFixture() {
+    const f = await fixture("queued");
+    const [reviewer] = await db.insert(agents).values({ companyId: f.company.id, name: "Review agent",
+      role: "engineer", status: "idle", adapterType: "process", adapterConfig: {} }).returning();
+    const [sourceRun] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id,
+      status: "succeeded", runtimeMode: "native", nativeIssueId: f.issue.id, finishedAt: new Date() }).returning();
+    const decisionId = randomUUID();
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`set local session_replication_role = replica`);
+      await tx.insert(statusDecisions).values({ id: decisionId, companyId: f.company.id, issueId: f.issue.id,
+        runId: sourceRun.id, assessmentId: randomUUID(), decisionVersion: 1, policyVersion: "test",
+        fromStatus: "in_progress", toStatus: "in_review", reasonCode: "native_completion_review",
+        decisionJson: { projectedStatusVersion: 1 }, decisionDigest: decisionId,
+        applicationState: "applied", appliedAt: new Date() });
+    });
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({ id: interactionId, companyId: f.company.id,
+      issueId: f.issue.id, kind: "request_confirmation", status: "pending", sourceRunId: sourceRun.id,
+      addresseeAgentId: reviewer.id,
+      payload: { version: 1, prompt: "Review the completion",
+        target: { type: "custom", key: "native_completion_review", revisionId: decisionId } } as never });
+    await db.update(issues).set({ status: "in_review", lastStatusDecisionId: decisionId,
+      executionRunId: null, executionAgentNameKey: null, executionLockedAt: null,
+      executionState: { status: "pending", currentStageId: null, currentStageIndex: null,
+        currentStageType: "review", currentParticipant: { type: "agent", agentId: reviewer.id, userId: null },
+        returnAssignee: null, reviewRequest: null, completedStageIds: [], lastDecisionId: null,
+        lastDecisionOutcome: null } }).where(eq(issues.id, f.issue.id));
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.company.id, agentId: reviewer.id,
+      source: "automation", reason: "native_completion_review", status: "queued" }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: reviewer.id,
+      status: "queued", runtimeMode: "native", nativeIssueId: f.issue.id, invocationSource: "automation",
+      wakeupRequestId: wake.id, responsibleUserId: "queue-test-user",
+      contextSnapshot: { issueId: f.issue.id, nativeReviewInteractionId: interactionId,
+        nativeReviewDecisionId: decisionId } }).returning();
+    await db.update(agentWakeupRequests).set({ runId: run.id }).where(eq(agentWakeupRequests.id, wake.id));
+    return { ...f, reviewer, sourceRun, decisionId, interactionId, wake, run };
+  }
+
+  it("settles a queued native review run whose assignment is gone instead of declining it every pass", async () => {
+    const f = await nativeReviewQueuedRunFixture();
+    // A newer decision replaced the review decision: the interaction is still
+    // pending and the reviewer is still the stage participant, but the
+    // assignment can never validate again (#22350).
+    const newerDecisionId = randomUUID();
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`set local session_replication_role = replica`);
+      await tx.insert(statusDecisions).values({ id: newerDecisionId, companyId: f.company.id,
+        issueId: f.issue.id, runId: f.sourceRun.id, assessmentId: randomUUID(), decisionVersion: 2,
+        policyVersion: "test", fromStatus: "in_review", toStatus: "in_review",
+        reasonCode: "native_completion_review", decisionJson: { projectedStatusVersion: 3 },
+        decisionDigest: newerDecisionId, applicationState: "applied", appliedAt: new Date() });
+    });
+    await db.update(issues).set({ statusVersion: 3, lastStatusDecisionId: newerDecisionId })
+      .where(eq(issues.id, f.issue.id));
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(f.reviewer);
+    expect(await createHeartbeatQueue(db, deps).claimQueuedRun(f.run)).toBeNull();
+    const [cancelled] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id));
+    expect(cancelled).toMatchObject({ status: "cancelled",
+      errorCode: "native_review_assignment_no_longer_available" });
+    expect(deps.setWakeupStatus).toHaveBeenCalledWith(f.run.wakeupRequestId, "skipped",
+      expect.objectContaining({ error: "native_review_assignment_no_longer_available" }));
+    expect(deps.releaseIssueExecutionAndPromote).toHaveBeenCalledWith(cancelled,
+      expect.objectContaining({ suppressImmediateRecovery: true }));
+    expect(deps.executeRun).not.toHaveBeenCalled();
+  });
+
+  it("claims a queued native review run whose assignment is still valid", async () => {
+    const f = await nativeReviewQueuedRunFixture();
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(f.reviewer);
+    expect(await createHeartbeatQueue(db, deps).claimQueuedRun(f.run))
+      .toMatchObject({ id: f.run.id, status: "running" });
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wake.id)))[0])
+      .toMatchObject({ status: "claimed" });
+  });
+
+  it("keeps a queued native review run waiting while its reviewer is not invokable", async () => {
+    const f = await nativeReviewQueuedRunFixture();
+    // A paused reviewer is still assigned: the pre-claim status separates a
+    // dead assignment (settle as gone) from a reviewer that cannot be invoked
+    // right now (keep waiting), so the run is not cancelled with
+    // native_review_assignment_no_longer_available (#22350).
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.reviewer.id));
+    expect(await getNativeReviewAssignmentStatus(db, {
+      companyId: f.company.id, issueId: f.issue.id, agentId: f.reviewer.id,
+      contextSnapshot: f.run.contextSnapshot,
+    })).toEqual({ kind: "agent_uninvokable" });
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue({ ...f.reviewer, status: "paused" });
+    deps.getAgentInvokability.mockResolvedValue({ invokable: false, reason: "paused",
+      message: "Agent is paused", details: {}, invalidOrgChain: false });
+    expect(await createHeartbeatQueue(db, deps).claimQueuedRun(f.run)).toBeNull();
+    expect(deps.cancelRunInternal).toHaveBeenCalledWith(f.run.id,
+      expect.stringContaining("paused"));
+    expect(deps.setWakeupStatus).not.toHaveBeenCalled();
+    expect(deps.releaseIssueExecutionAndPromote).not.toHaveBeenCalled();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id)))[0])
+      .toMatchObject({ status: "queued", errorCode: null });
   });
 });
 
