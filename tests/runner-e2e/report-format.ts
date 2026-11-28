@@ -1,6 +1,12 @@
 import type { RunnerE2EBillingSummary } from "./types.js";
 import { billingCoverageLabel } from "./billing.js";
 
+export function isPublicReportTimestamp(value: unknown): value is string {
+  return typeof value === "string" && value === value.trim()
+    && /^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,9})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/.test(value)
+    && Number.isFinite(Date.parse(value));
+}
+
 export function html(value: unknown) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -10,7 +16,8 @@ export function html(value: unknown) {
     .replaceAll("'", "&#39;");
 }
 
-export function durationLabel(durationMs: number) {
+export function durationLabel(durationMs: number | null) {
+  if (durationMs === null) return "Unknown";
   if (durationMs < 1_000) return `${durationMs}ms`;
   const seconds = Math.round(durationMs / 1_000);
   if (seconds < 60) return `${seconds}s`;
@@ -23,7 +30,7 @@ export function tokenLabel(value: number, llm?: RunnerE2EBillingSummary["llm"]) 
 }
 
 export function llmCostLabel(value: number, llm: RunnerE2EBillingSummary["llm"]) {
-  return billingCoverageLabel(usdLabel(value), llm.runsWithReportedCost, llm.runCount);
+  return billingCoverageLabel(usdLabel(value), llm.runsWithReportedCost, llm.runCount, (llm.runsWithPartialReportedCost ?? 0) > 0);
 }
 
 export function usdLabel(value: number | null) {

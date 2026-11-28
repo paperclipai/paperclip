@@ -19,6 +19,24 @@ export const ProductionPicker: Story = {
   render: () => <GoogleWorkspaceServicesDialog onContinue={fn()} onCancel={fn()} />,
   parameters: { docs: { description: { story: "The production picker used by both Apps and task-hosted OAuth setup. Callbacks are mocked in Storybook; no OAuth grant is created." } } },
 };
+export const ProductionPickerReadOnly: Story = {
+  render: () => <GoogleWorkspaceServicesDialog initial={{ gmail: "read", calendar: "read" }} onContinue={fn()} onCancel={fn()} />,
+  parameters: { docs: { description: { story: "The picker shows the service rows and the privacy policy link only. It has no data-use text for any selection." } } },
+  play: async ({ canvasElement }) => {
+    const body = within(canvasElement.ownerDocument.body);
+    const dialog = body.getByRole("dialog");
+    await expect(dialog).not.toHaveTextContent(/What agents can do|How your data is used|agents can|AI model provider|train general AI models/);
+    await expect(within(dialog).getByRole("link", { name: /Limited Use/ })).toHaveAttribute("href", "https://paperclip.ing/privacy");
+    await userEvent.click(body.getByRole("switch", { name: /^Gmail$/ }));
+    await userEvent.click(body.getByRole("switch", { name: /^Calendar$/ }));
+    await expect(body.getByRole("status")).toHaveTextContent("Select at least one service to continue.");
+    await expect(within(dialog).getByRole("link", { name: /Limited Use/ })).toBeVisible();
+  },
+};
+export const ProductionPickerMobile: Story = {
+  render: () => <GoogleWorkspaceServicesDialog onContinue={fn()} onCancel={fn()} />,
+  globals: { viewport: { value: "mobile", isRotated: false } },
+};
 export const ChooseServices: Story = { args: {} };
 export const FromApps: Story = { args: { start: "catalog" } };
 export const GmailOnlyReviewer: Story = { args: { initial: { gmail: "read" }, start: "review" } };

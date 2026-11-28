@@ -1,8 +1,11 @@
+import { kimiManagedConfiguration } from "./kimi-config.js";
+import { kimiInstructionBinding } from "./kimi-instructions.js";
+import { acpxInstructionsAdmissionError } from "./admission-diagnostics.js";
 import { AGENT_OBSERVABILITY_ENV_KEYS, codexObservabilityToml } from "../agent-observability.js";
 import { piProviderConfiguration } from "./pi-provider-config.js";
-import { configuredEnvironmentKeys } from "../../configured-environment.js";
+import { CERTIFICATE_ENVIRONMENT_KEYS, configuredEnvironmentKeys } from "../../configured-environment.js";
 import { COPILOT_SYSTEM_INSTRUCTIONS_FILE } from "./copilot-profile.js";
-import { preconfiguredHomeEnvironment, usesPreconfiguredHome } from "../preconfigured-home.js";
+import { preparedHarnessHome, preconfiguredHomeEnvironment, usesPreconfiguredHome } from "../preconfigured-home.js";
 import { randomBytes } from "node:crypto";
 import {
   constants,
@@ -34,7 +37,7 @@ import {
 
 import { createSanitizedAcpxSpawnInput } from "./environment.js";
 import { cursorInstructionBinding } from "./cursor-instructions.js";
-import { claudePaperclipPermissionRules } from "./permission-policy.js";
+import { CLAUDE_SELF_SCHEDULING_TOOLS, claudePaperclipPermissionRules } from "./permission-policy.js";
 import type { QualifiedAcpxAgent } from "./qualified-profiles.js";
 import {
   resolveAcpxRuntimeRoot,
@@ -45,6 +48,7 @@ const PRIVATE_DIRECTORY_MODE = 0o700;
 const PRIVATE_FILE_MODE = 0o600;
 const MAX_SANDBOX_ENVIRONMENT_BYTES = 512 * 1024;
 const MAX_WORKSPACE_RECORD_BYTES = 64 * 1024;
+const MAX_PROVIDER_INSTRUCTIONS_BYTES = 32 * 1024;
 
 export interface AcpxRuntimeSandbox {
   root: string;
@@ -350,7 +354,7 @@ export async function prepareAcpxRuntimeSandbox(input: {
   if (input.agent === "pi" && (input.providerPolicy === undefined || typeof input.providerPolicy.readOnly !== "boolean")) {
     throw new Error("Pi admission requires an explicit task execution policy");
   }
-  const policy = await validateProviderPolicy(input.providerPolicy);
+  const policy = await validateProviderPolicy(input.providerPolicy, input.agent);
   const expectedRoot = input.binding.runtimeRoot;
   if (resolve(expectedRoot) !== expectedRoot) {
     throw new Error("ACPX runtime root must be an absolute normalized path");
@@ -399,7 +403,9 @@ export async function prepareAcpxRuntimeSandbox(input: {
       persistedEnvironment: Object.freeze({ ...homes, PAPERCLIP_RUNNER_HOME_MODE: "preconfigured" }),
     };
   }
-  const homeDirectory = await ensurePrivateDirectory(join(root, "home"), root);
+  const preparedHome = preparedHarnessHome(input.environment, input.agent);
+  const homeDirectory = preparedHome ? preconfiguredHomeEnvironment(input.environment).HOME
+    : await ensurePrivateDirectory(join(root, "home"), root);
   const configDirectory = await ensurePrivateDirectory(
     join(root, "config"),
     root,
@@ -409,16 +415,19 @@ export async function prepareAcpxRuntimeSandbox(input: {
     join(root, "cache"),
     root,
   );
-  const agentHomeDirectory = await ensurePrivateDirectory(
+  const agentHomeDirectory = preparedHome ?? await ensurePrivateDirectory(
     join(root, `${input.agent}-home`),
     root,
   );
-  const protectedPaths = Object.freeze([...new Set([physicalRuntimeDirectory, ...policy.protectedPaths])]);
+  const protectedPaths = Object.freeze([...new Set([physicalRuntimeDirectory, ...(preparedHome ? [preparedHome] : []), ...policy.protectedPaths])]);
   const workspaceRecordPath = join(root, "workspace");
   await writePrivateFile(
     workspaceRecordPath,
     `${input.binding.workspacePath}\n`,
   );
+  if (input.agent === "kimi") {
+    await writePrivateFile(join(agentHomeDirectory, "config.toml"), kimiManagedConfiguration(input.binding.requestedModel));
+  }
   if (input.agent === "pi") {
     const configuration = piProviderConfiguration(input.environment);
     if (configuration) await writePrivateFile(join(agentHomeDirectory, "models.json"), configuration.json);
@@ -433,16 +442,24 @@ export async function prepareAcpxRuntimeSandbox(input: {
         model: input.binding.requestedModel,
         availableModels: [input.binding.requestedModel],
         ...(input.binding.claudeEffort ? { effortLevel: input.binding.claudeEffort } : {}),
-        ...((input.binding.permissionMode === "approve-reads" || input.binding.permissionMode === "approve-paperclip")
-          ? { permissions: { allow: claudePaperclipPermissionRules(input.tools ?? [], input.binding.permissionMode) } }
-          : {}),
+        permissions: {
+          ...((input.binding.permissionMode === "approve-reads" || input.binding.permissionMode === "approve-paperclip")
+            ? { allow: claudePaperclipPermissionRules(input.tools ?? [], input.binding.permissionMode) }
+            : {}),
+          deny: [...CLAUDE_SELF_SCHEDULING_TOOLS],
+        },
       })}\n`,
     );
+  } : input.agent === "antigravity" ? async () => {
+    const profile = await ensurePrivateDirectory(join(agentHomeDirectory, "antigravity-acp"), agentHomeDirectory);
+    const method = input.environment?.PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET ? "oauth-personal" : "gemini-api-key";
+    await writePrivateFile(join(profile, "settings.json"), `${JSON.stringify({ auth: { type: method } })}\n`);
   } : undefined;
   if (input.agent === "grok") {
     // Native project rules merge with global rules. Ask rules win over project
     // allows, keeping operation approval at the runner's authenticated boundary.
     await writePrivateFile(join(agentHomeDirectory, "config.toml"), [
+      `disable_web_search = ${input.binding.grokDisableWebSearch === true}`,
       "[permission]",
       'ask = ["Bash", "Read", "Edit", "Grep", "MCPTool", "WebFetch", "WebSearch"]',
       "[ui]", 'permission_mode = "ask"',
@@ -458,7 +475,7 @@ export async function prepareAcpxRuntimeSandbox(input: {
     // Always-approve may otherwise be enabled by compatible project settings.
     // Even approve-all runs use one host decision per requested operation.
     await writePrivateFile(join(agentHomeDirectory, "requirements.toml"),
-      "[ui]\ndisable_bypass_permissions_mode = true\n");
+      `${input.binding.grokDisableWebSearch === true ? "disable_web_search = true\n" : ""}[ui]\ndisable_bypass_permissions_mode = true\n`);
   }
   if (input.agent === "pi") {
     await writePrivateFile(
@@ -498,6 +515,8 @@ export async function prepareAcpxRuntimeSandbox(input: {
           `include_only = ${JSON.stringify([...new Set([
             "PATH", "HOME", "LANG", "LANGUAGE", "TZ", "TMPDIR", "TEMP", "TMP", "CODEX_HOME",
             "PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
+            // Certificate-trust names stay inheritable for execution-side injection.
+            ...CERTIFICATE_ENVIRONMENT_KEYS,
             ...taskEnvironmentKeys,
             // Unselected provider/config secrets keep Codex's default shell exclusions;
             // only Paperclip's scoped API token is required by Bash/curl skills.
@@ -526,6 +545,8 @@ export async function prepareAcpxRuntimeSandbox(input: {
     XDG_CACHE_HOME: cacheDirectory,
     PAPERCLIP_ACPX_PROFILE: input.agent,
     PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1",
+    ...(input.agent === "kimi" ? { KIMI_CODE_HOME: agentHomeDirectory, PAPERCLIP_KIMI_INSTRUCTIONS: kimiInstructionBinding(policy.systemInstructions).payload } : {}),
+    ...(input.agent === "antigravity" ? { GEMINI_HOME: agentHomeDirectory, AGY_ACP_FORCE_FILE_STORAGE: "1" } : {}),
     ...(input.agent === "grok" ? { GROK_HOME: agentHomeDirectory, NO_BROWSER: "1", GROK_DISABLE_AUTOUPDATER: "1" } : {}),
     ...(input.agent === "pi"
       ? {
@@ -597,7 +618,7 @@ export async function prepareAcpxRuntimeSandbox(input: {
   };
 }
 
-async function validateProviderPolicy(policy: AcpxProviderRuntimePolicy | undefined): Promise<{
+async function validateProviderPolicy(policy: AcpxProviderRuntimePolicy | undefined, agent: QualifiedAcpxAgent): Promise<{
   readOnly: boolean; readRoots: string[]; protectedPaths: string[]; systemInstructions: string;
 }> {
   if (policy !== undefined && typeof policy.readOnly !== "boolean") throw new Error("Provider task execution policy is invalid");
@@ -610,7 +631,8 @@ async function validateProviderPolicy(policy: AcpxProviderRuntimePolicy | undefi
     }));
   };
   const systemInstructions = policy?.systemInstructions ?? "";
-  if (typeof systemInstructions !== "string" || systemInstructions.includes("\0") || Buffer.byteLength(systemInstructions) > 32 * 1024) throw new Error("Provider runtime instructions exceed their bounded size");
+  if (typeof systemInstructions !== "string" || systemInstructions.includes("\0")) throw acpxInstructionsAdmissionError("Provider runtime instructions are invalid");
+  if (agent === "pi" && Buffer.byteLength(systemInstructions) > MAX_PROVIDER_INSTRUCTIONS_BYTES) throw acpxInstructionsAdmissionError("Provider runtime instructions exceed their bounded size");
   return {
     readOnly: policy?.readOnly ?? true,
     readRoots: await paths(policy?.readRoots, true),
@@ -678,8 +700,8 @@ export async function refreshCopilotSystemInstructions(
   sandbox: Pick<AcpxRuntimeSandbox, "agentHomeDirectory">,
   instructions: string,
 ): Promise<void> {
-  if (instructions.includes("\0") || Buffer.byteLength(instructions) > 32 * 1024) {
-    throw new Error("Provider runtime instructions exceed their bounded size");
+  if (instructions.includes("\0") || Buffer.byteLength(instructions) > MAX_PROVIDER_INSTRUCTIONS_BYTES) {
+    throw acpxInstructionsAdmissionError("Provider runtime instructions exceed their bounded size");
   }
   // Native Copilot reloads this file on session/load. Empty text clears old text.
   await writePrivateFile(
@@ -761,7 +783,8 @@ function isPersistableEnvironmentName(name: string): boolean {
     /^(?:PI_CODING_AGENT_DIR|PI_SKIP_VERSION_CHECK|PI_TELEMETRY)$/.test(name) ||
     /^(?:CURSOR_CONFIG_DIR|CURSOR_DATA_DIR|AGENT_CLI_CREDENTIAL_STORE|NO_OPEN_BROWSER|NODE_DISABLE_COMPILE_CACHE)$/.test(name) ||
     /^(?:COPILOT_HOME|COPILOT_CACHE_HOME|COPILOT_AUTO_UPDATE|COPILOT_ALLOW_ALL|COPILOT_DISABLE_TERMINAL_TITLE|NO_COLOR)$/.test(name) ||
-    /^(?:CLAUDE_CONFIG_DIR|CODEX_HOME|NO_BROWSER|DEFAULT_AUTH_REQUEST)$/.test(
+    /^(?:GEMINI_HOME|AGY_ACP_FORCE_FILE_STORAGE)$/.test(name) ||
+    /^(?:CLAUDE_CONFIG_DIR|CODEX_HOME|NO_BROWSER|DEFAULT_AUTH_REQUEST|PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME)$/.test(
       name,
     )
   );

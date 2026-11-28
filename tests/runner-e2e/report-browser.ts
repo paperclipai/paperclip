@@ -54,6 +54,7 @@ export const reportBrowserScript = String.raw`
     } else appendCrumb(view === 'attention' ? 'Needs attention' : view === 'case' ? 'Case unavailable' : 'All results');
   };
   const apply = () => {
+    controls.forEach(control => { control.dataset.filterActive = String(Boolean(control.value)); });
     const search = query.value.trim().toLowerCase();
     const matchesFilters = card =>
       (!search || card.dataset.reportSearch.includes(search)) &&

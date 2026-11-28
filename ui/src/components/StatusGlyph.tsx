@@ -1,6 +1,7 @@
 import type { CSSProperties } from "react";
 import {
   Ban,
+  Clock,
   Circle,
   CircleCheck,
   CircleDashed,
@@ -20,7 +21,7 @@ import { taskStatusIconVar, taskStatusIconVarDefault } from "../lib/status-color
  *
  *   backlog → circle-dashed · todo → circle · in_progress → animated open circle ·
  *   in_review → circle-dot · done → circle-check · blocked → circle-minus ·
- *   cancelled → ban · in_queue → circle-minus (blocked recoloured blue).
+ *   cancelled → ban · monitoring → clock · in_queue → circle-minus (blocked recoloured blue).
  *
  * The in-progress animation represents task workflow status, independently of
  * run execution. It remains between runs until the task status changes; live
@@ -41,6 +42,7 @@ const SIZE_PX: Record<StatusGlyphSize, number> = { sm: 14, md: 16, lg: 20 };
 export type StatusGlyphStatus =
   | "backlog"
   | "todo"
+  | "monitoring"
   | "in_progress"
   | "in_review"
   | "done"
@@ -60,6 +62,7 @@ const STATUS_ICON: Record<string, LucideIcon> = {
   backlog: CircleDashed,
   todo: Circle,
   in_progress: TaskProgressSpinner,
+  monitoring: Clock,
   in_review: CircleDot,
   done: CircleCheck,
   blocked: CircleMinus,

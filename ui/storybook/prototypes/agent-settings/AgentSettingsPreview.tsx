@@ -18,6 +18,7 @@ import {
   confirmAgentConfigNavigation,
 } from "@/pages/AgentDetail";
 import { AgentSkillsTab } from "@/pages/agent-skills/AgentSkillsTab";
+import { AgentAdvancedTab } from "@/pages/AgentAdvancedTab";
 import { AgentToolsTab } from "@/pages/AgentToolsTab";
 import { AgentContextualSidebar } from "@/components/AgentContextualSidebar";
 import { AgentActionButtons } from "@/components/AgentActionButtons";
@@ -45,6 +46,7 @@ import { storybookIssues } from "../../fixtures/paperclipData";
 import "./settings.css";
 
 const descriptions: Record<AgentLocalDetailView, string> = {
+  advanced: "Edit the agent’s configuration as YAML.",
   overview: "A snapshot of Nova’s work, capabilities, and current setup.",
   instructions: "The files that guide how your agent thinks and works.",
   skills: "Choose the skills your agent brings to each task.",
@@ -58,6 +60,10 @@ const descriptions: Record<AgentLocalDetailView, string> = {
   "api-keys": "Manage the keys this agent uses to authenticate with Paperclip.",
   revisions:
     "Review past configuration changes and restore an earlier version.",
+  activity: "Everything this agent did and everything done to it.",
+  runs: "Every execution of this agent, newest first.",
+  costs: "What this agent spent, by model.",
+  budgets: "This agent’s monthly budget and how much of it is used.",
 };
 type Feedback = Parameters<
   NonNullable<ComponentProps<typeof AgentConfigForm>["onTestFeedbackChange"]>
@@ -80,7 +86,7 @@ export function AgentSettingsPreview({
   const [fixtures] = useState(() => {
     const fixtures = createSettingsFixtures(adapterType, testOutcome, saveFails);
     if (adapterType === "codex_local" || adapterType === "paperclip_runner") {
-      fixtures.agent.adapterConfig = { ...fixtures.agent.adapterConfig, model: "gpt-5.6-sol", modelReasoningEffort: "high", ...(adapterType === "paperclip_runner" ? { provider: "codex" } : {}) };
+      fixtures.agent.adapterConfig = { ...fixtures.agent.adapterConfig, model: "gpt-6.1-sol", modelReasoningEffort: "high", ...(adapterType === "paperclip_runner" ? { provider: "codex" } : {}) };
     }
     return fixtures;
   });
@@ -275,7 +281,7 @@ function SettingsPage({ runtimeContent }: { runtimeContent?: ReactNode }) {
             if (
               dirty &&
               (event.target as HTMLElement).closest("a") &&
-              !confirmAgentConfigNavigation(true)
+              (saving || !confirmAgentConfigNavigation(true))
             ) {
               event.preventDefault();
               event.stopPropagation();
@@ -470,6 +476,9 @@ function SettingsPage({ runtimeContent }: { runtimeContent?: ReactNode }) {
               )}
               {view === "revisions" && (
                 <AgentRevisionsTab agent={agent} companyId={COMPANY} />
+              )}
+              {view === "advanced" && (
+                <AgentAdvancedTab key={agent.id} agent={agent} onDirtyChange={onDirty} onSavingChange={setSaving} onSaved={() => {}} />
               )}
             </div>
             {(saveError || permissions.error) && (

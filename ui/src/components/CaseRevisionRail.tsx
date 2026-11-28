@@ -6,6 +6,7 @@ import { casesApi, type CaseDocumentRevision, type CaseDocumentRevisions } from 
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
 import { buildLineDiff, type DiffRow } from "@/lib/line-diff";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -13,6 +14,7 @@ import { MarkdownBody } from "@/components/MarkdownBody";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn, relativeTime } from "@/lib/utils";
 import { Diff } from "lucide-react";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 /** Author + via-issue attribution line for a revision. */
 function RevisionByline({ revision }: { revision: CaseDocumentRevision }) {
@@ -149,7 +151,7 @@ function CaseDocumentDiffModal({
                   <span className="select-none px-3 text-center text-muted-foreground">
                     {markerByKind[row.kind]}
                   </span>
-                  <pre className="overflow-x-auto whitespace-pre-wrap break-words px-3 py-0 text-inherit">
+                  <pre className={cn("overflow-x-auto whitespace-pre-wrap break-words px-3 py-0 text-inherit", ANALYTICS_MASK_CLASS)}>
                     {row.text.length > 0 ? row.text : " "}
                   </pre>
                 </div>
@@ -180,6 +182,7 @@ export function CaseRevisionRail({
     queryKey: taskId ? queryKeys.issues.documentRevisions(taskId, documentKey) : queryKeys.cases.revisions(caseIdentifier, documentKey),
     queryFn: () => taskId ? issuesApi.listDocumentRevisions(taskId, documentKey) : casesApi.listRevisions(caseIdentifier, documentKey),
   });
+  const revisionsView = useQueryView(revisionsQuery);
   const response = revisionsQuery.data;
   const revisions: CaseDocumentRevision[] = Array.isArray(response) ? response.map(revision => ({
     ...revision, title: revision.title ?? documentKey, createdAt: new Date(revision.createdAt).toISOString(),
@@ -197,11 +200,21 @@ export function CaseRevisionRail({
     }
   }, [revisions, selectedId]);
 
-  if (revisionsQuery.isLoading) {
+  if (revisionsQuery.isLoading || revisionsView.kind === "reconnecting") {
     return <p className="py-6 text-center text-sm text-muted-foreground">Loading revisions…</p>;
   }
-  if (revisionsQuery.isError) {
-    return <p className="py-6 text-center text-sm text-muted-foreground">Could not load revisions.</p>;
+  if (revisionsView.kind === "error") {
+    return (
+      <div className="flex justify-center py-6">
+        <QueryErrorState
+          size="inline"
+          error={revisionsQuery.error}
+          action="load revisions"
+          onRetry={revisionsView.retry}
+          retrying={revisionsView.isFetching}
+        />
+      </div>
+    );
   }
   if (revisions.length === 0) {
     return <p className="py-6 text-center text-sm text-muted-foreground">No revisions yet.</p>;

@@ -32,7 +32,7 @@ describe("createCapturedOutputBuffer", () => {
       headers: { "content-type": "application/json" },
     });
 
-    await expect(parseJsonResponseWithLimit<{ ok: boolean }>(response, 64)).resolves.toEqual({ ok: true });
+    await expect(parseJsonResponseWithLimit(response, 64)).resolves.toEqual({ ok: true });
   });
 
   it("rejects oversized JSON responses before parsing them", async () => {
