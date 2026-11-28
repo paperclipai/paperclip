@@ -213,7 +213,7 @@ describe("run inspection commands", () => {
       reason: "manual check",
       payload: { issueId: "PC-1" },
     });
-    expect(fetchMock.mock.calls[2]?.[0]).toBe("http://localhost:3100/api/issues/PC-1/runs");
+    expect(fetchMock.mock.calls[2]?.[0]).toBe("http://localhost:3100/api/issues/PC-1/runs?limit=100");
     expect(fetchMock.mock.calls[3]?.[0]).toBe("http://localhost:3100/api/issues/PC-1/live-runs");
     expect(fetchMock.mock.calls[4]?.[0]).toBe("http://localhost:3100/api/issues/PC-1/active-run");
   });

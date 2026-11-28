@@ -31,6 +31,7 @@ import {
   addCommonClientOptions,
   apiPath,
   formatInlineRecord,
+  getAllIssueHistory,
   handleCommandError,
   inferContentTypeFromPath,
   printOutput,
@@ -1213,7 +1214,7 @@ export function registerIssueCommands(program: Command): void {
       .action(async (issueId: string, opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const rows = (await ctx.api.get<unknown[]>(apiPath`/api/issues/${issueId}/runs`)) ?? [];
+          const rows = await getAllIssueHistory<{ runId: string }>(ctx.api, issueId, "runs", (run) => run.runId);
           printOutput(rows, { json: ctx.json });
         } catch (err) {
           handleCommandError(err);

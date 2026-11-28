@@ -33,7 +33,8 @@ function fixture(options: {
   const select = vi.fn((fields: Record<string, unknown> = {}) => ({
     from(table: Parameters<typeof getTableName>[0]) {
       const name = getTableName(table);
-      const key = name === "heartbeat_runs" && "runId" in fields ? "run_list"
+      const key = name === "heartbeat_runs" && "runId" in fields
+        ? Object.keys(fields).length === 1 ? "run_page" : "run_list"
         : name === "heartbeat_runs" && "stdoutExcerpt" in fields ? "liveness_backfill"
           : name;
       let condition: SQL;
@@ -53,7 +54,7 @@ function fixture(options: {
             const error = options.failures?.[key]?.[attempt];
             if (error) throw error;
             if (options.missing) return [];
-            if (key === "heartbeat_runs" || key === "run_list") return [row];
+            if (key === "heartbeat_runs" || key === "run_list" || key === "run_page") return [row];
             if (key === "liveness_backfill") return options.backfill ? [row] : [];
             if (key === "issues") return [{ status: "in_progress", title: "Fixture", workMode: "standard" }];
             if (key === "issue_thread_interactions") return [{ issueId, kind: "ask_user_questions" }];
@@ -138,7 +139,7 @@ describe("execution projection read retries", () => {
     const result = await activityService(test.db).runsForIssue(companyId, issueId);
     expect(result).toMatchObject([{ runId, execution: { phase: "waiting_for_answer" } }]);
     expect(test.count("issue_thread_interactions")).toBe(3);
-    for (const key of ["run_list", "liveness_backfill", "heartbeat_runs", "native_run_finalizations", "environment_leases", "issue_recovery_actions"]) {
+    for (const key of ["run_page", "run_list", "liveness_backfill", "heartbeat_runs", "native_run_finalizations", "environment_leases", "issue_recovery_actions"]) {
       expect(test.count(key)).toBe(1);
     }
     // One retry-exhaustion lookup plus the independent backfill's event count.

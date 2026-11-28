@@ -43,7 +43,6 @@ jobs:
       plan: ${{ steps.publish.outputs.plan }}
     env:
       CI_PLAN: ${{ needs.gate.outputs.plan }}
-      CI_RUNNER_PROFILE: ${{ needs.gate.outputs.runner == 'ubuntu-latest' && 'hosted' || 'aws' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -70,20 +69,8 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
-      - name: Check preinstalled pnpm
-        id: pnpm_preinstalled
-        if: steps.eligible.outputs.enabled == 'true'
-        run: |
-          expected="$(node -e 'const m = /^pnpm@([^+\s]+)(?:\+.*)?$/.exec(JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).packageManager || ""); process.stdout.write(m ? m[1] : "");')"
-          if [ -x "$HOME/setup-pnpm/node_modules/.bin/pnpm" ] && [ -n "$expected" ] && [ "$("$HOME/setup-pnpm/node_modules/.bin/pnpm" --version 2>/dev/null || true)" = "$expected" ]; then
-            echo "PNPM_HOME=$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_ENV"
-            echo "$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_PATH"
-            echo "hit=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "hit=false" >> "$GITHUB_OUTPUT"
-          fi
       - name: Setup pnpm
-        if: steps.eligible.outputs.enabled == 'true' && steps.pnpm_preinstalled.outputs.hit != 'true'
+        if: steps.eligible.outputs.enabled == 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -210,20 +197,7 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
-      - name: Check preinstalled pnpm
-        id: pnpm_preinstalled
-        run: |
-          expected="$(node -e 'const m = /^pnpm@([^+\s]+)(?:\+.*)?$/.exec(JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).packageManager || ""); process.stdout.write(m ? m[1] : "");')"
-          if [ -x "$HOME/setup-pnpm/node_modules/.bin/pnpm" ] && [ -n "$expected" ] && [ "$("$HOME/setup-pnpm/node_modules/.bin/pnpm" --version 2>/dev/null || true)" = "$expected" ]; then
-            echo "PNPM_HOME=$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_ENV"
-            echo "$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_PATH"
-            echo "hit=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "hit=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Setup pnpm
-        if: steps.pnpm_preinstalled.outputs.hit != 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -269,46 +243,13 @@ jobs:
         run: node "$CI_NODE_TEST" '.github/scripts/tests/*.test.mjs'
 
       - name: Test general-server shard partition
-        run: |
-          tests=(./scripts/__tests__/run-vitest-stable-shard.test.mjs)
-          if [[ -f ./scripts/__tests__/run-vitest-stable-pr-mode.test.mjs ]]; then tests+=(./scripts/__tests__/run-vitest-stable-pr-mode.test.mjs); fi
-          node "$CI_NODE_TEST" "${tests[@]}"
+        run: node "$CI_NODE_TEST" ./scripts/__tests__/run-vitest-stable-shard.test.mjs
 
       - name: Test e2e shard partition
         run: node "$CI_NODE_TEST" ./scripts/__tests__/e2e-shard.test.mjs
 
-      - name: Check CI test budget policy
-        run: |
-          if [[ -f ./scripts/check-test-budget.mjs ]]; then
-            base_sha="${{ github.event.pull_request.base.sha }}"
-            if [[ -n "$base_sha" ]]; then
-              node ./scripts/check-test-budget.mjs --base "$base_sha"
-            else
-              node ./scripts/check-test-budget.mjs
-            fi
-          fi
-          if [[ -f ./scripts/check-test-budget.test.mjs ]]; then
-            node "$CI_NODE_TEST" ./scripts/check-test-budget.test.mjs
-          fi
-
       - name: Test release verify workflow wiring
-        run: |
-          tests=(./scripts/__tests__/release-verify-workflow.test.mjs ./scripts/__tests__/eval-schedule-monitor.test.mjs ./scripts/__tests__/prepare-runner-release-image.test.mjs ./scripts/cloud-source-verification.test.mjs ./scripts/cloud-readiness-runner-loss.test.mjs ./scripts/standard-image-contract.test.mjs ./scripts/reuse-canary-image.test.mjs)
-          for test in ./scripts/github-actions-rate-limit.test.mjs ./scripts/docker-image-metadata.test.mjs; do
-            if [[ -f "$test" ]]; then tests+=("$test"); fi
-          done
-          if [[ -f ./scripts/verify-canary-provenance.test.mjs ]]; then tests+=(./scripts/verify-canary-provenance.test.mjs); fi
-          node "$CI_NODE_TEST" "${tests[@]}"
-
-      - name: Test merge-queue workflow wiring
-        # This workflow loads from master and tests the caller's checkout. A
-        # rerun of an older pull request has no copy of these tests.
-        run: |
-          tests=()
-          for test in ./scripts/merge-group-image.test.mjs ./scripts/__tests__/merge-queue-checks-workflow.test.mjs; do
-            if [[ -f "$test" ]]; then tests+=("$test"); fi
-          done
-          if (( ${#tests[@]} > 0 )); then node "$CI_NODE_TEST" "${tests[@]}"; fi
+        run: node "$CI_NODE_TEST" ./scripts/__tests__/release-verify-workflow.test.mjs ./scripts/__tests__/eval-schedule-monitor.test.mjs ./scripts/__tests__/prepare-runner-release-image.test.mjs ./scripts/cloud-source-verification.test.mjs ./scripts/standard-image-contract.test.mjs ./scripts/reuse-canary-image.test.mjs
 
       - name: Test standalone package build concurrency
         run: node "$CI_NODE_TEST" ./scripts/__tests__/build-standalone-concurrency.test.mjs
@@ -346,9 +287,6 @@ jobs:
     timeout-minutes: 20
 
     env:
-      CI_PLAN: ${{ needs.gate.outputs.plan }}
-      PAPERCLIP_CI_BASE_SHA: ${{ needs.gate.outputs.plan != '' && fromJSON(needs.gate.outputs.plan).diff.base || github.event.pull_request.base.sha }}
-      PAPERCLIP_CI_FULL: ${{ (contains(github.event.pull_request.labels.*.name, 'full-ci') || vars.CI_INCREMENTAL_MODE == 'full') && '1' || '' }}
       PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
       PAPERCLIP_CI_PROFILE_JOB: Typecheck + Release Registry
 
@@ -357,7 +295,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-          fetch-depth: 2
 
       - name: Initialize CI profile
         continue-on-error: true
@@ -370,20 +307,7 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
-      - name: Check preinstalled pnpm
-        id: pnpm_preinstalled
-        run: |
-          expected="$(node -e 'const m = /^pnpm@([^+\s]+)(?:\+.*)?$/.exec(JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).packageManager || ""); process.stdout.write(m ? m[1] : "");')"
-          if [ -x "$HOME/setup-pnpm/node_modules/.bin/pnpm" ] && [ -n "$expected" ] && [ "$("$HOME/setup-pnpm/node_modules/.bin/pnpm" --version 2>/dev/null || true)" = "$expected" ]; then
-            echo "PNPM_HOME=$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_ENV"
-            echo "$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_PATH"
-            echo "hit=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "hit=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Setup pnpm
-        if: steps.pnpm_preinstalled.outputs.hit != 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -427,7 +351,7 @@ jobs:
             pnpm install --frozen-lockfile
           fi
 
-      # The typecheck lane builds @paperclipai/server, whose build script
+      # typecheck:build-gaps builds @paperclipai/server, whose build script
       # rebuilds the Runner release binary; without the shared Rust cache that
       # is a ~3m40s cold compile of all third-party crates (run 35036001734,
       # 2026-09-15). Same restore-only contract as Verify Paperclip Runner.
@@ -529,57 +453,31 @@ jobs:
             packages/paperclip-runner/runner/target/release/deps/paperclip_runnerd-*
             packages/paperclip-runner/runner/target/release/paperclip-runnerd
             packages/paperclip-runner/runner/target/release/paperclip-runnerd.d
-            packages/paperclip-runner/runner/target/release/.fingerprint/paperclip-process-table-*
-            packages/paperclip-runner/runner/target/release/deps/libpaperclip_process_table-*
-            packages/paperclip-runner/runner/target/release/deps/paperclip_process_table-*.d
           key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/acpx-profiles.json', 'packages/paperclip-runner/antigravity-distributions.json', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
 
       - name: Mark the restored Runner release crate current
         if: ${{ steps.runner_release_crate.outputs.cache-hit == 'true' }}
         run: node scripts/runner-release-crate-cache.mjs mark-current
 
-      # Exact-key master cache for prebuilt Runner dist (read-only restore;
-      # prepare-runner-vendor.mjs self-validates the SHA-256 input digest and
-      # every output size, rebuilding on any mismatch).
-      - name: Restore prebuilt Runner dist (read only)
-        id: runner_dist
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            packages/paperclip-runner/dist
-            packages/paperclip-runner/node_modules/.cache/paperclip-runner-build-inputs.json
-            packages/paperclip-eval-kernel/dist
-          key: runner-dist-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'tsconfig.base.json', 'patches/**', 'packages/shared/src/**', 'packages/adapter-utils/src/**', 'packages/plugins/sdk/src/**', 'packages/paperclip-runner/package.json', 'packages/paperclip-runner/tsconfig*.json', 'packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/acpx-profiles.json', 'packages/paperclip-runner/antigravity-distributions.json', 'packages/paperclip-runner/cursor-*.json', 'packages/paperclip-runner/src/**', 'packages/paperclip-runner/scripts/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/spec/**', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'packages/paperclip-eval-kernel/package.json', 'packages/paperclip-eval-kernel/tsconfig*.json', 'packages/paperclip-eval-kernel/src/**') }}
+      - name: Typecheck workspaces whose build scripts skip TypeScript
+        run: pnpm run typecheck:build-gaps
 
-      # Prefix-keyed master cache for TS 7 incremental .tsbuildinfo + dts outputs
-      # (read-only restore). TypeScript 7 hashes file contents so changed PR files
-      # always re-check cleanly while unchanged layers finish 10-18x faster.
-      - name: Restore incremental typecheck cache (read only)
-        id: typecheck_incremental
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            server/node_modules/.cache/paperclip-typecheck
-            ui/node_modules/.cache/paperclip-ui.tsbuildinfo
-          key: typecheck-incremental-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml', 'tsconfig.base.json', 'server/tsconfig.json', 'server/src/__tests__/tsconfig.json', 'server/scripts/typecheck-layers.mjs', 'ui/tsconfig.json') }}-${{ github.event.pull_request.base.sha }}
-          restore-keys: |
-            typecheck-incremental-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml', 'tsconfig.base.json', 'server/tsconfig.json', 'server/src/__tests__/tsconfig.json', 'server/scripts/typecheck-layers.mjs', 'ui/tsconfig.json') }}-
+      - name: Typecheck test files that no build reads
+        run: node scripts/typecheck-test-programs.mjs --low-memory
 
-      - name: Typecheck, CLI guidance safety and release registry tests
-        if: ${{ hashFiles('scripts/ci-typecheck-lane.mjs') != '' }}
-        run: node scripts/ci-typecheck-lane.mjs
-
-      - name: Typecheck a checkout that predates the typecheck lane script
-        if: ${{ hashFiles('scripts/ci-typecheck-lane.mjs') == '' }}
+      - name: Typecheck the server in low-memory layers
         env:
           PAPERCLIP_TYPECHECK_LOW_MEMORY: "1"
-        run: |
-          pnpm run typecheck:build-gaps
-          node scripts/typecheck-test-programs.mjs --low-memory
-          pnpm --filter @paperclipai/server typecheck
-          node scripts/typecheck-test-projects.mjs --low-memory --reuse-declarations
-          pnpm exec vitest run --project @paperclipai/server server/src/__tests__/cli-invocation-safety.test.ts
-          pnpm run test:release-registry
+        run: pnpm --filter @paperclipai/server typecheck
+
+      - name: Typecheck test projects against the server declarations
+        run: node scripts/typecheck-test-projects.mjs --low-memory --reuse-declarations
+
+      - name: Verify repository-wide CLI guidance safety
+        run: pnpm exec vitest run --project @paperclipai/server server/src/__tests__/cli-invocation-safety.test.ts
+
+      - name: Verify release registry test coverage
+        run: pnpm run test:release-registry
 
       - name: Upload CI profile timings
         continue-on-error: true
@@ -600,11 +498,9 @@ jobs:
     timeout-minutes: 20
     strategy:
       fail-fast: false
-      max-parallel: ${{ needs.gate.outputs.runner == 'ubuntu-latest' && 4 || 256 }}
-      matrix: ${{ fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan) != '' && toJSON((needs.gate.outputs.runner == 'ubuntu-latest' && fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan)).jobs.general_tests.hosted_matrix) || fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan)).jobs.general_tests.matrix) || (needs.gate.outputs.runner == 'ubuntu-latest' && '{"include":[{"group":"general-server-without-chat","group_label":"server (1/8)","shard_index":0,"shard_count":8,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (2/8)","shard_index":1,"shard_count":8,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (3/8)","shard_index":2,"shard_count":8,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (4/8)","shard_index":3,"shard_count":8,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (5/8)","shard_index":4,"shard_count":8,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (6/8)","shard_index":5,"shard_count":8,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (7/8)","shard_index":6,"shard_count":8,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (8/8)","shard_index":7,"shard_count":8,"task":"ci:server"},{"group":"general-chat","group_label":"chat (1/1)","shard_index":0,"shard_count":1,"task":"ci:chat"},{"group":"general-workspaces-a","group_label":"workspaces-a (1/1)","shard_index":0,"shard_count":1,"task":"ci:workspaces-a"},{"group":"general-workspaces-b","group_label":"workspaces-b (1/1)","shard_index":0,"shard_count":1,"task":"ci:workspaces-b"},{"group":"general-workspaces-c","group_label":"workspaces-c","task":"ci:db"}]}' || '{"include":[{"group":"general-server-without-chat","group_label":"server (1/20)","shard_index":0,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (2/20)","shard_index":1,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (3/20)","shard_index":2,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (4/20)","shard_index":3,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (5/20)","shard_index":4,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (6/20)","shard_index":5,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (7/20)","shard_index":6,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (8/20)","shard_index":7,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (9/20)","shard_index":8,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (10/20)","shard_index":9,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (11/20)","shard_index":10,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (12/20)","shard_index":11,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (13/20)","shard_index":12,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (14/20)","shard_index":13,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (15/20)","shard_index":14,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (16/20)","shard_index":15,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (17/20)","shard_index":16,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (18/20)","shard_index":17,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (19/20)","shard_index":18,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (20/20)","shard_index":19,"shard_count":20,"task":"ci:server"},{"group":"general-chat","group_label":"chat (1/3)","shard_index":0,"shard_count":3,"task":"ci:chat"},{"group":"general-chat","group_label":"chat (2/3)","shard_index":1,"shard_count":3,"task":"ci:chat"},{"group":"general-chat","group_label":"chat (3/3)","shard_index":2,"shard_count":3,"task":"ci:chat"},{"group":"general-workspaces-a","group_label":"workspaces-a (1/2)","shard_index":0,"shard_count":2,"task":"ci:workspaces-a"},{"group":"general-workspaces-a","group_label":"workspaces-a (2/2)","shard_index":1,"shard_count":2,"task":"ci:workspaces-a"},{"group":"general-workspaces-b","group_label":"workspaces-b (1/2)","shard_index":0,"shard_count":2,"task":"ci:workspaces-b"},{"group":"general-workspaces-b","group_label":"workspaces-b (2/2)","shard_index":1,"shard_count":2,"task":"ci:workspaces-b"},{"group":"general-workspaces-c","group_label":"workspaces-c","task":"ci:db"}]}')) }}
+      matrix: ${{ fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan) != '' && toJSON(fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan)).jobs.general_tests.matrix) || '{"include":[{"group":"general-server-without-chat","group_label":"server (1/12)","shard_index":0,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (2/12)","shard_index":1,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (3/12)","shard_index":2,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (4/12)","shard_index":3,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (5/12)","shard_index":4,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (6/12)","shard_index":5,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (7/12)","shard_index":6,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (8/12)","shard_index":7,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (9/12)","shard_index":8,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (10/12)","shard_index":9,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (11/12)","shard_index":10,"shard_count":12,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (12/12)","shard_index":11,"shard_count":12,"task":"ci:server"},{"group":"general-chat","group_label":"chat (1/3)","shard_index":0,"shard_count":3,"task":"ci:chat"},{"group":"general-chat","group_label":"chat (2/3)","shard_index":1,"shard_count":3,"task":"ci:chat"},{"group":"general-chat","group_label":"chat (3/3)","shard_index":2,"shard_count":3,"task":"ci:chat"},{"group":"general-workspaces-a","group_label":"workspaces-a (1/2)","shard_index":0,"shard_count":2,"task":"ci:workspaces-a"},{"group":"general-workspaces-a","group_label":"workspaces-a (2/2)","shard_index":1,"shard_count":2,"task":"ci:workspaces-a"},{"group":"general-workspaces-b","group_label":"workspaces-b","task":"ci:workspaces-b"},{"group":"general-workspaces-c","group_label":"workspaces-c","task":"ci:db"}]}') }}
 
     env:
-      PAPERCLIP_CI_FULL: ${{ (contains(github.event.pull_request.labels.*.name, 'full-ci') || vars.CI_INCREMENTAL_MODE == 'full') && '1' || '' }}
       PAPERCLIP_CI_TEST_SELECTION: ${{ matrix.selection && '.ci-test-selection/manifest.json' || '' }}
       PAPERCLIP_CI_SELECTION_HASH: ${{ matrix.selection && fromJSON(needs.test_selection.outputs.plan).testSelection.hash || '' }}
       PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
@@ -637,20 +533,7 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
-      - name: Check preinstalled pnpm
-        id: pnpm_preinstalled
-        run: |
-          expected="$(node -e 'const m = /^pnpm@([^+\s]+)(?:\+.*)?$/.exec(JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).packageManager || ""); process.stdout.write(m ? m[1] : "");')"
-          if [ -x "$HOME/setup-pnpm/node_modules/.bin/pnpm" ] && [ -n "$expected" ] && [ "$("$HOME/setup-pnpm/node_modules/.bin/pnpm" --version 2>/dev/null || true)" = "$expected" ]; then
-            echo "PNPM_HOME=$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_ENV"
-            echo "$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_PATH"
-            echo "hit=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "hit=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Setup pnpm
-        if: steps.pnpm_preinstalled.outputs.hit != 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -770,9 +653,6 @@ jobs:
       - name: Run generated-file drift checks against the Docker build context
         run: docker buildx build --file .github/docker-context-checks.Dockerfile .
 
-      - name: Verify Tailscale runtime clients
-        run: docker buildx build --file Dockerfile --target tailscale-client .
-
       - name: Upload CI profile timings
         continue-on-error: true
         if: always() && env.PAPERCLIP_CI_PROFILE == 'true'
@@ -815,20 +695,7 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
-      - name: Check preinstalled pnpm
-        id: pnpm_preinstalled
-        run: |
-          expected="$(node -e 'const m = /^pnpm@([^+\s]+)(?:\+.*)?$/.exec(JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).packageManager || ""); process.stdout.write(m ? m[1] : "");')"
-          if [ -x "$HOME/setup-pnpm/node_modules/.bin/pnpm" ] && [ -n "$expected" ] && [ "$("$HOME/setup-pnpm/node_modules/.bin/pnpm" --version 2>/dev/null || true)" = "$expected" ]; then
-            echo "PNPM_HOME=$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_ENV"
-            echo "$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_PATH"
-            echo "hit=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "hit=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Setup pnpm
-        if: steps.pnpm_preinstalled.outputs.hit != 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -864,20 +731,15 @@ jobs:
           retention-days: 14
 
   verify_runner_e2e_support:
-    name: Runner support suite (${{ matrix.shard_label }})
+    name: Runner support suite
     needs: [gate]
     if: ${{ needs.gate.outputs.full_ci == 'true' && (needs.gate.outputs.plan == '' || fromJSON(needs.gate.outputs.plan).jobs.verify_runner_e2e_support.run) }}
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      max-parallel: ${{ needs.gate.outputs.runner == 'ubuntu-latest' && 4 || 256 }}
-      matrix: ${{ fromJSON(needs.gate.outputs.plan != '' && toJSON((needs.gate.outputs.runner == 'ubuntu-latest' && fromJSON(needs.gate.outputs.plan).jobs.verify_runner_e2e_support.hosted_matrix) || fromJSON(needs.gate.outputs.plan).jobs.verify_runner_e2e_support.matrix) || (needs.gate.outputs.runner == 'ubuntu-latest' && '{"include":[{"shard_index":0,"shard_count":2,"shard_label":"1/2","task":"ci:runner-e2e-support"},{"shard_index":1,"shard_count":2,"shard_label":"2/2","task":"ci:runner-e2e-support"}]}' || '{"include":[{"shard_index":0,"shard_count":4,"shard_label":"1/4","task":"ci:runner-e2e-support"},{"shard_index":1,"shard_count":4,"shard_label":"2/4","task":"ci:runner-e2e-support"},{"shard_index":2,"shard_count":4,"shard_label":"3/4","task":"ci:runner-e2e-support"},{"shard_index":3,"shard_count":4,"shard_label":"4/4","task":"ci:runner-e2e-support"}]}')) }}
 
     env:
       PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
-      PAPERCLIP_CI_PROFILE_JOB: Runner support suite (${{ matrix.shard_label }})
-      PAPERCLIP_CI_PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+      PAPERCLIP_CI_PROFILE_JOB: Runner support suite
 
     # The paid Runner workflows depend on this suite: workflow security
     # policy, evidence oracles, cost receipts and controller recovery. It
@@ -900,20 +762,7 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
-      - name: Check preinstalled pnpm
-        id: pnpm_preinstalled
-        run: |
-          expected="$(node -e 'const m = /^pnpm@([^+\s]+)(?:\+.*)?$/.exec(JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).packageManager || ""); process.stdout.write(m ? m[1] : "");')"
-          if [ -x "$HOME/setup-pnpm/node_modules/.bin/pnpm" ] && [ -n "$expected" ] && [ "$("$HOME/setup-pnpm/node_modules/.bin/pnpm" --version 2>/dev/null || true)" = "$expected" ]; then
-            echo "PNPM_HOME=$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_ENV"
-            echo "$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_PATH"
-            echo "hit=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "hit=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Setup pnpm
-        if: steps.pnpm_preinstalled.outputs.hit != 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -929,14 +778,7 @@ jobs:
 
       # Builds the plugin SDK first, then runs Vitest and the node:test files.
       - name: Run the Runner support suite
-        run: |
-          if grep -q 'shard-index' tests/runner-e2e/run-unit.mjs; then
-            node tests/runner-e2e/run-unit.mjs --shard-index ${{ matrix.shard_index }} --shard-count ${{ matrix.shard_count }}
-          elif [ "${{ matrix.shard_index }}" = "0" ]; then
-            pnpm test:e2e:runner:unit
-          else
-            echo "Checkout predates sharded run-unit.mjs; shard 0 covers full suite."
-          fi
+        run: pnpm test:e2e:runner:unit
 
       - name: Upload CI profile timings
         continue-on-error: true
@@ -953,7 +795,7 @@ jobs:
     name: verify
     if: ${{ always() }}
     needs: [gate, test_selection, policy, typecheck_release_registry, general_tests, verify_paperclip_runner, build, docker_context_integrity, sandbox_provider_tests, verify_serialized_server, canary_dry_run, verify_runner_e2e_support]
-    runs-on: ubuntu-slim
+    runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 5
     steps:
       - name: Validate every planned suite result
@@ -986,11 +828,9 @@ jobs:
     timeout-minutes: 20
     strategy:
       fail-fast: false
-      max-parallel: ${{ needs.gate.outputs.runner == 'ubuntu-latest' && 4 || 256 }}
-      matrix: ${{ fromJSON(needs.gate.outputs.plan != '' && toJSON((needs.gate.outputs.runner == 'ubuntu-latest' && fromJSON(needs.gate.outputs.plan).jobs.verify_paperclip_runner.hosted_matrix) || fromJSON(needs.gate.outputs.plan).jobs.verify_paperclip_runner.matrix) || (needs.gate.outputs.runner == 'ubuntu-latest' && '{"include":[{"lane_label":"static checks","command":"check:static","release_crate":true,"task":"ci:runner-static"},{"lane_label":"rust","command":"check:runner","release_crate":true,"task":"ci:runner-rust"},{"lane_label":"vitest package (1/3)","command":"test:typescript:vitest --package-lane=1/3","task":"ci:runner-package"},{"lane_label":"vitest package (2/3)","command":"test:typescript:vitest --package-lane=2/3","task":"ci:runner-package"},{"lane_label":"vitest package (3/3)","command":"test:typescript:vitest --package-lane=3/3","task":"ci:runner-package"},{"lane_label":"vitest native server","command":"test:typescript:vitest --native-server","release_crate":true,"task":"ci:runner-vitest"}]}' || '{"include":[{"lane_label":"static checks","command":"check:static","release_crate":true,"task":"ci:runner-static"},{"lane_label":"rust","command":"check:runner","release_crate":true,"task":"ci:runner-rust"},{"lane_label":"vitest package (1/6)","command":"test:typescript:vitest --package-lane=1/6","task":"ci:runner-package"},{"lane_label":"vitest package (2/6)","command":"test:typescript:vitest --package-lane=2/6","task":"ci:runner-package"},{"lane_label":"vitest package (3/6)","command":"test:typescript:vitest --package-lane=3/6","task":"ci:runner-package"},{"lane_label":"vitest package (4/6)","command":"test:typescript:vitest --package-lane=4/6","task":"ci:runner-package"},{"lane_label":"vitest package (5/6)","command":"test:typescript:vitest --package-lane=5/6","task":"ci:runner-package"},{"lane_label":"vitest package (6/6)","command":"test:typescript:vitest --package-lane=6/6","task":"ci:runner-package"},{"lane_label":"vitest native server (1/2)","command":"test:typescript:vitest --native-server=1/2","release_crate":true,"task":"ci:runner-vitest"},{"lane_label":"vitest native server (2/2)","command":"test:typescript:vitest --native-server=2/2","release_crate":true,"task":"ci:runner-vitest"}]}')) }}
+      matrix: ${{ fromJSON(needs.gate.outputs.plan != '' && toJSON(fromJSON(needs.gate.outputs.plan).jobs.verify_paperclip_runner.matrix) || '{"include":[{"lane_label":"static checks","command":"check:static","task":"ci:runner-static"},{"lane_label":"rust","command":"check:runner","release_crate":true,"task":"ci:runner-rust"},{"lane_label":"vitest package (1/3)","command":"test:typescript:vitest --package-lane=1/3","task":"ci:runner-vitest"},{"lane_label":"vitest package (2/3)","command":"test:typescript:vitest --package-lane=2/3","task":"ci:runner-vitest"},{"lane_label":"vitest package (3/3)","command":"test:typescript:vitest --package-lane=3/3","task":"ci:runner-vitest"},{"lane_label":"vitest native server","command":"test:typescript:vitest --native-server","release_crate":true,"task":"ci:runner-vitest"}]}') }}
 
     env:
-      PAPERCLIP_CI_FULL: ${{ (contains(github.event.pull_request.labels.*.name, 'full-ci') || vars.CI_INCREMENTAL_MODE == 'full') && '1' || '' }}
       PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
       PAPERCLIP_CI_PROFILE_JOB: Verify Paperclip Runner (${{ matrix.lane_label }})
 
@@ -1011,20 +851,7 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
-      - name: Check preinstalled pnpm
-        id: pnpm_preinstalled
-        run: |
-          expected="$(node -e 'const m = /^pnpm@([^+\s]+)(?:\+.*)?$/.exec(JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).packageManager || ""); process.stdout.write(m ? m[1] : "");')"
-          if [ -x "$HOME/setup-pnpm/node_modules/.bin/pnpm" ] && [ -n "$expected" ] && [ "$("$HOME/setup-pnpm/node_modules/.bin/pnpm" --version 2>/dev/null || true)" = "$expected" ]; then
-            echo "PNPM_HOME=$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_ENV"
-            echo "$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_PATH"
-            echo "hit=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "hit=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Setup pnpm
-        if: steps.pnpm_preinstalled.outputs.hit != 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -1159,11 +986,10 @@ jobs:
       # path list and the key live in scripts/runner-release-crate-cache.mjs
       # and must match the writer's; a guard test holds them together.
       #
-      # Only the lanes that build the release crate restore it: `static checks`
-      # runs `check:api-authority` (which builds `paperclip-runnerd` in release
-      # mode), the Rust lane's release tests link the lib, and `vitest native
-      # server` builds the binary in its beforeAll. The package vitest lanes
-      # only use the debug crate cache.
+      # Only the lanes that build the release crate restore it: the Rust
+      # lane's release tests link the lib, and the final vitest shard hosts
+      # the server's native-runner suite, which builds the binary in its
+      # beforeAll. The static and first vitest lanes run no cargo at all.
       - name: Compute the Runner release crate cache key
         id: runner_release_crate_key
         if: ${{ matrix.release_crate == true }}
@@ -1181,9 +1007,6 @@ jobs:
             packages/paperclip-runner/runner/target/release/deps/paperclip_runnerd-*
             packages/paperclip-runner/runner/target/release/paperclip-runnerd
             packages/paperclip-runner/runner/target/release/paperclip-runnerd.d
-            packages/paperclip-runner/runner/target/release/.fingerprint/paperclip-process-table-*
-            packages/paperclip-runner/runner/target/release/deps/libpaperclip_process_table-*
-            packages/paperclip-runner/runner/target/release/deps/paperclip_process_table-*.d
           key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/acpx-profiles.json', 'packages/paperclip-runner/antigravity-distributions.json', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
 
       - name: Mark the restored Runner release crate current
@@ -1243,7 +1066,6 @@ jobs:
     timeout-minutes: 20
 
     env:
-      PAPERCLIP_CI_FULL: ${{ (contains(github.event.pull_request.labels.*.name, 'full-ci') || vars.CI_INCREMENTAL_MODE == 'full') && '1' || '' }}
       PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
       PAPERCLIP_CI_PROFILE_JOB: Build
 
@@ -1264,20 +1086,7 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
-      - name: Check preinstalled pnpm
-        id: pnpm_preinstalled
-        run: |
-          expected="$(node -e 'const m = /^pnpm@([^+\s]+)(?:\+.*)?$/.exec(JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).packageManager || ""); process.stdout.write(m ? m[1] : "");')"
-          if [ -x "$HOME/setup-pnpm/node_modules/.bin/pnpm" ] && [ -n "$expected" ] && [ "$("$HOME/setup-pnpm/node_modules/.bin/pnpm" --version 2>/dev/null || true)" = "$expected" ]; then
-            echo "PNPM_HOME=$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_ENV"
-            echo "$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_PATH"
-            echo "hit=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "hit=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Setup pnpm
-        if: steps.pnpm_preinstalled.outputs.hit != 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -1320,6 +1129,25 @@ jobs:
             pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
             pnpm install --frozen-lockfile
           fi
+
+      # The public-install verifier at the end of this lane downloads the whole
+      # public registry graph into an empty npm cache: its consumer install
+      # took 119-129s of the 226-241s step, more than half of this ~415-446s
+      # lane, in runs 38426120144, 38432086560 and 38423713537 (2026-10-13).
+      # That graph is fixed by source manifests, so this fetches it in the
+      # background while the Rust restore, Evalbook and `pnpm build` run, about
+      # 150s before the verifier installs anything. Only the cache is handed
+      # over, and the verify step waits for this first. A failed or partial
+      # warm-up leaves the verifier to fetch what is missing as before.
+      - name: Start warming the public-install npm cache
+        if: ${{ hashFiles('scripts/warm-public-install-npm-cache.mjs') != '' }}
+        run: |
+          (
+            # The default `bash -e` would skip the status line on a failure.
+            set +e
+            PAPERCLIP_PUBLIC_INSTALL_NPM_CACHE="$RUNNER_TEMP/public-install-npm-cache" node scripts/warm-public-install-npm-cache.mjs
+            echo $? > "$RUNNER_TEMP/public-install-npm-cache.status"
+          ) > "$RUNNER_TEMP/public-install-npm-cache.log" 2>&1 &
 
       # pnpm build reaches the Runner package's build:binary step; without the
       # shared Rust cache that is a ~3m40s cold compile of all third-party
@@ -1423,9 +1251,6 @@ jobs:
             packages/paperclip-runner/runner/target/release/deps/paperclip_runnerd-*
             packages/paperclip-runner/runner/target/release/paperclip-runnerd
             packages/paperclip-runner/runner/target/release/paperclip-runnerd.d
-            packages/paperclip-runner/runner/target/release/.fingerprint/paperclip-process-table-*
-            packages/paperclip-runner/runner/target/release/deps/libpaperclip_process_table-*
-            packages/paperclip-runner/runner/target/release/deps/paperclip_process_table-*.d
           key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/acpx-profiles.json', 'packages/paperclip-runner/antigravity-distributions.json', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
 
       - name: Mark the restored Runner release crate current
@@ -1435,27 +1260,44 @@ jobs:
       - name: Build Runner Evalbook viewer
         run: pnpm --filter @paperclipai/paperclip-runner build:issue-thread
 
-      # On ordinary PRs, Typecheck + Release Registry checks every server type in
-      # parallel, so server build only needs JS emit (`PAPERCLIP_TSC_EMIT_ONLY=1`).
-      # Full-CI / release builds emit full declarations and re-check types.
       - name: Build
-        env:
-          PAPERCLIP_TSC_EMIT_ONLY: ${{ !(contains(github.event.pull_request.labels.*.name, 'full-ci') || vars.CI_INCREMENTAL_MODE == 'full') && '1' || '' }}
         run: pnpm build
 
-      # Always verify the production runtime bundle builds cleanly (~4s).
-      # Full embedded-Postgres boot smoke (~53s) runs on full-ci / release
-      # verification; ordinary PRs already boot the server in e2e_shards.
-      - name: Build production runtime bundle
+      # The production image starts the server from this bundle with plain
+      # node (Dockerfile CMD), so prove it boots before the image is built:
+      # bundle the `pnpm build` output, start it against a throwaway embedded
+      # instance, and wait for /api/health to report ok.
+      - name: Boot the production runtime bundle
         run: |
           pnpm --filter @paperclipai/server build:runtime
-          if [ "${PAPERCLIP_CI_FULL:-}" = "1" ]; then
-            scripts/server-boot-smoke.sh node server/dist-runtime/index.mjs
-          fi
+          scripts/server-boot-smoke.sh node server/dist-runtime/index.mjs
 
-      # Clean public npm install verification (`verify-grok-npm-install.mjs`,
-      # ~231s) is covered by release-smoke.yml and docker-runner-check.yml
-      # rather than running on every pull request Build job.
+      # This verification only needs `pnpm build` output (the verifier stages
+      # the public packages' dist and reuses ui/dist itself), yet it ran at the
+      # end of Canary Dry Run, serially after the ~210-295s release.sh dry run.
+      # That made Canary Dry Run the slowest check in every green PR run:
+      # 484s, 572s and 483s in runs 37310951026, 37309272947 and 37308895471
+      # (2026-10-05), with this step alone at 210-223s of each. The Build lane
+      # finished its `pnpm build` in ~206s total in those same runs, so it
+      # absorbs the step at ~416s while Canary Dry Run drops to ~275-350s and
+      # neither remains the critical path (server 2/12 at ~437-467s is).
+      # docker-runner-check.yml runs the same verifier after `pnpm build`.
+      - name: Verify built-in Grok from a clean public npm install
+        if: ${{ hashFiles('scripts/verify-grok-npm-install.mjs') != '' }}
+        run: |
+          status="$RUNNER_TEMP/public-install-npm-cache.status"
+          if [ -f "$RUNNER_TEMP/public-install-npm-cache.log" ]; then
+            # Normally finished long before this; never let it hold the lane.
+            for _ in $(seq 180); do [ -f "$status" ] && break; sleep 1; done
+            if [ "$(cat "$status" 2>/dev/null)" = 0 ]; then
+              tail -n 1 "$RUNNER_TEMP/public-install-npm-cache.log"
+            else
+              echo '::notice title=Public-install npm cache::warm-up did not finish cleanly; the verifier fetches what is missing'
+              tail -n 20 "$RUNNER_TEMP/public-install-npm-cache.log"
+            fi
+            export PAPERCLIP_PUBLIC_INSTALL_NPM_CACHE="$RUNNER_TEMP/public-install-npm-cache"
+          fi
+          node scripts/verify-grok-npm-install.mjs
 
       - name: Upload CI profile timings
         continue-on-error: true
@@ -1476,11 +1318,9 @@ jobs:
     timeout-minutes: 20
     strategy:
       fail-fast: false
-      max-parallel: ${{ needs.gate.outputs.runner == 'ubuntu-latest' && 4 || 256 }}
-      matrix: ${{ fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan) != '' && toJSON((needs.gate.outputs.runner == 'ubuntu-latest' && fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan)).jobs.verify_serialized_server.hosted_matrix) || fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan)).jobs.verify_serialized_server.matrix) || (needs.gate.outputs.runner == 'ubuntu-latest' && '{"include":[{"shard_index":0,"shard_count":4,"shard_label":"1/4","task":"ci:serialized"},{"shard_index":1,"shard_count":4,"shard_label":"2/4","task":"ci:serialized"},{"shard_index":2,"shard_count":4,"shard_label":"3/4","task":"ci:serialized"},{"shard_index":3,"shard_count":4,"shard_label":"4/4","task":"ci:serialized"}]}' || '{"include":[{"shard_index":0,"shard_count":9,"shard_label":"1/9","task":"ci:serialized"},{"shard_index":1,"shard_count":9,"shard_label":"2/9","task":"ci:serialized"},{"shard_index":2,"shard_count":9,"shard_label":"3/9","task":"ci:serialized"},{"shard_index":3,"shard_count":9,"shard_label":"4/9","task":"ci:serialized"},{"shard_index":4,"shard_count":9,"shard_label":"5/9","task":"ci:serialized"},{"shard_index":5,"shard_count":9,"shard_label":"6/9","task":"ci:serialized"},{"shard_index":6,"shard_count":9,"shard_label":"7/9","task":"ci:serialized"},{"shard_index":7,"shard_count":9,"shard_label":"8/9","task":"ci:serialized"},{"shard_index":8,"shard_count":9,"shard_label":"9/9","task":"ci:serialized"}]}')) }}
+      matrix: ${{ fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan) != '' && toJSON(fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan)).jobs.verify_serialized_server.matrix) || '{"include":[{"shard_index":0,"shard_count":9,"shard_label":"1/9","task":"ci:serialized"},{"shard_index":1,"shard_count":9,"shard_label":"2/9","task":"ci:serialized"},{"shard_index":2,"shard_count":9,"shard_label":"3/9","task":"ci:serialized"},{"shard_index":3,"shard_count":9,"shard_label":"4/9","task":"ci:serialized"},{"shard_index":4,"shard_count":9,"shard_label":"5/9","task":"ci:serialized"},{"shard_index":5,"shard_count":9,"shard_label":"6/9","task":"ci:serialized"},{"shard_index":6,"shard_count":9,"shard_label":"7/9","task":"ci:serialized"},{"shard_index":7,"shard_count":9,"shard_label":"8/9","task":"ci:serialized"},{"shard_index":8,"shard_count":9,"shard_label":"9/9","task":"ci:serialized"}]}') }}
 
     env:
-      PAPERCLIP_CI_FULL: ${{ (contains(github.event.pull_request.labels.*.name, 'full-ci') || vars.CI_INCREMENTAL_MODE == 'full') && '1' || '' }}
       PAPERCLIP_CI_TEST_SELECTION: ${{ matrix.selection && '.ci-test-selection/manifest.json' || '' }}
       PAPERCLIP_CI_SELECTION_HASH: ${{ matrix.selection && fromJSON(needs.test_selection.outputs.plan).testSelection.hash || '' }}
       PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
@@ -1510,20 +1350,7 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
-      - name: Check preinstalled pnpm
-        id: pnpm_preinstalled
-        run: |
-          expected="$(node -e 'const m = /^pnpm@([^+\s]+)(?:\+.*)?$/.exec(JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).packageManager || ""); process.stdout.write(m ? m[1] : "");')"
-          if [ -x "$HOME/setup-pnpm/node_modules/.bin/pnpm" ] && [ -n "$expected" ] && [ "$("$HOME/setup-pnpm/node_modules/.bin/pnpm" --version 2>/dev/null || true)" = "$expected" ]; then
-            echo "PNPM_HOME=$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_ENV"
-            echo "$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_PATH"
-            echo "hit=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "hit=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Setup pnpm
-        if: steps.pnpm_preinstalled.outputs.hit != 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -1619,20 +1446,7 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
-      - name: Check preinstalled pnpm
-        id: pnpm_preinstalled
-        run: |
-          expected="$(node -e 'const m = /^pnpm@([^+\s]+)(?:\+.*)?$/.exec(JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).packageManager || ""); process.stdout.write(m ? m[1] : "");')"
-          if [ -x "$HOME/setup-pnpm/node_modules/.bin/pnpm" ] && [ -n "$expected" ] && [ "$("$HOME/setup-pnpm/node_modules/.bin/pnpm" --version 2>/dev/null || true)" = "$expected" ]; then
-            echo "PNPM_HOME=$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_ENV"
-            echo "$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_PATH"
-            echo "hit=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "hit=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Setup pnpm
-        if: steps.pnpm_preinstalled.outputs.hit != 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -1778,9 +1592,6 @@ jobs:
             packages/paperclip-runner/runner/target/release/deps/paperclip_runnerd-*
             packages/paperclip-runner/runner/target/release/paperclip-runnerd
             packages/paperclip-runner/runner/target/release/paperclip-runnerd.d
-            packages/paperclip-runner/runner/target/release/.fingerprint/paperclip-process-table-*
-            packages/paperclip-runner/runner/target/release/deps/libpaperclip_process_table-*
-            packages/paperclip-runner/runner/target/release/deps/paperclip_process_table-*.d
           key: runner-release-crate-v1-${{ steps.runner_release_crate_key.outputs.scope }}-${{ hashFiles('packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/acpx-profiles.json', 'packages/paperclip-runner/antigravity-distributions.json', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'tests/runner-e2e/fixtures/**') }}
 
       - name: Mark the restored Runner release crate current
@@ -1830,8 +1641,7 @@ jobs:
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      max-parallel: ${{ needs.gate.outputs.runner == 'ubuntu-latest' && 4 || 256 }}
-      matrix: ${{ fromJSON(needs.gate.outputs.plan != '' && toJSON((needs.gate.outputs.runner == 'ubuntu-latest' && fromJSON(needs.gate.outputs.plan).jobs.e2e_shards.hosted_matrix) || fromJSON(needs.gate.outputs.plan).jobs.e2e_shards.matrix) || (needs.gate.outputs.runner == 'ubuntu-latest' && '{"include":[{"shard_index":0,"shard_count":4,"shard_label":"1/4","task":"ci:e2e"},{"shard_index":1,"shard_count":4,"shard_label":"2/4","task":"ci:e2e"},{"shard_index":2,"shard_count":4,"shard_label":"3/4","task":"ci:e2e"},{"shard_index":3,"shard_count":4,"shard_label":"4/4","task":"ci:e2e"}]}' || '{"include":[{"shard_index":0,"shard_count":16,"shard_label":"1/16","task":"ci:e2e"},{"shard_index":1,"shard_count":16,"shard_label":"2/16","task":"ci:e2e"},{"shard_index":2,"shard_count":16,"shard_label":"3/16","task":"ci:e2e"},{"shard_index":3,"shard_count":16,"shard_label":"4/16","task":"ci:e2e"},{"shard_index":4,"shard_count":16,"shard_label":"5/16","task":"ci:e2e"},{"shard_index":5,"shard_count":16,"shard_label":"6/16","task":"ci:e2e"},{"shard_index":6,"shard_count":16,"shard_label":"7/16","task":"ci:e2e"},{"shard_index":7,"shard_count":16,"shard_label":"8/16","task":"ci:e2e"},{"shard_index":8,"shard_count":16,"shard_label":"9/16","task":"ci:e2e"},{"shard_index":9,"shard_count":16,"shard_label":"10/16","task":"ci:e2e"},{"shard_index":10,"shard_count":16,"shard_label":"11/16","task":"ci:e2e"},{"shard_index":11,"shard_count":16,"shard_label":"12/16","task":"ci:e2e"},{"shard_index":12,"shard_count":16,"shard_label":"13/16","task":"ci:e2e"},{"shard_index":13,"shard_count":16,"shard_label":"14/16","task":"ci:e2e"},{"shard_index":14,"shard_count":16,"shard_label":"15/16","task":"ci:e2e"},{"shard_index":15,"shard_count":16,"shard_label":"16/16","task":"ci:e2e"}]}')) }}
+      matrix: ${{ fromJSON(needs.gate.outputs.plan != '' && toJSON(fromJSON(needs.gate.outputs.plan).jobs.e2e_shards.matrix) || '{"include":[{"shard_index":0,"shard_count":8,"shard_label":"1/8","task":"ci:e2e"},{"shard_index":1,"shard_count":8,"shard_label":"2/8","task":"ci:e2e"},{"shard_index":2,"shard_count":8,"shard_label":"3/8","task":"ci:e2e"},{"shard_index":3,"shard_count":8,"shard_label":"4/8","task":"ci:e2e"},{"shard_index":4,"shard_count":8,"shard_label":"5/8","task":"ci:e2e"},{"shard_index":5,"shard_count":8,"shard_label":"6/8","task":"ci:e2e"},{"shard_index":6,"shard_count":8,"shard_label":"7/8","task":"ci:e2e"},{"shard_index":7,"shard_count":8,"shard_label":"8/8","task":"ci:e2e"}]}') }}
 
     env:
       PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
@@ -1854,20 +1664,7 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
-      - name: Check preinstalled pnpm
-        id: pnpm_preinstalled
-        run: |
-          expected="$(node -e 'const m = /^pnpm@([^+\s]+)(?:\+.*)?$/.exec(JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).packageManager || ""); process.stdout.write(m ? m[1] : "");')"
-          if [ -x "$HOME/setup-pnpm/node_modules/.bin/pnpm" ] && [ -n "$expected" ] && [ "$("$HOME/setup-pnpm/node_modules/.bin/pnpm" --version 2>/dev/null || true)" = "$expected" ]; then
-            echo "PNPM_HOME=$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_ENV"
-            echo "$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_PATH"
-            echo "hit=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "hit=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Setup pnpm
-        if: steps.pnpm_preinstalled.outputs.hit != 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -1932,21 +1729,10 @@ jobs:
           }
           CONF
 
-      # Reuse master's exact UI build on non-UI PRs so all 8 E2E shards skip
-      # rebuilding Vite (~35s each). Exact key only (no restore-keys): a UI
-      # change misses and Playwright builds server/ui-dist inline.
-      - name: Restore prebuilt UI assets (read only)
-        id: e2e_ui_dist
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: server/ui-dist
-          key: e2e-ui-dist-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml', 'tsconfig*.json', 'ui/package.json', 'ui/index.html', 'ui/vite.config.*', 'ui/tsconfig*.json', 'ui/src/**', 'ui/public/**', 'packages/shared/package.json', 'packages/shared/src/**', 'packages/adapter-utils/package.json', 'packages/adapter-utils/src/**', 'packages/adapters/*/package.json', 'packages/adapters/*/src/**', 'packages/plugins/sdk/package.json', 'packages/plugins/sdk/src/**', 'announcements/examples/animated/**') }}
-
       - name: Run e2e tests
         env:
           PAPERCLIP_E2E_SKIP_LLM: "true"
           PAPERCLIP_PLAYWRIGHT_CHANNEL: "chrome"
-          PAPERCLIP_E2E_SKIP_UI_BUILD: ${{ steps.e2e_ui_dist.outputs.cache-hit == 'true' && '1' || '' }}
         run: |
           # Playwright's own --shard balances by test count, and one spec
           # (smoke-lab) is ~40% of the lane's wall clock. Partition by recorded
@@ -1983,7 +1769,7 @@ jobs:
     name: e2e
     if: ${{ always() }}
     needs: [gate, policy, e2e_shards]
-    runs-on: ubuntu-slim
+    runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 5
     steps:
       - name: Validate every planned suite result

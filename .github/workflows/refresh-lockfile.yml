@@ -151,13 +151,6 @@ jobs:
           git checkout -B "$BRANCH"
           git add $LOCKFILES tests/runner-e2e/report-lock.json tests/runner-e2e/report-lock.patch
           git commit -m "chore(lockfile): refresh pnpm lockfiles"
-          # The SDK public source proof pins the committed lock blob and the
-          # report-lock output hash. This PR merges without CI, so resync those
-          # pins from the commit above and check them before pushing (#20615).
-          node tests/runner-e2e/source-sdk-public-inputs.mjs "$(git rev-parse HEAD)" --write
-          git add tests/runner-e2e/source-sdk-public-inputs.json
-          git commit --amend --no-edit
-          node tests/runner-e2e/source-sdk-public-inputs.mjs "$(git rev-parse HEAD)" --check
           git push --force origin "$BRANCH"
 
           # Only reuse an open PR from this repository owner, not a fork with the same branch name.
@@ -196,7 +189,6 @@ jobs:
           - Refresh the dependency lock from the manifests on master.
           - Refresh the sandbox provider lockfiles from their manifests on master.
           - Include the matching offline report correction and hashes.
-          - Resync the SDK public source proof's lock pins from the refreshed lock.
 
           ## Verification
 
@@ -206,7 +198,7 @@ jobs:
 
           ## Risks
 
-          The lockfile bot merges this PR without CI or review when it verifies every added version on npm and all versions outside the harness allowlist are at least 3 days old. Otherwise the PR waits for a maintainer, and the daily refresh tries again. The bot merges only the exact commit this workflow generated from manifests already reviewed on master. Unknown report lock baselines remain blocked. This update changes no permissions or paid enable gates.
+          The lockfile bot merges this PR without CI or review when every added package version is at least 3 days old on npm. Otherwise the PR waits for a maintainer, and the daily refresh tries again. The bot merges only the exact commit this workflow generated from manifests already reviewed on master. Unknown report lock baselines remain blocked. This update changes no permissions or paid enable gates.
 
           ## Model Used
 
@@ -230,8 +222,8 @@ jobs:
           echo "head_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       # Resolution picks the newest matching version for any added or widened
-      # dependency. The gate verifies every added version on npm and enforces
-      # the age requirement outside the harness allowlist.
+      # dependency. Merge without review only when every added version has been
+      # on npm long enough for a hijacked release to be caught and pulled.
       - name: Check release age of added package versions
         id: release-age
         if: steps.upsert-pr.outputs.pr_url != ''

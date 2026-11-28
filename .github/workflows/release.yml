@@ -322,14 +322,10 @@ jobs:
     name: Reuse exact-source verification
     if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.event_name == 'push' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
-    # The source wait allows 90 minutes: a deferred full readiness run plus two
-    # retries of jobs whose Spot runner was reclaimed.
-    timeout-minutes: 100
+    timeout-minutes: 70
     permissions:
       contents: read
-      # Also re-runs readiness jobs whose runner was lost, never a failed check.
       actions: write # restart only an exact-source push deferred before admission
-      checks: read # runner-loss evidence (annotations) for readiness retries
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -345,10 +341,10 @@ jobs:
         run: node scripts/cloud-source-verification.mjs "$SOURCE_SHA"
 
   release_runner_source:
-    needs: [select_nightly, select_beta, preflight_stable]
+    needs: [verify_canary, select_nightly, select_beta, preflight_stable]
     if: >-
       !cancelled() && (
-        (github.event_name == 'push' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master') ||
+        (github.event_name == 'push' && needs.verify_canary.result == 'success') ||
         (needs.select_nightly.result == 'success' && needs.select_nightly.outputs.proceed == 'true') ||
         needs.select_beta.result == 'success' || needs.preflight_stable.result == 'success')
     runs-on: ubuntu-latest
@@ -396,9 +392,9 @@ jobs:
     outputs:
       canary_version: ${{ steps.canary_tag.outputs.version }}
     permissions:
-      contents: read
+      contents: write
       id-token: write
-      # For the canary-finalize.yml dispatch below.
+      # For the explicit docker.yml dispatch below.
       actions: write
 
     steps:
@@ -488,8 +484,7 @@ jobs:
       - name: Publish canary
         env:
           GITHUB_ACTIONS: "true"
-          PAPERCLIP_RELEASE_VERSION_FILE: ${{ runner.temp }}/canary-version
-        run: ./scripts/release.sh canary --skip-verify --defer-registry-confirmation
+        run: ./scripts/release.sh canary --skip-verify
 
       - name: Dump npm debug logs
         if: failure()
@@ -501,25 +496,100 @@ jobs:
               -e 's#((authorization|_authToken|_auth|node_auth_token|npm_token)"?[[:space:]]*[:=][[:space:]]*"?)(Bearer[[:space:]]+)?[^",[:space:]]+#\1***REDACTED***#Ig'
           done
 
-      - name: Hand off npm confirmation, the tag and the image to canary-finalize
+      - name: Push canary tag
         id: canary_tag
+        run: |
+          tag="$(git tag --points-at HEAD | grep '^canary/v' | head -1)"
+          if [ -z "$tag" ]; then
+            echo "Error: no canary tag points at HEAD after release." >&2
+            exit 1
+          fi
+          git push origin "refs/tags/${tag}"
+          echo "version=${tag#canary/v}" >> "$GITHUB_OUTPUT"
+
+      # Canary images previously relied on the master-push docker.yml run,
+      # whose single pending concurrency slot gets superseded by every
+      # newer push — on a busy day no canary image publishes at all (five
+      # consecutive canaries shipped npm packages with no cloud image on
+      # 2026-09-06, starving downstream managed deploys for ~18 hours).
+      # Tag pushes made with GITHUB_TOKEN do not fire docker.yml's
+      # triggers, so dispatch the image build at the canary tag
+      # explicitly, exactly like the nightly and beta lanes: the run keys
+      # its concurrency off the tag ref, so no master push can supersede
+      # it, and docker.yml's `type=sha` mapping publishes the
+      # standard sha-<short> images either way.
+      - name: Build Docker images for the canary tag
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION_FILE: ${{ runner.temp }}/canary-version
-          SOURCE_SHA: ${{ github.sha }}
         run: |
-          set -euo pipefail
-          version="$(cat "$VERSION_FILE")"
-          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-canary\.[0-9]+$ ]] || { echo "Error: release.sh wrote no canary version" >&2; exit 1; }
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          gh workflow run canary-finalize.yml --ref master --repo "$GITHUB_REPOSITORY" \
-            -f version="$version" -f source_sha="$SOURCE_SHA" -f release_run_id="$GITHUB_RUN_ID"
           {
-            echo "## Canary published to npm"
+            echo "## Canary published"
             echo ""
-            echo "- Version: \`$version\`"
-            echo "- npm confirmation, \`canary/v$version\`, the Docker build and the onboarding smoke run in Canary finalize."
+            echo "- Published canary: \`${{ steps.canary_tag.outputs.version }}\`"
+            echo "- Docker build dispatched at \`canary/v${{ steps.canary_tag.outputs.version }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+          gh workflow run docker.yml --ref "refs/tags/canary/v${{ steps.canary_tag.outputs.version }}" --repo "$GITHUB_REPOSITORY"
+
+  # The package is already public when this gate runs. A red result leaves the
+  # immutable canary in npm, but makes the release workflow visibly fail before
+  # anyone mistakes an installable package for an onboardable one.
+  smoke_canary_onboarding:
+    needs: publish_canary
+    if: ${{ !cancelled() && needs.publish_canary.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      PAPERCLIPAI_VERSION: ${{ needs.publish_canary.outputs.canary_version }}
+      PAPERCLIP_PLAYWRIGHT_CHANNEL: chrome
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+
+      # Default download scope is this workflow run, including job reruns.
+      # A missing artifact fails instead of resolving a different dependency set.
+      - name: Restore canary smoke lockfile
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: canary-smoke-lockfile-${{ github.sha }}
+
+      - name: Install test dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Show browser version
+        run: google-chrome --version
+
+      - name: Smoke exact published canary through onboarding
+        env:
+          PAPERCLIP_CANARY_SMOKE_SERVER_LOG: ${{ runner.temp }}/canary-onboarding-server.log
+        run: pnpm run test:canary-onboarding-smoke
+
+      - name: Upload failed canary onboarding diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: canary-onboarding-smoke-${{ needs.publish_canary.outputs.canary_version }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/canary-onboarding-server.log
+            tests/canary-onboarding/playwright-report/
+            tests/canary-onboarding/test-results/
 
   # ----- Nightly lane -----------------------------------------------------
   # Once a night (or on a forced nightly dispatch), promote the newest master
@@ -638,7 +708,7 @@ jobs:
       (needs.smoke_nightly.result == 'success' ||
        (needs.smoke_nightly.result == 'skipped' && github.event_name == 'workflow_dispatch' && inputs.dry_run))
     runs-on: ubuntu-latest
-    timeout-minutes: 170
+    timeout-minutes: 150
     environment: npm-canary
     # The workflow-level concurrency group is per event, so a forced dispatch
     # nightly could otherwise overlap the scheduled one and race it to the
@@ -927,7 +997,7 @@ jobs:
       (needs.verify_beta_candidate.result == 'success' ||
        (needs.verify_beta_candidate.result == 'skipped' && needs.select_beta.outputs.mode == 'promote'))
     runs-on: ubuntu-latest
-    timeout-minutes: 170
+    timeout-minutes: 150
     environment: npm-beta
     # Serialize beta publishes so two dispatches cannot race to the same next
     # -beta.N version; release.sh additionally refuses to double-publish a
@@ -1392,7 +1462,7 @@ jobs:
     if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.channel == 'stable' && !inputs.dry_run && needs.preflight_stable.result == 'success' && needs.verify_stable.result == 'success' && needs.release_runner_source.result == 'success' && (needs.release_runner_source.outputs.required == 'false' || needs.release_runner_binaries.result == 'success') }}
     needs: [preflight_stable, verify_stable, release_runner_source, release_runner_binaries]
     runs-on: ubuntu-latest
-    timeout-minutes: 170
+    timeout-minutes: 150
     environment: npm-stable
     permissions:
       contents: write

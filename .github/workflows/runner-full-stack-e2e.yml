@@ -389,7 +389,6 @@ jobs:
       execution_ids: ${{ steps.catalog.outputs.execution_ids }}
       max_parallel: ${{ steps.catalog.outputs.max_parallel }}
       daytona_image_content_id: ${{ steps.daytona_image_content.outputs.content_id }}
-      candidate_providers: ${{ steps.catalog.outputs.candidate_providers }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -435,6 +434,12 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # The v2 contract fails closed unless every Docker FROM is digest-pinned,
+      # and hashes those exact base references into the immutable image tag.
+      - name: Compute Daytona image content ID with pinned bases
+        id: daytona_image_content
+        run: echo "content_id=$(pnpm --silent test:e2e:runner:image-id)" >> "$GITHUB_OUTPUT"
+
       - name: Validate selectors and emit matrix
         id: catalog
         env:
@@ -479,7 +484,6 @@ jobs:
               echo "needs_runner_typescript=true"
               echo "needs_native_binaries=true"
               echo "needs_remote_provider_pack=false"
-              echo "candidate_providers="
               echo "max_parallel=1"
             } >> "$GITHUB_OUTPUT"
             exit 0
@@ -534,11 +538,6 @@ jobs:
             echo "needs_remote_provider_pack=$(jq -r '[.include[] | select((.environmentId == "daytona") and ((.profileId | startswith("runner-opencode")) or (.profileId | startswith("runner-acpx-"))))] | length > 0' <<< "$catalog_json")"
             echo "execution_ids=$(jq -c '.executionIds' <<< "$catalog_json")"
           } >> "$GITHUB_OUTPUT"
-          # Pending candidates the selected Daytona cells run, derived from
-          # their profiles; the image and the controller pack carry exactly these.
-          candidate_providers="$(jq -r '(.candidateProviders // []) | join(",")' <<< "$catalog_json")"
-          [[ "$candidate_providers" =~ ^([a-z]+(,[a-z]+)*)?$ ]]
-          echo "candidate_providers=$candidate_providers" >> "$GITHUB_OUTPUT"
           if ! [[ "$MAX_PARALLEL_LIMIT" =~ ^[1-9][0-9]*$ ]] || [ "$MAX_PARALLEL_LIMIT" -gt 100 ]; then
             echo "Runner selection emitted an invalid max-parallel limit." >&2
             exit 1
@@ -555,21 +554,6 @@ jobs:
             MAX_PARALLEL="$REQUESTED_MAX_PARALLEL"
           fi
           echo "max_parallel=$MAX_PARALLEL" >> "$GITHUB_OUTPUT"
-
-      # The v2 contract fails closed unless every Docker FROM is digest-pinned,
-      # and hashes those exact base references into the immutable image tag.
-      # A candidate image has its own identity, never the default image's.
-      - name: Compute Daytona image content ID with pinned bases
-        id: daytona_image_content
-        env:
-          CANDIDATE_PROVIDERS: ${{ steps.catalog.outputs.candidate_providers }}
-        run: |
-          set -euo pipefail
-          if [ -n "$CANDIDATE_PROVIDERS" ]; then
-            echo "content_id=$(pnpm --silent test:e2e:runner:image-id "--candidate-providers=$CANDIDATE_PROVIDERS")" >> "$GITHUB_OUTPUT"
-          else
-            echo "content_id=$(pnpm --silent test:e2e:runner:image-id)" >> "$GITHUB_OUTPUT"
-          fi
 
   daytona_image:
     name: Publish verified Daytona image
@@ -650,10 +634,8 @@ jobs:
           TARGET_LOCK_SHA256: ${{ needs.target_lock.outputs.lock_sha256 }}
           TARGET_REF: ${{ needs.authorize.outputs.target_ref }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          CANDIDATE_PROVIDERS: ${{ needs.catalog.outputs.candidate_providers }}
         run: |
           set -euo pipefail
-          [[ "$CANDIDATE_PROVIDERS" =~ ^([a-z]+(,[a-z]+)*)?$ ]]
           if [ "$NEEDS_DAYTONA" != true ]; then
             {
               echo "image="
@@ -701,7 +683,6 @@ jobs:
               --build-arg "PAPERCLIP_RUNNER_CONTENT_ID=${IMAGE_CONTENT_ID}" \
               --build-arg "PAPERCLIP_RUNNER_SOURCE_REVISION=${TARGET_SHA}" \
               --build-arg "PAPERCLIP_RUNNER_LOCK_SHA256=${TARGET_LOCK_SHA256}" \
-              --build-arg "PAPERCLIP_RUNNER_CANDIDATE_PROVIDERS=${CANDIDATE_PROVIDERS}" \
               --file docker/daytona-runner/Dockerfile \
               --tag "$IMAGE_TAG" \
               "${cache_args[@]}" \
@@ -816,16 +797,6 @@ jobs:
           if [ "$NEEDS_NATIVE_BINARIES" = true ]; then
             pnpm --filter @paperclipai/paperclip-runner build:runner-binaries
           fi
-          # The source server imports the plugin SDK from its generated dist.
-          # Build it once here, with the same certified helper the cell uses,
-          # instead of in every paid cell.
-          node scripts/ensure-plugin-build-deps.mjs
-          for entry in packages/shared/dist/index.js packages/plugins/sdk/dist/index.js; do
-            if [ ! -f "$entry" ] || [ ! -f "$(dirname "$entry")/.paperclip-build-complete" ]; then
-              echo "::error::Workspace build output $entry is missing; paid cells would fail before any test runs."
-              exit 1
-            fi
-          done
 
       - name: Package immutable campaign outputs
         env:
@@ -843,8 +814,6 @@ jobs:
           )
           archive_paths=(
             packages/paperclip-eval-kernel/dist
-            packages/shared/dist
-            packages/plugins/sdk/dist
           )
           if [ "$NEEDS_RUNNER_TYPESCRIPT" = true ]; then
             test -d packages/paperclip-runner/dist
@@ -984,13 +953,7 @@ jobs:
           # content ID. Matching that revision lets remote execution reuse the
           # verified pack already installed in the immutable image.
           PAPERCLIP_RUNNER_SOURCE_REVISION: ${{ needs.daytona_image.outputs.source_revision }}
-          # The same candidate selection as the image, so the image pack is reused.
-          CANDIDATE_PROVIDERS: ${{ needs.catalog.outputs.candidate_providers }}
-        run: |
-          set -euo pipefail
-          [[ "$CANDIDATE_PROVIDERS" =~ ^([a-z]+(,[a-z]+)*)?$ ]]
-          node packages/paperclip-runner/scripts/build-provider-pack.mjs packages/paperclip-runner/provider-pack \
-            "--candidate-providers=$CANDIDATE_PROVIDERS"
+        run: node packages/paperclip-runner/scripts/build-provider-pack.mjs packages/paperclip-runner/provider-pack
 
       - name: Package verified remote provider pack
         if: needs.catalog.outputs.needs_remote_provider_pack == 'true'
@@ -1243,13 +1206,6 @@ jobs:
         if: matrix.environmentId == 'local' && (matrix.profileId == 'runner-acpx-grok' || matrix.profileId == 'runner-acpx-grok-subscription')
         run: sudo node packages/paperclip-runner/scripts/provision-grok.mjs /opt/paperclip/providers/grok/1.0.13/grok
 
-      # Antigravity is not an npm package: provision its checksum-verified,
-      # admission-patched native closure into the runner-owned cache. Daytona
-      # cells use the closure carried by the remote provider pack instead.
-      - name: Provision verified Antigravity runtime
-        if: matrix.environmentId == 'local' && startsWith(matrix.profileId, 'runner-acpx-antigravity')
-        run: node --use-env-proxy packages/paperclip-runner/scripts/provision-antigravity.mjs
-
       - name: Download immutable campaign outputs
         if: startsWith(matrix.profileId, 'runner-') || matrix.suiteId == 'openrouter-model-breadth'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -1279,12 +1235,6 @@ jobs:
             --file runner-e2e-build/runner-e2e-build-bundle.tar.gz \
             --directory "$GITHUB_WORKSPACE"
           test -d packages/paperclip-eval-kernel/dist
-          for entry in packages/shared/dist/index.js packages/plugins/sdk/dist/index.js; do
-            if [ ! -f "$entry" ]; then
-              echo "::error::Campaign outputs lack $entry; the source server cannot start without it."
-              exit 1
-            fi
-          done
           if [ "$NEEDS_RUNNER_TYPESCRIPT" = true ]; then
             test -d packages/paperclip-runner/dist
           fi
@@ -1477,7 +1427,6 @@ jobs:
           XAI_API_KEY: ${{ matrix.credentialName == 'XAI_API_KEY' && secrets.XAI_API_KEY || '' }}
           GROK_AUTH_JSON: ${{ matrix.credentialName == 'GROK_AUTH_JSON' && secrets.GROK_AUTH_JSON || '' }}
           COPILOT_GITHUB_TOKEN: ${{ matrix.credentialName == 'COPILOT_GITHUB_TOKEN' && secrets.COPILOT_GITHUB_TOKEN || '' }}
-          GEMINI_API_KEY: ${{ matrix.credentialName == 'GEMINI_API_KEY' && secrets.GEMINI_API_KEY || '' }}
           DAYTONA_API_KEY: ${{ matrix.environmentId == 'daytona' && secrets.DAYTONA_API_KEY || '' }}
           PAPERCLIP_E2E_DAYTONA_IMAGE: ${{ needs.daytona_image.outputs.image }}
           PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH: ${{ github.workspace }}/packages/paperclip-runner/provider-pack
@@ -1486,16 +1435,11 @@ jobs:
           PAPERCLIP_RUNNER_E2E_SOURCE_SHA: ${{ needs.authorize.outputs.target_sha }}
           PAPERCLIP_RUNNER_E2E_SOURCE_REF: ${{ needs.authorize.outputs.target_ref }}
           PAPERCLIP_PLAYWRIGHT_CHANNEL: ${{ needs.authorize.outputs.playwright_channel }}
-          PAPERCLIP_RUNNER_E2E_SELECTED_ID: ${{ matrix.executionId }}
         run: |
-          # Agents can read any process's argv in /proc. A target that reads the
-          # selected cell from the environment keeps the case id off the command line.
-          selector=(-- --id "$PAPERCLIP_RUNNER_E2E_SELECTED_ID")
-          if grep -q PAPERCLIP_RUNNER_E2E_SELECTED_ID tests/runner-e2e/selectors.ts 2>/dev/null; then selector=(); fi
           if [ -n "$PAPERCLIP_RUNNER_E2E_PRIVATE_PREFLIGHT" ]; then
-            pnpm test:e2e:runner "${selector[@]}" > "$PRIVATE_EVIDENCE_ROOT/launcher-output.log" 2>&1
+            pnpm test:e2e:runner -- --id "${{ matrix.executionId }}" > "$PRIVATE_EVIDENCE_ROOT/launcher-output.log" 2>&1
           else
-            pnpm test:e2e:runner "${selector[@]}"
+            pnpm test:e2e:runner -- --id "${{ matrix.executionId }}"
           fi
 
       - name: Stage bounded campaign evidence

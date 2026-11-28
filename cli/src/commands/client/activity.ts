@@ -4,6 +4,7 @@ import {
   addCommonClientOptions,
   apiPath,
   formatInlineRecord,
+  getAllIssueHistory,
   handleCommandError,
   printOutput,
   resolveCommandContext,
@@ -97,7 +98,7 @@ export function registerActivityCommands(program: Command): void {
       .action(async (issueId: string, opts: BaseClientOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          printOutput(await ctx.api.get(apiPath`/api/issues/${issueId}/activity`), { json: ctx.json });
+          printOutput(await getAllIssueHistory<ActivityEvent>(ctx.api, issueId, "activity", (event) => event.id), { json: ctx.json });
         } catch (err) {
           handleCommandError(err);
         }
