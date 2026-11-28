@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRuntimeStore, type AcpSessionRecord, type AcpSessionStore } from "acpx/runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createEphemeralSessionEnvironmentStore } from "./ephemeral-session-environment.js";
+import { createEphemeralSessionEnvironmentStore, hideRecordUntilSaved } from "./ephemeral-session-environment.js";
 
 const currentEnvironment = Object.freeze({
   PAPERCLIP_API_KEY: "current-credential-fixture",
@@ -202,5 +202,24 @@ describe("ephemeral ACPX session environment", () => {
       wrapper.save({ ...record(), acpxRecordId: "fixture-record-b" }),
     ]);
     expect(maxActive).toBe(2);
+  });
+});
+
+describe("hideRecordUntilSaved", () => {
+  it("hides the stored record of a fresh run until that run saves its own", async () => {
+    const backing = stubStore(record());
+    const store = hideRecordUntilSaved(backing, "fixture-record");
+    expect(await store.load("fixture-record")).toBeUndefined();
+    expect(backing.load).not.toHaveBeenCalled();
+    await store.save({ ...record(), acpSessionId: "new-session" });
+    expect(await store.load("fixture-record")).toMatchObject({ acpxRecordId: "fixture-record" });
+  });
+
+  it("leaves other records alone", async () => {
+    const backing = stubStore({ ...record(), acpxRecordId: "other-record" });
+    const store = hideRecordUntilSaved(backing, "fixture-record");
+    expect(await store.load("other-record")).toMatchObject({ acpxRecordId: "other-record" });
+    await store.save({ ...record(), acpxRecordId: "other-record" });
+    expect(await store.load("fixture-record")).toBeUndefined();
   });
 });
