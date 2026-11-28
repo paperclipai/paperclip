@@ -93,6 +93,112 @@ describe("claude_local failure classification precedence", () => {
     expect(result.errorCode).toBe("max_turns_exhausted");
   });
 
+  it("keeps max_turns_exhausted when stdout mentions Unauthorized in tool output", async () => {
+    mockExecutionResult(
+      buildProcResult(
+        { is_error: true, subtype: "error_max_turns" },
+        'assert response.json() == {"error": "Unauthorized"}',
+      ),
+    );
+
+    const result = await execute(buildContext() as never);
+
+    expect(result.errorCode).toBe("max_turns_exhausted");
+  });
+
+  it("still reports claude_auth_required when the CLI result asks to log in", async () => {
+    mockExecutionResult(
+      buildProcResult({
+        is_error: true,
+        subtype: "success",
+        result: "Not logged in · Please run /login",
+      }),
+    );
+
+    const result = await execute(buildContext() as never);
+
+    expect(result.errorCode).toBe("claude_auth_required");
+  });
+
+  it("still reports claude_auth_required when only stderr asks to log in", async () => {
+    mockExecutionResult({
+      ...buildProcResult({ is_error: true, subtype: "error_during_execution" }),
+      stderr: "Not logged in · Please run /login",
+    });
+
+    const result = await execute(buildContext() as never);
+
+    expect(result.errorCode).toBe("claude_auth_required");
+  });
+
+  it("keeps max_turns_exhausted when the max-turns result itself mentions Unauthorized", async () => {
+    mockExecutionResult(
+      buildProcResult({
+        is_error: true,
+        subtype: "error_max_turns",
+        result: "Stopped; last tool said Unauthorized",
+      }),
+    );
+
+    const result = await execute(buildContext() as never);
+
+    expect(result.errorCode).toBe("max_turns_exhausted");
+  });
+
+  it("keeps max_turns_exhausted when the max-turns result errors carry a login prompt", async () => {
+    mockExecutionResult(
+      buildProcResult({
+        is_error: true,
+        subtype: "error_max_turns",
+        errors: ["Not logged in · Please run /login"],
+      }),
+    );
+
+    const result = await execute(buildContext() as never);
+
+    expect(result.errorCode).toBe("max_turns_exhausted");
+  });
+
+  it("keeps max_turns_exhausted when the max-turns result carries a token failure marker", async () => {
+    mockExecutionResult(
+      buildProcResult({
+        is_error: true,
+        subtype: "error_max_turns",
+        errors: ["authentication_error: invalid bearer token"],
+      }),
+    );
+
+    const result = await execute(buildContext() as never);
+
+    expect(result.errorCode).toBe("max_turns_exhausted");
+  });
+
+  it("does not report claude_auth_required for a successful run that mentions 401 Unauthorized", async () => {
+    mockExecutionResult({
+      ...buildProcResult({
+        is_error: false,
+        subtype: "success",
+        result: "The endpoint returns 401 Unauthorized when the token is missing.",
+      }),
+      exitCode: 0,
+    });
+
+    const result = await execute(buildContext() as never);
+
+    expect(result.errorCode).toBeNull();
+  });
+
+  it("reports claude_auth_required when only raw stdout asks to log in and no result was parsed", async () => {
+    mockExecutionResult({
+      ...buildProcResult({ is_error: true }),
+      stdout: "Not logged in · Please run /login",
+    });
+
+    const result = await execute(buildContext() as never);
+
+    expect(result.errorCode).toBe("claude_auth_required");
+  });
+
   it("still reports model_not_found when the provider returns it", async () => {
     mockExecutionResult(
       buildProcResult({ is_error: true, subtype: "error", result: "API Error: 404 model not found" }),
