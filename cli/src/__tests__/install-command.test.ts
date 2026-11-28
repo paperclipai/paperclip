@@ -28,7 +28,26 @@ import {
 import { resolveCliVersion } from "../version.js";
 import { systemdServiceName } from "../services/service-manager.js";
 
+vi.mock(import("../services/service-manager.js"), async (importOriginal) => ({
+  ...await importOriginal(),
+  detectServiceManager: vi.fn(async () => {
+    throw new Error("Installer tests must inject a service manager");
+  }),
+}));
+
 const ORIGINAL_ENV = { ...process.env };
+
+function activeServiceFixture() {
+  const uninstall = vi.fn(async () => {});
+  const detectServiceManager = vi.fn(async () => ({
+    supported: true as const,
+    manager: {
+      status: vi.fn(async () => ({ installed: true, active: true })),
+      uninstall,
+    } as never,
+  }));
+  return { detectServiceManager, uninstall };
+}
 
 describe("managed install commands", () => {
   let root: string;
@@ -272,6 +291,7 @@ describe("managed install commands", () => {
           uninstall: uninstallService,
         } as never,
       })),
+      userHomeDir: process.env.HOME!,
     });
 
     expect(uninstallService).toHaveBeenCalledOnce();
@@ -345,7 +365,9 @@ describe("managed install commands", () => {
     fs.mkdirSync(paths.cliRoot, { recursive: true });
     fs.writeFileSync(unrelatedFile, "keep");
 
-    await expect(uninstallCommand()).rejects.toThrow("unverified install store");
+    const { detectServiceManager } = activeServiceFixture();
+    await expect(uninstallCommand({ detectServiceManager, userHomeDir: process.env.HOME! })).rejects.toThrow("unverified install store");
+    expect(detectServiceManager).not.toHaveBeenCalled();
     expect(fs.readFileSync(unrelatedFile, "utf8")).toBe("keep");
   });
 
@@ -365,13 +387,29 @@ describe("managed install commands", () => {
       previous: [],
     }, paths);
 
+    const { detectServiceManager } = activeServiceFixture();
     await withInstallStoreLock(
       async () => {
-        await expect(uninstallCommand()).rejects.toThrow("already running");
+        await expect(uninstallCommand({ detectServiceManager, userHomeDir: process.env.HOME! })).rejects.toThrow("already running");
       },
       paths,
     );
+    expect(detectServiceManager).not.toHaveBeenCalled();
     expect(fs.existsSync(paths.lockPath)).toBe(false);
+  });
+
+  it("can retry a service-only uninstall after service removal fails", async () => {
+    const paths = resolveInstallStorePaths();
+    const { detectServiceManager, uninstall } = activeServiceFixture();
+    uninstall.mockRejectedValueOnce(new Error("service manager failed"));
+    const options = { detectServiceManager, userHomeDir: process.env.HOME! };
+
+    await expect(uninstallCommand(options)).rejects.toThrow("service manager failed");
+    expect(fs.existsSync(paths.cliRoot)).toBe(false);
+
+    await uninstallCommand(options);
+    expect(uninstall).toHaveBeenCalledTimes(2);
+    expect(fs.existsSync(paths.cliRoot)).toBe(false);
   });
 
   it("refuses a symlinked git payload root before downloading", async () => {
