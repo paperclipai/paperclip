@@ -17,7 +17,11 @@ export const ALREADY_MOVED_ON_MESSAGE = "The task already moved on, so nothing n
 export function taskRetryNotStartedReason(result: RetryResult): string | null {
   if (!result.accepted && result.refused) return result.refused.message;
   if (!result.accepted && result.alreadyMovedOn) return ALREADY_MOVED_ON_MESSAGE;
-  if (!result.accepted) return STALE_TASK_RETRY_MESSAGE;
+  if (!result.accepted) {
+    const blockers = result.blockedBy?.unresolvedBlockerIssueIds;
+    if (blockers?.length) return `Retry did not start: this task is still blocked by ${blockers.length} unresolved ${blockers.length === 1 ? "dependency" : "dependencies"}.`;
+    return STALE_TASK_RETRY_MESSAGE;
+  }
   const outcome = result.scheduledRetry?.outcome;
   if (outcome && outcome !== "promoted" && outcome !== "already_promoted") return result.scheduledRetry!.message;
   return null;

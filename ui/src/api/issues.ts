@@ -458,6 +458,7 @@ export const issuesApi = {
   retryTask: (issueId: string, body: { idempotencyKey: string; observedRunId: string | null; retryAction?: "move_forward" }) =>
     api.post<{ requestId: string | null; accepted: boolean; stale: boolean; alreadyMovedOn?: boolean;
       refused?: { reason: string; message: string };
+      blockedBy?: { unresolvedBlockerIssueIds: string[]; pendingFinalizeBlockerIssueIds: string[] };
       scheduledRetry?: { outcome: "promoted" | "already_promoted" | "gate_suppressed" | "waiting" | "no_scheduled_retry"; message: string };
       presentation: import("@paperclipai/shared").TaskInterruptionPresentation | null }>(`/issues/${issueId}/retry`, body),
   recoverWorkspace: (id: string, data: { actionId: string; runId: string; idempotencyKey: string }) =>
