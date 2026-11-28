@@ -145,6 +145,7 @@ import { installRunIntakeStallWatch, stopRunIntakeStallWatch } from "./services/
 import { drainHttpRequestWork } from "./middleware/idle-admission.js";
 import { initializeCloudRuntimeConfig } from "./services/cloud-runtime-config.js";
 import { loadCloudBootstrapConfig, loadConfig, type Config } from "./config.js";
+import { serverVersion } from "./version.js";
 import { logger } from "./middleware/logger.js";
 import { startEventLoopStallMonitor } from "./event-loop-stall-monitor.js";
 import { setStartupQueuedRunPassPending, setStartupRecoveryPhase } from "./startup-recovery-state.js";
@@ -1030,6 +1031,7 @@ async function startServerWithDatabaseTeardown(
       : undefined,
     deploymentMode: config.deploymentMode,
     deploymentExposure: config.deploymentExposure,
+    hostVersion: serverVersion,
     allowedHostnames: config.allowedHostnames,
     bindHost: config.host,
     authPublicBaseUrl: config.authPublicBaseUrl,
