@@ -29,6 +29,10 @@ Message the configured bot/address from its external provider and follow the cor
 
 ### `endpoint-management`
 
+Delegated setup can save ordinary bot tokens and API keys. Provider verification
+keys require the addressed human credential-entry step or verified provider
+provisioning. Open the saved setup link as that person to complete the request.
+
 Open `/apps/chat/:endpointId/settings` and the endpoint’s other available tabs; identity confirmation uses `/chat-identity/confirm`.
 
 ### `outbound-agentmail`
@@ -39,18 +43,16 @@ Use `paperclipai email inboxes --company-id <company-id>`, then `email send --co
 
 Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Use a
 test provider account/channel with permission to send messages. Gates differ:
-AgentMail bypasses the chat-connectors UI gate, GitHub uses
-`enableGitHubReviewBots`, and other chat providers use `enableChatConnectors`.
+AgentMail and GitHub bypass the chat-connectors UI gate; other chat providers
+use `enableChatConnectors`.
 Setup is covered in [connection setup](./connection-setup.md).
 
 ### `external-thread`
 
-Automated: [channel integration](../../server/src/__tests__/chat-channels.integration.test.ts) uses provider fixtures; it does not prove a live Slack, Discord, Teams, Telegram, GitHub, email, or Photon delivery.
+Automated: the chat channel integration suites ([Slack](../../server/src/__tests__/chat-channels/slack-ingress-and-threads.integration.test.ts), [Discord](../../server/src/__tests__/chat-channels/discord-setup-and-commands.integration.test.ts), [Teams](../../server/src/__tests__/chat-channels/teams-ingress-and-media.integration.test.ts), [Telegram](../../server/src/__tests__/chat-channels/telegram-ingress-and-callbacks.integration.test.ts), [GitHub](../../server/src/__tests__/chat-channels/github-setup-and-access.integration.test.ts), and [shared core](../../server/src/__tests__/chat-channels/board-and-shared-core.integration.test.ts)) use provider fixtures; they do not prove a live Slack, Discord, Teams, Telegram, GitHub, email, or Photon delivery.
 
-Monitor continuation regression: [database checks](../../server/src/services/chat-monitor-continuation.test.ts)
-verify the exact originating conversation, rejected forged/mismatched receipts,
-one working publication, no completion for a yielded run, and saved-response
-recovery. In a disposable live thread, request work that needs deferred repository
+Monitor continuation coverage lives in [GitHub review workflow](../../server/src/__tests__/chat-channels/github-review-workflow.integration.test.ts), [Slack interactions and files](../../server/src/__tests__/chat-channels/slack-interactions-and-files.integration.test.ts),
+and [external chat wait](../../server/src/services/native-runtime/external-chat-wait.integration.test.ts). In a disposable live thread, request work that needs deferred repository
 preparation. Verify a useful continuation explanation, automatic resumption, and
 the final result in that same thread. A successful provider turn alone is insufficient.
 
@@ -72,6 +74,17 @@ database suite checks these states and revoked endpoints using stored provider
 receipts; live model adherence remains a separate check.
 It also checks saved monitors, disabled repositories, multiple reviewed heads,
 read-only finish validation, withdrawal rollback, and separate approval gates.
+Repeat the review wait after a tree resume and a same-agent continuation with
+no new provider message. Accepted requester lineage and the latest saved review
+publication keep the task in review without a self-wake or duplicate publication.
+A newer unreviewed head, changed requester/repository, or revoked access cannot
+inherit the prior head's passive wait. Omitted/null yielded continuation is filled
+from authorized server task context after a current-head review, an accepted tree
+resume inheriting it, or a same-head follow-up with this run's processed useful
+reply bound to its exact current source. Pending or ambiguous replies and
+acknowledgements do not authorize this fallback. A malformed first report can recover by omitting the continuation;
+explicit malformed input remains rejected. Revocation between context read,
+finish and commit preserves the task without self-waking. Done policy is unchanged.
 
 Manual: For each supported provider being changed, send a unique message, verify the intended agent/company receives it, and inspect the actual external reply in the original thread. Repeat with an unlinked/unauthorized sender, duplicate inbound delivery, and one supported attachment. Record provider-specific results separately.
 
@@ -86,16 +99,17 @@ cover the database and prompt contracts; they do not prove live provider deliver
 
 For Slack, enable **Require at-mention** and **Allow direct messages**. Send a
 plain DM and follow up without a mention: both should reach the agent, with
-top-level replies to top-level DMs. Channel messages and thread replies still
+top-level replies to top-level DMs. Channel messages and channel thread replies still
 require a mention when that setting is enabled. Disable direct messages and
-confirm a plain DM is rejected. Use a private channel for threaded conversations.
+confirm a plain DM is rejected. Threads also work in DMs.
 
 For Slack acknowledgement latency, mention the bot with and without an attachment.
 Eyes should appear after authorized task/comment persistence, independently of
 file preparation, subscription and agent startup. Duplicate delivery must keep
 one receipt; the final reply must remove only its source message's eyes. Record
 live mention-to-reaction timing separately from the PostgreSQL fixture tests and
-the `chat.slack.receipt` transport span described in [Observability](../../doc/observability.md).
+the `chat.slack.receipt` transport span in
+[`receipt-timing.ts`](../../server/src/services/chat-channels/slack/receipt-timing.ts).
 
 During a top-level DM run, verify that the bot adds eyes to the source message
 and removes them when the final reply arrives. The pinned Slack SDK encodes a
@@ -105,10 +119,11 @@ while still validating the channel and the source message timestamp.
 For an agent with two linked Slack endpoints, compare assignment preparation and
 tool discovery in the run trace. Endpoint checks may overlap in pairs. Confirm
 that both permitted tool sets remain available, then revoke one linked identity
-and confirm that the next preparation excludes it. The
-[database regression](../../server/src/__tests__/slack-tool-preparation.test.ts)
-uses real PostgreSQL with one connection and controlled credential resolution;
-it does not prove live provider latency or an end-to-end response target.
+and confirm that the next preparation excludes it. Canonical endpoint preparation
+and Slack lifecycle coverage lives in
+[batch failure controls](../../server/src/services/connectors/slack-endpoint-preparation.test.ts)
+and [Slack lifecycle tests](../../server/src/__tests__/slack-conversation-lifecycle.test.ts);
+these do not prove live provider latency or an end-to-end response target.
 
 Catalog discovery rechecks live authority and current credentials without
 computing the unused compatibility fingerprint. Assignment snapshots and
@@ -129,10 +144,22 @@ contracts with synthetic providers; record a live journey separately.
 For a long-lived task, repeat more than 100 continuations and check that tool
 access remains available. Fail a later GitHub run after a final answer and
 check that the earlier answer remains intact.
+After publishing a PR assessment, deliver an ordinary no-new-work author reply.
+Hold native presentation after execution succeeds. Verify maintenance makes no
+provider write while undecided, including repeated passes and the explicit
+fallback path. Commit either a passive wait, genuine missing response, or failure
+and verify that the same request settles once with the corresponding behavior.
+Verify the actual shared summary stays unchanged during queued/running
+acknowledgements and after the committed passive wait, including maintenance,
+restart and cleanup. Confirm the per-request acknowledgement is terminal and a
+second maintenance pass makes no write. Then request a real same-head and
+changed-head assessment and confirm canonical publication can replace it.
+Real-PostgreSQL provider fixtures cover this producer and missing/error/unknown
+write safety; record hosted destination acceptance separately.
 
 ### `endpoint-management`
 
-Automated: [channel integration](../../server/src/__tests__/chat-channels.integration.test.ts) covers shared endpoint/delivery behavior; live credential repair and provider ownership remain manual checks.
+Automated: [board and shared core integration](../../server/src/__tests__/chat-channels/board-and-shared-core.integration.test.ts) and the provider-scoped suites under `server/src/__tests__/chat-channels/` cover shared endpoint/delivery behavior; live credential repair and provider ownership remain manual checks.
 
 Manual: Inspect the bound agent and identity, recent activity, and delivery failure details. Repair a disposable credential, retry a safe message when offered, and verify exactly one external reply. Disable the endpoint and confirm new traffic is not silently processed.
 
@@ -154,6 +181,12 @@ covers these views, pending/failure/success, mobile, and light theme with simula
 provider responses. Verify actual credential validity and restored delivery
 separately against GitHub; a Storybook success does not establish live recovery.
 
+For an agent-requested GitHub credential handoff, open the saved link as the
+addressed human. A fresh App opens import; a configured App opens replacement
+through reconnect and retains credentials omitted from the request. Complete
+the requested credential entry and confirm the endpoint identity before
+expecting task continuation.
+
 For GitHub, submit a disposable PR and verify the summary heading uses the bot's
 display name and the check remains **Paperclip Review**. For two separate bots on one PR, verify
 their App-scoped checks and comments remain independent.
@@ -163,7 +196,12 @@ write and verify one summary, finding, and App-scoped check. Retry the same tool
 call and verify it returns the saved receipt. Include text longer than 500
 characters and coverage with more than 50 entries. Change only the text suffix
 or final coverage entry and verify rejection without another write. Remove the
-durable publication and verify that a retry cannot dispatch a new write.
+completed durable publication and verify that a retry cannot dispatch a new write.
+Also interrupt metadata reads before publication staging, repeat the exact
+`begin_review` and `submit_review` requests, and verify typed results and one
+assessment publication. Let the original metadata read finish alongside its
+retry and verify that both converge on the same publication. Changed requests
+and revoked access must still stop preflight recovery.
 Leave a transient failure queued,
 restart the instance, and verify publication resumes at its saved deadline
 without another inbound message. Revoked access and permanent rejections must
@@ -212,8 +250,23 @@ Capability ID: `chat-channels/attachments`.
 Scope: ui
 Storybook: Mount TaskChatBubble attachments and ChatEndpointDetail provider-specific consent/upload/delivery failure and unknown-outcome states. Local email attachment dialog remains a prototype.
 Production: Transfer a disposable supported file through each affected provider; verify recipient delivery, read scope, duplicate/replay handling and failure/unknown state without treating notification as file-upload proof.
-Sources: Source: [TaskChatBubble.tsx](../../ui/src/components/task-chat/TaskChatBubble.tsx), [ChatEndpointDetail.tsx](../../ui/src/pages/apps/chat/ChatEndpointDetail.tsx), [chatEndpoints.ts](../../ui/src/api/chatEndpoints.ts), [chat-channels.ts](../../server/src/routes/chat-channels.ts). Tests: [TaskChatBubble.test.tsx](../../ui/src/components/task-chat/TaskChatBubble.test.tsx), [task-chat-attachments.test.ts](../../ui/src/components/task-chat/task-chat-attachments.test.ts), [chat-channels.integration.test.ts](../../server/src/__tests__/chat-channels.integration.test.ts), [issue-attachment-routes.test.ts](../../server/src/__tests__/issue-attachment-routes.test.ts)
+Sources: Source: [TaskChatBubble.tsx](../../ui/src/components/task-chat/TaskChatBubble.tsx), [ChatEndpointDetail.tsx](../../ui/src/pages/apps/chat/ChatEndpointDetail.tsx), [chatEndpoints.ts](../../ui/src/api/chatEndpoints.ts), [chat-channels.ts](../../server/src/routes/chat-channels.ts). Tests: [task-chat-attachments.test.ts](../../ui/src/components/task-chat/task-chat-attachments.test.ts), [slack-interactions-and-files.integration.test.ts](../../server/src/__tests__/chat-channels/slack-interactions-and-files.integration.test.ts), [teams-authority-and-transfer.integration.test.ts](../../server/src/__tests__/chat-channels/teams-authority-and-transfer.integration.test.ts), [telegram-media-and-recovery.integration.test.ts](../../server/src/__tests__/chat-channels/telegram-media-and-recovery.integration.test.ts), [issue-attachment-routes.test.ts](../../server/src/__tests__/issue-attachment-routes.test.ts)
 
 ### Documentation scope: Chat and email channel setup
 
 Shared recipes name provider checks; each provider transport/thread/identity/file-size/type combination needs separate live evidence and deeper instructions.
+
+Saved-input Retry regression: fail a disposable GitHub turn, change the
+configured instruction skill, and send a new authorized request while an agent
+budget gate blocks admission. Clear that gate and use the task thread's ordinary
+**Retry** control. Verify the new saved message and its admitted skill snapshot
+reach one run, rather than replaying the previous failed request. Preserve both
+original receipts. With a committed failed native result, continuation requires
+verified controller and environment cleanup; an unknown executor remains held.
+After successful admission, reload and verify that the prior skipped receipt does
+not strand a later real provider reply or tree resume. Provider fixtures support
+this behavior; live fixed-source runtime and destination proof remain separate.
+
+### `delegated-configuration`
+
+See the canonical [delegated configuration guidance and acceptance evidence](connection-setup.md#delegated-configuration).

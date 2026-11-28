@@ -1,6 +1,11 @@
 import { sql } from "drizzle-orm";
 import { heartbeatRuns } from "@paperclipai/db";
 
+export const runTaskContextColumn = sql<Record<string, unknown>>`jsonb_build_object(
+  'issueId', ${heartbeatRuns.contextSnapshot}->'issueId',
+  'taskId', ${heartbeatRuns.contextSnapshot}->'taskId'
+)`;
+
 type RunTaskBinding = {
   nativeIssueId?: string | null;
   issueId?: string | null;

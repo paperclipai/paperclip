@@ -111,6 +111,7 @@ export function parseIssueReferenceHref(href: string): { identifier: string } | 
   } catch {
     return null;
   }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
 
   const segments = url.pathname
     .split("/")

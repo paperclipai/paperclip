@@ -5,6 +5,7 @@ import {
   resolveChatActionSchema,
   resolveChatPublicationSchema,
   chatPublicationStateSchema,
+  updateChatEndpointSchema,
 } from "./chat-channels.js";
 
 describe("Microsoft Teams chat credential validation", () => {
@@ -109,5 +110,16 @@ describe("chat provider-action resolution validation", () => {
     expect(resolveChatActionSchema.safeParse({ action: "retry" }).success).toBe(
       false,
     );
+  });
+});
+
+describe("chat endpoint communicationInstructions validation", () => {
+  it("accepts clearing instructions and rejects oversized instructions and unsupported controls", () => {
+    expect(updateChatEndpointSchema.parse({ communicationInstructions: "  " })).toEqual({
+      communicationInstructions: "",
+    });
+    expect(updateChatEndpointSchema.safeParse({ communicationInstructions: "a".repeat(4001) }).success).toBe(false);
+    expect(updateChatEndpointSchema.safeParse({ replyDetail: "brief" }).success).toBe(false);
+    expect(updateChatEndpointSchema.safeParse({ progressUpdates: false }).success).toBe(false);
   });
 });

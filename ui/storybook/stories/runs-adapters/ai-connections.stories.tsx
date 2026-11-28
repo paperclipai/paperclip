@@ -1,7 +1,7 @@
 import { AiReviewFrame, aiReviewContext } from "../../prototypes/AiReviewFrame";
 import { AiTaskConnectionReview } from "../../prototypes/AiTaskConnectionReview";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, userEvent, within } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 import { AiConnectionsReview } from "../../prototypes/AiConnectionsReview";
 import { AiConnectorPages } from "../../prototypes/AiConnectorPages";
 import {
@@ -128,9 +128,9 @@ export const ProviderCatalog: Story = {
     await expect(await canvas.findByRole("button", { name: "Add account Anthropic" })).toBeVisible();
     await expect(canvas.getByRole("button", { name: "Connect GitHub" })).toBeVisible();
     await expect(canvas.getByRole("button", { name: "Connect Gmail" })).toBeVisible();
-    await userEvent.type(canvas.getByPlaceholderText("Search connectors…"), "Claude");
+    await userEvent.type(canvas.getByPlaceholderText("Search plugins…"), "Claude");
     await expect(canvas.queryByRole("button", { name: "Connect Gmail" })).not.toBeInTheDocument();
-    await userEvent.clear(canvas.getByPlaceholderText("Search connectors…"));
+    await userEvent.clear(canvas.getByPlaceholderText("Search plugins…"));
   },
 };
 export const ConnectFromExistingCatalog: Story = {
@@ -148,7 +148,9 @@ export const ConnectFromExistingCatalog: Story = {
     await userEvent.click(canvas.getByRole("button", { name: "Use connection" }));
     await expect(await canvas.findByLabelText("AI account settings")).toBeVisible();
     await expect(canvas.getByRole("heading", { name: "My additional Claude account" })).toBeVisible();
-    await userEvent.click(canvas.getByRole("link", { name: "Connectors" }));
+    await userEvent.click(canvas.getByRole("link", { name: "Plugins" }));
+    // The catalog opens on plugin cards; accounts are listed under Installed.
+    await userEvent.click(await canvas.findByRole("radio", { name: "Installed" }));
     await expect(await canvas.findByRole("button", { name: "Open My additional Claude account permissions" })).toBeVisible();
     await expect(canvas.getByRole("button", { name: "Open My Claude subscription permissions" })).toBeVisible();
   },
@@ -259,10 +261,62 @@ export const ChangePersonalDefault: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(await canvas.findByRole("button", { name: "Make default" }));
-    await expect(canvas.getByLabelText("AI account settings")).toHaveTextContent("Personal default");
-    await expect(canvas.queryByRole("button", { name: "Make default" })).not.toBeInTheDocument();
+    await userEvent.click(await canvas.findByRole("button", { name: "Set as default for Claude" }));
+    await expect(canvas.getByLabelText("AI account settings")).toHaveTextContent("Default for Claude");
+    await expect(canvas.queryByRole("button", { name: "Set as default for Claude" })).not.toBeInTheDocument();
   },
+};
+
+const connectorDefaultAccounts = AI_REVIEW_CONNECTIONS.map(account => account.id === "openai-api"
+  ? { ...account, name: "My OpenAI API key", ownership: "personal" as const, ownerUserId: "dotta", ownerName: "Dotta" }
+  : account);
+
+export const ConnectorDefaultMenu: Story = {
+  args: { host: "connections", initialConnections: connectorDefaultAccounts },
+  parameters: { paperclip: { capabilities: ["runs-adapters/validation", "connection-setup/catalog"], status: "current", implementation: "production", boundary: "fixtures",
+    notes: "Production Browse/ConnectorCard crown and dropdown. Fixture API persists one default per owner/provider across methods; provider authentication and real API authorization are not exercised." } },
+  play: async ({ canvasElement }) => {
+    await userEvent.click(await within(canvasElement).findByRole("radio", { name: "Installed" }));
+    const heading = await within(canvasElement).findByRole("heading", { name: "OpenAI", level: 2 });
+    const provider = within(heading.closest<HTMLElement>('[data-app-slug="openai"]')!);
+    const body = within(canvasElement.ownerDocument.body);
+    await userEvent.click(await provider.findByRole("button", { name: "2 connections" }));
+    await expect(provider.getByLabelText("Your default for OpenAI")).toBeVisible();
+    await userEvent.click(provider.getByRole("button", { name: "Manage My OpenAI API key connection" }));
+    await userEvent.click(await body.findByRole("menuitem", { name: "Set as default for OpenAI" }));
+    await waitFor(() => expect(provider.getByLabelText("Your default for OpenAI").parentElement).toHaveTextContent("My OpenAI API key"));
+    await userEvent.click(provider.getByRole("button", { name: "Manage My OpenAI API key connection" }));
+    await expect(await body.findByRole("menuitem", { name: "Default for OpenAI" })).toHaveAttribute("aria-disabled", "true");
+    await userEvent.keyboard("{Escape}");
+    await expect(provider.getByRole("button", { name: "Manage My OpenAI API key connection" })).toHaveFocus();
+  },
+};
+
+export const ConnectorDefaultRetry: Story = {
+  args: { host: "connections", initialConnections: connectorDefaultAccounts, failDefaultOnce: true },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("radio", { name: "Installed" }));
+    const heading = await canvas.findByRole("heading", { name: "OpenAI", level: 2 });
+    const provider = within(heading.closest<HTMLElement>('[data-app-slug="openai"]')!);
+    const body = within(canvasElement.ownerDocument.body);
+    await userEvent.click(await provider.findByRole("button", { name: "2 connections" }));
+    await userEvent.click(provider.getByRole("button", { name: "Manage My OpenAI API key connection" }));
+    await userEvent.click(await body.findByRole("menuitem", { name: "Set as default for OpenAI" }));
+    const failure = (await canvas.findByText("Couldn’t change your OpenAI default.")).closest<HTMLElement>('[role="alert"]')!;
+    await expect(failure).toHaveTextContent("Couldn’t change your OpenAI default");
+    await expect(provider.getByLabelText("Your default for OpenAI").parentElement).toHaveTextContent("My ChatGPT subscription");
+    await userEvent.click(within(failure).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(provider.getByLabelText("Your default for OpenAI").parentElement).toHaveTextContent("My OpenAI API key"));
+  },
+};
+
+export const ConnectorDefaultUnavailable: Story = {
+  args: { host: "connections", initialConnections: connectorDefaultAccounts.map(account => account.id === "openai-personal" ? { ...account, status: "expired" } : account) },
+};
+
+export const ConnectorDefaultsReadOnly: Story = {
+  args: { host: "connections", initialConnections: connectorDefaultAccounts, readOnly: true },
 };
 
 const authArgs = { initialStage: "auth" as const };
@@ -522,7 +576,7 @@ export const ReconnectExisting: Story = {
     await userEvent.click(canvas.getByRole("button", { name: "Submit code" }));
     await userEvent.click(canvas.getByRole("button", { name: "Use connection" }));
     await expect(await canvas.findByRole("heading", { name: "My Claude subscription" })).toBeVisible();
-    await expect(canvas.getByLabelText("AI account settings")).toHaveTextContent("Personal default");
+    await expect(canvas.getByLabelText("AI account settings")).toHaveTextContent("Default for Claude");
   },
 };
 export const RevokeConnection: Story = {

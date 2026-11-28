@@ -1,5 +1,6 @@
 import { expect } from "@playwright/test";
 import { createConnectionProof } from "../connection-evidence.js";
+import { onboardingConnect } from "./onboarding-connect.js";
 import { onboardingFirstTask } from "./onboarding-first-task.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
 
@@ -27,9 +28,16 @@ export async function cloudOnboarding(input: CloudOnboardingInput): Promise<Jour
   const firstRunName = page.getByLabel("Name", { exact: true });
   const organizationName = page.getByLabel("Organization name", { exact: true });
   const createLink = page.getByRole("link", { name: /^(Create (?:a new )?organization|\+ New organization)$/ }).first();
+  const betaConnection = page.getByRole("checkbox", { name: "OpenAI Codex", exact: true });
   // The first organization uses the signup Name/Next form. Later organizations
   // use Organization name/Create organization, reached from the managed portfolio.
-  await expect(firstRunName.or(organizationName).or(createLink).first()).toBeVisible();
+  await expect(betaConnection.or(firstRunName).or(organizationName).or(createLink).first()).toBeVisible();
+  if (await betaConnection.isVisible()) {
+    await betaConnection.check();
+    await page.getByRole("checkbox", { name: "I intend to provide feedback on the Paperclip closed beta.", exact: true }).check();
+    await page.getByRole("button", { name: "Continue", exact: true }).click();
+    await expect(firstRunName).toBeVisible();
+  }
   if (!await firstRunName.isVisible() && !await organizationName.isVisible()) {
     await createLink.click();
     await expect(organizationName).toBeVisible();
@@ -49,7 +57,13 @@ export async function cloudOnboarding(input: CloudOnboardingInput): Promise<Jour
   await page.getByRole("button", { name: "Next", exact: true }).click();
   await page.getByRole("button", { name: "Use API key instead", exact: true }).click();
   await page.getByRole("radio", { name: /OpenAI.*API/ }).click();
-  await page.getByRole("button", { name: "Use a custom gateway", exact: true }).click();
+  const gatewayButton = page.getByRole("button", { name: "Use a custom gateway", exact: true });
+  const advanced = page.locator("summary").filter({ hasText: "Advanced" });
+  await expect(gatewayButton.or(advanced).first()).toBeVisible();
+  // Older tenants show the gateway inline and keep the runner picker in Advanced.
+  const inlineGateway = await gatewayButton.isVisible();
+  if (!inlineGateway) await advanced.click();
+  await gatewayButton.click();
   const dialog = page.getByRole("dialog", { name: "Custom gateway connection", exact: true });
   await dialog.getByLabel("Provider URL", { exact: true }).fill(input.gateway.baseUrl);
   await dialog.getByLabel("API key", { exact: true }).fill(input.gateway.apiKey);
@@ -64,16 +78,19 @@ export async function cloudOnboarding(input: CloudOnboardingInput): Promise<Jour
   if (!connection || connections.length !== 1) throw new JourneyError("failed", "onboarding_connection_not_saved");
   await input.own({ kind: "connection", name: connectionName, id: connection.id });
   await page.getByRole("combobox", { name: "Model", exact: true }).selectOption(input.gateway.model);
-  await page.locator("summary").filter({ hasText: "Advanced" }).click();
-  await page.getByRole("button", { name: "Runner", exact: true }).click();
-  await page.getByRole("option", { name: /^Paperclip Runner/ }).click();
+  if (inlineGateway) {
+    await advanced.click();
+    await page.getByRole("button", { name: "Runner", exact: true }).click();
+    await page.getByRole("option", { name: /^Paperclip Runner/ }).click();
+  }
   await input.qualify(context, connection.id);
   // Connect performs the production probe and agent creation. Never press Retry.
-  await page.getByRole("button", { name: "Connect", exact: true }).click();
-  await page.getByRole("button", { name: "Get started", exact: true }).waitFor({ timeout: 180_000 });
+  const connect = await onboardingConnect({ page, origin: api.origin, companyId: company.id, deadlineAt: input.deadlineAt,
+    retain: value => { evidence.onboardingConnect = value; } });
   const agents = await api.get<Row[]>(`/api/companies/${company.id}/agents`);
   const agent = agents.find(a => a.name === name);
   if (!agent || agents.length !== 1 || agent.adapterType !== "paperclip_runner" || agent.adapterConfig?.provider !== "codex" || agent.adapterConfig?.model !== input.gateway.model) throw new JourneyError("failed", "onboarding_agent_configuration_mismatch");
+  connect.checkpoint = "agent-verification";
   await input.own({ kind: "agent", name, id: agent.id });
   evidence.checks.push({ id: "ui-connection-and-native-agent", passed: true });
   await input.own({ kind: "issue", name: "Paperclip onboarding" });
@@ -81,7 +98,8 @@ export async function cloudOnboarding(input: CloudOnboardingInput): Promise<Jour
   await input.phase("agent");
   const completed = await onboardingFirstTask({ context, agent: { id: agent.id }, connectionId: connection.id,
     proof: createConnectionProof(), campaignId, maxRuns: input.maxRuns, deadlineAt: input.deadlineAt,
-    own: input.own, observeRun: input.observeRun, onArtifact: artifact => { evidence.artifact = artifact; } });
+    own: input.own, observeRun: input.observeRun, onArtifact: artifact => { evidence.artifact = artifact; },
+    onPreAcceptanceFailure: receipt => { evidence.onboardingPreAcceptance = receipt; } });
   await input.verifyExecution(context, [completed.artifact.originatingRunId]);
   evidence.checks.push({ id: "first-task-complete", passed: true },
     { id: "downloadable-artifact-verified", passed: true }, { id: "native-trace-verified", passed: true });
