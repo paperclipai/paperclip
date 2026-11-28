@@ -2,6 +2,7 @@ import { RUNNER_REVISION_WAIT_RETRY_REASON } from "./runner-revision-mismatch.js
 import { STORAGE_UNAVAILABLE_WAIT_RETRY_REASON } from "../storage/storage-unavailable.js";
 import { ENVIRONMENT_PROVIDER_WAIT_RETRY_REASON } from "./environment-provider-wait.js";
 import { PROVIDER_ATTEMPT_CREDIT_GENERATION_LIMIT } from "./native-runtime/provider-attempt-outcome.js";
+import { NATIVE_RESUME_REFUSED_CONTINUATION_CODE } from "./native-runtime/native-resume-refused-continuation.js";
 import { AGENT_DIRECTORY_BUSY_RETRY_REASON } from "../modules/run-dispatch/index.js";
 
 /**
@@ -32,7 +33,7 @@ export const SERVER_RESTART_RETRY_WINDOW_MS = 60 * 60_000;
 const UNCHARGED_RETRY_LANES: ReadonlySet<string> = new Set([
   "workspace_busy", "ai_connection_busy", "ai_connection_pool_wait", AGENT_DIRECTORY_WAIT_RETRY_REASON, RUNNER_REVISION_WAIT_RETRY_REASON,
   INTERRUPTED_PREPARATION_RETRY_REASON, STORAGE_UNAVAILABLE_WAIT_RETRY_REASON, SERVER_RESTART_RETRY_REASON,
-  ENVIRONMENT_PROVIDER_WAIT_RETRY_REASON,
+  ENVIRONMENT_PROVIDER_WAIT_RETRY_REASON, NATIVE_RESUME_REFUSED_CONTINUATION_CODE,
 ]);
 
 type RetryRun = {

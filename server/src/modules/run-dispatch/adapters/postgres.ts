@@ -182,7 +182,7 @@ function classifyRetryReasonKind(retryReason: string | null): RetryReasonKind {
   if (retryReason === ISSUE_DISPOSITION_REPAIR_RETRY_REASON) return "disposition_repair";
   if ((retryReason === "ai_connection_busy" || retryReason === "ai_connection_pool_wait")) return "ai_connection_wait";
   if (["native_safe_replacement", "native_provider_overloaded", "native_environment_blocker", "native_agent_blocker_continuation",
-    "interrupted_preparation"].includes(retryReason ?? "")) return "native_safe_replacement";
+    "native_resume_refused_continuation", "interrupted_preparation"].includes(retryReason ?? "")) return "native_safe_replacement";
   return "other";
 }
 

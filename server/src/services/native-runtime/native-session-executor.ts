@@ -74,6 +74,8 @@ import { environmentTaskOperationSchema, environmentTaskResultSchema } from "@pa
 import { preparePluginRunnerCredentials } from "./plugin-runner-credentials.js";
 import { createPluginRunnerTaskOwner, verifyPluginRunnerTaskReattachment } from "./plugin-runner-task.js";
 import { findNativeFailedBeforeProviderTurn, NATIVE_FAILED_BEFORE_PROVIDER_TURN_CODE, NativeFailedBeforeProviderTurnError } from "./failed-before-provider-turn.js";
+import { materializeNativeResumeRefusedContinuation } from "./native-provider-capacity-retry.js";
+import { nativeResumeRefusedMessage } from "./native-resume-refused-continuation.js";
 import { findNativePredecessorRetirementUnproven, NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE, NativePredecessorRetirementDirectoryBusyError, NativePredecessorRetirementUnprovenError } from "./predecessor-retirement.js";
 import {
   inspectSandboxSessionRunner, retireSandboxRunnerPortHolders, sandboxSessionRunnerExited, type SandboxSessionRunnerInspection,
@@ -13917,8 +13919,14 @@ async function executePaperclipNativeSessionAttempt(
             failureTask.executionRunId === input.execution.binding.runId) &&
           (!failureTask.checkoutRunId ||
             failureTask.checkoutRunId === input.execution.binding.runId);
+        const resumeRefusedSuccessor = !ownershipUnverified && stillOwnsTask && phase === "terminal_failure"
+          && sourceFailureCode === "runner_task_admission_rejected"
+          ? await materializeNativeResumeRefusedContinuation({ tx: tx as unknown as Db,
+            companyId: input.execution.binding.companyId, issueId: input.execution.binding.issueId,
+            runId: input.execution.binding.runId, agentId: input.execution.binding.agentId })
+          : null;
         let failureBlockStatusVersion: number | undefined;
-        if (stillOwnsTask && recoveryProjection.issueStatus) {
+        if (stillOwnsTask && recoveryProjection.issueStatus && !resumeRefusedSuccessor) {
           const projected = await issueService(tx as unknown as Db).update(
             input.execution.binding.issueId,
             { status: recoveryProjection.issueStatus },
@@ -13938,6 +13946,14 @@ async function executePaperclipNativeSessionAttempt(
             .where(eq(issues.id, input.execution.binding.issueId));
         }
         if (!stillOwnsTask) return;
+        if (resumeRefusedSuccessor) {
+          await tx.update(nativeRunFinalizations).set({
+            failureDetail: sql`coalesce(${nativeRunFinalizations.failureDetail}, '{}'::jsonb) || ${JSON.stringify({
+              successorRunId: resumeRefusedSuccessor.retryId, nextAction: nativeResumeRefusedMessage(resumeRefusedSuccessor.reason) })}::jsonb`,
+          }).where(and(eq(nativeRunFinalizations.runId, input.execution.binding.runId),
+            eq(nativeRunFinalizations.companyId, input.execution.binding.companyId)));
+          return;
+        }
         // The hold's reset deadline belongs to the provider-limit owner.
         if (providerLimit?.plan.automatic) await notifyDeliveryWork(tx, DELIVERY_QUEUES.providerLimitResume,
           JSON.stringify({ companyId: input.execution.binding.companyId }));
