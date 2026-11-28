@@ -8,6 +8,7 @@ import {
   ensureRuntimeServicesForRun, persistAdapterManagedRuntimeServices,
   type RealizedExecutionWorkspace, type RuntimeServiceRef,
 } from "../workspace-runtime.js";
+import { mergeRunRuntimeServicesIntoSnapshot } from "../run-context-snapshot.js";
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
@@ -182,17 +183,21 @@ export async function recordHeartbeatAdapterRuntimeServices(db: Db, input: Runti
       ...adapterManagedRuntimeServices,
     ];
     context.paperclipRuntimeServices = combinedRuntimeServices;
-    context.paperclipRuntimePrimaryUrl =
+    const runtimePrimaryUrl =
       combinedRuntimeServices.find((service) =>
         readNonEmptyString(service.url),
       )?.url ?? null;
-    await db
-      .update(heartbeatRuns)
-      .set({
-        contextSnapshot: context,
-        updatedAt: new Date(),
-      })
-      .where(eq(heartbeatRuns.id, run.id));
+    context.paperclipRuntimePrimaryUrl = runtimePrimaryUrl;
+    // Merge only the runtime-service fields this writer owns. The
+    // in-memory `context` was read before dispatch, so writing it back
+    // wholesale would erase an issue anchor the checkout route bound
+    // into the persisted snapshot mid-run (and re-open the
+    // taskless-write wall).
+    await mergeRunRuntimeServicesIntoSnapshot(db, {
+      runId: run.id,
+      runtimeServices: combinedRuntimeServices,
+      primaryUrl: runtimePrimaryUrl,
+    });
     if (issueId) {
       try {
         await postWorkspaceReadyComment({
