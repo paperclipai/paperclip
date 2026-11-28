@@ -148,7 +148,13 @@ export function signalRunningProcess(
   }
 }
 
-export const runningProcesses = new Map<string, RunningProcess>();
+const RUNNING_PROCESSES_KEY: unique symbol = Symbol.for("paperclipai.adapter-utils.runningProcesses");
+type RunningProcessesGlobal = typeof globalThis & {
+  [RUNNING_PROCESSES_KEY]?: Map<string, RunningProcess>;
+};
+const runningProcessesGlobal = globalThis as RunningProcessesGlobal;
+export const runningProcesses: Map<string, RunningProcess> =
+  runningProcessesGlobal[RUNNING_PROCESSES_KEY] ??= new Map<string, RunningProcess>();
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
 const TERMINAL_RESULT_SCAN_OVERLAP_CHARS = 64 * 1024;
