@@ -58,6 +58,7 @@ A managed home is created empty, so the adapter must provision auth into it befo
 - **Managed homes** (the default home and any configured `CODEX_HOME` under the company tree) are always seeded: the ChatGPT-subscription `auth.json` is symlinked from the host Codex home, or, when a per-agent `OPENAI_API_KEY` is configured, an API-key `auth.json` is written instead.
 - **Genuine external overrides** (a `CODEX_HOME` outside the Paperclip-managed company tree) are treated as self-managed and are never seeded or overwritten.
 - **Fail-fast guard:** if a managed home ends up with no usable `auth.json` and no configured API key, the run fails with an explicit `adapter_failed` ("no Codex credentials provisioned for managed home …") rather than emitting an unauthenticated request.
+- **Routed AI connections** (routing kind `local`, `gateway` or `openrouter`) authenticate through their provider routing, not `auth.json`: the home's `model_providers.paperclip` entry reads `PAPERCLIP_AI_PROVIDER_KEY`, or no key for a route with `auth: "none"`. The guard passes such a run when the route needs no key or the key is non-empty, and fails it when a required key is empty; a host or sandbox Codex login does not count, because the routed provider never reads it.
 
 ### Auth ownership and precedence
 

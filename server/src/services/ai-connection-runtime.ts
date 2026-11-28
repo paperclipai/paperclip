@@ -577,6 +577,7 @@ export async function prepareManagedAiRuntime(
         throw error;
       }
     })().finally(() => { cleanupRunning = undefined; });
+    const { managedAiRouting: _configuredRouting, managedAiConnection: _configuredConnection, ...configured } = input.config;
     return {
       sessionIdentity,
       ...(retainedCleanupScope ? { retainedCleanupScope } : {}),
@@ -590,7 +591,7 @@ export async function prepareManagedAiRuntime(
           google: { credentialSha256: createHash("sha256").update(originalCredential, "utf8").digest("hex") } } satisfies ManagedAiCredentialWritebackBinding,
       } : {}),
       config: {
-        ...input.config,
+        ...configured,
         ...projected?.config,
         ...(routing ? { managedAiRouting: routing } : {}),
         env,
