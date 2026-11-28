@@ -1321,6 +1321,90 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     });
   });
 
+  async function insertWorkspaceBusyDeferrals(companyId: string, agentId: string, count: number) {
+    for (let index = 0; index < count; index++) {
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        triggerDetail: "manual",
+        status: "cancelled",
+        errorCode: "workspace_busy",
+        createdAt: new Date(),
+        startedAt: new Date(),
+        finishedAt: new Date(),
+        contextSnapshot: {},
+        resultJson: { executionRecovery: { kind: "workspace_wait", providerWorkStarted: false } },
+      });
+    }
+  }
+
+  it("does not count workspace-busy deferrals toward the per-agent daily run cap", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({
+      heartbeatConfig: {
+        maxDailyRuns: 1,
+      },
+    });
+    await insertWorkspaceBusyDeferrals(companyId, agentId, 3);
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+    });
+
+    expect(run).not.toBeNull();
+    await heartbeat.drainActiveRunExecutions();
+    expect(countExecuteCallsForRun(run!.id)).toBe(1);
+  });
+
+  it("still enforces the daily run cap on real runs next to workspace-busy deferrals", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({
+      heartbeatConfig: {
+        maxDailyRuns: 1,
+      },
+    });
+    await insertWorkspaceBusyDeferrals(companyId, agentId, 3);
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      invocationSource: "on_demand",
+      triggerDetail: "manual",
+      status: "succeeded",
+      createdAt: new Date(),
+      startedAt: new Date(),
+      finishedAt: new Date(),
+      contextSnapshot: {},
+    });
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+    });
+
+    expect(run).toBeNull();
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    const [wakeup] = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        payload: agentWakeupRequests.payload,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeup).toMatchObject({
+      status: "skipped",
+      reason: "heartbeat.daily_run_limit",
+    });
+    expect(wakeup?.payload).toMatchObject({
+      heartbeatSkip: {
+        observed: 1,
+        limit: 1,
+      },
+    });
+  });
+
   it("coalesces same-issue wakes before enforcing the daily run cap", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent({
       heartbeatConfig: {
