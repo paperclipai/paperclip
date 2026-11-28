@@ -51,6 +51,7 @@ import {
 import { getRunLogStore } from "../services/run-log-store.js";
 import * as nativeRunLogRecovery from "../services/native-runtime/native-run-log-recovery.js";
 import { terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
+import { recordAgentSelfHandoff } from "../services/agent-self-handoff.js";
 import { settleUnrecoverableExecutions } from "../services/execution-recovery-resolution.js";
 import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
@@ -6882,6 +6883,54 @@ describeEmbeddedPostgres("issueService.assertCheckoutOwner stale checkout adopti
     });
     expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, seeded.issueId)))
       .toHaveLength(0);
+  });
+
+  it.each(["running", "succeeded"])("rejects the outgoing legacy run's late writes after an agent handoff while it is %s", async status => {
+    const seeded = await seedOwnershipIssue({ checkoutStatus: "failed" });
+    const original = await svc.getById(seeded.issueId);
+    const peerAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: peerAgentId, companyId: original!.companyId, name: "Peer", role: "engineer", status: "active",
+      adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {},
+    });
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: seeded.issueId } })
+      .where(eq(heartbeatRuns.id, seeded.actorRunId));
+    await svc.assertCheckoutOwner(seeded.issueId, seeded.actorAgentId, seeded.actorRunId);
+
+    expect(await recordAgentSelfHandoff(db, {
+      companyId: original!.companyId, runId: seeded.actorRunId, agentId: seeded.actorAgentId,
+      issueId: seeded.issueId, assigneeAgentId: peerAgentId,
+    })).toBe(true);
+    expect(await recordAgentSelfHandoff(db, {
+      companyId: original!.companyId, runId: seeded.actorRunId, agentId: seeded.actorAgentId,
+      issueId: randomUUID(), assigneeAgentId: peerAgentId,
+    })).toBe(false);
+    await svc.update(seeded.issueId, {
+      assigneeAgentId: peerAgentId,
+      status: "todo",
+      actorAgentId: seeded.actorAgentId,
+      actorRunId: seeded.actorRunId,
+    });
+    if (status === "succeeded") {
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.actorRunId));
+      await terminalizeLegacyExecution({
+        db, run: run!, status, fromStatuses: ["running"], reconcileIfNeeded: true,
+        patch: { finishedAt: new Date(), resultJson: { summary: "done" } },
+      });
+    }
+
+    for (const late of [{ title: "Late outgoing edit" }, { status: "done" as const }]) {
+      await expect(svc.update(seeded.issueId, {
+        ...late,
+        actorAgentId: seeded.actorAgentId,
+        actorRunId: seeded.actorRunId,
+      })).rejects.toMatchObject({ status: 403, details: { code: "issue_handed_off" } });
+    }
+    expect(await svc.getById(seeded.issueId)).toMatchObject({
+      status: "todo",
+      assigneeAgentId: peerAgentId,
+      title: original!.title,
+    });
   });
 
   it("lets the current assignee adopt a stale terminal checkout owner", async () => {

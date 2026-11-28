@@ -78,8 +78,10 @@ const mockRunnerGoalService = vi.hoisted(() => ({
   projection: vi.fn(async () => null),
   act: vi.fn(),
 }));
+const mockRecordAgentSelfHandoff = vi.hoisted(() => vi.fn(async () => true));
 
 function registerModuleMocks() {
+  vi.doMock("../services/agent-self-handoff.js", () => ({ recordAgentSelfHandoff: mockRecordAgentSelfHandoff }));
   vi.doMock("../services/queued-interaction-response.js", () => ({
     hasQueuedInteractionResponse: vi.fn(async () => false),
   }));
@@ -177,6 +179,7 @@ type TestActor =
       agentId: string;
       companyId: string;
       runId: string | null;
+      source?: "agent_jwt" | "agent_key";
     };
 
 function loadAppModules() {
@@ -799,6 +802,101 @@ describe("issue execution policy routes", () => {
       }),
       expect.anything(),
     );
+  });
+
+  it("hands the task to its agent reviewer without cancelling the run that sends it", async () => {
+    const executorRun = {
+      id: "55555555-5555-4555-8555-555555555555",
+      companyId: "company-1",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      runtimeMode: "legacy",
+      status: "running",
+      contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+    };
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: executorRun.agentId,
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1005",
+      title: "Execution participant",
+      executionRunId: executorRun.id,
+      executionPolicy: normalizeIssueExecutionPolicy({
+        stages: [{
+          id: "11111111-1111-4111-8111-111111111111",
+          type: "review",
+          participants: [{ type: "agent", agentId: "44444444-4444-4444-8444-444444444444" }],
+        }],
+      }),
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+    mockHeartbeatService.getRun.mockResolvedValue(executorRun as never);
+    mockHeartbeatService.cancelRun.mockRejectedValue(new Error("Execution is still stopping; termination has not been verified."));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: executorRun.agentId,
+      companyId: "company-1",
+      runId: executorRun.id,
+      source: "agent_jwt",
+    }))
+      .patch(`/api/issues/${issue.id}`)
+      .send({ status: "in_review" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issue.id,
+      expect.objectContaining({
+        status: "in_review",
+        assigneeAgentId: "44444444-4444-4444-8444-444444444444",
+        actorRunId: executorRun.id,
+        actorRunStopId: null,
+      }),
+      expect.anything(),
+    );
+    expect(mockRecordAgentSelfHandoff).toHaveBeenCalledWith(expect.anything(), {
+      companyId: "company-1",
+      runId: executorRun.id,
+      agentId: executorRun.agentId,
+      issueId: issue.id,
+      assigneeAgentId: "44444444-4444-4444-8444-444444444444",
+    });
+
+    mockIssueService.getById.mockResolvedValue({
+      ...issue,
+      status: "in_review",
+      assigneeAgentId: "44444444-4444-4444-8444-444444444444",
+    });
+    mockHeartbeatService.getRun.mockResolvedValue({
+      ...executorRun,
+      contextSnapshot: {
+        ...executorRun.contextSnapshot,
+        agentSelfHandoff: { issueId: issue.id, fromAgentId: executorRun.agentId },
+      },
+    } as never);
+    mockIssueService.update.mockClear();
+    const late = await request(await createApp({
+      type: "agent",
+      agentId: executorRun.agentId,
+      companyId: "company-1",
+      runId: executorRun.id,
+      source: "agent_jwt",
+    }))
+      .patch(`/api/issues/${issue.id}`)
+      .send({ status: "done" });
+
+    expect(late.status, JSON.stringify(late.body)).toBe(403);
+    expect(late.body.details).toMatchObject({ code: "issue_handed_off" });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("allows an agent-authored in_review transition with a scheduled monitor", async () => {

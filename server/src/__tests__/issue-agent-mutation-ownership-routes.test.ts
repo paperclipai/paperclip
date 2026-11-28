@@ -177,6 +177,7 @@ const mockOnboardingFirstTaskDependenciesAllowed = vi.hoisted(() => vi.fn(async 
 const mockGetExperimental = vi.hoisted(() => vi.fn());
 const mockResumeWorkspaceFinalization = vi.hoisted(() => vi.fn());
 const mockRecordNativeHumanSelfHandoff = vi.hoisted(() => vi.fn(async () => true));
+const mockRecordAgentSelfHandoff = vi.hoisted(() => vi.fn(async () => true));
 
 function registerRouteMocks() {
   vi.doMock("../services/instance-settings.js", async () => {
@@ -201,6 +202,7 @@ function registerRouteMocks() {
   vi.doMock("../services/native-runtime/native-workspace-export-retry.js", () => ({ retryNativeWorkspaceExport: mockRetryWorkspaceExport }));
   vi.doMock("../services/workspace-recovery.js", () => ({ requestWorkspaceRecovery: mockRequestWorkspaceRecovery }));
   vi.doMock("../services/native-runtime/native-human-self-handoff.js", () => ({ recordNativeHumanSelfHandoff: mockRecordNativeHumanSelfHandoff }));
+  vi.doMock("../services/agent-self-handoff.js", () => ({ recordAgentSelfHandoff: mockRecordAgentSelfHandoff }));
   vi.doMock("@paperclipai/shared/telemetry", () => ({
     trackAgentTaskCompleted: vi.fn(),
     trackErrorHandlerCrash: vi.fn(),
@@ -3079,14 +3081,163 @@ describe("agent issue mutation checkout ownership", () => {
       },
     );
 
-    it.each(["agent", "unassigned"])("still stops the outgoing run before an %s handoff", async target => {
+    it("still stops the outgoing run before it unassigns its own task", async () => {
       const res = await request(handoffApp({ ...ownerActor(), source: "agent_jwt" }))
-        .patch(`/api/issues/${issueId}`).send({
-          assigneeAgentId: target === "agent" ? peerAgentId : null,
-          assigneeUserId: null,
-        });
+        .patch(`/api/issues/${issueId}`).send({ assigneeAgentId: null, assigneeUserId: null });
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       expect(mockHeartbeatService.cancelRun).toHaveBeenCalledTimes(1);
+      expect(mockHeartbeatService.cancelRun.mock.invocationCallOrder[0])
+        .toBeLessThan(mockIssueService.update.mock.invocationCallOrder[0]!);
+    });
+  });
+
+  describe("agent self-handoff", () => {
+    const runningRun = {
+      id: ownerRunId,
+      companyId,
+      agentId: ownerAgentId,
+      runtimeMode: "legacy",
+      status: "running",
+      contextSnapshot: { issueId },
+    };
+    const handoff = { assigneeAgentId: peerAgentId, assigneeUserId: null, status: "todo" };
+    const handoffApp = (actor: Record<string, unknown>) => createApp(actor,
+      createRunContextDb({}, ownerAgentId, ownerRunId, [], true));
+
+    beforeEach(() => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ executionRunId: ownerRunId }));
+      mockHeartbeatService.getRun.mockResolvedValue(runningRun);
+      mockHeartbeatService.cancelRun.mockRejectedValue(new Error("Execution is still stopping; termination has not been verified."));
+      mockAgentService.resolveByReference.mockImplementation(async (_companyId: string, id: string) => ({
+        ambiguous: false,
+        agent: await mockAgentService.getById(id),
+      }));
+    });
+
+    it("persists a hand-off to another agent from its own run without cancelling the run", async () => {
+      const res = await request(handoffApp({ ...ownerActor(), source: "agent_jwt" }))
+        .patch(`/api/issues/${issueId}`).send(handoff);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+      expect(mockRecordNativeHumanSelfHandoff).not.toHaveBeenCalled();
+      expect(mockRecordAgentSelfHandoff).toHaveBeenCalledWith(expect.anything(), {
+        companyId, runId: ownerRunId, agentId: ownerAgentId, issueId, assigneeAgentId: peerAgentId,
+      });
+      expect(mockRecordAgentSelfHandoff.mock.invocationCallOrder[0])
+        .toBeLessThan(mockIssueService.update.mock.invocationCallOrder[0]!);
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject({
+        ...handoff,
+        actorRunId: ownerRunId,
+        actorRunStopId: null,
+      });
+      expect(mockLogActivity.mock.calls.find(call => call[1].action === "issue.updated")?.[1]).toMatchObject({
+        action: "issue.updated",
+        runId: ownerRunId,
+      });
+    });
+
+    it("recognizes the caller when the active run is resolved without an issue execution lock", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({}));
+      mockHeartbeatService.getActiveRunForAgent.mockResolvedValue(runningRun);
+      const res = await request(handoffApp({ ...ownerActor(), source: "agent_jwt" }))
+        .patch(`/api/issues/${issueId}`).send(handoff);
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject(handoff);
+    });
+
+    it("refuses the hand-off when the run can no longer be marked as the one giving the task away", async () => {
+      mockRecordAgentSelfHandoff.mockResolvedValueOnce(false);
+      const res = await request(handoffApp({ ...ownerActor(), source: "agent_jwt" }))
+        .patch(`/api/issues/${issueId}`).send(handoff);
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(res.body.code ?? res.body.details?.code).toBe("agent_self_handoff_run_changed");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+    });
+
+    describe("after the hand-off", () => {
+      const handedOffRun = {
+        ...runningRun,
+        contextSnapshot: { issueId, agentSelfHandoff: { issueId, fromAgentId: ownerAgentId, toAgentId: peerAgentId } },
+      };
+
+      it.each([
+        ["todo", "edit"], ["todo", "complete"], ["todo", "reclaim"],
+        ["in_review", "edit"], ["in_review", "complete"], ["in_review", "reclaim"],
+      ])("rejects the outgoing run's later %s %s", async (status, action) => {
+        mockIssueService.getById.mockResolvedValue(makeIssue({ ...handoff, status, executionRunId: ownerRunId }));
+        mockHeartbeatService.getRun.mockResolvedValue(handedOffRun);
+
+        const res = await request(handoffApp({ ...ownerActor(), source: "agent_jwt" })).patch(`/api/issues/${issueId}`).send(
+          action === "edit" ? { title: "Late outgoing edit" } :
+            action === "complete" ? { status: "done" } :
+              { assigneeAgentId: ownerAgentId, assigneeUserId: null },
+        );
+
+        expect(res.status, JSON.stringify(res.body)).toBe(403);
+        expect(res.body.details).toMatchObject({ code: "issue_handed_off" });
+        expect(mockIssueService.update).not.toHaveBeenCalled();
+        expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+      });
+
+      it("still lets the outgoing run comment on the task it handed off", async () => {
+        mockIssueService.getById.mockResolvedValue(makeIssue({ ...handoff }));
+        mockHeartbeatService.getRun.mockResolvedValue(handedOffRun);
+        const res = await request(handoffApp({ ...ownerActor(), source: "agent_jwt" }))
+          .patch(`/api/issues/${issueId}`).send({ comment: "Handed to the peer agent." });
+        expect(res.body.details?.code).not.toBe("issue_handed_off");
+      });
+
+      it("lets the run write again once the task comes back to its agent", async () => {
+        mockIssueService.getById.mockResolvedValue(makeIssue({ executionRunId: ownerRunId }));
+        mockHeartbeatService.getRun.mockResolvedValue(handedOffRun);
+        const res = await request(handoffApp({ ...ownerActor(), source: "agent_jwt" }))
+          .patch(`/api/issues/${issueId}`).send({ title: "Back with its agent" });
+        expect(res.status, JSON.stringify(res.body)).toBe(200);
+        expect(mockIssueService.update).toHaveBeenCalled();
+      });
+
+      it("does not fence another run of the same agent that never handed the task off", async () => {
+        mockIssueService.getById.mockResolvedValue(makeIssue({ ...handoff }));
+        mockHeartbeatService.getRun.mockResolvedValue(runningRun);
+        const res = await request(handoffApp({ ...ownerActor(), source: "agent_jwt" }))
+          .patch(`/api/issues/${issueId}`).send({ title: "Peer-visible edit" });
+        expect(res.body.details?.code).not.toBe("issue_handed_off");
+      });
+    });
+
+    it.each(["board", "agent_key", "other_run", "native", "other_issue", "other_agent", "other_company"])(
+      "still requires a verified stop for %s reassignment to an agent", async scenario => {
+        let actor: Record<string, unknown> = { ...ownerActor(), source: "agent_jwt" };
+        if (scenario === "board") actor = boardActor();
+        if (scenario === "agent_key") actor = ownerActor();
+        const run = {
+          ...runningRun,
+          ...(scenario === "other_run" ? { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" } : {}),
+          ...(scenario === "native" ? { runtimeMode: "native" } : {}),
+          ...(scenario === "other_issue" ? { contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" } } : {}),
+          ...(scenario === "other_agent" ? { agentId: peerAgentId } : {}),
+          ...(scenario === "other_company" ? { companyId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" } : {}),
+        };
+        mockHeartbeatService.getRun.mockResolvedValue(run);
+
+        const res = await request(handoffApp(actor)).patch(`/api/issues/${issueId}`).send(handoff);
+
+        expect(res.status, JSON.stringify(res.body)).toBe(500);
+        expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(run.id, "Cancelled before issue reassignment",
+          expect.objectContaining({ errorCode: "issue_reassigned" }));
+        expect(mockIssueService.update).not.toHaveBeenCalled();
+      },
+    );
+
+    it("cancels the run before saving when another actor reassigns the task to an agent", async () => {
+      mockHeartbeatService.cancelRun.mockResolvedValue({ ...runningRun, status: "cancelled" });
+      const res = await request(handoffApp(boardActor())).patch(`/api/issues/${issueId}`).send(handoff);
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(ownerRunId, "Cancelled before issue reassignment",
+        expect.objectContaining({ errorCode: "issue_reassigned" }));
       expect(mockHeartbeatService.cancelRun.mock.invocationCallOrder[0])
         .toBeLessThan(mockIssueService.update.mock.invocationCallOrder[0]!);
     });

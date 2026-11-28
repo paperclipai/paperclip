@@ -12194,7 +12194,10 @@ export function issueService(db: Db) {
           const actorRun = await assertAgentRunWriteAllowed(tx, receiptExisting.companyId, {
             agentId: actorAgentId, runId: actorRunId, stopId: actorRunStopId,
           });
-          assertHandedOffRunTaskOwnership(actorRun, receiptExisting);
+          if (nextLabelIds !== undefined || blockedByIssueIds !== undefined ||
+              Object.values(issueData).some(value => value !== undefined)) {
+            assertHandedOffRunTaskOwnership(actorRun, receiptExisting);
+          }
         }
         if (blockedByIssueIds !== undefined) {
           await assertOnboardingFirstTaskDependenciesAllowed(tx as Db, {

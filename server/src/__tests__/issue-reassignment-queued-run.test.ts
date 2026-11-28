@@ -10,10 +10,12 @@ import {
   companyMemberships,
   createDb,
   heartbeatRuns,
+  issueComments,
   issues,
 } from "@paperclipai/db";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
+import { issueService } from "../services/issues.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -28,7 +30,7 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
-describeEmbeddedPostgres("reassigning a task whose previous assignee's run has not started", () => {
+describeEmbeddedPostgres("reassigning a task away from the previous assignee's run", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let companySequence = 0;
@@ -43,11 +45,11 @@ describeEmbeddedPostgres("reassigning a task whose previous assignee's run has n
     await tempDb?.cleanup();
   });
 
-  function app(companyId: string) {
+  function app(companyId: string, actor?: Record<string, unknown>) {
     const testApp = express();
     testApp.use(express.json());
     testApp.use((req, _res, next) => {
-      (req as any).actor = {
+      (req as any).actor = actor ?? {
         type: "board",
         source: "session",
         userId: "board-owner",
@@ -134,5 +136,46 @@ describeEmbeddedPostgres("reassigning a task whose previous assignee's run has n
       .send({ assigneeAgentId: f.morganId }).expect(200);
     const [other] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, otherRunId));
     expect(other.status).toBe("queued");
+  });
+
+  it("keeps an agent's own run when it hands its task to another agent, then fences that run's task changes", async () => {
+    const companyId = randomUUID();
+    const issuePrefix = `REA${++companySequence}`;
+    await db.insert(companies).values({ id: companyId, name: "Hand-off Co", issuePrefix });
+    const [owner, peer] = await db.insert(agents).values(["Owner", "Peer"].map(name => ({
+      companyId, name, role: "engineer", adapterType: "process", status: "active",
+    }))).returning();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId, companyId, agentId: owner!.id, status: "running", invocationSource: "assignment",
+      startedAt: new Date(), contextSnapshot: { issueId },
+    });
+    await db.insert(issues).values({
+      id: issueId, companyId, identifier: `${issuePrefix}-1`, title: "Hand me off", status: "in_progress",
+      assigneeAgentId: owner!.id, checkoutRunId: runId, executionRunId: runId, executionLockedAt: new Date(),
+    });
+    const ownerApp = app(companyId, { type: "agent", agentId: owner!.id, companyId, runId, source: "agent_jwt" });
+
+    const handoff = await request(ownerApp).patch(`/api/issues/${issueId}`).send({ assigneeAgentId: peer!.id, status: "todo" });
+    expect(handoff.status, JSON.stringify(handoff.body)).toBe(200);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run).toMatchObject({ status: "running" });
+    expect(run!.contextSnapshot).toMatchObject({ agentSelfHandoff: { issueId, toAgentId: peer!.id } });
+
+    const comment = await request(ownerApp).patch(`/api/issues/${issueId}`).send({ comment: "Handed to the peer agent." });
+    expect(comment.status, JSON.stringify(comment.body)).toBe(200);
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, issueId))).toEqual(
+      expect.arrayContaining([expect.objectContaining({ body: "Handed to the peer agent." })]),
+    );
+
+    for (const late of [{ title: "Late outgoing edit" }, { status: "done" }, { assigneeAgentId: owner!.id }]) {
+      const res = await request(ownerApp).patch(`/api/issues/${issueId}`).send(late);
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.details).toMatchObject({ code: "issue_handed_off" });
+    }
+    expect(await issueService(db).getById(issueId)).toMatchObject({
+      title: "Hand me off", status: "todo", assigneeAgentId: peer!.id,
+    });
   });
 });

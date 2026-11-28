@@ -26,4 +26,22 @@ export function assertHandedOffRunTaskOwnership(
       issueId: issue.id,
     });
   }
+  const agentHandoff = readAgentSelfHandoff(run?.contextSnapshot);
+  if (run?.runtimeMode === "legacy" && run.companyId === issue.companyId &&
+      run.contextSnapshot?.issueId === issue.id && agentHandoff?.issueId === issue.id &&
+      issue.assigneeAgentId !== agentHandoff.fromAgentId) {
+    throw forbidden("This task now belongs to another agent; the outgoing run can no longer change it", {
+      code: "issue_handed_off",
+      issueId: issue.id,
+    });
+  }
+}
+
+export const AGENT_SELF_HANDOFF_KEY = "agentSelfHandoff";
+
+export function readAgentSelfHandoff(contextSnapshot: Record<string, unknown> | null | undefined) {
+  const record = contextSnapshot?.[AGENT_SELF_HANDOFF_KEY];
+  if (!record || typeof record !== "object") return null;
+  const { issueId, fromAgentId } = record as Record<string, unknown>;
+  return typeof issueId === "string" && typeof fromAgentId === "string" ? { issueId, fromAgentId } : null;
 }
