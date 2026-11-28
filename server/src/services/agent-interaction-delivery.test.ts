@@ -314,13 +314,15 @@ describe.skipIf(!support.supported)("pending agent interaction delivery", () => 
       await released;
     });
     await holding;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
       const outcome = await Promise.race([
         preparedRunInteractionDeliveryDenied(db, await readRun(f.run.id)),
-        new Promise(resolve => setTimeout(() => resolve("blocked"), 2_000)),
+        new Promise(resolve => { timeout = setTimeout(() => resolve("blocked"), 2_000); }),
       ]);
       expect(outcome).toBe(false);
     } finally {
+      clearTimeout(timeout);
       release();
       await holder;
     }
