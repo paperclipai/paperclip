@@ -96,6 +96,10 @@ An unavailable or ambiguous managed identity fails visibly. It never falls
 through to another person, an organization credential, or a legacy token.
 Agent grants are company-scoped, have exactly one `subjectAgentId`, cannot be
 organization defaults, and are installed only for that agent.
+OAuth reconnect keeps the existing grant subject. Dedicated-agent connections
+reuse the retained `subjectAgentId`, including when the grant has been revoked.
+If that subject cannot be found, reconnect stops instead of authorizing the
+board user's identity.
 
 The connection installation is the credential owner's consent boundary. A
 personal setup may target every agent or a selected set, and runtime resolution
