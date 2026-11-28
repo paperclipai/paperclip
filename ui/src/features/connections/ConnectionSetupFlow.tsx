@@ -922,14 +922,15 @@ function StandardConnectionSetupFlow({
 
   const openAuthorization = useCallback((url: string) => {
     setAuthorizationFallbackUrl(url);
-    const popup = oauthPopupRef.current;
-    if (!popup || popup.closed || !navigatePopupWindow(popup, url)) {
+    const navigatedPopup = navigatePopupWindow(oauthPopupRef.current, url);
+    if (!navigatedPopup) {
       setOAuthPhase("error");
       setOAuthError("Paperclip couldn’t open the sign-in window. Open sign-in in a new tab to continue.");
       onPhaseChange?.("needs_retry");
       return;
     }
-    focusPopupWindow(popup);
+    oauthPopupRef.current = navigatedPopup;
+    focusPopupWindow(navigatedPopup);
   }, [host, onPhaseChange]);
 
   const openAuthorizationTab = useCallback(() => {
@@ -1283,9 +1284,10 @@ function StandardConnectionSetupFlow({
       return;
     }
     setEnrollmentAuthorizationUrl(target.url);
-    const popup = oauthPopupRef.current;
-    if (popup && !popup.closed && navigatePopupWindow(popup, target.url)) {
-      focusPopupWindow(popup);
+    const navigatedPopup = navigatePopupWindow(oauthPopupRef.current, target.url);
+    if (navigatedPopup) {
+      oauthPopupRef.current = navigatedPopup;
+      focusPopupWindow(navigatedPopup);
     } else {
       oauthPopupRef.current?.close();
       oauthPopupRef.current = null;

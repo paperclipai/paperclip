@@ -267,8 +267,10 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
         if (!target.ok) throw new Error(target.message);
         authorizationUrl.current = target.url;
         edit({ connectStatus: "sign_in", token: "", headers: [] });
-        if (popup.current && !popup.current.closed && navigatePopupWindow(popup.current, target.url)) {
-          focusPopupWindow(popup.current);
+        const navigatedPopup = navigatePopupWindow(popup.current, target.url);
+        if (navigatedPopup) {
+          popup.current = navigatedPopup;
+          focusPopupWindow(navigatedPopup);
         } else {
           popup.current?.close();
           popup.current = null;
