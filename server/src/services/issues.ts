@@ -4254,8 +4254,14 @@ async function readIssueBlockerAttentionBatch(
       explicitWaitCandidateIds,
       ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE,
     )) {
-      const interactionRows: Array<{ issueId: string }> = await dbOrTx
-        .select({ issueId: issueThreadInteractions.issueId })
+      const interactionRows: Array<{
+        issueId: string;
+        continuationPolicy: string;
+      }> = await dbOrTx
+        .select({
+          issueId: issueThreadInteractions.issueId,
+          continuationPolicy: issueThreadInteractions.continuationPolicy,
+        })
         .from(issueThreadInteractions)
         .where(
           and(
@@ -4267,8 +4273,20 @@ async function readIssueBlockerAttentionBatch(
             inArray(issueThreadInteractions.issueId, chunk),
           ),
         );
-      for (const row of interactionRows)
-        explicitWaitingIssueIds.add(row.issueId);
+      for (const row of interactionRows) {
+        const interactionHost = evidenceNodes.get(row.issueId);
+        const policyCanWake =
+          row.continuationPolicy === "wake_assignee" ||
+          row.continuationPolicy === "wake_assignee_on_accept";
+        if (
+          policyCanWake &&
+          interactionHost?.assigneeAgentId &&
+          interactionHost.status !== "done" &&
+          interactionHost.status !== "cancelled"
+        ) {
+          explicitWaitingIssueIds.add(row.issueId);
+        }
+      }
 
       const approvalRows: Array<{ issueId: string }> = await dbOrTx
         .select({ issueId: issueApprovals.issueId })
