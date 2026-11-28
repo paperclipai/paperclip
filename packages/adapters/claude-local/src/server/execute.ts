@@ -111,6 +111,17 @@ import {
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const executeClaudeAcp = createClaudeAcpExecutor();
 
+// Sent as the whole stdin prompt of a fresh session when stableOpeningPrompt is on.
+// Claude Code caches the request prefix only at the end of the first user turn, so
+// any per-run text in that turn forces the whole opening (CLAUDE.md, skills list,
+// tool names) to be written to the cache again. Keeping it byte-identical lets
+// every fresh session in the same working directory read it from the cache.
+export const STABLE_OPENING_PROMPT =
+  "Paperclip saved this run's prompt in the file named by the PAPERCLIP_RUN_PROMPT_FILE environment variable. " +
+  "That file is your instructions for this run, the same as if they had been sent here, so carry them out. " +
+  "Before doing anything else, read all of it with `cat \"$PAPERCLIP_RUN_PROMPT_FILE\"`. " +
+  "It can be long: if the output is cut off or saved to a file, keep reading until you reach the end.\n";
+
 interface ClaudeExecutionInput {
   agentIdentity?: AdapterExecutionContext["agentIdentity"];
   runId: string;
@@ -584,6 +595,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     servers: runtimeMcpServers,
   });
   const localMcpConfigDir = path.dirname(localMcpConfigPath);
+  const stableOpeningPrompt = asBoolean(config.stableOpeningPrompt, false) && !executionTargetIsRemote;
+  const runPromptPath = path.join(claudeRuntimeStateDir, "runs", runId, "prompt", "run-prompt.md");
+  if (stableOpeningPrompt) await fs.mkdir(path.dirname(runPromptPath), { recursive: true });
   const sharedClaudeConfigDir = config.managedAiConnection ? asString(configEnv.CLAUDE_CONFIG_DIR, "") : resolveSharedClaudeConfigDir(process.env);
   const networkScope = parseLocalProcessNetworkScope(config.networkScope);
   const filesystemScope = parseLocalProcessFilesystemScope(config.filesystemScope);
@@ -597,6 +611,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             { path: path.join(path.dirname(sharedClaudeConfigDir), ".claude.json"), access: "rw" },
             { path: promptBundle.addDir, access: "ro" },
             { path: localMcpConfigDir, access: "ro" },
+            ...(stableOpeningPrompt ? [{ path: path.dirname(runPromptPath), access: "ro" as const }] : []),
           ],
           extraPaths: parseLocalProcessSandboxExtraPaths(config.filesystemExtraPaths),
           homeDir: filesystemScope ? path.dirname(sharedClaudeConfigDir) : null,
@@ -949,8 +964,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         taskContextNote,
         renderedPrompt,
       ]);
+      const useStableOpening = stableOpeningPrompt && !resumeSessionId;
+      if (useStableOpening) {
+        await fs.writeFile(runPromptPath, prompt, { encoding: "utf8", mode: 0o600 });
+        env.PAPERCLIP_RUN_PROMPT_FILE = runPromptPath;
+      } else {
+        delete env.PAPERCLIP_RUN_PROMPT_FILE;
+      }
+      const stdinPrompt = useStableOpening ? STABLE_OPENING_PROMPT : prompt;
       const promptMetrics = {
         promptChars: prompt.length,
+        stdinPromptChars: stdinPrompt.length,
         bootstrapPromptChars: renderedBootstrapPrompt.length,
         wakePromptChars: wakePrompt.length,
         sessionHandoffChars: sessionHandoffNote.length,
@@ -962,6 +986,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const commandNotes: string[] = [];
       if (!resumeSessionId) {
         commandNotes.push(`Using stable Claude prompt bundle ${promptBundle.bundleKey}.`);
+      }
+      if (useStableOpening) {
+        commandNotes.push(`Sent the stable opening prompt; this run's prompt is in ${runPromptPath}.`);
       }
       if (dangerouslySkipPermissions && executionTargetIsRemote) {
         commandNotes.push(
@@ -1004,7 +1031,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         onProcessStopped: providerStop.beginInvocation(),
         cwd,
         env,
-        stdin: prompt,
+        stdin: stdinPrompt,
         timeoutSec,
         graceSec,
         onSpawn,
@@ -1457,6 +1484,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     return toAdapterResult(initial, { fallbackSessionId: !sshSessionState || sshSessionState.canResume ? runtimeSessionId || runtime.sessionId : null });
   } finally {
+    if (stableOpeningPrompt) {
+      await fs.rm(path.dirname(runPromptPath), { recursive: true, force: true }).catch(() => {});
+    }
     try {
       await providerStop.collectBeforeRestore();
     } finally {
