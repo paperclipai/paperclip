@@ -1,5 +1,8 @@
+import { applyPendingMigrations } from "@paperclipai/db";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { createGrokRoutineDispatcher } from "../services/grok-bot/dispatcher.js";
 import { grokRoutineService } from "../services/grok-bot/routine.js";
+import { assertNoExternalOverlap, withExternalAdmissionGuard } from "../modules/external-agents/admission.js";
 import { accessService } from "../services/access.js";
 import { Readable } from "node:stream";
 import { createPublicMcpTransfers } from "../services/public-mcp/file-transfers.js";
@@ -15,16 +18,18 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import express, { type Request } from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { grokBotRoutines, grokBotDispatches, agents, authUsers, companies, companyMemberships, createDb, dotAgentBindings, dotMailboxItems, dotRunnerAssignments, dotRunnerOperations,
-  heartbeatRuns, agentWakeupRequests, issueComments, issues, nativeRunResults, nativeRunFinalizations, completionContracts, mcpEventDeliveries, mcpEventSubscriptions, workspaceOperations, workAssessments, statusDecisions, issueThreadInteractions } from "@paperclipai/db";
+import { budgetPolicies, costEvents, grokBotRoutines, grokBotDispatches, agents, authUsers, companies, companyMemberships, createDb, dotAgentBindings, dotMailboxItems, dotRunnerAssignments, dotRunnerOperations,
+  heartbeatRuns, mcpOauthGrants, issueAttachments, activityLog, agentWakeupRequests, issueComments, issueRecoveryActions, issues, nativeRunResults, nativeRunFinalizations, completionContracts, mcpEventDeliveries, mcpEventSubscriptions, workspaceOperations, workAssessments, statusDecisions, issueThreadInteractions } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { createPublicMcpOAuth, DEVICE_GRANT } from "../services/public-mcp/oauth.js";
 import { createPublicMcpExecutor } from "../services/public-mcp/capabilities.js";
 import { publicMcpIngressRoutes, publicMcpManagementRoutes } from "../routes/public-mcp.js";
-import { createPublicMcpEvents, type EventFetch } from "../services/public-mcp/events.js";
+import { createPublicMcpEvents } from "../services/public-mcp/events.js";
+import type { EventFetch } from "../services/public-mcp/event-webhooks.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { canonicalNativeRuntimeContextDigest, type StrictCompletionContractInput } from "../vendor/paperclip-runner/index.js";
 import { createDotRunnerMcpTools, dotRunnerBroker } from "../services/dot-runner-broker.js";
+import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
 import { prepareNativeHeartbeatRun } from "../services/native-runtime/prepare-native-run.js";
 import { buildNativeExecutionInput } from "../services/native-runtime/native-execution-input.js";
 import { nativeRuntimeContextFixture } from "../services/native-runtime/runtime-context.test-fixture.js";
@@ -39,6 +44,16 @@ import { heartbeatService } from "../services/heartbeat.js";
 import { consumeDotHistoryReceipt, publishActiveDotComment } from "../services/dot-assignment-follow-up.js";
 import { createPostgresWakeQueueAdapter } from "../modules/wake-queue/adapters/postgres.js";
 import { createReleaseIssueExecution } from "../modules/wake-queue/application/use-cases.js";
+import { classifyAdapterFailureForRecovery, classifyContinuationFailure } from "../services/recovery/service.js";
+import { continuesAutomatically } from "../services/continuation-cause.js";
+import { assignedWorkSweep } from "../services/recovery/assigned-work-sweep.js";
+
+const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_DOT_RUNNER_TEST_DATABASE_URL");
+
+function uploadGrantUrl(grant: { url: string } | { attachment: unknown }) {
+  if (!("url" in grant)) throw new Error("Expected an upload grant");
+  return new URL(grant.url);
+}
 
 describe("durable Dot Runner integration", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -47,8 +62,9 @@ describe("durable Dot Runner integration", () => {
   beforeAll(async () => {
     const runnerRoot = fileURLToPath(new URL("../../../packages/paperclip-runner/", import.meta.url));
     execFileSync("cargo", ["build", "--release", "--locked", "--manifest-path", join(runnerRoot, "runner/Cargo.toml"), "-p", "paperclip-runner-core", "--bin", "paperclip-runnerd"], { cwd: runnerRoot, stdio: "inherit", timeout: 300000 });
-    temporary = await startEmbeddedPostgresTestDatabase("paperclip-dot-runner-");
-    db = createDb(temporary.connectionString);
+    if (externalUrl) await applyPendingMigrations(externalUrl);
+    else temporary = await startEmbeddedPostgresTestDatabase("paperclip-dot-runner-");
+    db = createDb(externalUrl ?? temporary.connectionString);
     root = await mkdtemp(join(tmpdir(), "paperclip-dot-state-"));
     vi.stubEnv("PAPERCLIP_IN_WORKTREE", "false");
     vi.stubEnv("PAPERCLIP_RUNNER_BINARY", join(runnerRoot, "runner/target/release", process.platform === "win32" ? "paperclip-runnerd.exe" : "paperclip-runnerd"));
@@ -63,6 +79,7 @@ describe("durable Dot Runner integration", () => {
   });
   afterAll(async () => {
     try {
+      await db?.$client.end({ timeout: 1 });
       await temporary?.cleanup();
     } finally {
       try {
@@ -76,7 +93,7 @@ describe("durable Dot Runner integration", () => {
   it("requires each persisted prerequisite for pairing and new work without relying on the retired environment flag", async () => {
     const settings = instanceSettingsService(db);
     const broker = dotRunnerBroker(db);
-    for (const key of ["enableOpenAiDot", "enablePublicMcp"] as const) {
+    for (const key of ["enableOpenAiDot"] as const) {
       await settings.updateExperimental({ [key]: false });
       try {
         vi.stubEnv("PAPERCLIP_ENABLE_OPENAI_DOT", "1");
@@ -101,7 +118,7 @@ describe("durable Dot Runner integration", () => {
     expect(() => resolveNativeRuntimeMode(input)).toThrow("experimental settings");
     expect(resolveNativeRuntimeMode({ ...input, enabled: false, dotEnabled: true })).toMatchObject({ kind: "native", profile: { backend: "openai_dot_mcp" } });
     expect(() => resolveNativeRuntimeMode({ ...input, enabled: false, dotEnabled: true,
-      adapterConfig: { provider: "codex" },
+      adapterConfig: { provider: "acpx", acpxAgent: "grok", model: "anthropic/claude-sonnet-4-6" },
     })).toThrow("Paperclip Runner is experimental and disabled");
     expect(resolveHeartbeatNativeRuntimeMode({ ...input, enabled: false, dotEnabled: false,
       persisted: { runtimeMode: "native", runtimeModeReason: null, runtimeModeResolvedAt: new Date(), driverKind: "openai_dot_mcp" },
@@ -207,12 +224,390 @@ describe("durable Dot Runner integration", () => {
     return { app, personal };
   }
 
+  it.each(["grok_bot_mcp", "codex_app_server"] as const)("fences a running Grok overlap before assignment materialization with %s", async driverKind => {
+    const f = await fixture({ provider: "grok_bot" });
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id,
+      status: "running", runtimeMode: "native", nativePhase: "preparing", driverKind,
+      invocationSource: "assignment", triggerDetail: "system" }).returning();
+    expect(await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.runId, run!.id))).toHaveLength(0);
+    await expect(db.transaction(tx => assertNoExternalOverlap(tx, f.company.id, f.agent.id))).rejects.toThrow("External work is live or unresolved");
+    await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, run!.id));
+    await expect(db.transaction(tx => assertNoExternalOverlap(tx, f.company.id, f.agent.id))).resolves.toBeUndefined();
+  });
+
+  it.each(["openai_dot", "grok_bot"] as const)("requires a matching %s descriptor for a V6 authority fence", async provider => {
+    const f = await fixture({ provider }), { run, assignment } = await offeredWork(f);
+    const [issue] = await db.insert(issues).values({ companyId: f.company.id, title: "Owned descriptor fence", assigneeAgentId: f.agent.id, checkoutRunId: run.id, executionRunId: run.id }).returning();
+    await db.update(heartbeatRuns).set({ nativeIssueId: issue!.id }).where(eq(heartbeatRuns.id, run.id));
+    const binding = { companyId: f.company.id, agentId: f.agent.id, runId: run.id };
+    const event = { sourceEventId: randomUUID(), payload: { kind: "authority_revoked" as const, binding: {
+      ...f.snapshot, runId: run.id, normalizedSessionId: assignment.normalizedSessionId,
+      turnId: assignment.turnId, assignmentRevision: assignment.revision,
+    } } };
+    const foreign = provider === "openai_dot" ? "grok_bot" as const : "openai_dot" as const;
+    await expect(f.broker.port({ binding, provider: { kind: foreign, binding: f.snapshot } }).dispatch(event)).rejects.toThrow("binding unavailable");
+    expect((await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.id, assignment.id)))[0]!.status).toBe("offered");
+    await f.broker.port({ binding, provider: { kind: provider, binding: f.snapshot } }).dispatch(event);
+    expect((await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.id, assignment.id)))[0]!.status).toBe("fenced");
+  });
+
+  it("admits a native Grok operation while an actual upload waits for its task lock", async () => {
+    const f = await fixture({ provider: "grok_bot" }), { run, assignment } = await offeredWork(f);
+    const [issue] = await db.insert(issues).values({ companyId: f.company.id, title: "Concurrent Grok publication", assigneeAgentId: f.agent.id,
+      checkoutRunId: run.id, executionRunId: run.id }).returning();
+    await db.update(heartbeatRuns).set({ status: "running", runtimeMode: "native", nativePhase: "running", driverKind: "grok_bot_mcp",
+      nativeIssueId: issue!.id, nativeSessionId: assignment.normalizedSessionId }).where(eq(heartbeatRuns.id, run.id));
+    await db.update(dotRunnerAssignments).set({ status: "accepted", acceptedAt: new Date() }).where(eq(dotRunnerAssignments.id, assignment.id));
+    await db.insert(nativeRunFinalizations).values({ runId: run.id, companyId: f.company.id, issueId: issue!.id, phase: "running",
+      controllerGeneration: assignment.controllerGeneration, leaseExpiresAt: new Date(Date.now() + 60_000) });
+    const files = new Map<string, Buffer>();
+    const transfers = createPublicMcpTransfers(db, f.oauth, async () => { throw new Error("Personal API dispatch forbidden"); }, {
+      provider: "local_disk", putFile: async input => {
+        if (!Buffer.isBuffer(input.body)) throw new Error("Expected bounded upload bytes");
+        files.set(input.objectKey!, input.body);
+        return { provider: "local_disk", objectKey: input.objectKey!, contentType: input.contentType, originalFilename: input.originalFilename,
+          byteSize: input.body.length, sha256: createHash("sha256").update(input.body).digest("hex") };
+      }, getObject: async (_company, key) => ({ stream: Readable.from(files.get(key)!) }),
+      headObject: async () => ({ exists: true }), deleteObject: async (_company, key) => { files.delete(key); },
+    }, { pathPrefix: "/mcp/runner/files", agentSession: { authorize: (principal, sessionId, taskId, write, database) => dotRunnerBroker(database ?? db).authorizeFileSession(principal, sessionId, taskId, write) } });
+    const body = Buffer.from("Authenticated concurrent deliverable"), uploadRequestId = randomUUID(), operationId = randomUUID();
+    const upload = await transfers.getUploadUrl(f.principal, { companyId: f.company.id, taskId: issue!.id, requestId: uploadRequestId,
+      filename: "concurrent.txt", contentType: "text/plain", byteSize: body.length, sha256: createHash("sha256").update(body).digest("hex") }, assignment.id);
+    const url = uploadGrantUrl(upload), api = express(); api.use(transfers.router);
+    let uploading: Promise<request.Response> | undefined, uploaded: request.Response | undefined, uploadError: unknown;
+    try {
+      await db.transaction(async tx => {
+        await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, issue!.id)).for("update");
+        const [holder] = await tx.execute(sql`select pg_backend_pid() as pid`) as unknown as Array<{ pid: number }>;
+        uploading = request(api).put(url.pathname + url.search).set("Content-Type", "text/plain").send(body).then(response => response);
+        await vi.waitFor(async () => {
+          const [state] = await db.execute(sql`select exists (
+            select 1 from pg_stat_activity where datname=current_database() and wait_event_type='Lock'
+              and query ilike '%issues%' and ${holder!.pid}=any(pg_blocking_pids(pid))
+          ) as waiting`) as unknown as Array<{ waiting: boolean }>;
+          expect(state!.waiting).toBe(true);
+        }, { timeout: 5000, interval: 20 });
+        const operationDb = Object.assign(Object.create(tx), {
+          transaction: async (effect: (database: typeof db) => Promise<unknown>) => effect(tx as unknown as typeof db),
+        }) as typeof db;
+        await expect(dotRunnerBroker(operationDb).operation(f.principal, assignment.id, operationId, "progress", { text: "Concurrent progress" }))
+          .resolves.toMatchObject({ status: "pending", assignmentId: assignment.id, requestId: operationId });
+      });
+    } finally {
+      try { uploaded = await uploading; } catch (error) { uploadError = error; }
+    }
+    expect(uploadError).toBeUndefined(); expect(uploaded?.status).toBe(200);
+    expect((await db.select().from(dotRunnerOperations).where(and(eq(dotRunnerOperations.assignmentId, assignment.id), eq(dotRunnerOperations.requestId, operationId))))).toHaveLength(1);
+    const attachments = await db.select().from(issueAttachments).where(eq(issueAttachments.issueId, issue!.id));
+    expect(attachments).toHaveLength(1);
+    const attachment = await issueService(db).getAttachmentById(attachments[0]!.id);
+    expect(attachment).toMatchObject({ companyId: f.company.id, issueId: issue!.id, assetId: attachments[0]!.assetId,
+      createdByAgentId: f.agent.id, originatingRunId: run.id, createdByUserId: null });
+    const audit = await db.select().from(activityLog).where(and(eq(activityLog.companyId, f.company.id),
+      eq(activityLog.action, "issue.attachment_added"), eq(activityLog.entityType, "issue"), eq(activityLog.entityId, issue!.id),
+      sql`${activityLog.details}->>'attachmentId' = ${attachments[0]!.id}`));
+    expect(audit).toHaveLength(1);
+    expect(audit[0]).toMatchObject({ actorType: "agent", actorId: f.agent.id, details: { attachmentId: attachments[0]!.id,
+      authorizingPersonId: f.userId, workSessionId: assignment.id, mcpConnectionId: f.principal.grant.id } });
+    expect(uploaded!.body.attachment).toEqual({ id: attachments[0]!.id, issueId: issue!.id, originalFilename: "concurrent.txt",
+      contentType: "text/plain", byteSize: body.length, sha256: createHash("sha256").update(body).digest("hex"),
+      createdAt: attachment!.createdAt.toISOString() });
+    expect((await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.id, assignment.id)))[0]!.status).toBe("accepted");
+  }, 30000);
+
+  it.each(["openai_dot", "grok_bot"] as const)("keeps %s assignment authority after a rejected finish receipt until a completed finish", async provider => {
+    const f = await fixture({ provider }), { run, assignment } = await offeredWork(f);
+    const acceptedAt = new Date("2026-10-01T00:00:00.000Z");
+    await db.update(dotRunnerAssignments).set({ status: "accepted", acceptedAt }).where(eq(dotRunnerAssignments.id, assignment.id));
+    const port = f.broker.port({ binding: { companyId: f.company.id, agentId: f.agent.id, runId: run.id },
+      provider: { kind: provider, binding: f.snapshot } });
+    const binding = { ...f.snapshot, runId: run.id, normalizedSessionId: assignment.normalizedSessionId,
+      turnId: assignment.turnId, assignmentRevision: assignment.revision };
+    const rejectedId = randomUUID();
+    await db.insert(dotRunnerOperations).values({ companyId: f.company.id, assignmentId: assignment.id,
+      requestId: rejectedId, digest: "rejected-finish", command: { action: "finish" }, status: "admitted" });
+    const rejection = { sourceEventId: randomUUID(), payload: { binding, requestId: rejectedId,
+      outcome: { status: "rejected", message: "Completion evidence was not accepted" } } };
+    await port.settle(rejection);
+    const [rejected] = await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.id, assignment.id));
+    expect(rejected).toMatchObject({ status: "accepted", acceptedAt, settledAt: null });
+    const [receipt] = await db.select().from(dotRunnerOperations).where(eq(dotRunnerOperations.requestId, rejectedId));
+    expect(receipt!.outcome).toEqual(rejection.payload.outcome);
+    await port.settle(rejection);
+    expect((await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.id, assignment.id)))[0]).toEqual(rejected);
+    const completedId = randomUUID();
+    await db.insert(dotRunnerOperations).values({ companyId: f.company.id, assignmentId: assignment.id,
+      requestId: completedId, digest: "completed-finish", command: { action: "finish" }, status: "admitted" });
+    await port.settle({ sourceEventId: randomUUID(), payload: { binding, requestId: completedId,
+      outcome: { status: "completed" } } });
+    const [completed] = await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.id, assignment.id));
+    expect(completed).toMatchObject({ status: "settled", acceptedAt });
+    expect(completed!.settledAt).toBeInstanceOf(Date);
+  });
+
   it("reapplies the Dot-only migration after the merged gateway schema", async () => {
     const migration = await readFile(new URL("../../../packages/db/src/migrations/0317_messy_famine.sql", import.meta.url), "utf8");
     for (const statement of migration.split("--> statement-breakpoint")) {
       if (statement.trim()) await db.execute(sql.raw(statement));
     }
   });
+
+  it("names an expired event subscription and recovers by subscribing again without pairing", async () => {
+    const f = await fixture();
+    try {
+      const pairing = await f.broker.createPairing({ companyId: f.company.id, agentId: (await db.insert(agents).values({
+        companyId: f.company.id, name: "Dot Renewal Check", adapterType: "paperclip_runner", status: "active",
+        adapterConfig: { provider: "openai_dot", allowUnmeteredProvider: true },
+      }).returning())[0]!.id, operatorId: f.userId });
+      const freshVerifier = randomBytes(32).toString("base64url");
+      const freshReq = (await f.oauth.authorize({ client_id: f.client.client_id, redirect_uri: "https://chatgpt.com/connector_platform/oauth/callback",
+        response_type: "code", resource: f.oauth.config.resource, code_challenge: createHash("sha256").update(freshVerifier).digest("base64url"), code_challenge_method: "S256" })).split("/").at(-1)!;
+      const freshConsent = await f.oauth.consent(freshReq, { type: "board", source: "session", userId: f.userId }, { decision: "approve", companyId: f.company.id, allowWrites: false });
+      const freshTokens = await f.oauth.token({ grant_type: "authorization_code", client_id: f.client.client_id, redirect_uri: "https://chatgpt.com/connector_platform/oauth/callback",
+        resource: f.oauth.config.resource, code: new URL(freshConsent.redirectUrl).searchParams.get("code"), code_verifier: freshVerifier });
+      const paired = await f.broker.pair(await f.oauth.authenticate(freshTokens.access_token), pairing.pairingCode);
+      expect(paired.eventInstructions).toContain("refreshBefore");
+
+      await db.update(mcpEventSubscriptions).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(mcpEventSubscriptions.bindingId, f.snapshot.bindingId));
+      await expect(f.broker.snapshot(f.company.id, f.agent.id, f.snapshot.bindingId)).rejects.toThrow("event subscription expired");
+      expect(await f.broker.bindingForAgent(f.company.id, f.agent.id)).toMatchObject({ status: "ready", subscriptionVerified: false, subscriptionExpired: true });
+      await f.events.subscribe(f.principal, f.subscription);
+      await expect(f.broker.snapshot(f.company.id, f.agent.id, f.snapshot.bindingId)).resolves.toMatchObject({ bindingId: f.snapshot.bindingId });
+      expect(await f.broker.bindingForAgent(f.company.id, f.agent.id)).toMatchObject({ subscriptionVerified: true, subscriptionExpired: false });
+    } finally {
+      await f.events.unsubscribe(f.principal, f.subscription); await f.events.stop();
+    }
+  }, 30000);
+
+  it("marks expired or unpaired Dot runs as non-retryable configuration_incomplete instead of looping", async () => {
+    const f = await fixture();
+    const hb = heartbeatService(db);
+    try {
+      const waitForSettledRun = async (runId: string, issueId: string, agentId: string) => {
+        const deadline = Date.now() + 15_000;
+        while (Date.now() < deadline) {
+          const [row] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+          const [issueRow] = await db.select({ executionRunId: issues.executionRunId }).from(issues).where(eq(issues.id, issueId));
+          const [agentRow] = await db.select({ status: agents.status }).from(agents).where(eq(agents.id, agentId));
+          if (row && ["succeeded", "failed", "cancelled", "timed_out"].includes(row.status)
+              && issueRow?.executionRunId !== runId && agentRow?.status !== "running") return row;
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        throw new Error(`Run ${runId} did not settle`);
+      };
+
+      // Case 1: event subscription expired after 24h
+      await db.update(mcpEventSubscriptions).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(mcpEventSubscriptions.bindingId, f.snapshot.bindingId));
+      const expiredIssue = await issueService(db).create(f.company.id, {
+        title: "Expired Dot subscription task",
+        status: "todo",
+        assigneeAgentId: f.agent.id,
+        responsibleUserId: f.userId,
+        trustExplicitResponsibleUserId: true,
+      });
+      const expiredWake = await hb.wakeup(f.agent.id, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId: expiredIssue.id },
+        contextSnapshot: { issueId: expiredIssue.id, taskId: expiredIssue.id },
+      });
+      expect(expiredWake?.id).toBeTruthy();
+      const expiredRun = await waitForSettledRun(expiredWake!.id, expiredIssue.id, f.agent.id);
+      expect(expiredRun).toMatchObject({
+        status: "failed",
+        errorCode: "configuration_incomplete",
+        error: expect.stringContaining("event subscription expired"),
+        resultJson: expect.objectContaining({
+          configurationIncomplete: expect.objectContaining({ reason: "dot_subscription_expired" }),
+        }),
+      });
+      expect(classifyContinuationFailure(expiredRun as never)).toMatchObject({ kind: "non_retryable", maxAttempts: 0 });
+      expect(continuesAutomatically(expiredRun)).toBe(false);
+      const [blockedExpiredIssue] = await db.select().from(issues).where(eq(issues.id, expiredIssue.id));
+      expect(blockedExpiredIssue?.status).toBe("blocked");
+      const [expiredAction] = await db.select().from(issueRecoveryActions).where(and(
+        eq(issueRecoveryActions.companyId, f.company.id),
+        eq(issueRecoveryActions.sourceIssueId, expiredIssue.id),
+        eq(issueRecoveryActions.status, "active"),
+      ));
+      expect(expiredAction).toMatchObject({
+        kind: "configuration_validation",
+        cause: "configuration_incomplete",
+        ownerType: "board",
+        nextAction: expect.stringContaining("paperclip.dot.mailbox_updated"),
+      });
+      expect(expiredAction?.nextAction).not.toContain("secret");
+      const expiredComments = await db.select().from(issueComments).where(eq(issueComments.issueId, expiredIssue.id));
+      expect(expiredComments.some(c => c.body.includes("event subscription expired") || c.body.includes("paperclip.dot.mailbox_updated"))).toBe(true);
+
+      const sweepWake = vi.fn().mockResolvedValue(null);
+      const sweep = assignedWorkSweep(db, { enqueueWakeup: sweepWake, now: () => new Date(Date.now() + 20 * 60_000) });
+      const expiredCheck = await sweep.checkIssue({ companyId: f.company.id, issueId: expiredIssue.id });
+      expect(expiredCheck).toMatchObject({ verdict: { kind: "ok", clause: "waiting", reason: "credential" }, outcome: "ok" });
+      expect(sweepWake).not.toHaveBeenCalled();
+
+      // Case 2: paired Dot with invalid agent configuration (e.g. unmetered provider not acknowledged)
+      const [pairedAgentRow] = await db.select({ adapterConfig: agents.adapterConfig }).from(agents).where(eq(agents.id, f.agent.id));
+      const originalAdapterConfig = pairedAgentRow!.adapterConfig;
+      await db.update(agents).set({ adapterConfig: { ...originalAdapterConfig, allowUnmeteredProvider: false } }).where(eq(agents.id, f.agent.id));
+      const invalidConfigIssue = await issueService(db).create(f.company.id, {
+        title: "Invalid Dot config task",
+        status: "todo",
+        assigneeAgentId: f.agent.id,
+        responsibleUserId: f.userId,
+        trustExplicitResponsibleUserId: true,
+      });
+      const invalidConfigWake = await hb.wakeup(f.agent.id, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId: invalidConfigIssue.id },
+        contextSnapshot: { issueId: invalidConfigIssue.id, taskId: invalidConfigIssue.id },
+      });
+      expect(invalidConfigWake?.id).toBeTruthy();
+      const invalidConfigRun = await waitForSettledRun(invalidConfigWake!.id, invalidConfigIssue.id, f.agent.id);
+      expect(invalidConfigRun).toMatchObject({
+        status: "failed",
+        errorCode: "configuration_incomplete",
+        resultJson: expect.objectContaining({
+          configurationIncomplete: expect.objectContaining({ reason: "dot_config_invalid" }),
+        }),
+      });
+      const [invalidConfigAction] = await db.select().from(issueRecoveryActions).where(and(
+        eq(issueRecoveryActions.companyId, f.company.id),
+        eq(issueRecoveryActions.sourceIssueId, invalidConfigIssue.id),
+        eq(issueRecoveryActions.status, "active"),
+      ));
+      expect(invalidConfigAction).toMatchObject({
+        kind: "configuration_validation",
+        cause: "configuration_incomplete",
+        ownerType: "board",
+        nextAction: expect.stringContaining("configuration"),
+      });
+      expect(invalidConfigAction?.nextAction).not.toContain("Pair the Dot");
+      expect(invalidConfigAction?.nextAction).not.toContain("secret");
+      expect(await sweep.checkIssue({ companyId: f.company.id, issueId: invalidConfigIssue.id }))
+        .toMatchObject({ verdict: { kind: "ok", clause: "waiting", reason: "credential" }, outcome: "ok" });
+      await db.update(agents).set({ adapterConfig: originalAdapterConfig }).where(eq(agents.id, f.agent.id));
+
+      // Case 3: OpenAI Dot disabled in experimental settings
+      await instanceSettingsService(db).updateExperimental({ enableOpenAiDot: false });
+      try {
+        const disabledIssue = await issueService(db).create(f.company.id, {
+          title: "Disabled Dot task",
+          status: "todo",
+          assigneeAgentId: f.agent.id,
+          responsibleUserId: f.userId,
+          trustExplicitResponsibleUserId: true,
+        });
+        const disabledWake = await hb.wakeup(f.agent.id, {
+          source: "assignment",
+          triggerDetail: "system",
+          reason: "issue_assigned",
+          payload: { issueId: disabledIssue.id },
+          contextSnapshot: { issueId: disabledIssue.id, taskId: disabledIssue.id },
+        });
+        expect(disabledWake?.id).toBeTruthy();
+        const disabledRun = await waitForSettledRun(disabledWake!.id, disabledIssue.id, f.agent.id);
+        expect(disabledRun).toMatchObject({
+          status: "failed",
+          errorCode: "configuration_incomplete",
+          resultJson: expect.objectContaining({
+            configurationIncomplete: expect.objectContaining({
+              reason: "dot_disabled",
+              actionUrl: "/instance/settings/experimental",
+            }),
+          }),
+        });
+        const [disabledAction] = await db.select().from(issueRecoveryActions).where(and(
+          eq(issueRecoveryActions.companyId, f.company.id),
+          eq(issueRecoveryActions.sourceIssueId, disabledIssue.id),
+          eq(issueRecoveryActions.status, "active"),
+        ));
+        expect(disabledAction).toMatchObject({
+          kind: "configuration_validation",
+          cause: "configuration_incomplete",
+          ownerType: "board",
+          nextAction: expect.stringContaining("Enable OpenAI Dot"),
+        });
+        expect(disabledAction?.nextAction).not.toContain("Pair the Dot");
+        expect(disabledAction?.nextAction).not.toContain("secret");
+        expect(await sweep.checkIssue({ companyId: f.company.id, issueId: disabledIssue.id }))
+          .toMatchObject({ verdict: { kind: "ok", clause: "waiting", reason: "credential" }, outcome: "ok" });
+      } finally {
+        await instanceSettingsService(db).updateExperimental({ enableOpenAiDot: true });
+      }
+
+      // Case 4: unpaired / revoked Dot
+      await f.broker.revoke(f.company.id, f.agent.id, f.userId);
+      const unpairedIssue = await issueService(db).create(f.company.id, {
+        title: "Unpaired Dot task",
+        status: "todo",
+        assigneeAgentId: f.agent.id,
+        responsibleUserId: f.userId,
+        trustExplicitResponsibleUserId: true,
+      });
+      const unpairedWake = await hb.wakeup(f.agent.id, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId: unpairedIssue.id },
+        contextSnapshot: { issueId: unpairedIssue.id, taskId: unpairedIssue.id },
+      });
+      expect(unpairedWake?.id).toBeTruthy();
+      const unpairedRun = await waitForSettledRun(unpairedWake!.id, unpairedIssue.id, f.agent.id);
+      expect(unpairedRun).toMatchObject({
+        status: "failed",
+        errorCode: "configuration_incomplete",
+        resultJson: expect.objectContaining({
+          configurationIncomplete: expect.objectContaining({ reason: "dot_pairing_required" }),
+        }),
+      });
+      const [blockedUnpairedIssue] = await db.select().from(issues).where(eq(issues.id, unpairedIssue.id));
+      expect(blockedUnpairedIssue?.status).toBe("blocked");
+      const [unpairedAction] = await db.select().from(issueRecoveryActions).where(and(
+        eq(issueRecoveryActions.companyId, f.company.id),
+        eq(issueRecoveryActions.sourceIssueId, unpairedIssue.id),
+        eq(issueRecoveryActions.status, "active"),
+      ));
+      expect(unpairedAction).toMatchObject({
+        kind: "configuration_validation",
+        cause: "configuration_incomplete",
+        ownerType: "board",
+        nextAction: expect.stringContaining("Pair the Dot"),
+      });
+      expect(unpairedAction?.nextAction).not.toContain("secret");
+      const unpairedCheck = await sweep.checkIssue({ companyId: f.company.id, issueId: unpairedIssue.id });
+      expect(unpairedCheck).toMatchObject({ verdict: { kind: "ok", clause: "waiting", reason: "credential" }, outcome: "ok" });
+      expect(sweepWake).not.toHaveBeenCalled();
+
+      // Case 5: missing Grok Bot binding stays on the Grok error path without Dot pairing wording
+      await expect(f.broker.snapshot(f.company.id, f.agent.id, f.snapshot.bindingId, "grok_bot"))
+        .rejects.toMatchObject({ message: expect.stringContaining("External provider is disabled"), reason: undefined });
+      await instanceSettingsService(db).updateExperimental({ enableGrokBot: true, enableNativeRunner: true });
+      try {
+        await expect(f.broker.snapshot(f.company.id, f.agent.id, f.snapshot.bindingId, "grok_bot"))
+          .rejects.toMatchObject({ message: expect.stringContaining("Grok Bot"), reason: undefined });
+      } finally {
+        await instanceSettingsService(db).updateExperimental({ enableGrokBot: false, enableNativeRunner: false });
+      }
+
+      // Case 6: legacy pre-fix adapter_failed runs still classify as configuration_incomplete
+      expect(classifyAdapterFailureForRecovery({
+        errorCode: "adapter_failed",
+        error: "Dot must be paired with a verified event subscription and a completed event test.",
+        resultJson: null,
+      })).toEqual({ kind: "configuration_incomplete" });
+      expect(classifyAdapterFailureForRecovery({
+        errorCode: "adapter_failed",
+        error: "Dot's event subscription expired. Ask the Dot to subscribe to paperclip.dot.mailbox_updated again; it does not need a new pairing.",
+        resultJson: null,
+      })).toEqual({ kind: "configuration_incomplete" });
+    } finally {
+      await f.events.stop();
+    }
+  }, 30000);
 
   it.each(["revoked binding", "removed subscription"])("handles an automatic event-test race with a %s", async change => {
     const f = await fixture();
@@ -242,14 +637,19 @@ describe("durable Dot Runner integration", () => {
     try {
       const requests = await Promise.all([1, 2, 3].map(() => f.broker.requestTurn(f.principal, "Create hello and assign it to my owner", requestId)));
       expect(requests[1]).toEqual(requests[0]); expect(requests[2]).toEqual(requests[0]);
+      expect(requests[0]!.instruction).toContain(provider === "grok_bot"
+        ? "Queued admission does not start another Grok routine"
+        : "Events also notify queued work");
       const intake = await db.select().from(issues).where(eq(issues.id, requests[0]!.issueId));
       expect(intake).toHaveLength(1);
       expect(intake[0]).toMatchObject({ assigneeAgentId: f.agent.id, createdByAgentId: f.agent.id, responsibleUserId: f.userId });
       expect(await f.broker.capabilities(f.principal)).toMatchObject({ agentId: f.agent.id, responsibleUser: { id: f.userId }, idle: { start: provider === "grok_bot" ? "paperclip_grok_request_turn" : "paperclip_dot_request_turn" } });
       await expect(f.broker.requestTurn(f.principal, "Different request", requestId)).rejects.toThrow("reused");
-      await db.update(companies).set({ budgetMonthlyCents: 1, spentMonthlyCents: 1 }).where(eq(companies.id, f.company.id));
+      const [budget] = await db.insert(budgetPolicies).values({ companyId: f.company.id, scopeType: "company", scopeId: f.company.id,
+        windowKind: "calendar_month_utc", amount: 1 }).returning();
+      await db.insert(costEvents).values({ companyId: f.company.id, agentId: f.agent.id, provider: "test", model: "test", costCents: 1, occurredAt: new Date() });
       await expect(f.broker.requestTurn(f.principal, "Spend more", randomUUID())).rejects.toThrow("budget");
-      await db.update(companies).set({ budgetMonthlyCents: 0, spentMonthlyCents: 0 }).where(eq(companies.id, f.company.id));
+      await db.delete(budgetPolicies).where(eq(budgetPolicies.id, budget.id));
       await f.broker.revoke(f.company.id, f.agent.id, f.userId);
       expect((await db.select().from(agents).where(eq(agents.id, f.agent.id)))[0]!.adapterConfig).not.toHaveProperty(provider === "grok_bot" ? "externalBindingId" : "dotBindingId");
       await expect(f.broker.requestTurn(f.principal, "After revoke", randomUUID())).rejects.toThrow();
@@ -451,6 +851,36 @@ describe("durable Dot Runner integration", () => {
       } finally { await f.events.stop(); }
     }, 30000);
 
+  it("does not authorize a failed Grok bootstrap retry without an external assignment", async () => {
+    const f = await fixture({ provider: "grok_bot" });
+    try {
+      const [task] = await db.insert(issues).values({ companyId: f.company.id, title: "Bootstrap retry", assigneeAgentId: f.agent.id }).returning();
+      const [run] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id,
+        nativeIssueId: task.id, runtimeMode: "native", driverKind: "grok_bot_mcp", status: "failed", invocationSource: "assignment" }).returning();
+      await db.insert(nativeRunFinalizations).values({ companyId: f.company.id, issueId: task.id, runId: run.id, phase: "retryable_failure" });
+      const cancelRun = vi.fn().mockResolvedValue(null);
+      const broker = dotRunnerBroker(db, { heartbeat: { wakeup: vi.fn(), cancelRun } });
+      await expect(broker.stopGrokWork(f.company.id, f.agent.id, f.userId, run.id)).rejects.toThrow("changed");
+      expect(cancelRun).not.toHaveBeenCalled();
+      expect(await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.runId, run.id))).toHaveLength(0);
+    } finally { await f.events.stop(); }
+  });
+
+  it("fences a failed Grok run's remaining external assignment without stopping a successor", async () => {
+    const f = await fixture({ provider: "grok_bot" });
+    const old = await offeredWork(f);
+    await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, old.run.id));
+    expect(await f.broker.stopGrokWork(f.company.id, f.agent.id, f.userId, old.run.id))
+      .toMatchObject({ stopped: true, remoteTerminationConfirmed: false });
+    expect((await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.runId, old.run.id)))[0]?.status).toBe("fenced");
+    expect(await grokRoutineService(db).recoveryNeeded(f.company.id, f.agent.id)).toBe(true);
+    await expect(f.broker.read(f.principal, old.assignment.id)).rejects.toThrow();
+    const current = await offeredWork(f);
+    await expect(f.broker.stopGrokWork(f.company.id, f.agent.id, f.userId, old.run.id)).rejects.toThrow("changed");
+    expect((await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.id, current.assignment.id)))[0]?.status).toBe("offered");
+    await f.events.stop();
+  });
+
   it.each(["queued", "running"] as const)("stops a %s Grok run before an external assignment exists", async status => {
     const f = await fixture({ provider: "grok_bot" });
     const [run] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id, status, invocationSource: "assignment", triggerDetail: "system" }).returning();
@@ -545,6 +975,48 @@ describe("durable Dot Runner integration", () => {
     const initial = await reader;
     const next = await f.broker.mailbox(f.principal, initial.nextCursor);
     expect([...initial.items, ...next.items].map(i => i.sourceEventId)).toEqual(expect.arrayContaining([firstEvent, secondEvent]));
+    await f.events.unsubscribe(f.principal, f.subscription); await f.events.stop();
+  }, 30000);
+
+  it.each(["accept", "finish"] as const)("settles %s under the admission guard without waiting on a run that admission holds", async action => {
+    const f = await fixture();
+    const { run, assignment } = await offeredWork(f);
+    const requestId = randomUUID();
+    await db.insert(dotRunnerOperations).values({ companyId: f.company.id, assignmentId: assignment.id, requestId,
+      digest: "test", command: { action }, status: "admitted" });
+    let release!: () => void;
+    let held!: () => void;
+    const locked = new Promise<void>(resolve => { held = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    // Execution admission locks the run before it takes the guard. A settle
+    // that holds the guard must not then need that run row, or the two
+    // transactions wait on each other.
+    const admission = db.transaction(async tx => {
+      await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)).for("update");
+      held(); await gate;
+      await withExternalAdmissionGuard(tx, f.company.id, f.agent.id, async () => {});
+    });
+    await locked;
+    const port = f.broker.port({ binding: { companyId: f.company.id, agentId: f.agent.id, runId: run.id }, provider: { binding: f.snapshot } });
+    // Capture each outcome now so a failure surfaces as itself, not as the wait timeout.
+    let settled = false;
+    let settleError: unknown;
+    const settle = port.settle({ sourceEventId: randomUUID(), payload: { requestId, binding: { ...f.snapshot, runId: run.id,
+      normalizedSessionId: assignment.normalizedSessionId, turnId: assignment.turnId, assignmentRevision: assignment.revision },
+      outcome: { status: action === "accept" ? "accepted" : "completed" } } } as Parameters<typeof port.settle>[0])
+      .then(() => { settled = true; }, error => { settleError = error; });
+    const admitted = admission.then(() => undefined, error => error as unknown);
+    try {
+      await vi.waitFor(() => { if (settleError) throw settleError; expect(settled).toBe(true); }, { timeout: 5000, interval: 20 });
+    } finally {
+      release();
+      await settle;
+      const admissionError = await admitted;
+      if (settleError) throw settleError;
+      if (admissionError) throw admissionError;
+    }
+    expect((await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.id, assignment.id)))[0]?.status)
+      .toBe(action === "accept" ? "accepted" : "settled");
     await f.events.unsubscribe(f.principal, f.subscription); await f.events.stop();
   }, 30000);
 
@@ -694,6 +1166,10 @@ describe("durable Dot Runner integration", () => {
     expect(issuer.body).toMatchObject({ issuer: oauth.config.origin + "/mcp/runner/oauth", client_id_metadata_document_supported: true,
       scopes_supported: ["paperclip:agent", "offline_access"], device_authorization_endpoint: oauth.config.origin + "/mcp/runner/oauth/device_authorization" });
     expect((await request(app).get("/.well-known/oauth-authorization-server")).body.issuer).toBe(oauth.config.origin);
+    // A client that follows the 401 challenge must ask for renewable access.
+    const challenge = await request(app).post("/mcp/runner").send({});
+    expect(challenge.status).toBe(401);
+    expect(challenge.headers["www-authenticate"]).toContain('scope="paperclip:agent offline_access"');
     const verifier = randomBytes(32).toString("base64url");
     const input = { client_id: clientId, redirect_uri: redirectUri, response_type: "code", resource: oauth.config.resource,
       company_id: f.company.id, code_challenge: createHash("sha256").update(verifier).digest("base64url"), code_challenge_method: "S256" };
@@ -711,7 +1187,12 @@ describe("durable Dot Runner integration", () => {
     expect(redirect.searchParams.get("iss")).toBe(issuer.body.issuer);
     const tokens = await oauth.token({ grant_type: "authorization_code", client_id: clientId, redirect_uri: redirectUri,
       resource: oauth.config.resource, code: redirect.searchParams.get("code"), code_verifier: verifier });
-    expect((await oauth.authenticate(tokens.access_token)).grant).toMatchObject({ purpose: "agent", agentId: null, scopes: ["paperclip:agent"] });
+    expect((await oauth.authenticate(tokens.access_token)).grant).toMatchObject({ purpose: "agent", agentId: null, scopes: ["paperclip:agent", "offline_access"] });
+    // Omitted scope: the client still gets a refresh token and renews past the 15-minute access token.
+    expect(tokens.refresh_token).toEqual(expect.any(String));
+    const renewed = await oauth.token({ grant_type: "refresh_token", client_id: clientId, resource: oauth.config.resource, refresh_token: tokens.refresh_token });
+    expect(renewed.refresh_token).toEqual(expect.any(String));
+    expect(renewed.refresh_token).not.toBe(tokens.refresh_token);
     await expect(personal.authenticate(tokens.access_token)).rejects.toThrow();
     await expect(oauth.authorize({ ...input, scope: "paperclip:read" })).rejects.toMatchObject({ code: "invalid_scope" });
     await f.events.unsubscribe(f.principal, f.subscription);
@@ -752,18 +1233,20 @@ describe("durable Dot Runner integration", () => {
   }, 30000);
 
   it.each([
-    { name: "Dot local Rust", managed: false, provider: "openai_dot" as const },
-    { name: "Grok local Rust", managed: false, provider: "grok_bot" as const },
-    ...(process.env.PAPERCLIP_DOT_DAYTONA_LIVE === "1" ? [{ name: "private Daytona Rust", managed: true, provider: "openai_dot" as const }] : []),
-  ])("signed readiness, native tools and finalization through $name", async ({ managed, provider }) => {
+    { name: "Dot local Rust", managed: false, provider: "openai_dot" as const, revokeDuringUpload: false },
+    { name: "Grok local Rust", managed: false, provider: "grok_bot" as const, revokeDuringUpload: false },
+    { name: "Grok upload revocation Rust", managed: false, provider: "grok_bot" as const, revokeDuringUpload: true },
+    ...(process.env.PAPERCLIP_DOT_DAYTONA_LIVE === "1" ? [{ name: "private Daytona Rust", managed: true, provider: "openai_dot" as const, revokeDuringUpload: false }] : []),
+  ])("signed readiness, native tools and finalization through $name", async ({ managed, provider, revokeDuringUpload }) => {
     const remote = managed ? await (await import("./helpers/dot-daytona.js")).startDotDaytona(root) : null;
     try {
       const f = await fixture({ provider });
-      const [issue] = await db.insert(issues).values({ companyId: f.company.id, title: "Save the arithmetic report", description: "Save 17 + 25 = 42 as a task document.",
+      const [issue] = await db.insert(issues).values({ companyId: f.company.id, title: "Save the arithmetic report", description: provider === "grok_bot" ? "Save 17 + 25 = 42 as a task document and attach report.txt." : "Save 17 + 25 = 42 as a task document.",
         status: "in_progress", workMode: "standard", assigneeAgentId: f.agent.id }).returning();
       const [run] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id, status: "running", invocationSource: "assignment", triggerDetail: "system", contextSnapshot: { issueId: issue!.id } }).returning();
       await db.update(issues).set({ executionRunId: run!.id, checkoutRunId: run!.id }).where(eq(issues.id, issue!.id));
       const prepared = await prepareNativeHeartbeatRun({ db, run: run!, issue: issue!, environmentLeaseId: randomUUID() });
+      await db.update(heartbeatRuns).set({ driverKind: provider === "grok_bot" ? "grok_bot_mcp" : "openai_dot_mcp" }).where(eq(heartbeatRuns.id, run!.id));
       await db.insert(nativeRunFinalizations).values({ runId: run!.id, companyId: f.company.id, issueId: issue!.id, phase: "observed" });
       const [boundRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id));
       const [contract] = await db.select().from(completionContracts).where(eq(completionContracts.id, boundRun!.completionContractId!));
@@ -779,12 +1262,15 @@ describe("durable Dot Runner integration", () => {
       await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeExecutionInput: execution } }).where(eq(heartbeatRuns.id, run!.id));
       const server = createServer(); await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
       const address = server.address(); if (!address || typeof address === "string") throw new Error("Missing test server");
-      setupRunnerPrpWebSocketServer(server, { apiUrl: `http://127.0.0.1:${address.port}` });
+      setupRunnerPrpWebSocketServer(server);
       const observed: Array<Record<string, any>> = [];
       const appCall = vi.fn().mockResolvedValue({ status: "completed", result: { content: [{ type: "text", text: "synthetic gateway result" }] } });
       const gatewayTools = [{ name: "fixture:read_status", displayName: "Read fixture status", description: "Read a synthetic app", parametersSchema: { type: "object", properties: {}, additionalProperties: false }, risk: "read" }];
       registerAssignedMcpGateway(db, { listToolsForNamedGateway: vi.fn().mockResolvedValue(gatewayTools), executeTool: appCall } as unknown as ToolGatewayService);
-      if (provider === "openai_dot") await db.update(agents).set({ adapterConfig: { ...f.agent.adapterConfig, dotBindingId: f.snapshot.bindingId, dotWorkspaceAccess: true, dotAttachmentAccess: true } }).where(eq(agents.id, f.agent.id));
+      if (provider === "openai_dot") {
+        const [connectedAgent] = await db.select().from(agents).where(eq(agents.id, f.agent.id));
+        await db.update(agents).set({ adapterConfig: { ...connectedAgent!.adapterConfig, dotBindingId: f.snapshot.bindingId, dotWorkspaceAccess: true, dotAttachmentAccess: true } }).where(eq(agents.id, f.agent.id));
+      }
       vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "fixture-cloud");
       try {
         for (const useRunnerd of [false, true]) {
@@ -809,7 +1295,7 @@ describe("durable Dot Runner integration", () => {
         const [assignment] = await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.runId, run!.id));
         if (provider === "openai_dot") await f.events.tick();
         expect(JSON.stringify(f.received)).not.toContain("17 + 25");
-        const work = await f.broker.read(f.principal, assignment!.id);
+        const work = await f.broker.read(f.principal, assignment!.id) as Awaited<ReturnType<typeof f.broker.read>> & { tools: unknown };
         expect(work.accounting).toEqual({ usage: null, cost: null });
         expect(work.status).toBe("offered");
         expect(observed.filter(event => event.eventType === "turn.started")).toHaveLength(0);
@@ -818,12 +1304,17 @@ describe("durable Dot Runner integration", () => {
         expect(await f.broker.operation(f.principal, assignment!.id, randomUUID(), "tool", { name: "write_document", arguments: {} })).toMatchObject({ status: "rejected" });
         await f.broker.operation(f.principal, assignment!.id, randomUUID(), "accept", {});
         expect(JSON.stringify(work)).not.toContain("fixture-gateway-secret");
+        let uploadedDeliverableId: string | undefined;
         if (provider === "grok_bot") {
           const files = new Map<string, Buffer>();
+          let storingUpload = false;
+          let releaseUploadStorage!: () => void;
+          const uploadStorageRelease = new Promise<void>(resolve => { releaseUploadStorage = resolve; });
           const transfers = createPublicMcpTransfers(db, f.oauth, async () => { throw new Error("Personal API dispatch forbidden"); }, {
             provider: "local_disk", putFile: async input => {
               if (!Buffer.isBuffer(input.body)) throw new Error("Expected bounded bytes");
               const objectKey = input.objectKey!; files.set(objectKey, input.body);
+              if (revokeDuringUpload) { storingUpload = true; await uploadStorageRelease; }
               return { provider: "local_disk", objectKey, contentType: input.contentType, byteSize: input.body.length,
                 sha256: createHash("sha256").update(input.body).digest("hex"), originalFilename: input.originalFilename };
             }, getObject: async (_company, key) => ({ stream: Readable.from(files.get(key)!) }),
@@ -833,16 +1324,94 @@ describe("durable Dot Runner integration", () => {
           const body = Buffer.from("Grok arithmetic file: 42\n"), uploadId = randomUUID();
           const args = { companyId: f.company.id, taskId: issue!.id, requestId: uploadId, filename: "report.txt", contentType: "text/plain", byteSize: body.length, sha256: createHash("sha256").update(body).digest("hex") };
           const grant = await transfers.getUploadUrl(f.principal, args, assignment!.id);
-          const url = new URL(String(grant.url));
-          const uploaded = await request(api).put(url.pathname + url.search).set("Content-Type", "text/plain").send(body);
+          const url = uploadGrantUrl(grant);
+          if (revokeDuringUpload) {
+            const uploading = request(api).put(url.pathname + url.search).set("Content-Type", "text/plain").send(body)
+              .then(response => response);
+            let revoked = false;
+            let revoking: Promise<void> | undefined;
+            try {
+              await vi.waitFor(() => expect(storingUpload).toBe(true), { timeout: 10000, interval: 20 });
+              revoking = f.broker.revoke(f.company.id, f.agent.id, f.userId).then(() => { revoked = true; });
+              void revoking.catch(() => {});
+              // Revocation must not wait for remote storage, and late bytes
+              // cannot produce accepted artifacts or completion evidence.
+              await vi.waitFor(() => expect(revoked).toBe(true), { timeout: 3000, interval: 20 });
+            } finally { releaseUploadStorage(); }
+            await revoking;
+            expect((await uploading).status).toBe(403);
+            await resultPromise.catch(() => {});
+            const [revokedGrant] = await db.select().from(mcpOauthGrants).where(eq(mcpOauthGrants.id, f.principal.grant.id));
+            expect(revokedGrant!.revokedAt).not.toBeNull();
+            expect((await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.id, assignment!.id)))[0]!.status).toBe("fenced");
+            expect(await db.select().from(issueAttachments).where(eq(issueAttachments.issueId, issue!.id))).toHaveLength(0);
+            const [cancelledRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id));
+            expect(Object.keys((cancelledRun?.resultJson?.semanticToolReceipts ?? {}) as Record<string, unknown>)
+              .filter(key => key.startsWith("external-upload:"))).toHaveLength(0);
+            return;
+          }
+          // Hold the document transaction at its task lock, then start the real
+          // HTTP upload. The native document write must still acquire its run
+          // lock and commit; a run-before-task upload deadlocks this overlap.
+          let concurrentUpload: Promise<request.Response> | undefined;
+          let earlyUpload: request.Response | undefined;
+          await db.transaction(async tx => {
+            await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, issue!.id)).for("update");
+            const [backend] = await tx.execute(sql`select pg_backend_pid() as pid`) as unknown as Array<{ pid: number }>;
+            concurrentUpload = request(api).put(url.pathname + url.search).set("Content-Type", "text/plain").send(body)
+              .then(response => { earlyUpload = response; return response; });
+            await vi.waitFor(async () => {
+              expect(earlyUpload?.status, JSON.stringify(earlyUpload?.body)).toBeUndefined();
+              const [state] = await db.execute(sql`select exists (
+                select 1 from pg_stat_activity where ${backend!.pid} = any(pg_blocking_pids(pid))
+              ) as waiting`) as unknown as Array<{ waiting: boolean }>;
+              expect(state!.waiting).toBe(true);
+            }, { timeout: 10000, interval: 20 });
+            // Use the same native authority inside this already-open document
+            // transaction, retaining every real identity and mutation check.
+            const documentDb = Object.assign(Object.create(tx), {
+              transaction: async (effect: (database: typeof db) => Promise<unknown>) => effect(tx as unknown as typeof db),
+            }) as typeof db;
+            const authority = new PaperclipRunnerToolAuthority(documentDb, {
+              companyId: f.company.id, issueId: issue!.id, agentId: f.agent.id, runId: run!.id, firstPartyOnly: true,
+            });
+            try {
+              expect(await authority.execute({ tool: "write_document", callId: randomUUID(), arguments: {
+                key: "upload-overlap", title: "Concurrent document", body: "Saved while the file is uploading.",
+                baseRevisionId: null, idempotencyKey: "upload-overlap",
+              } })).toMatchObject({ disposition: "applied" });
+            } finally { authority.close(); }
+          });
+          const uploaded = await concurrentUpload!;
           expect(uploaded.status).toBe(200);
-          const duplicate = await request(api).put(url.pathname + url.search).set("Content-Type", "text/plain").send(body);
+          expect((await documentService(db).getIssueDocumentByKey(issue!.id, "upload-overlap"))?.body)
+            .toBe("Saved while the file is uploading.");
+          uploadedDeliverableId = uploaded.body.attachment.id;
+          expect(uploaded.body.publication).toMatchObject({ evidenceRef: `deliverable:${uploadedDeliverableId}`,
+            commandId: `deliverable-uploaded:${uploadedDeliverableId}`, source: "authenticated_upload" });
+          const duplicates = await Promise.all([0, 1].map(() => request(api).put(url.pathname + url.search)
+            .set("Content-Type", "text/plain").send(body)));
+          expect(duplicates.every(response => response.status === 200)).toBe(true);
+          expect(duplicates[0]!.body).toEqual(duplicates[1]!.body);
+          const duplicate = duplicates[0]!;
           expect(duplicate.body.attachment.id).toBe(uploaded.body.attachment.id);
+          expect(duplicate.body.publication).toEqual(uploaded.body.publication);
+          expect(await transfers.getUploadUrl(f.principal, args, assignment!.id)).toMatchObject({
+            status: "completed", publication: uploaded.body.publication, attachment: { id: uploadedDeliverableId },
+          });
+          const [publishedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id));
+          expect(Object.values(publishedRun!.resultJson!.semanticToolReceipts as Record<string, unknown>))
+            .toEqual(expect.arrayContaining([
+              expect.objectContaining({ operationId: "publish_external_deliverable" }),
+              expect.objectContaining({ operationId: "write_document", input: expect.objectContaining({ key: "upload-overlap" }) }),
+            ]));
+          expect(Object.keys(publishedRun!.resultJson!.semanticToolReceipts as Record<string, unknown>)
+            .filter(key => key.startsWith("external-upload:"))).toHaveLength(1);
           expect(await issueService(db).getAttachmentById(uploaded.body.attachment.id)).toMatchObject({ createdByAgentId: f.agent.id, originatingRunId: run!.id, createdByUserId: null });
           await expect(transfers.getUploadUrl(f.principal, { ...args, taskId: randomUUID() }, assignment!.id)).rejects.toThrow();
           const download = new URL(String((await transfers.getDownloadUrl(f.principal, uploaded.body.attachment.id, assignment!.id)).url));
           expect((await request(api).get(download.pathname + download.search)).status).toBe(200);
-          const pendingUpload = new URL(String((await transfers.getUploadUrl(f.principal, { ...args, requestId: randomUUID() }, assignment!.id)).url));
+          const pendingUpload = uploadGrantUrl(await transfers.getUploadUrl(f.principal, { ...args, requestId: randomUUID() }, assignment!.id));
           await db.update(issues).set({ workMode: "ask" }).where(eq(issues.id, issue!.id));
           await expect(transfers.getUploadUrl(f.principal, { ...args, requestId: randomUUID() }, assignment!.id)).rejects.toThrow("work mode");
           expect((await request(api).put(pendingUpload.pathname + pendingUpload.search).set("Content-Type", "text/plain").send(body)).status).toBeGreaterThanOrEqual(400);
@@ -875,9 +1444,12 @@ describe("durable Dot Runner integration", () => {
           expect(app).toBeUndefined();
           expect((work.tools as Array<{ operationId: string }>).some(tool => ["get_workspace", "prepare_repository", "workspace_read"].includes(tool.operationId))).toBe(false);
         }
-        await db.update(agents).set({ budgetMonthlyCents: 100, spentMonthlyCents: 100 }).where(eq(agents.id, f.agent.id));
+        const [budget] = await db.insert(budgetPolicies).values({ companyId: f.company.id, scopeType: "agent", scopeId: f.agent.id,
+          windowKind: "calendar_month_utc", amount: 100 }).returning();
+        await db.insert(costEvents).values({ companyId: f.company.id, agentId: f.agent.id, provider: "test", model: "test", costCents: 100, occurredAt: new Date() });
         await expect(f.broker.read(f.principal, assignment!.id)).rejects.toThrow("execution authority");
-        await db.update(agents).set({ budgetMonthlyCents: 0, spentMonthlyCents: 0, status: "paused" }).where(eq(agents.id, f.agent.id));
+        await db.delete(budgetPolicies).where(eq(budgetPolicies.id, budget.id));
+        await db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agent.id));
         await expect(f.broker.read(f.principal, assignment!.id)).rejects.toThrow("authority");
         await db.update(agents).set({ status: "active" }).where(eq(agents.id, f.agent.id));
         await db.update(issues).set({ executionRunId: null, checkoutRunId: null }).where(eq(issues.id, issue!.id));
@@ -894,7 +1466,15 @@ describe("durable Dot Runner integration", () => {
         const result = { reportedWorkDisposition: "completed", summary: "Saved the arithmetic report.",
           completionClaim: { contractRevision: execution.completionContract.contract.revision, objectiveSatisfied: true,
             criteria: execution.completionContract.contract.criteria.map(c => ({ criterionId: c.id, status: "passed", evidenceRefs: [] })), remainingWork: [] },
-          evidence: [], verification: [{ commandOrCheck: "17 + 25", status: "pass" }] };
+          evidence: uploadedDeliverableId ? [{ ref: `deliverable:${uploadedDeliverableId}` }] : [], verification: [{ commandOrCheck: "17 + 25", status: "pass" }] };
+        if (uploadedDeliverableId) {
+          const missingEvidenceId = randomUUID();
+          await f.broker.operation(f.principal, assignment!.id, missingEvidenceId, "tool", {
+            name: "paperclip_finish", arguments: { ...result, evidence: [] },
+          });
+          await vi.waitFor(async () => expect(await f.broker.operationStatus(f.principal, assignment!.id, missingEvidenceId))
+            .toMatchObject({ status: "completed", isError: true, result: { error: expect.stringContaining("requested file") } }), { timeout: 10000 });
+        }
         const completionId = randomUUID();
         await f.broker.operation(f.principal, assignment!.id, completionId, "tool", { name: "paperclip_finish", arguments: result });
         await vi.waitFor(async () => expect(await f.broker.operationStatus(f.principal, assignment!.id, completionId)).toMatchObject({ status: "completed", isError: false }), { timeout: 10000 });

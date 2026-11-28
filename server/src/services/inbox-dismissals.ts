@@ -8,11 +8,14 @@ export function inboxDismissalService(db: Db) {
     companyId: string,
     userId: string,
     itemKey: string,
-    input: { kind: InboxDismissalKind; dismissedAt?: Date; snoozedUntil?: Date | null },
+    input: { kind: InboxDismissalKind; dismissedAt?: Date; snoozedUntil?: Date | null; fingerprint?: string | null },
   ) {
     const now = new Date();
     const dismissedAt = input.dismissedAt ?? now;
     const snoozedUntil = input.kind === "snooze" ? input.snoozedUntil ?? null : null;
+    // A re-hide without a fingerprint clears the old one, so the row never
+    // compares against content the user did not see.
+    const fingerprint = input.fingerprint ?? null;
     const [row] = await db
       .insert(inboxDismissals)
       .values({
@@ -22,6 +25,7 @@ export function inboxDismissalService(db: Db) {
         kind: input.kind,
         dismissedAt,
         snoozedUntil,
+        fingerprint,
         updatedAt: now,
       })
       .onConflictDoUpdate({
@@ -30,6 +34,7 @@ export function inboxDismissalService(db: Db) {
           kind: input.kind,
           dismissedAt,
           snoozedUntil,
+          fingerprint,
           updatedAt: now,
         },
       })
@@ -50,7 +55,8 @@ export function inboxDismissalService(db: Db) {
       userId: string,
       itemKey: string,
       dismissedAt: Date = new Date(),
-    ) => upsert(companyId, userId, itemKey, { kind: "dismiss", dismissedAt }),
+      fingerprint: string | null = null,
+    ) => upsert(companyId, userId, itemKey, { kind: "dismiss", dismissedAt, fingerprint }),
 
     snooze: async (
       companyId: string,
@@ -58,7 +64,8 @@ export function inboxDismissalService(db: Db) {
       itemKey: string,
       snoozedUntil: Date,
       dismissedAt: Date = new Date(),
-    ) => upsert(companyId, userId, itemKey, { kind: "snooze", dismissedAt, snoozedUntil }),
+      fingerprint: string | null = null,
+    ) => upsert(companyId, userId, itemKey, { kind: "snooze", dismissedAt, snoozedUntil, fingerprint }),
 
     restore: async (companyId: string, userId: string, itemKey: string) => {
       const [row] = await db

@@ -36,13 +36,14 @@ function Journey({ scenario = 'ready' }: { scenario?: Scenario }) {
   </Route></Routes></PluginLauncherProvider>;
 }
 const meta = { id: 'skills-project-repository-skills-02-journeys', title: 'Agents and reusable capabilities/Skills and Skill Studio/Project repository skills/02 Journeys', component: Journey, tags: ['!autodocs'],
-  parameters: { paperclip: {"capabilities": ["skills/discovery", "skills/versions", "projects/repositories", "routines/run-now", "routines/history"], "status": "current", "implementation": "production", "boundary": "fixtures", "notes": "Production app shell and pages exercise project creation/attachment, legacy adoption, refresh/repair and routine revision journeys with in-memory GitHub and execution fixtures. Live authorization and GitHub-to-run delivery are verified separately."}, layout: 'fullscreen', docs: { description: { component: 'Production pages and app shell. Imports, GitHub responses, background refresh and routine executions are in-memory fixtures. Start with Create project or Legacy adoption; all actions remain interactive. Live integration is verified separately.' } } },
+  parameters: { paperclip: {"capabilities": ["skills/discovery", "skills/versions", "projects/repositories", "routines/run-now", "routines/history"], "status": "current", "implementation": "production", "boundary": "fixtures", "notes": "Production app shell and pages exercise project creation/attachment, legacy and existing-source adoption, refresh/repair and routine revision journeys with in-memory GitHub and execution fixtures. Live authorization and GitHub-to-run delivery are verified separately."}, layout: 'fullscreen', docs: { description: { component: 'Production pages and app shell. Imports, GitHub responses, background refresh and routine executions are in-memory fixtures. Start with Create project or Legacy adoption; all actions remain interactive. Live integration is verified separately.' } } },
 } satisfies Meta<typeof Journey>;
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const CreateProject: Story = { name: '01 · Create a project', args: { scenario: 'new-project' } };
 export const LegacyAdoption: Story = { name: '02 · Import from an older project', args: { scenario: 'legacy' } };
 export const DuplicateProjects: Story = { name: 'Shared repository import across projects', args: { scenario: 'duplicate' } };
+export const ExistingSourceMoreProjects: Story = { name: 'Existing source, more projects', args: { scenario: 'partial-adoption' } };
 export const MissingBranch: Story = { name: 'Repair an unavailable branch', args: { scenario: 'missing-branch' } };
 export const Synced: Story = { name: '03 · Automatically imported skills' };
 export const AutomaticUpdate: Story = { name: '04 · Background update and a new skill', args: { scenario: 'automatic' } };

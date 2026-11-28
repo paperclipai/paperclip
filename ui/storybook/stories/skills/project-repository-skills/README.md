@@ -9,6 +9,8 @@ Open **Agents and reusable capabilities → Skills and Skill Studio → Project 
   navigate to Skills → Sources. Legacy adoption starts before import. Background
   update introduces skills without a click. Retry the failed refresh, pause updates,
   inspect the private/shared source and try the mobile and light-theme variants.
+  **Existing source, more projects** reproduces a saved source with additional
+  project imports available in its More menu. The source row shows no project names.
   Connection repair chooses an existing authorized account without changing skill
   selections. Also inspect removed skills, invalid upstream content, two private
   projects and the large-list story.

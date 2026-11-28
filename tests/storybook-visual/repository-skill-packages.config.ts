@@ -11,6 +11,6 @@ export default defineConfig({
   use: {
     baseURL: process.env.PAPERCLIP_REPOSITORY_STORYBOOK_URL ?? 'http://localhost:6106',
     viewport: { width: 1280, height: 900 },
-    reducedMotion: 'reduce',
+    contextOptions: { reducedMotion: 'reduce' },
   },
 });

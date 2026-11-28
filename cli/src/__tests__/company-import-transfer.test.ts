@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { deflateRawSync } from "node:zlib";
+import { crc32, deflateRawSync } from "node:zlib";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -73,12 +73,7 @@ function buildDeflateZip(entryPath: string, text: string): Uint8Array {
   const raw = Buffer.from(text, "utf8");
   const body = deflateRawSync(raw);
   const name = Buffer.from(entryPath, "utf8");
-  let crc = 0xffffffff;
-  for (const byte of raw) {
-    crc ^= byte;
-    for (let bit = 0; bit < 8; bit += 1) crc = (crc & 1) === 1 ? (crc >>> 1) ^ 0xedb88320 : crc >>> 1;
-  }
-  crc = (crc ^ 0xffffffff) >>> 0;
+  const crc = crc32(raw);
   const local = Buffer.alloc(30 + name.length);
   local.writeUInt32LE(0x04034b50, 0);
   local.writeUInt16LE(20, 4);

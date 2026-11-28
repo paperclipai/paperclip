@@ -15,6 +15,8 @@ export interface AggregatorAppCatalogEntry {
   name: string;
   aliases: string[];
   routes: AggregatorAppRoute[];
+  /** The provider's own category for the app, when its public catalog states one. */
+  category?: string;
 }
 
 // The public catalogs use different brand names for these same services.
@@ -35,10 +37,11 @@ export function aggregatorAppIdentity(value: string): string {
 }
 
 const entries = new Map<string, AggregatorAppCatalogEntry>();
-function add(name: string, slug: string, aliases: string[], route: AggregatorAppRoute) {
+function add(name: string, slug: string, aliases: string[], route: AggregatorAppRoute, category?: string) {
   const identity = aggregatorAppIdentity(name);
   const existing = entries.get(identity);
   if (existing) {
+    existing.category ??= category;
     existing.aliases = [...new Set([...existing.aliases, name, slug, ...aliases])];
     // Prefer the ordinary toolkit over an API/MCP variant from the same provider.
     if (!existing.routes.some((candidate) => candidate.provider === route.provider)) {
@@ -46,7 +49,7 @@ function add(name: string, slug: string, aliases: string[], route: AggregatorApp
     }
     return;
   }
-  entries.set(identity, { slug, name: name.replace(/\s+(MCP|API)$/i, ""), aliases, routes: [route] });
+  entries.set(identity, { slug, name: name.replace(/\s+(MCP|API)$/i, ""), aliases, routes: [route], ...(category ? { category } : {}) });
 }
 
 for (const [toolkit, name] of composio.toolkits) {
@@ -59,7 +62,7 @@ for (const [toolkit, name] of composio.toolkits) {
 for (const app of arcade.apps) {
   add(app.name, app.slug, app.aliases, {
     provider: "arcade", toolkit: app.toolkit, logoUrl: app.logoUrl, docsUrl: app.docsUrl,
-  });
+  }, app.category);
 }
 
 export const AGGREGATOR_APP_CATALOG = [...entries.values()].sort((a, b) =>

@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { OnboardingWizard } from "@/components/OnboardingWizard";
 import { PillGuy } from "@/components/onboarding/PillGuy";
 import { Stepper } from "@/components/onboarding/Stepper";
+import { storybookHiredAgent } from "../../fixtures/paperclipData";
 import { useCompanyListQuery } from "@/api/companies-query";
 import { useDialog } from "@/context/DialogContext";
 import {
@@ -41,7 +42,8 @@ const meta = {
         "onboarding/first-task"
       ],
       "implementation": "production",
-      "boundary": "fixtures"
+      "boundary": "fixtures",
+      "notes": "Production wizard with simulated accounts, failed/expired sign-in and retry, immutable-target discovery, native/Legacy setup and refused/unconfirmed cleanup. Fixtures do not prove isolation, lease cleanup, runtime limits, draft reload persistence or model execution."
     },
   },
 } satisfies Meta;
@@ -380,14 +382,16 @@ function signedOutConnectionFixture() {
   return () => { clearOnboardingDraft(); resetOnboardingFixtureState(); };
 }
 
-async function openProviderConnection(provider: "Claude" | "OpenAI", mode: "subscription" | "api") {
+async function openProviderConnection(provider: "Claude" | "OpenAI", mode: "subscription" | "api", loginState: "ready" | "failed" = "ready") {
   await advance("Connect a model");
   await userEvent.click(await screen.findByRole("button", { name: "Use API key instead" }, { timeout: STEP_TIMEOUT_MS }));
   if (mode === "subscription") {
     await userEvent.click(await screen.findByRole("button", { name: "Use subscription instead" }, { timeout: STEP_TIMEOUT_MS }));
   }
   await userEvent.click(await screen.findByRole("radio", { name: new RegExp(`^${provider} `) }, { timeout: STEP_TIMEOUT_MS }));
-  if (mode === "api") {
+  if (loginState === "failed") {
+    await screen.findByRole("button", { name: "Retry sign-in" }, { timeout: STEP_TIMEOUT_MS });
+  } else if (mode === "api") {
     await screen.findByLabelText("API key", {}, { timeout: STEP_TIMEOUT_MS });
   } else if (provider === "Claude") {
     await screen.findByLabelText("Authorization code", {}, { timeout: STEP_TIMEOUT_MS });
@@ -402,6 +406,78 @@ export const ClaudeSubscription: StoryObj = {
   render: () => <WizardArc />,
   play: () => openProviderConnection("Claude", "subscription"),
 };
+function claudeLoginFailureStory(failure: "failed" | "timed_out"): StoryObj {
+  return {
+    name: failure === "timed_out" ? "Connect · Claude sign-in expired" : "Connect · Claude sign-in failed",
+    beforeEach: () => {
+      const reset = signedOutConnectionFixture();
+      const previous = window.fetch;
+      const base = `/api/companies/${STORYBOOK_COMPANY_ID}/setup-token-login-sessions`;
+      let attempts = 0;
+      let setupAgent: Record<string, unknown> | null = null;
+      const released = new Set<string>();
+      const fixtureFetch: typeof fetch = async (input, init) => {
+        const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, window.location.origin);
+        const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+        const session = (id: string, status: string) => ({
+          sessionId: id, environmentId: "environment-storybook-sandbox", status,
+          expiresAt: new Date(Date.now() + 600_000).toISOString(), failure: null,
+        });
+        if (url.pathname === `/api/companies/${STORYBOOK_COMPANY_ID}/agents`) {
+          if (method === "GET") return Response.json(setupAgent ? [setupAgent] : []);
+          if (method === "POST") {
+            const body = JSON.parse(typeof init?.body === "string" ? init.body : input instanceof Request ? await input.clone().text() : "{}");
+            setupAgent = { ...storybookHiredAgent, ...body, id: body.setupId, status: "paused", pauseReason: "setup" };
+            return Response.json(setupAgent, { status: 201 });
+          }
+        }
+        if (setupAgent && url.pathname === `/api/agents/${setupAgent.id}` && url.searchParams.get("companyId") === STORYBOOK_COMPANY_ID) {
+          if (method === "PATCH") {
+            const body = JSON.parse(typeof init?.body === "string" ? init.body : input instanceof Request ? await input.clone().text() : "{}");
+            setupAgent = { ...setupAgent, ...body };
+          }
+          return Response.json(setupAgent);
+        }
+        if (url.pathname === base && method === "POST") {
+          if (attempts > 0 && !released.has(`claude-storybook-${attempts}`)) {
+            return Response.json({ error: "Release the previous attempt first." }, { status: 409 });
+          }
+          attempts += 1;
+          return Response.json(session(`claude-storybook-${attempts}`, "awaiting_browser_code"), { status: 201 });
+        }
+        if (url.pathname === `${base}/active`) return new Response(null, { status: 404 });
+        const match = url.pathname.slice(base.length).match(/^\/(claude-storybook-\d+)(?:\/(prompt|cancel))?$/);
+        if (url.pathname.startsWith(`${base}/`) && match) {
+          const id = match[1]!;
+          if (match[2] === "cancel" && method === "POST") {
+            released.add(id);
+            return Response.json(session(id, "cancelled"));
+          }
+          if (match[2] === "prompt") return Response.json({ authorizationUrl: `https://claude.example.test/authorize?attempt=${attempts}`, transportAdvisory: null });
+          return Response.json(session(id, id === "claude-storybook-1" ? failure : "awaiting_browser_code"));
+        }
+        return previous(input, init);
+      };
+      window.fetch = fixtureFetch;
+      return () => {
+        if (window.fetch === fixtureFetch) window.fetch = previous;
+        reset();
+      };
+    },
+    render: () => <WizardArc />,
+    play: async () => {
+      await openProviderConnection("Claude", "subscription", "failed");
+      await expect(screen.getByRole("button", { name: "Retry sign-in" })).toBeEnabled();
+      await expect(screen.getByRole("alert")).toHaveTextContent("Retry sign-in to get a fresh code. Your setup is saved.");
+      await expect(screen.queryByRole("link", { name: "Sign in to Claude" })).not.toBeInTheDocument();
+      await expect(screen.queryByLabelText("Authorization code")).not.toBeInTheDocument();
+    },
+  };
+}
+
+export const ClaudeSignInFailed = claudeLoginFailureStory("failed");
+export const ClaudeSignInExpired = claudeLoginFailureStory("timed_out");
+
 export const CodexSubscription: StoryObj = {
   name: "Connect · Codex / OpenAI subscription",
   beforeEach: signedOutConnectionFixture,
@@ -527,3 +603,124 @@ export const LocalClaudeRetry = localSubscriptionStory("Claude", "retry");
 export const LocalCodexRetry = localSubscriptionStory("OpenAI", "retry");
 export const LocalClaudeSuccess = localSubscriptionStory("Claude", "success");
 export const LocalCodexSuccess = localSubscriptionStory("OpenAI", "success");
+
+
+type CodexPlatformFixtureOutcome = "native" | "legacy" | "permission" | "cleanup";
+interface CodexPlatformFixtureReceipt {
+  calls: string[];
+  testRequests: Record<string, unknown>[];
+  hireRequests: Record<string, unknown>[];
+  createdAdapterType: string | null;
+}
+let codexPlatformFixtureReceipt: CodexPlatformFixtureReceipt | null = null;
+
+function installCodexPlatformFixture(outcome: CodexPlatformFixtureOutcome) {
+  clearOnboardingDraft();
+  resetOnboardingFixtureState();
+  setOnboardingFixtureState({ environments: "managed-sandbox", authSignal: "present", savedManagedSubscription: "openai" });
+  const previous = window.fetch;
+  const receipt: CodexPlatformFixtureReceipt = { calls: [], testRequests: [], hireRequests: [], createdAdapterType: null };
+  codexPlatformFixtureReceipt = receipt;
+  let qualified = false;
+  const diagnostic = outcome === "permission"
+    ? "Instance admin access is required to qualify this environment. Ask an instance admin to qualify this environment."
+    : "The setup lease could not be confirmed as released. Ask an instance admin to resolve cleanup, then retry setup.";
+  const fixtureFetch: typeof fetch = async (input, init) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, window.location.origin);
+    const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+    const payload = async (): Promise<Record<string, unknown>> => JSON.parse(typeof init?.body === "string" ? init.body : input instanceof Request ? await input.clone().text() : "{}");
+    if (url.pathname === `/api/companies/${STORYBOOK_COMPANY_ID}/environments` && method === "GET") {
+      const response = await previous(input, init);
+      const environments = await response.json();
+      return Response.json(environments.map((environment: { id: string; config: Record<string, unknown> }) => ({ ...environment,
+        config: { ...environment.config, image: `registry.example.test/paperclip@sha256:${"a".repeat(64)}` },
+      })));
+    }
+    if (url.pathname === "/api/adapters" && url.searchParams.get("companyId") === STORYBOOK_COMPANY_ID) {
+      if (url.searchParams.get("environmentId") !== "environment-storybook-sandbox") return Response.json({ error: "Discovery requires the selected environment." }, { status: 400 });
+      receipt.calls.push(qualified ? "discovery-after" : "discovery-before");
+      const response = await previous(input, init);
+      const adapters = (await response.json()).map((adapter: { type: string }) => adapter.type === "codex_local" ? { ...adapter,
+        defaultRunner: qualified && outcome === "native" ? "paperclip" : "legacy",
+        supportedRunners: qualified && outcome === "native" ? ["paperclip", "legacy"] : ["legacy"],
+      } : adapter);
+      return Response.json([...adapters, { type: "paperclip_runner", loaded: true, disabled: false, source: "builtin", label: "Paperclip Runner", modelsCount: 0 }]);
+    }
+    if (url.pathname === "/api/environments/environment-storybook-sandbox/probe" && method === "POST") {
+      receipt.calls.push("platform");
+      if (url.searchParams.get("companyId") !== STORYBOOK_COMPANY_ID) return Response.json({ error: "The probe requires this company's context." }, { status: 403 });
+      if (outcome === "permission") return Response.json({ error: diagnostic }, { status: 403 });
+      if (outcome === "cleanup") return Response.json({ ok: false, driver: "sandbox", summary: diagnostic,
+        details: { platformQualificationRecorded: false, leaseId: "storybook-platform-lease", platformQualificationDiagnostic: diagnostic } });
+      qualified = true;
+      return Response.json({ ok: true, driver: "sandbox", summary: "The immutable image was measured and its setup lease released.",
+        details: { platformQualificationRecorded: true, leaseId: "storybook-platform-lease" } });
+    }
+    if (url.pathname === `/api/companies/${STORYBOOK_COMPANY_ID}/adapters/codex_local/test-environment` && method === "POST") {
+      receipt.calls.push("adapter");
+      receipt.testRequests.push(await payload());
+      const response = await previous(input, init);
+      const result = await response.json();
+      return Response.json({ ...result, adapterType: outcome === "native" && qualified ? "paperclip_runner" : "codex_local" });
+    }
+    if (url.pathname === `/api/companies/${STORYBOOK_COMPANY_ID}/agent-hires` && method === "POST") {
+      receipt.calls.push("hire");
+      const request = await payload();
+      receipt.hireRequests.push(request);
+      const native = outcome === "native" && qualified;
+      receipt.createdAdapterType = native ? "paperclip_runner" : "codex_local";
+      const adapterConfig = request.adapterConfig as Record<string, unknown>;
+      return Response.json({ agent: { ...storybookHiredAgent, ...request, adapterType: receipt.createdAdapterType,
+        adapterConfig: { ...adapterConfig, ...(native ? { provider: "codex" } : {}) } }, approval: null });
+    }
+    return previous(input, init);
+  };
+  window.fetch = fixtureFetch;
+  return () => {
+    if (window.fetch === fixtureFetch) window.fetch = previous;
+    if (codexPlatformFixtureReceipt === receipt) codexPlatformFixtureReceipt = null;
+    clearOnboardingDraft();
+    resetOnboardingFixtureState();
+  };
+}
+
+function managedCodexQualificationStory(outcome: CodexPlatformFixtureOutcome): StoryObj {
+  return {
+    beforeEach: () => installCodexPlatformFixture(outcome),
+    render: () => <WizardArc />,
+    parameters: { docs: { description: { story: "Production onboarding with simulated immutable OCI environment, scoped runner discovery and saved platform probe. No sandbox, login, cleanup or provider execution is performed." } } },
+    play: async () => {
+      await advance("Connect a model");
+      await userEvent.click(await screen.findByRole("radio", { name: /^OpenAI / }, { timeout: STEP_TIMEOUT_MS }));
+      const success = outcome === "native" || outcome === "legacy";
+      if (success) {
+        await screen.findByRole("heading", { name: "Let's get started..." }, { timeout: STEP_TIMEOUT_MS });
+      } else {
+        await screen.findByText(outcome === "permission"
+          ? "Instance admin access is required to qualify this environment. Ask an instance admin to qualify this environment."
+          : "The setup lease could not be confirmed as released. Ask an instance admin to resolve cleanup, then retry setup.", {}, { timeout: STEP_TIMEOUT_MS });
+        await expect(screen.queryByRole("button", { name: "Runner" })).not.toBeInTheDocument();
+        await expect(screen.queryByText("Advanced", { exact: true, selector: "summary" })).not.toBeInTheDocument();
+        await expect(screen.queryByRole("heading", { name: "Let's get started..." })).not.toBeInTheDocument();
+      }
+      const receipt = codexPlatformFixtureReceipt!;
+      await expect(receipt.calls.filter(call => call === "platform")).toHaveLength(1);
+      await expect(receipt.testRequests).toHaveLength(success ? 1 : 0);
+      await expect(receipt.hireRequests).toHaveLength(success ? 1 : 0);
+      if (success) {
+        await expect(receipt.calls.indexOf("discovery-after")).toBeGreaterThan(receipt.calls.indexOf("platform"));
+        await expect(receipt.calls.indexOf("adapter")).toBeGreaterThan(receipt.calls.indexOf("discovery-after"));
+        await expect(receipt.calls.indexOf("hire")).toBeGreaterThan(receipt.calls.indexOf("adapter"));
+        await expect(receipt.testRequests[0]).not.toHaveProperty("runner");
+        await expect(receipt.testRequests[0]).toHaveProperty("environmentId", "environment-storybook-sandbox");
+        await expect(receipt.hireRequests[0]).not.toHaveProperty("runner");
+        await expect(receipt.createdAdapterType).toBe(outcome === "native" ? "paperclip_runner" : "codex_local");
+      }
+    },
+  };
+}
+
+export const ManagedCodexQualifiesOnConnect = managedCodexQualificationStory("native");
+export const ManagedCodexMeasuredLegacy = managedCodexQualificationStory("legacy");
+export const ManagedCodexQualificationRefused = managedCodexQualificationStory("permission");
+export const ManagedCodexCleanupUnconfirmed = managedCodexQualificationStory("cleanup");
