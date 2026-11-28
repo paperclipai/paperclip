@@ -36,6 +36,51 @@ function makeValues(overrides: Partial<CreateConfigValues> = {}): CreateConfigVa
 }
 
 describe("buildCodexLocalConfig", () => {
+  it("round-trips native Cursor Cloud fields and credentials without adding local command permission defaults", () => {
+    const cloud = { provider: "cursor_cloud", repoUrl: "https://github.com/acme/repo", repoRef: "feature", cloudEnvType: "cloud", autoCreatePR: true };
+    const env = { CURSOR_API_KEY: { type: "secret_ref" as const, secretId: "company-key", version: "latest" as const } };
+    const first = buildPaperclipRunnerConfig(makeValues({ model: "caller-custom-model", envBindings: env, adapterSchemaValues: cloud }));
+    expect(first).toEqual({ ...cloud, model: "caller-custom-model", env, lifecycleMode: "per_turn" });
+    const reopened = buildPaperclipRunnerConfig(makeValues({ model: "", envBindings: env, adapterSchemaValues: first }));
+    expect(reopened).toEqual(first);
+    expect(() => buildPaperclipRunnerConfig(makeValues({ model: "", adapterSchemaValues: cloud }))).toThrow("explicit model");
+  });
+
+  it("round-trips qualified Kimi Code with its exact selected model", () => {
+    const first = buildPaperclipRunnerConfig(makeValues({ model: "explicit-kimi-model", adapterSchemaValues: { provider: "acpx", acpxAgent: "kimi" } }));
+    const reopened = buildPaperclipRunnerConfig(makeValues({ model: "", adapterSchemaValues: JSON.parse(JSON.stringify(first)) }));
+    expect(reopened).toMatchObject({ provider: "acpx", acpxAgent: "kimi", model: "explicit-kimi-model" });
+    expect(first).not.toHaveProperty("candidateHarnesses");
+    expect(() => buildPaperclipRunnerConfig(makeValues({ model: "", adapterSchemaValues: { provider: "acpx", acpxAgent: "kimi" } })))
+      .toThrow("kimi requires an explicit provider model");
+  });
+  it("round-trips qualified Google Antigravity with its exact selected model", () => {
+    const first = buildPaperclipRunnerConfig(makeValues({ model: "exact-antigravity-model",
+      adapterSchemaValues: { provider: "acpx", acpxAgent: "antigravity" } }));
+    const reopened = buildPaperclipRunnerConfig(makeValues({ model: "", adapterSchemaValues: JSON.parse(JSON.stringify(first)) }));
+    expect(reopened).toMatchObject({ provider: "acpx", acpxAgent: "antigravity", model: "exact-antigravity-model" });
+    expect(first).not.toHaveProperty("candidateHarnesses");
+    expect(() => buildPaperclipRunnerConfig(makeValues({ model: "",
+      adapterSchemaValues: { provider: "acpx", acpxAgent: "antigravity" } })))
+      .toThrow("antigravity requires an explicit provider model");
+  });
+
+  it("preserves explicitly disabled hosted search in native Codex configuration", () => {
+    expect(buildPaperclipRunnerConfig(makeValues({ search: false }))).toHaveProperty("search", false);
+    expect(buildPaperclipRunnerConfig(makeValues({ search: true }))).not.toHaveProperty("search");
+  });
+
+  describe("qualified Copilot config", () => {
+    it("round-trips Copilot with the exact selected model", () => {
+      const first = buildPaperclipRunnerConfig(makeValues({ model: "gpt-5.6-luna", adapterSchemaValues: { provider: "acpx", acpxAgent: "copilot" } }));
+      const reopened = buildPaperclipRunnerConfig(makeValues({ model: "", adapterSchemaValues: JSON.parse(JSON.stringify(first)) }));
+      expect(reopened).toMatchObject({ provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" });
+    });
+    it.each(["", "auto", "default", "Auto", "DEFAULT"])("rejects a missing or implicit Copilot model (%s)", model => {
+      expect(() => buildPaperclipRunnerConfig(makeValues({ model, adapterSchemaValues: { provider: "acpx", acpxAgent: "copilot" } }))).toThrow("Select an available Copilot model");
+    });
+  });
+
   it.each([undefined, "approve-all", "approve-paperclip", "approve-reads", "deny-all"])(
     "defaults Grok to full auto while preserving an explicit %s permission mode",
     (acpxPermissionMode) => {
@@ -147,10 +192,11 @@ describe("buildPaperclipRunnerConfig", () => {
       extraArgs: "--unsafe",
     }));
 
+    // No lifecycle choice stores none; the server applies the product default.
+    expect(config).not.toHaveProperty("lifecycleMode");
     expect(config).toMatchObject({
       provider: "codex",
       codexPermissionMode: "never",
-      lifecycleMode: "per_turn",
       model: "gpt-5.4",
       modelReasoningEffort: "high",
       timeoutSec: 0,
@@ -160,7 +206,6 @@ describe("buildPaperclipRunnerConfig", () => {
       "engine",
       "agentCommand",
       "stateDir",
-      "search",
       "fastMode",
       "dangerouslyBypassApprovalsAndSandbox",
       "command",
@@ -245,16 +290,7 @@ describe("buildPaperclipRunnerConfig", () => {
     expect(config).not.toHaveProperty("acpxAgent");
   });
 
-  it.each(["copilot"])("rejects unavailable ACPX %s without selecting another provider", (acpxAgent) => {
-    expect(() => buildPaperclipRunnerConfig(makeValues({
-      adapterType: "paperclip_runner",
-      model: "explicit-provider-model",
-      adapterSchemaValues: {
-        provider: "acpx",
-        acpxAgent,
-      },
-    }))).toThrow(/is not enabled for production/);
-  });
+
 
   it.each(["agent", "plan", "ask"])("preserves Cursor's explicit model and %s mode", (mode) => {
     expect(buildPaperclipRunnerConfig(makeValues({
@@ -340,7 +376,7 @@ describe("buildPaperclipRunnerConfig", () => {
   it("uses the Codex default when no model was selected", () => {
     expect(buildPaperclipRunnerConfig(makeValues({ model: "" }))).toMatchObject({
       provider: "codex",
-      model: "gpt-5.6-sol",
+      model: "gpt-6.1-sol",
     });
   });
 

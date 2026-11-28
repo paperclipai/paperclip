@@ -5,11 +5,12 @@ import { agentsApi } from "@/api/agents";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
 import { useRecentTasks } from "@/hooks/useRecentTasks";
+import { useRecentTaskOpenWarmup } from "@/hooks/useRecentTaskOpenWarmup";
 import { useAccountIdentity } from "@/api/companies-query";
-import { useSidebar } from "@/context/SidebarContext";
 import { useOptionalToastActions } from "@/context/ToastContext";
 import {
-  updateRecentTaskSnapshots,
+  pruneRecentTasks,
+  recordRecentTask,
   type RecentTaskEntry,
 } from "@/lib/recent-tasks";
 import { Button } from "@/components/ui/button";
@@ -28,8 +29,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import { StatusIcon } from "./StatusIcon";
 import { SidebarSection } from "./SidebarSection";
-import { SidebarNavItem } from "./SidebarNavItem";
+import { RecentTaskNavItem } from "./RecentTaskNavItem";
+import { useLocation } from "@/lib/router";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 const RECENT_TASK_MENU_ITEM_CLASS =
   "h-(--profile-popover-row-height) gap-(--profile-popover-row-gap) rounded-lg px-2.5 py-0 text-(length:--text-compact) font-medium leading-(--profile-popover-label-line-height) focus:bg-accent/50 focus:text-foreground";
@@ -74,8 +78,6 @@ export function SidebarRecentTasks({
   companyId: string | null | undefined;
   liveIssueIds: ReadonlySet<string>;
 }) {
-  const { collapsed, peeking } = useSidebar();
-  const rail = collapsed && !peeking;
   const { userId, settled } = useAccountIdentity();
 
   if (!companyId || !settled) return null;
@@ -86,7 +88,6 @@ export function SidebarRecentTasks({
       companyId={companyId}
       userId={userId}
       liveIssueIds={liveIssueIds}
-      rail={rail}
     />
   );
 }
@@ -95,20 +96,20 @@ function RecentTasksList({
   companyId,
   userId,
   liveIssueIds,
-  rail,
 }: {
   companyId: string;
   userId: string | null;
   liveIssueIds: ReadonlySet<string>;
-  rail: boolean;
 }) {
   const { entries, storageKey } = useRecentTasks({ companyId, userId });
+  const { pathname } = useLocation();
   const queryClient = useQueryClient();
   const toastActions = useOptionalToastActions();
   const [renameEntry, setRenameEntry] = useState<RecentTaskEntry | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [pendingAction, setPendingAction] = useState<"rename" | "archive" | "pause" | null>(null);
   const restartRetryStorageKey = restartWakeRetryStorageKey(companyId, userId);
+  useRecentTaskOpenWarmup({ companyId, userId, tasks: entries, navigationKey: pathname });
 
   if (entries.length === 0) return null;
 
@@ -137,7 +138,7 @@ function RecentTasksList({
     try {
       const updated = await issuesApi.update(renameEntry.id, { title: nextTitle });
       queryClient.setQueryData(queryKeys.issues.detail(renameEntry.id), updated);
-      if (storageKey) updateRecentTaskSnapshots(storageKey, companyId, [updated]);
+      recordRecentTask(updated, userId, Date.now());
       await refreshIssueQueries(renameEntry.id);
       setRenameEntry(null);
       toastActions?.pushToast({ title: "Task renamed", tone: "success" });
@@ -156,6 +157,7 @@ function RecentTasksList({
     setPendingAction("archive");
     try {
       await issuesApi.archiveFromInbox(entry.id);
+      if (storageKey) pruneRecentTasks(storageKey, companyId, new Set([entry.id]));
       await refreshIssueQueries(entry.id);
       await queryClient.invalidateQueries({
         queryKey: queryKeys.sidebarBadges(companyId),
@@ -243,66 +245,66 @@ function RecentTasksList({
     }
   };
 
+  const renderTaskRow = (entry: RecentTaskEntry) => (
+  <div key={entry.id} className="sidebar-action-row group/recent-task relative">
+    <RecentTaskNavItem
+      task={entry}
+      label={entry.title}
+      iconNode={entry.displayStatus === "monitoring" && !liveIssueIds.has(entry.id) ? <StatusIcon {...taskStatusIconProps(entry)} /> : undefined}
+      trailing={entry.status === "in_review" && entry.externalConversationState === "waiting"
+        ? <span className="text-xs text-muted-foreground">Idle</span> : undefined}
+      className="sidebar-action-link pointer-coarse:pr-8"
+      liveCount={liveIssueIds.has(entry.id) ? 1 : undefined}
+    />
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-xs"
+          aria-label={`More actions for ${entry.title}`}
+          className="sidebar-action-menu absolute right-2 top-(--pct-50) z-10 -translate-y-(--pct-50) text-muted-foreground pointer-events-none opacity-0 transition-opacity hover:bg-sidebar-accent dark:hover:bg-sidebar-accent hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100 pointer-coarse:before:hidden group-hover/recent-task:pointer-events-auto group-hover/recent-task:opacity-100 group-focus-within/recent-task:pointer-events-auto group-focus-within/recent-task:opacity-100 data-[state=open]:pointer-events-auto data-[state=open]:bg-sidebar-accent data-[state=open]:text-foreground data-[state=open]:opacity-100"
+        >
+          <MoreHorizontal aria-hidden="true" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        side="right"
+        align="start"
+        className="w-(--profile-popover-width) rounded-xl p-1.5 shadow-(--shadow-profile-popover)"
+      >
+        <DropdownMenuItem
+          className={RECENT_TASK_MENU_ITEM_CLASS}
+          onSelect={() => beginRename(entry)}
+        >
+          <Pencil aria-hidden="true" />
+          Rename
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          className={RECENT_TASK_MENU_ITEM_CLASS}
+          disabled={pendingAction !== null}
+          onSelect={() => void archiveTask(entry)}
+        >
+          <Archive aria-hidden="true" />
+          Archive
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          className={RECENT_TASK_MENU_ITEM_CLASS}
+          disabled={pendingAction !== null}
+          onSelect={() => void toggleTaskPause(entry)}
+        >
+          <RefreshCw aria-hidden="true" />
+          Pause/Restart
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  </div>
+  );
+
   return (
     <>
       <SidebarSection label="Recent Tasks">
-        {entries.map((entry) => (
-          <div key={entry.id} className="sidebar-action-row group/recent-task relative">
-            <SidebarNavItem
-              to={`/issues/${entry.id}`}
-              label={entry.title}
-              trailing={entry.status === "in_review" && entry.externalConversationState === "waiting"
-                ? <span className="text-xs text-muted-foreground">Idle</span> : undefined}
-              trailingLabel={entry.status === "in_review" && entry.externalConversationState === "waiting" ? "Idle" : undefined}
-              className={rail ? undefined : "sidebar-action-link pointer-coarse:pr-8"}
-              liveCount={liveIssueIds.has(entry.id) ? 1 : undefined}
-            />
-            {!rail ? (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon-xs"
-                    aria-label={`More actions for ${entry.title}`}
-                    className="sidebar-action-menu absolute right-2 top-(--pct-50) z-10 -translate-y-(--pct-50) text-muted-foreground pointer-events-none opacity-0 transition-opacity hover:bg-sidebar-accent dark:hover:bg-sidebar-accent hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100 pointer-coarse:before:hidden group-hover/recent-task:pointer-events-auto group-hover/recent-task:opacity-100 group-focus-within/recent-task:pointer-events-auto group-focus-within/recent-task:opacity-100 data-[state=open]:pointer-events-auto data-[state=open]:bg-sidebar-accent data-[state=open]:text-foreground data-[state=open]:opacity-100"
-                  >
-                    <MoreHorizontal aria-hidden="true" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent
-                  side="right"
-                  align="start"
-                  className="w-(--profile-popover-width) rounded-xl p-1.5 shadow-(--shadow-profile-popover)"
-                >
-                  <DropdownMenuItem
-                    className={RECENT_TASK_MENU_ITEM_CLASS}
-                    onSelect={() => beginRename(entry)}
-                  >
-                    <Pencil aria-hidden="true" />
-                    Rename
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    className={RECENT_TASK_MENU_ITEM_CLASS}
-                    disabled={pendingAction !== null}
-                    onSelect={() => void archiveTask(entry)}
-                  >
-                    <Archive aria-hidden="true" />
-                    Archive
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    className={RECENT_TASK_MENU_ITEM_CLASS}
-                    disabled={pendingAction !== null}
-                    onSelect={() => void toggleTaskPause(entry)}
-                  >
-                    <RefreshCw aria-hidden="true" />
-                    Pause/Restart
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            ) : null}
-          </div>
-        ))}
+        {entries.map(renderTaskRow)}
       </SidebarSection>
 
       <Dialog

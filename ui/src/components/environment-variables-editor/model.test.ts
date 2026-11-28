@@ -179,6 +179,23 @@ describe("validateName", () => {
   it("charset error takes precedence over reserved prefix", () => {
     expect(validateName("PAPERCLIP-X", new Set(), reserved)?.level).toBe("error");
   });
+
+  it("flags secret-shaped strings pasted as variable names", () => {
+    for (const token of [
+      ["github", "pat", "11ABCDEF0123456789", "secretTokenValue99"].join("_"),
+      ["ghp", "0123456789abcdef0123456789abcdef"].join("_"),
+      ["sk", "proj", "secretApiKey1234567890abcdef"].join("-"),
+      ["sk", "live", "0123456789abcdef0123456789"].join("_"),
+      ["xoxb", "123456789012", "abcdefghijkl"].join("-"),
+      ["AKIA", "IOSFODNN7EXAMPLE"].join(""),
+    ]) {
+      const issue = validateName(token, new Set(), reserved);
+      expect(issue?.level, `expected error for ${token}`).toBe("error");
+      expect(issue?.message.toLowerCase()).toMatch(/secret|token/);
+    }
+    // Ordinary long variable names must not false-positive.
+    expect(validateName("MY_LONG_ENVIRONMENT_VARIABLE_NAME_2026", new Set(), reserved)).toBeNull();
+  });
 });
 
 describe("computeDuplicateNames", () => {

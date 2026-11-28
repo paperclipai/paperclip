@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import { copyTextToClipboard } from "@/lib/clipboard";
+import { safeExternalHttpUrl } from "../lib/safe-url";
 
 export type WorkspaceServiceControlState =
   | "stopped"
@@ -157,7 +158,7 @@ function UrlSegment({ entry, compact }: { entry: WorkspaceServiceControlEntry; c
     <>
       {live ? (
         <a
-          href={entry.url ?? undefined}
+          href={safeExternalHttpUrl(entry.url) ?? undefined}
           target="_blank"
           rel="noreferrer"
           title={entry.url ?? undefined}
@@ -184,7 +185,7 @@ function UrlSegment({ entry, compact }: { entry: WorkspaceServiceControlEntry; c
           title="Open in new tab"
         >
           {live ? (
-            <a href={entry.url ?? undefined} target="_blank" rel="noreferrer" aria-label="Open in new tab">
+            <a href={safeExternalHttpUrl(entry.url) ?? undefined} target="_blank" rel="noreferrer" aria-label="Open in new tab">
               <ExternalLink className="size-3" />
             </a>
           ) : (
@@ -379,7 +380,7 @@ function ServicePopoverRow({
           {live && entry.url ? (
             <>
               <a
-                href={entry.url}
+                href={safeExternalHttpUrl(entry.url) ?? undefined}
                 target="_blank"
                 rel="noreferrer"
                 title={entry.url}
@@ -461,7 +462,7 @@ function MultiServiceBar({
                 <ChevronDown className="size-3 text-muted-foreground" />
               </button>
             </PopoverTrigger>
-            <PopoverContent align="end" className="w-96 p-0" onOpenAutoFocus={(event) => event.preventDefault()}>
+            <PopoverContent align="end" className="w-96 max-w-(--sz-calc-4) p-0" onOpenAutoFocus={(event) => event.preventDefault()}>
               <div className="px-4 pb-1 pt-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                 Services · {services.length}
               </div>
@@ -470,7 +471,7 @@ function MultiServiceBar({
                   <ServicePopoverRow key={entry.key} entry={entry} onAction={onAction} />
                 ))}
               </div>
-              <div className="flex items-center gap-1 border-t border-border px-4 py-2">
+              <div className="flex flex-wrap items-center gap-1 border-t border-border px-4 py-2">
                 <Button variant="ghost" size="xs" onClick={() => onAction("start", null)}>Start all</Button>
                 <Button variant="ghost" size="xs" onClick={() => onAction("stop", null)}>Stop all</Button>
                 <Button variant="ghost" size="xs" onClick={() => onAction("restart", null)}>Restart all</Button>
