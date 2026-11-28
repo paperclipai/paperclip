@@ -226,3 +226,27 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     }
   });
 });
+
+describe("hermes-local quiet default (#11976)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  async function argsFor(overrides: Record<string, unknown>) {
+    const { ctx } = makeCtx(overrides);
+    await execute(ctx as any);
+    return vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)![2] as string[];
+  }
+
+  it("passes -Q when quiet is unset, matching the schema default", async () => {
+    expect(await argsFor({})).toContain("-Q");
+  });
+
+  it("passes -Q when quiet is true", async () => {
+    expect(await argsFor({ quiet: true })).toContain("-Q");
+  });
+
+  it("omits -Q when quiet is explicitly false", async () => {
+    expect(await argsFor({ quiet: false })).not.toContain("-Q");
+  });
+});
