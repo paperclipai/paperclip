@@ -158,6 +158,23 @@ describe("isGeminiSessionUnrecoverableError", () => {
     expect(isGeminiSessionUnrecoverableError("", "Resumed session abc-123 not found on disk")).toBe(true);
   });
 
+  it("matches the Gemini CLI error for a project with no saved sessions", () => {
+    expect(
+      isGeminiSessionUnrecoverableError(
+        "",
+        "Error resuming session: No previous sessions found for this project.",
+      ),
+    ).toBe(true);
+  });
+
+  it("matches the Gemini CLI error for a session id that is not in the project", () => {
+    const stderr =
+      'Error resuming session: Invalid session identifier "5f1c2b7e-0d3a-4c1e-9b7a-2f6d8e4a1c90".\n' +
+      "  Searched for sessions in /home/agent/.gemini/tmp/ab12cd34/chats.\n" +
+      "  Use --list-sessions to see available sessions, then use --resume {number}, --resume {uuid}, or --resume latest.";
+    expect(isGeminiSessionUnrecoverableError("", stderr)).toBe(true);
+  });
+
   it("matches 'exceeds the maximum number of tokens' (compression overflow)", () => {
     const stderr =
       '_ApiError: {"error":{"code":400,"message":"The input token count exceeds the maximum number of tokens allowed 1048576","status":"INVALID_ARGUMENT"}} at ChatCompressionService.compress';
