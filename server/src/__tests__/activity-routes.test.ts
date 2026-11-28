@@ -5,9 +5,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mockActivityService = vi.hoisted(() => ({
   list: vi.fn(),
   forIssue: vi.fn(),
+  inputFactsForIssue: vi.fn(),
   runsForIssue: vi.fn(),
   issuesForRun: vi.fn(),
   create: vi.fn(),
+  withActorNames: vi.fn(),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -119,6 +121,7 @@ async function requestApp(
 describe("activity routes", () => {
   beforeEach(() => {
     for (const mock of Object.values(mockActivityService)) mock.mockReset();
+    mockActivityService.withActorNames.mockImplementation(async (rows: unknown[]) => rows);
     for (const mock of Object.values(mockHeartbeatService)) mock.mockReset();
     mockHeartbeatService.getRun.mockImplementation(() => {
       throw new Error("Run issue links must use the narrow authorization read");
@@ -152,6 +155,22 @@ describe("activity routes", () => {
     expect(res.body).toEqual([{ action: "issue.recovery_action_resolved", actorType: "system" }]);
   });
 
+  it("reads bounded input facts with the same issue access checks", async () => {
+    const commentId = "11111111-1111-4111-8111-111111111111";
+    mockIssueService.getByIdentifier.mockResolvedValue({ id: "issue-1", companyId: "company-1" });
+    mockActivityService.inputFactsForIssue.mockResolvedValue([{ action: "issue.queued_comment_steered" }]);
+    const app = await createApp({ type: "agent", companyId: "company-1", agentId: "agent-1" });
+    const res = await requestApp(app, baseUrl => request(baseUrl).get(`/api/issues/TEST-1/activity?view=comment-inputs&commentIds=${commentId}`));
+    expect(res.status).toBe(200);
+    expect(mockActivityService.inputFactsForIssue).toHaveBeenCalledWith("company-1", "issue-1", [commentId]);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:read" }));
+    const invalid = await requestApp(app, baseUrl => request(baseUrl).get("/api/issues/TEST-1/activity?view=comment-inputs&commentIds=invalid"));
+    expect(invalid.status).toBe(400);
+    const oversized = await requestApp(app, baseUrl => request(baseUrl).get(`/api/issues/TEST-1/activity?view=comment-inputs&commentIds=${Array(101).fill(commentId).join(",")}`));
+    expect(oversized.status).toBe(400);
+    expect(mockActivityService.inputFactsForIssue).toHaveBeenCalledTimes(1);
+  });
+
   it.each(["boundary", "company"])("denies agent activity reads outside the %s scope", async (kind) => {
     const issue = { id: "issue-1", companyId: kind === "company" ? "company-2" : "company-1" };
     mockIssueService.getById.mockResolvedValue(issue);
@@ -161,6 +180,9 @@ describe("activity routes", () => {
     const res = await requestApp(app, baseUrl => request(baseUrl).get("/api/issues/issue-1/activity"));
     expect(res.status).toBe(kind === "company" ? 404 : 403);
     expect(mockActivityService.forIssue).not.toHaveBeenCalled();
+    const inputs = await requestApp(app, baseUrl => request(baseUrl).get("/api/issues/issue-1/activity?view=comment-inputs"));
+    expect(inputs.status).toBe(kind === "company" ? 404 : 403);
+    expect(mockActivityService.inputFactsForIssue).not.toHaveBeenCalled();
   });
 
   it("returns redacted all-actors rows to a basic company reader", async () => {
@@ -190,6 +212,7 @@ describe("activity routes", () => {
     expect(res.status).toBe(200);
     expect(mockAgentActionAuditService.list).toHaveBeenCalledWith({
       companyId: "company-1",
+      dashboardUserId: "user-1",
       actorScope: "all",
       limit: 50,
       caseReadCondition,
@@ -239,6 +262,7 @@ describe("activity routes", () => {
     expect(res.status).toBe(200);
     expect(mockAgentActionAuditService.list).toHaveBeenCalledWith({
       companyId: "company-1",
+      dashboardUserId: "user-1",
       actorScope: "all",
       actorType: "system",
       limit: 50,
@@ -262,6 +286,7 @@ describe("activity routes", () => {
     expect(res.status).toBe(200);
     expect(mockActivityService.list).toHaveBeenCalledWith({
       companyId: "company-1",
+      dashboardUserId: "user-1",
       agentId: undefined,
       entityType: undefined,
       entityId: undefined,
@@ -269,6 +294,31 @@ describe("activity routes", () => {
       readCondition: expect.anything(),
       caseReadCondition,
     });
+  });
+
+  it("rejects malformed agentId filters on company activity lists", async () => {
+    mockActivityService.list.mockResolvedValue([]);
+
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get("/api/companies/company-1/activity?agentId=dc04285a-"),
+    );
+
+    expect(res.status).toBe(400);
+    expect(mockActivityService.list).not.toHaveBeenCalled();
+  });
+
+  it("passes valid agentId filters to company activity lists", async () => {
+    mockActivityService.list.mockResolvedValue([]);
+    const agentId = "dc04285a-1b2c-4d3e-8f90-123456789abc";
+
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(`/api/companies/company-1/activity?agentId=${agentId}`),
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockActivityService.list).toHaveBeenCalledWith(expect.objectContaining({ agentId }));
   });
 
   it("caps requested company activity list limits", async () => {
@@ -282,6 +332,7 @@ describe("activity routes", () => {
     expect(res.status).toBe(200);
     expect(mockActivityService.list).toHaveBeenCalledWith({
       companyId: "company-1",
+      dashboardUserId: "user-1",
       agentId: undefined,
       entityType: "issue",
       entityId: undefined,
@@ -311,6 +362,20 @@ describe("activity routes", () => {
     expect(mockIssueService.getById).not.toHaveBeenCalled();
     expect(mockActivityService.runsForIssue).toHaveBeenCalledWith("company-1", "issue-uuid-1", "user-1");
     expect(res.body).toEqual([{ runId: "run-1", adapterType: "codex_local" }]);
+  });
+
+  it("validates bounded run IDs before using the authorized issue projection", async () => {
+    const runId = "10000000-0000-4000-8000-000000000001";
+    mockIssueService.getByIdentifier.mockResolvedValue({ id: "issue-uuid-1", companyId: "company-1" });
+    mockActivityService.runsForIssue.mockResolvedValue([{ runId }]);
+    const app = await createApp();
+    const response = await requestApp(app, base => request(base).get(`/api/issues/PAP-1/runs?runIds=${runId}`));
+    expect(response.status).toBe(200);
+    expect(mockActivityService.runsForIssue).toHaveBeenCalledWith("company-1", "issue-uuid-1", "user-1", undefined, [runId]);
+    for (const ids of ["", "not-a-uuid", Array.from({ length: 101 }, () => runId).join(",")]) {
+      const denied = await requestApp(app, base => request(base).get("/api/issues/PAP-1/runs").query({ runIds: ids }));
+      expect(denied.status).toBe(400);
+    }
   });
 
   it("requires company access before creating activity events", async () => {

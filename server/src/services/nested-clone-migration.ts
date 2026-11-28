@@ -6,6 +6,7 @@ import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { and, eq, sql } from "drizzle-orm";
 import { executionWorkspaces, projectWorkspaces, type Db } from "@paperclipai/db";
+import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { PROJECT_REPOSITORIES_DIR } from "@paperclipai/adapter-utils/git-workspace-sync";
 import { acquireGitExpirationLocks, recoverGitExpirationLocks, type GitExpirationLockLocation } from "./git-workspace-expiration-locks.js";
 import { allocatedBytes, withAnonymousGitFallback, type GitExpirationFailure } from "./git-workspace-expiration.js";
@@ -13,7 +14,7 @@ import { GIT_CACHE_RESTORATION_KEY, readGitCacheRestoration, type GitCacheRestor
 import { readManagedCheckoutContents, selectRestoredProjectRepositories } from "./git-workspace-contents.js";
 import { applyRestorePoint, captureRestorePoint, currentRestorePointSnapshot, importRestorePoint } from "./git-restore-point.js";
 import { managedProjectCheckoutName } from "./managed-project-checkout-name.js";
-import { createGitRemoteAuthProvider, type GitRemoteAuthProvider } from "./git-credentials.js";
+import { createIssueGitRemoteAuthProvider, type GitRemoteAuthProvider } from "./git-credentials.js";
 import { isNestedWorktreeBranchName, isVerifiedNestedRepositoryBase, moveNestedRepositoryWorktree, nestedRepositoryBaseCandidates, nestedWorktreeBranchPrefix,
   readLinkedNestedCheckout, removeStaleNestedRegistrations, trackNestedWorktreeUpstream, withNestedRepositoryBaseLock } from "./nested-repository-worktrees.js";
 import { assertSafeBaseConfig, assertTransferredItems, historyKey, linkedCheckoutBases, moveTransferItems, presentCommits, returnTransferItems,
@@ -75,17 +76,24 @@ async function canonicalPath(target: string) {
   return path.join(await fs.realpath(path.dirname(target)), path.basename(target));
 }
 
+function hasRemoteStorageFence(workspace: Pick<Workspace, "metadata">) {
+  const migration = workspace.metadata?.remoteWorkspaceMigration;
+  return Boolean(readRemoteWorkspaceAuthority(workspace.metadata)) || Boolean(migration && typeof migration === "object"
+    && !Array.isArray(migration) && (migration as Record<string, unknown>).state === "running");
+}
+
 export function isNestedCloneMigrationCandidate(workspace: Workspace) {
-  return workspace.providerType !== "plugin" && OPEN_STATUSES.includes(workspace.status) && !workspace.closedAt
+  return !hasRemoteStorageFence(workspace) && workspace.providerType !== "plugin" && OPEN_STATUSES.includes(workspace.status) && !workspace.closedAt
     && Boolean(workspace.cwd && workspace.projectId && workspace.sourceIssueId);
 }
 
 function canRecover(workspace: Workspace, name: string) {
-  return workspace.providerType !== "plugin" && Boolean(workspace.cwd && workspace.projectId && workspace.sourceIssueId)
+  return !hasRemoteStorageFence(workspace) && workspace.providerType !== "plugin" && Boolean(workspace.cwd && workspace.projectId && workspace.sourceIssueId)
     && pendingRecords(workspace)[name] !== undefined;
 }
 
 function pendingRecords(workspace: Pick<Workspace, "metadata">) {
+  if (hasRemoteStorageFence(workspace)) return {};
   const value = workspace.metadata?.[NESTED_CLONE_MIGRATION_PENDING_KEY];
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
@@ -442,7 +450,7 @@ export async function migrateNestedRepositoryClone(db: Db, snapshot: Workspace, 
         const base = source.base;
         await assertSafeBaseConfig(base, signal);
         await fetchBase(base, source.repoUrl, options.resolveGitAuth
-          ?? withAnonymousGitFallback(createGitRemoteAuthProvider(db, row!.companyId, { issueId: row!.sourceIssueId! })), signal);
+          ?? withAnonymousGitFallback(createIssueGitRemoteAuthProvider(db, row!.companyId, row!.sourceIssueId!)), signal);
         await assertSafeBaseConfig(base, signal);
         await assertNoBranchOnlyReflogHistory(inspected, signal);
         const planned = await planRefs(inspected, base, prefix, signal);

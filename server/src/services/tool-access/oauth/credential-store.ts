@@ -1,3 +1,4 @@
+import { connectionActorUserId } from "../actor.js";
 import type { ActorInfo, DbTransaction, ToolAccessMutationDb } from "../types.js";
 import { oauthConfig } from "./metadata.js";
 import { syncConnectionCredentialBindings } from "../../connection-credential-bindings.js";
@@ -5,11 +6,11 @@ import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { connectionGrants, toolConnections } from "@paperclipai/db";
 import type { ToolConnection, ToolCredentialSecretRef } from "@paperclipai/shared";
-import { notFound } from "../../../errors.js";
+import { notFound, unprocessable } from "../../../errors.js";
 import { secretService } from "../../secrets.js";
 import { resolveConnectionGrantSecret, writeConnectionCredential } from "../../connection-credentials.js";
 
-import { configuredOAuthClientForConnection, oauthSecretRef } from "./client-settings.js";
+import { configuredOAuthClientForConnection, oauthSecretRef, refusedDeploymentClientError } from "./client-settings.js";
 export function actorForSecret(
   actor?: ActorInfo,
 ): { userId?: string | null; agentId?: string | null } | undefined {
@@ -57,16 +58,21 @@ async function syncCredentialBindings(
   async function oauthClientForConnection(
     connection: typeof toolConnections.$inferSelect,
     provider: string,
+    tokenUrl: string | null | undefined,
     actor?: ActorInfo,
   ) {
-    const configured = configuredOAuthClientForConnection(connection, provider);
+    const configured = configuredOAuthClientForConnection(connection, provider, tokenUrl);
     if (configured.clientId) return configured;
     const oauth = oauthConfig(connection);
     const clientId =
       typeof oauth.clientId === "string" && oauth.clientId.trim()
         ? oauth.clientId.trim()
         : null;
-    if (!clientId) return configured;
+    if (!clientId) {
+      const refused = refusedDeploymentClientError(provider);
+      if (refused) throw refused;
+      return configured;
+    }
     // CIMD clients and public DCR clients have no token-endpoint secret. A DCR
     // authorization server may instead issue a confidential client (for
     // example, `client_secret_basic`); in that case the registration secret is
@@ -80,8 +86,7 @@ async function syncCredentialBindings(
     let credentialSecretRefs = connection.credentialSecretRefs;
     if (
       connection.credentialPolicy === "per_user" &&
-      actor?.actorType === "user" &&
-      actor.actorId &&
+      Boolean(connectionActorUserId(actor)) &&
       !credentialSecretRefs.some(
         (ref) => ref.configPath === "oauth.client_secret",
       )
@@ -96,7 +101,7 @@ async function syncCredentialBindings(
             eq(connectionGrants.companyId, connection.companyId),
             eq(connectionGrants.connectionId, connection.id),
             eq(connectionGrants.kind, "user"),
-            eq(connectionGrants.subjectUserId, actor.actorId),
+            eq(connectionGrants.subjectUserId, connectionActorUserId(actor)!),
             eq(connectionGrants.status, "active"),
           ),
         )
@@ -142,6 +147,7 @@ async function syncCredentialBindings(
       actor?: ActorInfo;
       existingRefs?: typeof connectionGrants.$inferSelect.credentialSecretRefs;
       ownerUserId?: string;
+      preserveOAuthIdentity?: boolean;
     },
     context?: {
       dbClient: Db | DbTransaction;
@@ -154,6 +160,7 @@ async function syncCredentialBindings(
     const write = (client: Db | DbTransaction) => writeConnectionCredential(client, {
       companyId: input.companyId, connectionName: input.connection.name, configPath: input.configPath,
       label: input.label, value: input.value, existingRef: existing ?? undefined, actor: actorForSecret(input.actor),
+      preserveOAuthIdentity: input.preserveOAuthIdentity,
       // Registration authenticates the OAuth client, never the person invoking tools.
       ownerUserId: input.configPath === "oauth.client_secret" ? undefined : input.ownerUserId,
       definitionKey: input.ownerUserId ? `tool_oauth.${input.connection.id}.${input.configPath.replace(/[^a-z0-9_:-]+/gi, "_")}` : undefined,

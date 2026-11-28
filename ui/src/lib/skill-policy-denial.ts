@@ -1,6 +1,6 @@
 /**
  * @fileoverview Classifies a failed skill mutation into the four visual states
- * from the Phase 3 UX spec (PAP-13865 / §9.10 Company Skill Policy Contract).
+ * from the Phase 3 UX spec (PAP-13865 / `doc/company-skill-policy.md`).
  *
  * The contract inverts the old model: **skill permissions are opt-in
  * restrictions, not opt-in capabilities.** Under the open default there is no
@@ -22,7 +22,7 @@ import { ApiError } from "../api/client";
 export const SKILL_POLICY_DENIAL_CODE = "skill_policy_denied";
 
 /**
- * Non-configurable platform-invariant failure codes (§9.10). Policy can never
+ * Non-configurable platform-invariant failure codes (`doc/company-skill-policy.md`). Policy can never
  * loosen these — the remediation is always to fix the artifact/source/input,
  * never to change a permission.
  */
@@ -50,7 +50,7 @@ export interface SkillDenial {
   state: SkillDenialState;
   /** Machine-readable error code from the server, when present. */
   code: string | null;
-  /** §9.10 decision `reason`, when the server surfaced the decision shape. */
+  /** Skill-policy decision `reason`, when the server surfaced the decision shape. */
   reason: string | null;
   /** Plain-language title for the banner. */
   title: string;

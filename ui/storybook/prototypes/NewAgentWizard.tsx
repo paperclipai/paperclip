@@ -181,7 +181,7 @@ export function NewAgentWizard({ initialScreen = "name", initialAdapter = null, 
     try {
       const result = await agentsApi.testEnvironment(PREVIEW_COMPANY_ID, selected, {
         adapterConfig,
-        environmentId: environment === "Paperclip Computer" ? "environment-storybook-sandbox"
+        environmentId: environment === "Paperclip Sandbox" ? "environment-storybook-sandbox"
           : environment === "Local machine" ? "environment-storybook-local" : null,
       });
       if (testRun.current !== run) return;
@@ -350,7 +350,7 @@ export function NewAgentWizard({ initialScreen = "name", initialAdapter = null, 
             {selected === "kimi_local" && draft.apiKey && <TextField label="Kimi API model name" value={draft.kimiModel} onChange={kimiModel => setDraft({ kimiModel })} placeholder="kimi-for-coding" required />}
           </Section>
           {selected !== "cursor_cloud" && <Section title="Environment">
-            <SelectField label="Environment" hideLabel value={environment} onChange={value => { setEnvironments(previous => ({ ...previous, [selected]: value })); resetTest(); }} options={["Organization default", "Paperclip Computer", "Local machine"]} />
+            <SelectField label="Environment" hideLabel value={environment} onChange={value => { setEnvironments(previous => ({ ...previous, [selected]: value })); resetTest(); }} options={["Organization default", "Paperclip Sandbox", "Local machine"]} />
           </Section>}
           </fieldset>
           <RuntimeTestCard state={testState} result={testResult} error={error} onTest={() => void runTest()} />

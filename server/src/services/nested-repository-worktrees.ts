@@ -15,6 +15,7 @@ import { sanitizeRuntimeServiceBaseEnv } from "./runtime-service-env.js";
 const execFile = promisify(execFileCallback);
 const NESTED_WORKTREE_GIT_TIMEOUT_MS = 10 * 60 * 1000;
 const NESTED_WORKTREE_BRANCH = /^paperclip\/[a-f0-9]{12}\/./;
+export const OWNED_NESTED_REF_LIMIT = 64;
 export const DETACHED_REPOSITORIES_DIR = path.join(".paperclip-runtime", "detached-repositories");
 
 export type LinkedNestedCheckout = { checkout: string; base: string; gitDir: string; admin: string; branchPrefix: string };

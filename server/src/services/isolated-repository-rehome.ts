@@ -1,28 +1,31 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { and, eq, ne, sql } from "drizzle-orm";
+import { and, eq, ne, or, sql } from "drizzle-orm";
 import { executionWorkspaces, projectWorkspaces, workspaceRuntimeServices, heartbeatRuns, nativeRunFinalizations, environmentLeases,
   withDedicatedDbConnection, type Db } from "@paperclipai/db";
 import { PROJECT_REPOSITORIES_DIR } from "@paperclipai/adapter-utils/git-workspace-sync";
 import { IsolatedRepositorySourceBusy, isolatedRemoteSourcePath, verifiedRecordedIsolatedRemoteSource, withIsolatedRepositorySourceLock } from "./isolated-remote-workspace-source.js";
+import { retainCurrentWorkspaceSource, withWorkspaceSourceLocks } from "./workspace-source-lock.js";
 import { acquireGitExpirationLocks, recoverGitExpirationLocks, type GitExpirationLockLocation } from "./git-workspace-expiration-locks.js";
-import { allocatedBytes, describeGitExpirationFailure, expirationScope, gitExpirationSkipReason, type GitExpirationFailure } from "./git-workspace-expiration.js";
-import { finishGitCacheTrash, managedSourcePaths, readGitCacheExpiration, readGitCacheRestoration, verifiedGitCacheSource,
+import { allocatedBytes, describeGitExpirationFailure, expirationScope, gitExpirationSkipReason, withAnonymousGitFallback, type GitExpirationFailure } from "./git-workspace-expiration.js";
+import { finishGitCacheTrash, hasCommitsMissingUpstream, managedSourcePaths, readGitCacheExpiration, readGitCacheRestoration, verifiedGitCacheSource,
   GIT_CACHE_RESTORATION_KEY, type GitCacheRestoration } from "./git-workspace-restoration.js";
 import { applyRestorePoint, captureRestorePoint, currentRestorePointSnapshot, importRestorePoint, restorePointSavesIgnoredFile,
   RestorePointRestoreFailure, RestorePointSkip, type RestorePointLimits, type RestorePointSnapshot } from "./git-restore-point.js";
-import { findRegenerableWorkspaceDirs, REGENERABLE_WORKSPACE_DIR_NAMES } from "./workspace-compaction.js";
+import { findRegenerableWorkspaceDirs, REGENERABLE_WORKSPACE_DIR_NAMES, WORKSPACE_COMPACTION_TRASH_DIR } from "./workspace-compaction.js";
 import { ensureManagedRepositoriesIgnored } from "./managed-repository-checkout.js";
 import { withWorkspaceLockKeepalive } from "./native-runtime/native-workspace-lock-keepalive.js";
-import { canonicalRepositoryRoot } from "./execution-workspace-source-roots.js";
+import { canonicalRepositoryRoot, localWorkspaceSourcePaths } from "./execution-workspace-source-roots.js";
 import { withExecutionWorkspaceLifecycleLock } from "./execution-workspace-lifecycle-lock.js";
 import { loadGitRestorePoint } from "./git-restore-point-storage.js";
 import { nestedWorktreeBranchPrefix, readLinkedNestedCheckout, repairMovedNestedRepositoryWorktree, withNestedRepositoryBaseLock } from "./nested-repository-worktrees.js";
 import { getStorageService } from "../storage/index.js";
+import { createIssueGitRemoteAuthProvider } from "./git-credentials.js";
+import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 
 const execFile = promisify(execFileCallback);
 const SHA = /^[0-9a-f]{40}$/;
@@ -31,7 +34,16 @@ const CLOSED_STATUSES = ["archived", "cleanup_failed"];
 const ADMIN_ENTRIES = new Set(["HEAD", "ORIG_HEAD", "FETCH_HEAD", "index", "commondir", "gitdir", "logs", "refs", "COMMIT_EDITMSG"]);
 const MAX_BOUNDARY_COMMITS = 64;
 const CLONE_HISTORY_BUDGET = 5_000;
+const CLONE_DIRECTORY_BUDGET = 1_000;
 const UNSAFE_BASE_CONFIG = /^(filter\.|include\.|includeif\.|core\.(fsmonitor|hookspath|attributesfile|worktree|gitproxy|sshcommand|askpass|editor|pager|alternaterefscommand)$|extensions\.worktreeconfig$)/;
+const GIB = 1024 * 1024 * 1024;
+const COMPACTION_TRASH_PATH = `.paperclip/worktrees/${WORKSPACE_COMPACTION_TRASH_DIR}`;
+const SOURCE_ID = /^[a-zA-Z0-9_-]+$/;
+const ORPHAN_HANDLED_ELSEWHERE = new Set(["base_has_consumers", "rehome_pending", "rehome_cleanup_pending"]);
+const SOURCE_TRASH = /^\.(rehomed-checkout|rehomed-worktree|orphaned-checkout)-[a-zA-Z0-9_-]+$/;
+export const ISOLATED_REHOME_RESTORE_POINT_LIMITS: RestorePointLimits = {
+  maxFiles: 500_000, maxFileBytes: GIB, maxTotalBytes: GIB, maxCommits: 1_000_000, maxBundleBytes: 1.5 * GIB,
+};
 export const ISOLATED_REPOSITORY_REHOME_KEY = "isolatedRepositoryRehome";
 export const ISOLATED_REPOSITORY_REHOME_PENDING_KEY = "isolatedRepositoryRehomePending";
 
@@ -46,7 +58,7 @@ export type IsolatedRepositoryRehomeHooks = {
 };
 export type IsolatedRepositoryRehomeResult = {
   outcome: "rehomed" | "dry_run" | "skipped" | "cleaned" | "clone_kept";
-  rehomed: boolean; cloneRemoved: boolean; reason: string | null; cloneKeptReason: string | null;
+  rehomed: boolean; cloneRemoved: boolean; reason: string | null; cloneKeptReason: string | null; cloneKeptPaths?: string[];
   candidateBytes: number; reclaimedBytes: number; from: string | null; to: string | null; failure?: GitExpirationFailure;
 };
 
@@ -342,13 +354,16 @@ async function undoMove(db: Db | Tx, workspaceId: string, pending: IsolatedRepos
 
 export function withWorkspaceMoveLocks<T>(db: Db, workspace: Workspace, work: (tx: Tx) => Promise<T>) {
   return withIsolatedRepositorySourceLock(db, workspace.companyId, workspace.sourceIssueId!, () =>
-    withDedicatedDbConnection(db, connection => connection.transaction(async tx => {
-      const rows = await tx.execute<{ locked: boolean; idle_timeout_ms: string | number | null }>(sql`select
-        pg_try_advisory_xact_lock(hashtextextended(${`execution_workspace_lifecycle:${workspace.id}`}, 0)) as locked,
-        (select setting::bigint from pg_settings where name = 'idle_in_transaction_session_timeout') as idle_timeout_ms`);
-      if (!rows[0]?.locked) throw new Error("lifecycle_busy");
-      return withWorkspaceLockKeepalive(tx, Number(rows[0]?.idle_timeout_ms), () => work(tx));
-    })), true);
+    withWorkspaceSourceLocks(db, { companyId: workspace.companyId, projectIds: workspace.projectId ? [workspace.projectId] : [] }, async () => {
+      for (const cwd of localWorkspaceSourcePaths(workspace)) await retainCurrentWorkspaceSource(cwd);
+      return withDedicatedDbConnection(db, connection => connection.transaction(async tx => {
+        const rows = await tx.execute<{ locked: boolean; idle_timeout_ms: string | number | null }>(sql`select
+          pg_try_advisory_xact_lock(hashtextextended(${`execution_workspace_lifecycle:${workspace.id}`}, 0)) as locked,
+          (select setting::bigint from pg_settings where name = 'idle_in_transaction_session_timeout') as idle_timeout_ms`);
+        if (!rows[0]?.locked) throw new Error("lifecycle_busy");
+        return withWorkspaceLockKeepalive(tx, Number(rows[0]?.idle_timeout_ms), () => work(tx));
+      }));
+    }), true);
 }
 
 function emptyResult(): IsolatedRepositoryRehomeResult {
@@ -419,7 +434,7 @@ export async function rehomeIsolatedRepositoryWorkspace(db: Db, snapshot: Worksp
         const beforeHistory = await historyKey(old.cwd, old.admin, options.signal);
         if (before.head !== old.head) throw new Error("head_changed");
         const captured = await captureRestorePoint({ cwd: old.cwd, upstreamCommits: await sharedHistoryBoundary(old.cwd, base, old.head, options.signal),
-          limits: options.limits, signal: options.signal });
+          limits: options.limits ?? ISOLATED_REHOME_RESTORE_POINT_LIMITS, signal: options.signal });
         const manifest = captured ? await importRestorePoint({ repositoryCwd: base, payload: captured.payload, signal: options.signal }) : null;
         const reflog = shas(await git(old.cwd, ["reflog", "show", "--format=%H", "HEAD"], { signal: options.signal }).catch(() => ""));
         const original = (await fs.readFile(path.join(old.admin, "ORIG_HEAD"), "utf8").catch(() => "")).trim();
@@ -496,10 +511,10 @@ export async function rehomeIsolatedRepositoryWorkspace(db: Db, snapshot: Worksp
   }
 }
 
-async function cloneConsumers(db: Db | Tx, workspace: Workspace, clone: string) {
-  const others = await db.select().from(executionWorkspaces).where(and(ne(executionWorkspaces.id, workspace.id),
-    sql`((${executionWorkspaces.metadata}->'isolatedRemoteSource'->>'companyId' = ${workspace.companyId}
-      AND ${executionWorkspaces.metadata}->'isolatedRemoteSource'->>'issueId' = ${workspace.sourceIssueId})
+async function cloneConsumers(db: Db | Tx, companyId: string, issueId: string, excludeId: string | null, clone: string) {
+  const others = await db.select().from(executionWorkspaces).where(and(excludeId ? ne(executionWorkspaces.id, excludeId) : undefined,
+    sql`((${executionWorkspaces.metadata}->'isolatedRemoteSource'->>'companyId' = ${companyId}
+      AND ${executionWorkspaces.metadata}->'isolatedRemoteSource'->>'issueId' = ${issueId})
       OR ${executionWorkspaces.cwd} = ${clone} OR ${executionWorkspaces.providerRef} = ${clone}
       OR left(${executionWorkspaces.cwd}, length(${clone}) + 1) = ${clone} || '/')`));
   const expired = (row: Workspace) => {
@@ -516,26 +531,79 @@ async function cloneConsumers(db: Db | Tx, workspace: Workspace, clone: string) 
   return service ? "base_has_live_services" : null;
 }
 
-async function cloneDisposable(clone: string, base: string, signal?: AbortSignal) {
-  const worktrees = (await git(clone, ["worktree", "list", "--porcelain"], { signal })).split("\n").filter(line => line.startsWith("worktree "));
-  if (worktrees.length !== 1) return "base_has_worktrees";
-  if ((await git(clone, ["status", "--porcelain=v1", "-z", "--untracked-files=no"], { signal })).length) return "clone_checkout_has_files";
-  const untracked = nul(await git(clone, ["ls-files", "-z", "--others", "--exclude-standard"], { signal }));
-  const ignored = nul(await git(clone, ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"], { signal }));
-  if (untracked.length || ignored.some(file => !file.split("/").slice(0, -1).some(part => REGENERABLE_WORKSPACE_DIR_NAMES.has(part)))) return "clone_checkout_has_files";
-  const refs = (await git(clone, ["for-each-ref", `--count=${CLONE_HISTORY_BUDGET + 1}`, "--format=%(objectname) %(refname)"], { signal })).split("\n").filter(Boolean);
-  if (refs.length > CLONE_HISTORY_BUDGET) return "clone_history_budget";
-  if (refs.some(ref => !/^[0-9a-f]{40} refs\/(heads|tags|remotes)\//.test(ref))) return "unsupported_clone_refs";
-  const reflog = (await git(clone, ["reflog", "show", "--all", "-n", String(CLONE_HISTORY_BUDGET + 1), "--format=%H %gD"], { signal }).catch(() => ""))
-    .split("\n").map(line => line.trim().split(" ")).filter(([sha]) => SHA.test(sha ?? ""));
-  if (reflog.length > CLONE_HISTORY_BUDGET) return "clone_history_budget";
-  const local = [...refs.filter(ref => !/ refs\/remotes\//.test(ref)).map(ref => ref.split(" ")[0]!),
-    ...reflog.filter(([, selector]) => !(selector ?? "").startsWith("refs/remotes/")).map(([sha]) => sha!)];
-  if (local.length === 0) return null;
-  const unique = shas(await git(clone, ["rev-list", `--max-count=${CLONE_HISTORY_BUDGET + 1}`, "--stdin"], { signal, input: [...new Set(local)].join("\n") + "\n--not\n--remotes\n" }));
-  if (unique.length > CLONE_HISTORY_BUDGET) return "clone_history_budget";
-  const present = await presentCommits(base, unique, signal);
-  return unique.some(sha => !present.has(sha)) ? "unique_clone_history" : null;
+function reproducibleCheckoutPath(file: string) {
+  const parts = file.split("/").filter(Boolean);
+  const directories = file.endsWith("/") ? parts : parts.slice(0, -1);
+  return directories.some(part => REGENERABLE_WORKSPACE_DIR_NAMES.has(part))
+    || file === `${COMPACTION_TRASH_PATH}/` || file.startsWith(`${COMPACTION_TRASH_PATH}/`);
+}
+
+type CloneCheck = { reason: string | null; paths: string[] };
+type MissingUpstream = (commits: string[], covered: string[]) => Promise<boolean>;
+
+async function cloneDisposable(clone: string, base: string | null, missingUpstream: MissingUpstream, signal?: AbortSignal): Promise<CloneCheck> {
+  const kept = (reason: string, paths: string[] = []): CloneCheck => ({ reason, paths: paths.slice(0, 5) });
+  try {
+    await git(clone, ["worktree", "prune"], { signal });
+    const worktrees = (await git(clone, ["worktree", "list", "--porcelain"], { signal })).split("\n").filter(line => line.startsWith("worktree "));
+    if (worktrees.length !== 1) return kept("base_has_worktrees", worktrees.slice(1).map(line => line.slice(9)));
+    const tracked = nul(await git(clone, ["status", "--porcelain=v1", "-z", "--untracked-files=no"], { signal }));
+    if (tracked.length) return kept("clone_checkout_has_files", tracked.map(entry => entry.slice(3)));
+    const untracked = nul(await git(clone, ["ls-files", "-z", "--others", "--exclude-standard", "--directory", "--no-empty-directory"], { signal }))
+      .filter(file => file !== `${COMPACTION_TRASH_PATH}/` && !file.startsWith(`${COMPACTION_TRASH_PATH}/`));
+    if (untracked.length) return kept("clone_checkout_has_files", untracked);
+    const ignored = nul(await git(clone, ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory", "--no-empty-directory"], { signal }))
+      .filter(entry => !reproducibleCheckoutPath(entry));
+    const ignoredFiles = ignored.filter(entry => !entry.endsWith("/"));
+    if (ignoredFiles.length) return kept("clone_checkout_has_files", ignoredFiles);
+    const ignoredDirectories = ignored.filter(entry => entry.endsWith("/"));
+    if (ignoredDirectories.length > CLONE_DIRECTORY_BUDGET) return kept("clone_file_budget");
+    if (ignoredDirectories.length) {
+      const unexplained = nul(await git(clone, ["--literal-pathspecs", "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--", ...ignoredDirectories], { signal }))
+        .filter(file => !reproducibleCheckoutPath(file));
+      if (unexplained.length) return kept("clone_checkout_has_files", unexplained);
+    }
+    const refs = (await git(clone, ["for-each-ref", `--count=${CLONE_HISTORY_BUDGET + 1}`, "--format=%(objectname) %(refname)"], { signal })).split("\n").filter(Boolean);
+    if (refs.length > CLONE_HISTORY_BUDGET) return kept("clone_history_budget");
+    const unexpected = refs.filter(ref => !/^[0-9a-f]{40} refs\/(heads|tags|remotes)\//.test(ref));
+    if (unexpected.length) return kept("unsupported_clone_refs", unexpected.map(ref => ref.slice(41)));
+    const reflog = (await git(clone, ["reflog", "show", "--all", "-n", String(CLONE_HISTORY_BUDGET + 1), "--format=%H %gD"], { signal }).catch(() => ""))
+      .split("\n").map(line => line.trim().split(" ")).filter(([sha]) => SHA.test(sha ?? ""));
+    if (reflog.length > CLONE_HISTORY_BUDGET) return kept("clone_history_budget");
+    const original = (await fs.readFile(path.join(clone, ".git", "ORIG_HEAD"), "utf8").catch(() => "")).trim();
+    const head = (await git(clone, ["rev-parse", "--verify", "-q", "HEAD^{commit}"], { signal }).catch(() => "")).trim();
+    const tips = [...new Set([...refs.filter(ref => !/ refs\/remotes\//.test(ref)).map(ref => ref.split(" ")[0]!),
+      ...reflog.filter(([, selector]) => !(selector ?? "").startsWith("refs/remotes/")).map(([sha]) => sha!), ...(SHA.test(original) ? [original] : []), ...(SHA.test(head) ? [head] : [])])];
+    const tipsInBase = base ? await presentCommits(base, tips, signal) : new Set<string>();
+    const pending = tips.filter(sha => !tipsInBase.has(sha));
+    if (pending.length === 0) return { reason: null, paths: [] };
+    const unique = shas(await git(clone, ["rev-list", `--max-count=${CLONE_HISTORY_BUDGET + 1}`, "--stdin"], { signal,
+      input: [...pending, "--not", "--remotes", ...tipsInBase].join("\n") + "\n" }));
+    if (unique.length > CLONE_HISTORY_BUDGET) return kept("clone_history_budget");
+    const uniqueInBase = base ? await presentCommits(base, unique, signal) : new Set<string>();
+    const missing = unique.filter(sha => !uniqueInBase.has(sha));
+    if (missing.length === 0) return { reason: null, paths: [] };
+    return await missingUpstream(missing, [...tipsInBase, ...uniqueInBase]) ? kept("unique_clone_history", missing) : { reason: null, paths: [] };
+  } catch (error) {
+    signal?.throwIfAborted();
+    return kept(gitExpirationSkipReason(error));
+  }
+}
+
+async function worktreeOfClone(worktree: string, cloneReal: string, signal?: AbortSignal) {
+  const admins = path.join(cloneReal, ".git", "worktrees");
+  const common = (await git(worktree, ["rev-parse", "--path-format=absolute", "--git-common-dir"], { signal }).catch(() => "")).trim();
+  if (common) return common === path.join(cloneReal, ".git");
+  const marker = await fs.lstat(path.join(worktree, ".git")).catch(() => null);
+  if (!marker?.isFile() || marker.size > 4096) return false;
+  const pointer = /^gitdir: (.+)\n?$/.exec(await fs.readFile(path.join(worktree, ".git"), "utf8"))?.[1];
+  if (!pointer) return false;
+  return path.dirname(await canonicalRepositoryRoot(path.resolve(worktree, pointer))) === admins;
+}
+
+function upstreamCheck(db: Db, companyId: string, issueId: string, clone: string, repoUrl: string, signal?: AbortSignal): MissingUpstream {
+  const auth = withAnonymousGitFallback(createIssueGitRemoteAuthProvider(db, companyId, issueId));
+  return (commits, covered) => hasCommitsMissingUpstream(clone, commits, repoUrl, auth, signal, covered);
 }
 
 async function cleanupRehomedSource(db: Db, tx: Tx, row: Workspace, result: IsolatedRepositoryRehomeResult,
@@ -569,8 +637,7 @@ async function cleanupRehomedSource(db: Db, tx: Tx, row: Workspace, result: Isol
     const fromStat = await fs.lstat(from).catch(() => null);
     if (fromStat) {
       if (!fromStat.isDirectory() || fromStat.isSymbolicLink()) return keep("unsafe_worktree_path", false);
-      const common = (await git(from, ["rev-parse", "--path-format=absolute", "--git-common-dir"], { signal: options.signal }).catch(() => "")).trim();
-      if (common !== path.join(cloneReal, ".git")) return keep("source_identity_changed", false);
+      if (!await worktreeOfClone(from, cloneReal, options.signal)) return keep("source_identity_changed", false);
       result.reclaimedBytes += await allocatedBytes(from, () => true).catch(() => 0);
       if (await exists(worktreeTrash)) await fs.rm(worktreeTrash, { recursive: true, force: true });
       await fs.rename(from, worktreeTrash);
@@ -579,10 +646,15 @@ async function cleanupRehomedSource(db: Db, tx: Tx, row: Workspace, result: Isol
   }
   if (await exists(worktreeTrash)) await fs.rm(worktreeTrash, { recursive: true, force: true });
   if (cloneReal) {
-    const consumer = await cloneConsumers(tx, row, clone);
+    const consumer = await cloneConsumers(tx, row.companyId, row.sourceIssueId, row.id, clone);
     if (consumer) return keep(consumer, consumer === "base_has_consumers");
-    const disposable = await cloneDisposable(clone, base, options.signal);
-    if (disposable) return keep(disposable, false);
+    const repoUrl = (await git(clone, ["config", "--local", "--get", "remote.origin.url"], { signal: options.signal }).catch(() => "")).trim();
+    if (repoUrl !== row.repoUrl) return keep("source_identity_changed", false);
+    const disposable = await cloneDisposable(clone, base, upstreamCheck(db, row.companyId, row.sourceIssueId, clone, repoUrl, options.signal), options.signal);
+    if (disposable.reason) {
+      result.cloneKeptPaths = disposable.paths;
+      return keep(disposable.reason, false);
+    }
     const bytes = await allocatedBytes(clone, () => true).catch(() => 0);
     if (await exists(cloneTrash)) await fs.rm(cloneTrash, { recursive: true, force: true });
     await fs.rename(clone, cloneTrash);
@@ -636,4 +708,83 @@ export async function rehomeExpiredIsolatedRestoration(db: Db, snapshot: Workspa
       return updated ?? row;
     });
   } catch { return snapshot; }
+}
+
+export type OrphanedIsolatedSourceResult = {
+  companyId: string; issueId: string; removed: boolean; reason: string | null; paths: string[];
+  candidateBytes: number; reclaimedBytes: number; failure?: GitExpirationFailure;
+};
+
+async function sourceDirectories(parent: string) {
+  const entries = await fs.readdir(parent, { withFileTypes: true }).catch(() => []);
+  return entries.filter(entry => entry.isDirectory() && SOURCE_ID.test(entry.name)).map(entry => entry.name).sort();
+}
+
+export async function sweepOrphanedIsolatedRepositorySources(db: Db, options: { dryRun?: boolean; signal?: AbortSignal; after?: string | null; limit?: number } = {}) {
+  const root = path.join(resolvePaperclipInstanceRoot(), "isolated-repository-sources");
+  const results: OrphanedIsolatedSourceResult[] = [];
+  const limit = options.limit ?? 8;
+  let inspected = 0;
+  let lastPosition: string | null = null;
+  const [afterCompany, afterIssue] = options.after?.split("/") ?? [];
+  for (const companyId of await sourceDirectories(root)) {
+    for (const issueId of await sourceDirectories(path.join(root, companyId))) {
+      options.signal?.throwIfAborted();
+      if (afterCompany !== undefined && (companyId < afterCompany || (companyId === afterCompany && issueId <= afterIssue!))) continue;
+      if (inspected >= limit) return { results, next: lastPosition };
+      inspected += 1;
+      lastPosition = `${companyId}/${issueId}`;
+      const result: OrphanedIsolatedSourceResult = { companyId, issueId, removed: false, reason: null, paths: [], candidateBytes: 0, reclaimedBytes: 0 };
+      try {
+        await withIsolatedRepositorySourceLock(db, companyId, issueId, async () => {
+          const clone = isolatedRemoteSourcePath(companyId, issueId);
+          const parent = path.dirname(clone);
+          for (const entry of await fs.readdir(parent, { withFileTypes: true })) {
+            if (!options.dryRun && entry.isDirectory() && SOURCE_TRASH.test(entry.name)) await fs.rm(path.join(parent, entry.name), { recursive: true, force: true });
+          }
+          const stat = await fs.lstat(clone).catch(() => null);
+          if (!stat) return;
+          const storage = await fs.lstat(path.join(clone, ".git")).catch(() => null);
+          if (!stat.isDirectory() || stat.isSymbolicLink() || !storage?.isDirectory() || storage.isSymbolicLink()
+            || await fs.realpath(clone) !== path.join(await fs.realpath(parent), "checkout")) throw new Error("source_identity_changed");
+          const consumer = await cloneConsumers(db, companyId, issueId, null, clone);
+          if (consumer) throw new Error(consumer);
+          const rows = await db.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.companyId, companyId), or(eq(executionWorkspaces.sourceIssueId, issueId),
+            sql`${executionWorkspaces.metadata}->'isolatedRemoteSource'->>'issueId' = ${issueId}`)));
+          if (rows.some(row => row.metadata?.[ISOLATED_REPOSITORY_REHOME_PENDING_KEY] !== undefined)) throw new Error("rehome_pending");
+          if (rows.some(row => hasPendingIsolatedRepositoryRehomeCleanup(row))) throw new Error("rehome_cleanup_pending");
+          const recorded = new Set(rows.map(row => (row.metadata?.isolatedRemoteSource as { repoUrl?: unknown } | undefined)?.repoUrl ?? row.repoUrl)
+            .filter((url): url is string => typeof url === "string" && url.length > 0));
+          if (recorded.size !== 1) throw new Error("unproven_repository");
+          const repoUrl = [...recorded][0]!;
+          if ((await git(clone, ["config", "--local", "--null", "--get-all", "remote.origin.url"], { signal: options.signal }).catch(() => "")) !== `${repoUrl}\0`) {
+            throw new Error("source_identity_changed");
+          }
+          const anchor = rows.find(row => row.projectId && row.repoUrl === repoUrl);
+          const base = anchor ? await sharedManagedBase(anchor).catch(() => null) : null;
+          const check = await cloneDisposable(clone, base, upstreamCheck(db, companyId, issueId, clone, repoUrl, options.signal), options.signal);
+          if (check.reason) {
+            result.paths = check.paths;
+            throw new Error(check.reason);
+          }
+          result.candidateBytes = await allocatedBytes(clone, () => { options.signal?.throwIfAborted(); return true; }).catch(() => 0);
+          if (options.dryRun) return;
+          const trash = path.join(parent, `.orphaned-checkout-${randomBytes(8).toString("hex")}`);
+          await fs.rename(clone, trash);
+          await fs.rm(trash, { recursive: true, force: true });
+          result.removed = true;
+          result.reclaimedBytes = result.candidateBytes;
+          await fs.rmdir(parent).catch(() => undefined);
+          await fs.rmdir(path.dirname(parent)).catch(() => undefined);
+        }, true);
+      } catch (error) {
+        options.signal?.throwIfAborted();
+        result.reason = error instanceof IsolatedRepositorySourceBusy ? "source_busy" : gitExpirationSkipReason(error);
+        if (result.reason === "inspection_failed") result.failure = describeGitExpirationFailure(error);
+      }
+      if (result.reason && ORPHAN_HANDLED_ELSEWHERE.has(result.reason)) continue;
+      if (result.removed || result.reason || result.candidateBytes) results.push(result);
+    }
+  }
+  return { results, next: null };
 }
