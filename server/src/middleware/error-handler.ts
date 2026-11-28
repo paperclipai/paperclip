@@ -298,9 +298,13 @@ export function errorHandler(
   // mobile network, cancelled upload): Node surfaces it as `Error: aborted`
   // with ECONNRESET. There is no server fault to report and nobody left to
   // answer, so skip the error sinks and just close out the response.
+  const errorCode = (rootError as NodeJS.ErrnoException).code;
+  const isAbortedBodyRead =
+    errorCode === "ECONNABORTED" &&
+    "type" in rootError && rootError.type === "request.aborted" &&
+    "status" in rootError && rootError.status === 400;
   if (
-    rootError.message === "aborted" &&
-    (rootError as NodeJS.ErrnoException).code === "ECONNRESET" &&
+    (isAbortedBodyRead || (rootError.message === "aborted" && errorCode === "ECONNRESET")) &&
     !isStorageUnavailableError(rootError)
   ) {
     if (!res.headersSent) res.status(499);
