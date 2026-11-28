@@ -19,6 +19,7 @@
  */
 
 import fs from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 
 import type {
@@ -83,6 +84,61 @@ function cfgEnvString(v: unknown): string | undefined {
 
 export function resolveHermesCommand(config: Record<string, unknown>): string {
   return cfgString(config.hermesCommand) || cfgString(config.command) || HERMES_CLI;
+}
+
+export function extractHermesProfileFromArgs(args: string[] | undefined): string | undefined {
+  if (!args?.length) return undefined;
+
+  let profile: string | undefined;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === "--profile" || arg === "-p") {
+      profile = cfgString(args[i + 1]) || profile;
+      continue;
+    }
+
+    const equalsMatch = arg.match(/^(?:--profile|-p)=(.+)$/);
+    if (equalsMatch?.[1]) {
+      profile = equalsMatch[1];
+      continue;
+    }
+
+    const splitMatch = arg.match(/^(?:--profile|-p)\s+(.+)$/);
+    if (splitMatch?.[1]) {
+      profile = splitMatch[1].trim() || profile;
+    }
+  }
+
+  return profile;
+}
+
+function isSafeHermesProfileName(profile: string): boolean {
+  return profile !== "."
+    && profile !== ".."
+    && !path.isAbsolute(profile)
+    && !profile.includes("/")
+    && !profile.includes("\\")
+    && !profile.includes("\0");
+}
+
+export function resolveHermesConfigPath(
+  config: Record<string, unknown>,
+  extraArgs: string[] | undefined,
+): string {
+  const envConfig = config.env as Record<string, unknown> | undefined;
+  const configuredHome = envConfig && typeof envConfig === "object"
+    ? cfgEnvString(envConfig.HERMES_HOME)
+    : undefined;
+  const userHome = cfgEnvString(envConfig?.HOME) || homedir();
+  const hermesHome = configuredHome || process.env.HERMES_HOME || path.join(userHome, ".hermes");
+
+  const profile = extractHermesProfileFromArgs(extraArgs);
+  if (profile && !isSafeHermesProfileName(profile)) {
+    throw new Error("Hermes profile must be a single directory name");
+  }
+  return profile
+    ? path.join(hermesHome, "profiles", profile, "config.yaml")
+    : path.join(hermesHome, "config.yaml");
 }
 
 // ---------------------------------------------------------------------------
@@ -349,12 +405,12 @@ export async function execute(
 
   // ── Resolve configuration ──────────────────────────────────────────────
   const hermesCmd = resolveHermesCommand(config);
-  const model = cfgString(config.model) || DEFAULT_MODEL;
   const timeoutSec = cfgNumber(config.timeoutSec) || DEFAULT_TIMEOUT_SEC;
   const graceSec = cfgNumber(config.graceSec) || DEFAULT_GRACE_SEC;
   const maxTurns = cfgNumber(config.maxTurnsPerRun);
   const toolsets = cfgString(config.toolsets) || cfgStringArray(config.enabledToolsets)?.join(",");
   const extraArgs = cfgStringArray(config.extraArgs);
+  const configuredModel = cfgString(config.model);
   const persistSession = cfgBoolean(config.persistSession) !== false;
   const worktreeMode = cfgBoolean(config.worktreeMode) === true;
   const checkpoints = cfgBoolean(config.checkpoints) === true;
@@ -393,14 +449,17 @@ export async function execute(
   // correct provider is still used.
   let detectedConfig: Awaited<ReturnType<typeof detectModel>> | null = null;
   const explicitProvider = cfgString(config.provider);
+  const hermesConfigPath = resolveHermesConfigPath(config, extraArgs);
 
-  if (!explicitProvider) {
+  if (!explicitProvider || !configuredModel) {
     try {
-      detectedConfig = await detectModel();
+      detectedConfig = await detectModel(hermesConfigPath);
     } catch {
       // Non-fatal — detection failure shouldn't block execution
     }
   }
+
+  const model = configuredModel || detectedConfig?.model || DEFAULT_MODEL;
 
   const { provider: resolvedProvider, resolvedFrom } = resolveProvider({
     explicitProvider,
