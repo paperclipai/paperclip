@@ -12,6 +12,10 @@ const PROJECT_WORKSPACE_ID = "77777777-7777-4777-8777-777777777777";
 const ENV_ID = "88888888-8888-4888-8888-888888888888";
 const INCIDENT_ID = "99999999-9999-4999-8999-999999999999";
 
+function stripAnsi(value: string): string {
+  return value.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "");
+}
+
 function createProgram(): Command {
   const program = new Command();
   program.exitOverride();
@@ -94,14 +98,14 @@ describe("operations parity commands", () => {
     await run(["environment", "get", ENV_ID]);
     await run(["environment", "leases", ENV_ID]);
     await run(["environment", "update", ENV_ID, "--payload-json", "{}"]);
-    await run(["environment", "delete", ENV_ID]);
+    await run(["environment", "delete", ENV_ID, "--yes"]);
     await run(["environment", "probe", ENV_ID]);
     await run(["environment", "probe-config", "--company-id", COMPANY_ID, "--payload-json", "{}"]);
     await run(["project-workspace", "list", PROJECT_ID]);
     await run(["project-workspace", "create", PROJECT_ID, "--payload-json", "{}"]);
     await run(["project-workspace", "update", PROJECT_ID, PROJECT_WORKSPACE_ID, "--payload-json", "{}"]);
     await run(["project-workspace", "runtime-command", PROJECT_ID, PROJECT_WORKSPACE_ID, "run", "--payload-json", "{}"]);
-    await run(["project-workspace", "delete", PROJECT_ID, PROJECT_WORKSPACE_ID]);
+    await run(["project-workspace", "delete", PROJECT_ID, PROJECT_WORKSPACE_ID, "--yes"]);
 
     expect(fetchMock.mock.calls.map((call) => [call[1]?.method ?? "GET", call[0]])).toEqual([
       ["GET", `http://localhost:3100/api/companies/${COMPANY_ID}/org`],
@@ -128,6 +132,24 @@ describe("operations parity commands", () => {
       ["POST", `http://localhost:3100/api/projects/${PROJECT_ID}/workspaces/${PROJECT_WORKSPACE_ID}/runtime-commands/run`],
       ["DELETE", `http://localhost:3100/api/projects/${PROJECT_ID}/workspaces/${PROJECT_WORKSPACE_ID}`],
     ]);
+  });
+
+  it("requires explicit confirmation before destructive workspace deletes", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse()));
+    vi.stubGlobal("fetch", fetchMock);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(process, "exit").mockImplementation(((code?: string | number | null) => {
+      throw new Error(`exit:${code ?? 0}`);
+    }) as typeof process.exit);
+
+    await expect(run(["environment", "delete", ENV_ID])).rejects.toThrow("exit:1");
+    await expect(run(["project-workspace", "delete", PROJECT_ID, PROJECT_WORKSPACE_ID])).rejects.toThrow("exit:1");
+
+    expect(errorSpy.mock.calls.map((call) => stripAnsi(String(call[0])))).toEqual([
+      "Deletion requires --yes.",
+      "Deletion requires --yes.",
+    ]);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 
