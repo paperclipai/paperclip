@@ -23,6 +23,8 @@ export {
   type CodexCredentialAuthMode,
 } from "./codex-home.js";
 export { listCodexSkills, syncCodexSkills } from "./skills.js";
+export { readCodexCommandVersion } from "./cli-version.js";
+export { CODEX_MODEL_CATALOG_URL, fetchCodexModelCatalog, parseCodexModelCatalog } from "./model-catalog.js";
 export { testEnvironment } from "./test.js";
 export {
   runDeviceLogin,

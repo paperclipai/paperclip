@@ -1,3 +1,4 @@
+import { listCodexSubscriptionModels } from "../services/codex-subscription-models.js";
 import { resolveLoginEnvironmentTarget } from "../services/login-environment.js";
 import { supportsUnscopedHeartbeat } from "../services/heartbeat-policy.js";
 import { checkAgentProtectedEnvironmentKeys } from "../services/protected-environment-keys.js";
@@ -3253,6 +3254,17 @@ export function agentRoutes(
     const models = refresh
       ? await refreshAdapterModels(modelAdapterType)
       : await listAdapterModels(modelAdapterType);
+    // A ChatGPT subscription lists the models the installed Codex CLI can run
+    // with it, including ones newer than the static list. The CLI version is the
+    // host's, so the Paperclip Runner and sandbox environments keep the static list.
+    if (type === "codex_local" && (!environment || environment.driver === "local")) {
+      const live = await listCodexSubscriptionModels(db, companyId, getActorInfo(req).actorId, { refresh });
+      if (live.length > 0) {
+        const liveIds = new Set(live.map((model) => model.id));
+        res.json([...live, ...models.filter((model) => !liveIds.has(model.id))]);
+        return;
+      }
+    }
     // The Legacy default marker is not an explicit native ACP model ID.
     res.json(type === "paperclip_runner" && modelAdapterType === "grok_local"
       ? models.filter(model => model.id !== "grok-build")
