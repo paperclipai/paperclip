@@ -1,0 +1,588 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#a8dcff">
+  <meta name="description" content="Explore a tiny floating island in a playful 3D scene.">
+  <title>Floating Island</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: system-ui, sans-serif;
+      font-synthesis: none;
+      text-rendering: optimizeLegibility;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      min-height: 100%;
+      overflow: hidden;
+      margin: 0;
+      background: #a8dcff;
+    }
+
+    body {
+      overscroll-behavior: none;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      touch-action: none;
+    }
+
+    #hint {
+      position: fixed;
+      z-index: 1;
+      left: max(12px, env(safe-area-inset-left));
+      bottom: max(12px, env(safe-area-inset-bottom));
+      max-width: min(32rem, calc(100vw - 24px));
+      border: 1px solid rgba(255, 255, 255, 0.6);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.78);
+      box-shadow: 0 8px 28px rgba(34, 74, 98, 0.12);
+      color: #234;
+      padding: 9px 14px;
+      font-size: 13px;
+      line-height: 1.4;
+      -webkit-backdrop-filter: blur(12px);
+      backdrop-filter: blur(12px);
+    }
+
+    #hint:focus-visible {
+      outline: 3px solid #276b92;
+      outline-offset: 3px;
+    }
+
+    @media (max-width: 480px) {
+      #hint {
+        right: max(12px, env(safe-area-inset-right));
+        max-width: none;
+        border-radius: 12px;
+        text-align: center;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      #hint {
+        -webkit-backdrop-filter: none;
+        backdrop-filter: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="hint" role="status" aria-live="polite" tabindex="0">
+    Drag to orbit · Scroll or use +/− to zoom · Arrow keys to look around
+  </div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script>
+    (() => {
+      const hint = document.getElementById("hint");
+      try {
+        if (!window.THREE) {
+          hint.textContent = "The 3D library did not load. Check your internet connection and reload.";
+          return;
+        }
+
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0xa8c6ce);
+        const skyGeometry = new THREE.SphereGeometry(220, 48, 32);
+        const skyColors = [];
+        const skyTop = new THREE.Color(0x568cb2);
+        const skyHorizon = new THREE.Color(0xd8ded0);
+        const skyPositions = skyGeometry.attributes.position;
+        for (let i = 0; i < skyPositions.count; i++) {
+          const height = THREE.MathUtils.clamp((skyPositions.getY(i) / 220 + 1) * 0.5, 0, 1);
+          const color = skyHorizon.clone().lerp(skyTop, Math.pow(height, 1.4));
+          skyColors.push(color.r, color.g, color.b);
+        }
+        skyGeometry.setAttribute("color", new THREE.Float32BufferAttribute(skyColors, 3));
+        const sky = new THREE.Mesh(
+          skyGeometry,
+          new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide, depthWrite: false, fog: false }),
+        );
+        sky.renderOrder = -1;
+        scene.add(sky);
+        scene.fog = new THREE.Fog(0xc5dfe9, 70, 180);
+        const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 400);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+        renderer.setSize(innerWidth, innerHeight);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        renderer.outputEncoding = THREE.sRGBEncoding;
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 0.72;
+        document.body.appendChild(renderer.domElement);
+
+        scene.add(new THREE.HemisphereLight(0xddeeff, 0x33452d, 0.42));
+        const sun = new THREE.DirectionalLight(0xffedcf, 1.05);
+        sun.position.set(10, 20, 8);
+        sun.castShadow = true;
+        sun.shadow.radius = 5;
+        sun.shadow.mapSize.set(2048, 2048);
+        sun.shadow.camera.left = -24;
+        sun.shadow.camera.right = 24;
+        sun.shadow.camera.top = 24;
+        sun.shadow.camera.bottom = -24;
+        sun.shadow.camera.near = 1;
+        sun.shadow.camera.far = 65;
+        sun.shadow.bias = -0.00015;
+        scene.add(sun);
+
+        let seed = 7;
+        const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+        const rr = (a, b) => a + (b - a) * rnd();
+        const pick = (items) => items[Math.floor(rnd() * items.length)];
+        const material = (color, options = {}) => new THREE.MeshStandardMaterial({
+          color,
+          roughness: 0.86,
+          ...options,
+        });
+        const add = (parent, geometry, color, x = 0, y = 0, z = 0) => {
+          const mesh = new THREE.Mesh(geometry, material(color));
+          mesh.position.set(x, y, z);
+          mesh.castShadow = true;
+          mesh.receiveShadow = true;
+          parent.add(mesh);
+          return mesh;
+        };
+
+        const makeGrassTexture = () => {
+          const canvas = document.createElement("canvas");
+          canvas.width = 512;
+          canvas.height = 512;
+          const context = canvas.getContext("2d");
+          context.fillStyle = "#567d3e";
+          context.fillRect(0, 0, canvas.width, canvas.height);
+          for (let i = 0; i < 14500; i++) {
+            const shade = Math.floor(rr(38, 105));
+            context.fillStyle = `rgba(${shade}, ${Math.floor(shade * 1.28)}, ${Math.floor(shade * 0.62)}, ${rr(0.08, 0.34)})`;
+            context.beginPath();
+            context.ellipse(rr(0, 512), rr(0, 512), rr(0.4, 2.2), rr(0.8, 4), rr(-0.4, 0.4), 0, Math.PI * 2);
+            context.fill();
+          }
+          const texture = new THREE.CanvasTexture(canvas);
+          texture.encoding = THREE.sRGBEncoding;
+          texture.wrapS = THREE.RepeatWrapping;
+          texture.wrapT = THREE.RepeatWrapping;
+          texture.repeat.set(2, 2);
+          texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+          return texture;
+        };
+        const grassTexture = makeGrassTexture();
+
+        // Floating island
+        const island = new THREE.Group();
+        scene.add(island);
+
+        const rockGeometry = new THREE.ConeGeometry(8.2, 13, 64, 32);
+        rockGeometry.rotateX(Math.PI);
+        const rockPositions = rockGeometry.attributes.position;
+        for (let i = 0; i < rockPositions.count; i++) {
+          const x = rockPositions.getX(i);
+          const z = rockPositions.getZ(i);
+          const variation = Math.sin(x * 1.7) * Math.cos(z * 1.3) * 0.22
+            + Math.sin((x + z) * 0.75) * 0.16;
+          rockPositions.setX(i, x * rr(0.97, 1.03));
+          rockPositions.setZ(i, z * rr(0.97, 1.03));
+          rockPositions.setY(i, rockPositions.getY(i) + variation + rr(-0.08, 0.08));
+        }
+        rockGeometry.computeVertexNormals();
+        const cliff = add(island, rockGeometry, 0x756653, 0, -7.3, 0);
+        cliff.material.roughness = 1;
+        const ground = add(island, new THREE.CylinderGeometry(8.5, 7.6, 1.6, 96), 0x567d3e, 0, 0, 0);
+        ground.material.map = grassTexture;
+        ground.material.color.setHex(0xffffff);
+        ground.material.roughness = 1;
+        ground.material.needsUpdate = true;
+
+        const beachGeometry = new THREE.RingGeometry(8.32, 8.55, 96);
+        beachGeometry.rotateX(-Math.PI / 2);
+        const beach = add(island, beachGeometry, 0x9b8055, 0, 0.82, 0);
+        beach.material.roughness = 0.92;
+
+        // Campfire
+        const fire = new THREE.Group();
+        island.add(fire);
+        add(fire, new THREE.BoxGeometry(0.8, 0.12, 0.12), 0x5a3a1e, 0, 0.9, 0).rotation.y = 0.6;
+        add(fire, new THREE.BoxGeometry(0.8, 0.12, 0.12), 0x5a3a1e, 0, 0.9, 0).rotation.y = -0.6;
+        const flame = new THREE.Mesh(
+          new THREE.ConeGeometry(0.25, 0.7, 6),
+          new THREE.MeshBasicMaterial({ color: 0xffa030 }),
+        );
+        flame.position.set(0, 1.2, 0);
+        fire.add(flame);
+        const fireLight = new THREE.PointLight(0xff8c3a, 1.2, 9);
+        fireLight.position.set(0, 1.6, 0);
+        island.add(fireLight);
+
+        // Huts
+        [2.4, 3.6].forEach((angle) => {
+          const x = Math.cos(angle) * 4.6;
+          const z = Math.sin(angle) * 4.6;
+          add(island, new THREE.CylinderGeometry(0.7, 0.75, 0.9, 16), 0xc49a6c, x, 1.25, z);
+          add(island, new THREE.ConeGeometry(0.95, 0.9, 16), 0x8b5e2b, x, 2.15, z);
+        });
+
+        // Forest
+        const greens = [0x245a35, 0x326b3d, 0x285331, 0x3c7040];
+        for (let i = 0; i < 32; i++) {
+          const angle = rnd() * Math.PI * 2;
+          const radius = rr(2.4, 7.2);
+          if (Math.cos(angle) > 0.2 && radius > 5.5) continue;
+          const tree = new THREE.Group();
+          add(tree, new THREE.CylinderGeometry(0.08, 0.2, 1.5, 10), 0x60452e, 0, 0.75, 0);
+          for (let cluster = 0; cluster < 5; cluster++) {
+            const crown = add(
+              tree,
+              new THREE.SphereGeometry(rr(0.36, 0.58), 16, 12),
+              pick(greens),
+              rr(-0.48, 0.48),
+              rr(1.7, 2.45),
+              rr(-0.48, 0.48),
+            );
+            crown.scale.set(rr(0.8, 1.25), rr(0.8, 1.2), rr(0.8, 1.25));
+          }
+          tree.position.set(Math.cos(angle) * radius, 0.8, Math.sin(angle) * radius);
+          tree.scale.setScalar(rr(0.8, 1.3));
+          tree.rotation.y = rr(0, Math.PI * 2);
+          island.add(tree);
+        }
+
+        // Flowers
+        const petals = [0xff5c8a, 0xffd23f, 0xb388ff, 0xff8a3d, 0xffffff, 0x5ac8fa];
+        const stemGeometry = new THREE.CylinderGeometry(0.03, 0.03, 0.7, 4);
+        const flowerHeadGeometry = new THREE.IcosahedronGeometry(0.16, 0);
+        const flowers = [];
+        for (let i = 0; i < 45; i++) {
+          const angle = rnd() * Math.PI * 2;
+          const radius = rr(1.2, 7.4);
+          if (Math.cos(angle) > 0.5 && radius > 6.5) continue;
+          const flower = new THREE.Group();
+          add(flower, stemGeometry, 0x3d8f2e, 0, 0.35, 0);
+          add(flower, flowerHeadGeometry, pick(petals), 0, 0.78, 0);
+          flower.position.set(Math.cos(angle) * radius, 0.8, Math.sin(angle) * radius);
+          flower.userData.phase = rnd() * 6.3;
+          island.add(flower);
+          flowers.push(flower);
+        }
+
+        // Island animals
+        function createAnimal(type) {
+          const group = new THREE.Group();
+          const color = { rabbit: 0xe8dcc8, deer: 0xb07a48, sheep: 0xf4f4ee, fox: 0xe0702a }[type];
+          const legGeometry = new THREE.CylinderGeometry(0.055, 0.07, 0.42, 8).translate(0, -0.2, 0);
+          const legs = [];
+          [[-0.22, 0.2], [0.22, 0.2], [-0.22, -0.2], [0.22, -0.2]].forEach(([x, z]) => {
+            legs.push(add(group, legGeometry, color, x, 0.6, z));
+          });
+          const body = add(group, new THREE.SphereGeometry(0.42, 16, 12), color, 0, 0.72, 0);
+          body.scale.set(0.8, 0.8, 1.3);
+          if (type === "sheep") {
+            for (let tuft = 0; tuft < 5; tuft++) {
+              const puff = add(
+                group,
+                new THREE.SphereGeometry(0.23, 10, 8),
+                color,
+                rr(-0.25, 0.25),
+                rr(0.62, 0.9),
+                rr(-0.35, 0.35),
+              );
+              puff.scale.set(1, 0.9, 1);
+            }
+          }
+          const head = add(group, new THREE.SphereGeometry(0.24, 14, 10), color, 0, 1.03, 0.48);
+          head.scale.set(0.9, 0.88, 1);
+          if (type === "deer") {
+            add(group, new THREE.CylinderGeometry(0.025, 0.04, 0.3, 6), 0x5a3a20, -0.1, 1.32, 0.48);
+            add(group, new THREE.CylinderGeometry(0.025, 0.04, 0.3, 6), 0x5a3a20, 0.1, 1.32, 0.48);
+          }
+          if (type === "rabbit") {
+            const earLeft = add(group, new THREE.SphereGeometry(0.09, 10, 8), color, -0.1, 1.38, 0.5);
+            earLeft.scale.set(0.55, 1.8, 0.6);
+            const earRight = add(group, new THREE.SphereGeometry(0.09, 10, 8), color, 0.1, 1.38, 0.5);
+            earRight.scale.set(0.55, 1.8, 0.6);
+          }
+          const eyeMaterial = new THREE.MeshStandardMaterial({ color: 0x171a18, roughness: 0.45 });
+          const eye = new THREE.Mesh(new THREE.SphereGeometry(0.035, 8, 6), eyeMaterial);
+          eye.position.set(0.11, 1.08, 0.68);
+          group.add(eye);
+          const tail = add(group, new THREE.SphereGeometry(type === "rabbit" ? 0.14 : 0.11, 10, 8), color, 0, 0.78, -0.52);
+          tail.scale.set(1, 1, 0.8);
+          group.scale.setScalar(type === "rabbit" ? 0.63 : 0.9);
+          group.userData.legs = legs;
+          return group;
+        }
+
+        const animals = [];
+        const animalTypes = ["rabbit", "deer", "sheep", "fox"];
+        for (let i = 0; i < 8; i++) {
+          const group = createAnimal(animalTypes[i % animalTypes.length]);
+          Object.assign(group.userData, {
+            angle: rnd() * 6.3,
+            radius: rr(3, 6.2),
+            speed: rr(0.12, 0.28) * (rnd() < 0.5 ? -1 : 1),
+            phase: rnd() * 6.3,
+          });
+          island.add(group);
+          animals.push(group);
+        }
+
+        // Island visitors
+        const skin = 0x9a6c50;
+        const clothes = [0x536d78, 0x8c5c45, 0x65774c, 0x6a6278, 0x88784d];
+        const personLegGeometry = new THREE.CylinderGeometry(0.07, 0.09, 0.62, 8).translate(0, -0.3, 0);
+        const personArmGeometry = new THREE.CylinderGeometry(0.055, 0.075, 0.62, 8).translate(0, -0.3, 0);
+        const people = [];
+        for (let i = 0; i < 5; i++) {
+          const group = new THREE.Group();
+          const legs = [
+            add(group, personLegGeometry, 0x6b4a2b, -0.13, 0.6, 0),
+            add(group, personLegGeometry, 0x6b4a2b, 0.13, 0.6, 0),
+          ];
+          const shirt = add(group, new THREE.CylinderGeometry(0.2, 0.3, 0.7, 16), pick(clothes), 0, 0.98, 0);
+          shirt.material.roughness = 0.95;
+          const arms = [
+            add(group, personArmGeometry, skin, -0.33, 1.2, 0),
+            add(group, personArmGeometry, skin, 0.33, 1.2, 0),
+          ];
+          add(group, new THREE.SphereGeometry(0.19, 16, 12), skin, 0, 1.55, 0);
+          const hair = add(group, new THREE.SphereGeometry(0.195, 14, 10), 0x42362e, 0, 1.66, -0.035);
+          hair.scale.set(1, 0.68, 0.96);
+          Object.assign(group.userData, {
+            angle: i * 1.26,
+            speed: rr(0.08, 0.14) * (i % 2 ? -1 : 1),
+            phase: rnd() * 6.3,
+            legs,
+            arms,
+            wave: i % 2 === 0,
+          });
+          island.add(group);
+          people.push(group);
+        }
+
+        // Birds
+        const birds = [];
+        const wingGeometry = new THREE.SphereGeometry(0.48, 12, 8);
+        const beakGeometry = new THREE.ConeGeometry(0.15, 0.6, 5);
+        beakGeometry.rotateX(Math.PI / 2);
+        for (let i = 0; i < 5; i++) {
+          const group = new THREE.Group();
+          const color = pick([0x39464b, 0x8a6e4a, 0xe7e1d0]);
+          const body = add(group, new THREE.SphereGeometry(0.18, 12, 8), color);
+          body.scale.set(0.8, 0.8, 1.5);
+          add(group, new THREE.SphereGeometry(0.11, 10, 8), color, 0, 0.06, 0.25);
+          add(group, beakGeometry, 0xd7a34e, 0, 0.02, 0.39).scale.set(0.22, 0.22, 0.35);
+          const leftWing = add(group, wingGeometry, color, -0.3, 0.02, 0);
+          leftWing.scale.set(1.15, 0.12, 0.52);
+          const rightWing = add(group, wingGeometry, color, 0.3, 0.02, 0);
+          rightWing.scale.set(1.15, 0.12, 0.52);
+          Object.assign(group.userData, {
+            angle: rnd() * 6.3,
+            radius: rr(10, 17),
+            height: rr(9, 14),
+            speed: rr(0.25, 0.45) * (rnd() < 0.5 ? -1 : 1),
+            phase: rnd() * 6.3,
+            leftWing,
+            rightWing,
+          });
+          scene.add(group);
+          birds.push(group);
+        }
+
+        // Clouds and sea
+        const clouds = new THREE.Group();
+        scene.add(clouds);
+        const cloudCanvas = document.createElement("canvas");
+        cloudCanvas.width = 256;
+        cloudCanvas.height = 256;
+        const cloudContext = cloudCanvas.getContext("2d");
+        [
+          [0.35, 0.45, 0.37],
+          [0.62, 0.4, 0.34],
+          [0.5, 0.62, 0.33],
+          [0.26, 0.62, 0.24],
+          [0.72, 0.62, 0.22],
+        ].forEach(([x, y, radius]) => {
+          const gradient = cloudContext.createRadialGradient(
+            x * 256, y * 256, 0,
+            x * 256, y * 256, radius * 256,
+          );
+          gradient.addColorStop(0, "rgba(255,255,255,0.62)");
+          gradient.addColorStop(0.38, "rgba(255,255,255,0.42)");
+          gradient.addColorStop(1, "rgba(255,255,255,0)");
+          cloudContext.fillStyle = gradient;
+          cloudContext.fillRect(0, 0, 256, 256);
+        });
+        const cloudTexture = new THREE.CanvasTexture(cloudCanvas);
+        cloudTexture.encoding = THREE.sRGBEncoding;
+        for (let i = 0; i < 8; i++) {
+          const cloud = new THREE.Group();
+          const puff = new THREE.Sprite(new THREE.SpriteMaterial({
+            map: cloudTexture,
+            color: 0xffffff,
+            transparent: true,
+            opacity: rr(0.82, 1),
+            depthWrite: false,
+            fog: false,
+          }));
+          puff.scale.set(rr(14, 20), rr(6, 9), 1);
+          cloud.add(puff);
+          const angle = rnd() * 6.3;
+          const radius = rr(20, 34);
+          cloud.position.set(Math.cos(angle) * radius, rr(10, 17), Math.sin(angle) * radius);
+          clouds.add(cloud);
+        }
+        const sea = new THREE.Mesh(
+          new THREE.PlaneGeometry(500, 500, 100, 100),
+          new THREE.MeshStandardMaterial({
+            color: 0x367f9c,
+            roughness: 0.22,
+            metalness: 0.18,
+            transparent: true,
+            opacity: 0.92,
+          }),
+        );
+        sea.rotation.x = -Math.PI / 2;
+        sea.position.y = -14.55;
+        sea.receiveShadow = false;
+        scene.add(sea);
+
+        // Orbit and zoom controls
+        let dragging = false;
+        let lastX = 0;
+        let lastY = 0;
+        let theta = 0.6;
+        let phi = 1.0;
+        let distance = 29;
+        const canvas = renderer.domElement;
+        canvas.setAttribute("aria-label", "Interactive 3D floating island");
+        canvas.addEventListener("pointerdown", (event) => {
+          dragging = true;
+          lastX = event.clientX;
+          lastY = event.clientY;
+          canvas.setPointerCapture(event.pointerId);
+        });
+        canvas.addEventListener("pointerup", () => { dragging = false; });
+        canvas.addEventListener("pointercancel", () => { dragging = false; });
+        canvas.addEventListener("pointermove", (event) => {
+          if (!dragging) return;
+          theta -= (event.clientX - lastX) * 0.006;
+          phi = Math.min(1.45, Math.max(0.15, phi - (event.clientY - lastY) * 0.005));
+          lastX = event.clientX;
+          lastY = event.clientY;
+        });
+        canvas.addEventListener("wheel", (event) => {
+          distance = Math.min(75, Math.max(18, distance + event.deltaY * 0.04));
+        }, { passive: true });
+        hint.addEventListener("keydown", (event) => {
+          const step = event.shiftKey ? 0.12 : 0.06;
+          if (event.key === "ArrowLeft") theta -= step;
+          else if (event.key === "ArrowRight") theta += step;
+          else if (event.key === "ArrowUp") phi = Math.max(0.15, phi - step);
+          else if (event.key === "ArrowDown") phi = Math.min(1.45, phi + step);
+          else if (event.key === "+" || event.key === "=") distance = Math.max(18, distance - 2);
+          else if (event.key === "-" || event.key === "_") distance = Math.min(75, distance + 2);
+          else return;
+          event.preventDefault();
+        });
+
+        addEventListener("resize", () => {
+          camera.aspect = innerWidth / innerHeight;
+          camera.updateProjectionMatrix();
+          renderer.setSize(innerWidth, innerHeight);
+        });
+
+        // Animation loop
+        const clock = new THREE.Clock();
+        const target = new THREE.Vector3(0, 3, 0);
+        let time = 0;
+        function loop() {
+          const delta = Math.min(clock.getDelta(), 0.05);
+          time += delta;
+          island.position.y = Math.sin(time * 0.6) * 0.5;
+          island.rotation.z = Math.sin(time * 0.4) * 0.015;
+
+          camera.position.set(
+            distance * Math.sin(phi) * Math.cos(theta),
+            target.y + distance * Math.cos(phi),
+            distance * Math.sin(phi) * Math.sin(theta),
+          );
+          camera.lookAt(target);
+
+          flame.scale.set(1 + Math.sin(time * 12) * 0.1, 1 + Math.sin(time * 9) * 0.2, 1);
+          fireLight.intensity = 1.1 + Math.sin(time * 14) * 0.2;
+          clouds.rotation.y += delta * 0.02;
+
+          animals.forEach((animal) => {
+            const data = animal.userData;
+            data.angle += data.speed * delta;
+            animal.position.set(
+              Math.cos(data.angle) * data.radius,
+              0.8 + Math.max(0, Math.sin(time * 8 + data.phase)) * 0.06,
+              Math.sin(data.angle) * data.radius,
+            );
+            animal.rotation.y = data.speed > 0 ? -data.angle : -data.angle + Math.PI;
+            const step = Math.sin(time * 8 + data.phase) * 0.5;
+            const legs = data.legs;
+            legs[0].rotation.x = step;
+            legs[1].rotation.x = -step;
+            legs[2].rotation.x = -step;
+            legs[3].rotation.x = step;
+          });
+
+          people.forEach((person) => {
+            const data = person.userData;
+            data.angle += data.speed * delta;
+            person.position.set(Math.cos(data.angle) * 2.6, 0.8, Math.sin(data.angle) * 2.6);
+            person.rotation.y = data.speed > 0 ? -data.angle : -data.angle + Math.PI;
+            const step = Math.sin(time * 5 + data.phase) * 0.5;
+            data.legs[0].rotation.x = step;
+            data.legs[1].rotation.x = -step;
+            data.arms[0].rotation.x = -step;
+            data.arms[1].rotation.x = data.wave ? -2.4 + Math.sin(time * 6) * 0.3 : step;
+          });
+
+          birds.forEach((bird) => {
+            const data = bird.userData;
+            data.angle += data.speed * delta;
+            bird.position.set(
+              Math.cos(data.angle) * data.radius,
+              data.height + Math.sin(time * 1.5 + data.phase) * 0.6,
+              Math.sin(data.angle) * data.radius,
+            );
+            bird.rotation.y = data.speed > 0 ? -data.angle : -data.angle + Math.PI;
+            bird.rotation.z = Math.sin(time * 1.5 + data.phase) * 0.15;
+            data.leftWing.rotation.z = Math.sin(time * 12 + data.phase) * 0.7;
+            data.rightWing.rotation.z = -data.leftWing.rotation.z;
+          });
+
+          flowers.forEach((flower) => {
+            flower.rotation.z = Math.sin(time * 1.5 + flower.userData.phase) * 0.08;
+          });
+
+          renderer.render(scene, camera);
+          requestAnimationFrame(loop);
+        }
+        loop();
+      } catch {
+        hint.textContent = "This browser could not start the 3D scene. Try a browser with WebGL enabled.";
+      }
+    })();
+  </script>
+</body>
+</html>
