@@ -330,6 +330,7 @@ export async function getExecutionOwnershipBlocker(db: Db, companyId: string, is
   return ownership ? { ...ownership, recoveryActionId: null } : null;
 }
 
+/** A resolved no-replay disposition remains an effective hold. */
 export async function getExecutionBlocker(db: Db, companyId: string, issueId: string, options?: {
   conversationResetCommentId?: string | null;
   /** The current issue row held under this transaction's issue lock. */
@@ -370,6 +371,7 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
 
   const ownership = options?.recoveryHoldOnly ? null : await getExecutionOwnershipBlocker(db, companyId, issueId);
   if (ownership) return ownership;
+  // An older recovery action must not shadow the newest applicable blocker.
   const [action] = restoreHold ? [restoreHold] : await db.select().from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, companyId),
     eq(issueRecoveryActions.sourceIssueId, issueId),
