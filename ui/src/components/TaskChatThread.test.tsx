@@ -14,6 +14,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ConnectivityProvider, createConnectivityStore } from "@/lib/connectivity";
 import { INITIAL_TRANSCRIPT_REVEAL_BUDGET_MS, TaskChatThread } from "./TaskChatThread";
+import { STARTUP_LABEL_MIN_DISPLAY_MS } from "./task-chat/run-startup-stage";
 import { IssueChatThread } from "./IssueChatThread";
 import { TaskChatAgentIdentity, TaskTranscriptAgents } from "./task-chat/TaskChatBubble";
 import type {
@@ -604,10 +605,11 @@ it("shows activity during admission and clears it when the saved follow-up enter
   show(false);
   expect(container.textContent).toContain("Confirm the existing result.");
   expect(container.textContent).toContain("Working");
-  expect(container.textContent).toContain("Thinking");
+  expect(container.textContent).toContain("Getting ready");
   expect(container.textContent).not.toContain("Queued");
   show(true);
   expect(container.textContent).not.toContain("Thinking");
+  expect(container.textContent).not.toContain("Getting ready");
   expect(container.textContent).not.toContain("Working");
 });
 
@@ -636,7 +638,7 @@ it.each((["task", "legacy"] as const).flatMap(surface =>
     await act(async () => { send!.click(); });
     expect(onAdd).toHaveBeenCalledTimes(1);
     expect(container.textContent).toContain("Working");
-    expect(container.textContent).toContain("Thinking");
+    expect(container.textContent).toContain("Getting ready");
     expect(container.textContent).not.toContain("Queued");
     const identity = container.querySelector('[data-testid="task-chat-agent-identity"]');
     render(<Component {...props} composerDisabledReason="Could not load task pause state." />);
@@ -776,6 +778,7 @@ it.each((["task", "legacy"] as const).flatMap(surface => [
   expect(onAdd).toHaveBeenCalledTimes(1);
   expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBeNull();
   expect(container.textContent).not.toContain("Thinking");
+  expect(container.textContent).not.toContain("Getting ready");
   expect(container.textContent).not.toContain("Taking longer than usual");
 });
 
@@ -808,7 +811,7 @@ it.each([null, "previous-agent"].flatMap(previousAgentId => ["paperclip_runner",
   await act(async () => acknowledge());
   expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
   expect(container.textContent).toContain("Working");
-  expect(container.textContent).toContain("Thinking");
+  expect(container.textContent).toContain("Getting ready");
   expect(container.textContent).not.toContain("Queued");
   // Choosing a recipient for the next draft does not change the sent request.
   await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-assignee"]')!.click());
@@ -1785,23 +1788,24 @@ describe("TaskChatThread runtime transcript selection", () => {
     const activity = container.querySelector('[data-testid="task-chat-current-activity-label"]');
     expect(identity?.textContent).toBe("Runner");
     expect(identity?.querySelector("svg, img")).not.toBeNull();
-    expect(activity?.textContent).toBe("Thinking");
+    expect(activity?.textContent).toBe("Getting ready");
 
     renderThread(props);
     expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
     expect(container.querySelector('[data-testid="task-chat-runner-identity-row"]')).toBe(header);
     expect(container.querySelector('[data-testid="task-chat-current-activity-label"]')).toBe(activity);
 
+    // The server's first stage after the claim is getting_ready, so the line does not change.
     for (const startup of [
       { ...run, runtimeMode: undefined, status: "queued", startedAt: null },
-      { ...run, runtimeMode: "legacy" as const, currentStatusMessage: "run started" },
-      run,
+      { ...run, runtimeMode: "legacy" as const, currentStatusMessage: "run started", startupStage: "getting_ready" as const },
+      { ...run, startupStage: "getting_ready" as const },
     ]) {
       renderThread({ ...props, activeRun: startup });
       expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
       expect(container.querySelector('[data-testid="task-chat-runner-identity-row"]')).toBe(header);
       expect(container.querySelector('[data-testid="task-chat-current-activity-label"]')).toBe(activity);
-      expect(activity?.textContent).toBe("Thinking");
+      expect(activity?.textContent).toBe("Getting ready");
       expect(header?.textContent).toContain("Working");
       expect(container.textContent).not.toContain("Queued");
       expect(container.querySelector('[data-testid="task-chat-live-run-pill"]')).toBeNull();
@@ -1815,6 +1819,42 @@ describe("TaskChatThread runtime transcript selection", () => {
     expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
     expect(container.querySelector('[data-testid="task-chat-runner-identity-row"]')).toBe(header);
     expect(container.textContent).toContain("Thinking");
+  });
+
+  it("names a claimed run's startup stage in the activity slot until agent activity arrives", async () => {
+    const run = nativeRunningRun();
+    const props = {
+      comments: [], onAdd: async () => {}, issueStatus: "in_progress",
+      currentUserId: "board", issueAssigneeAgentId: "agent-1",
+      agentMap: new Map([["agent-1", { id: "agent-1", name: "Runner", adapterType: "paperclip_runner", icon: "code" } as Agent]]),
+    };
+    const activity = () => container.querySelector('[data-testid="task-chat-current-activity-label"]');
+    renderThread({ ...props, activeRun: { ...run, startupStage: "connecting_tools" } });
+    expect(activity()?.textContent).toBe("Connecting tools");
+    // The stage is the activity line; the header keeps its usual Working status.
+    expect(container.querySelector('[data-testid="task-chat-turn-status-header"]')?.textContent).toContain("Working");
+
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, STARTUP_LABEL_MIN_DISPLAY_MS + 50)); });
+    renderThread({ ...props, activeRun: { ...run, startupStage: "starting_agent", startupSessionResumed: true } });
+    expect(activity()?.textContent).toBe("Resuming session");
+
+    nativeTranscriptState.transcriptByRun.set(run.id, [
+      { kind: "thinking", ts: "2026-08-25T18:00:01.000Z", text: "", lifecycle: "started", itemId: "reasoning-1" },
+    ]);
+    renderThread({ ...props, activeRun: { ...run, startupStage: "starting_agent" } });
+    expect(container.textContent).not.toContain("Starting agent");
+    expect(container.textContent).not.toContain("Resuming session");
+  });
+
+  it("does not name a startup stage for a queued run", () => {
+    const run = nativeRunningRun();
+    renderThread({
+      comments: [], onAdd: async () => {}, issueStatus: "in_progress",
+      currentUserId: "board", issueAssigneeAgentId: "agent-1",
+      agentMap: new Map([["agent-1", { id: "agent-1", name: "Runner", adapterType: "paperclip_runner", icon: "code" } as Agent]]),
+      activeRun: { ...run, status: "queued", startedAt: null, startupStage: "connecting_tools" },
+    });
+    expect(container.textContent).not.toContain("Connecting tools");
   });
 
   it.each([false, true].flatMap(mobile => ["streamed", "late", "absent"].map(reply => ({ mobile, reply }))))(

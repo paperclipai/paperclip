@@ -3518,6 +3518,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                                       agent={tailAgent ?? (tailAgentId ? { id: tailAgentId } : undefined)}
                                       items={tailItems}
                                       preparationLabel={optimisticRunnerStartup && submissionTakingLonger ? "Taking longer than usual…" : undefined}
+                                      startupStage={liveRun?.id === tailRunId ? liveRun.startupStage : null}
+                                      startupSessionResumed={liveRun?.id === tailRunId && liveRun.startupSessionResumed === true}
                                       allowSummaryFallback={!paperclipRunnerTail ||
                                         terminalHydratedRunIds.has(tailRunId ?? "") ||
                                         tailEntries.some((entry) => entry.kind === "run_terminal")}

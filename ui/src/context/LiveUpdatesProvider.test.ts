@@ -579,6 +579,29 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     ]);
   });
 
+  it("patches a run's startup stage and drops unknown stages", () => {
+    const read = (stage: unknown, sessionResumed?: unknown) =>
+      __liveUpdatesTestUtils.readRunLiveStatusPatchFromPayload(
+        { runId: "run-1", agentId: "agent-1", issueId: "issue-1", stage, sessionResumed },
+        "2026-04-06T12:00:09.000Z",
+        "heartbeat.run.startup_stage",
+      );
+    expect(read("connecting_tools")).toEqual({
+      runId: "run-1", agentId: "agent-1", issueId: "issue-1",
+      startupStage: "connecting_tools", startupSessionResumed: false,
+    });
+    expect(read("starting_agent", true)).toMatchObject({ startupStage: "starting_agent", startupSessionResumed: true });
+    expect(read(null)).toMatchObject({ startupStage: null });
+    expect(read("made_up_stage")).toMatchObject({ startupStage: null });
+
+    const client = new QueryClient();
+    client.setQueryData(queryKeys.liveRuns("company-1"), [{ id: "run-1", status: "running", startupStage: "getting_ready" }]);
+    __liveUpdatesTestUtils.applyRunLiveStatusPatchToCaches(client, "company-1", "/", read("restoring_session")!);
+    expect(client.getQueryData(queryKeys.liveRuns("company-1"))).toEqual([
+      expect.objectContaining({ startupStage: "restoring_session", startupSessionResumed: false }),
+    ]);
+  });
+
   it("uses the heartbeat event timestamp for run event status patches", () => {
     expect(
       __liveUpdatesTestUtils.readRunLiveStatusPatchFromPayload(

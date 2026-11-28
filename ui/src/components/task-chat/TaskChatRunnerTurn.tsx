@@ -5,7 +5,8 @@ import { WAITING_TO_START_LABEL, useWaitingToStart } from "./useWaitingToStart";
 import { McpAppTurnViews, mcpAppRunRefreshKey } from "@/components/mcp-app/McpAppTurnViews";
 import { ToolCallProgressRunProvider } from "./tool-call-progress";
 import { useRef, type ReactNode } from "react";
-import type { ExecutionProjection } from "@paperclipai/shared";
+import type { ExecutionProjection, RunStartupStage } from "@paperclipai/shared";
+import { RUN_STARTUP_STAGE_LABELS, runStartupStageLabel, useHeldLabel } from "./run-startup-stage";
 import { useSecondTick } from "@/hooks/useSecondTick";
 import { cn } from "@/lib/utils";
 import type {
@@ -115,12 +116,28 @@ function RunnerTurnStatus({
   );
 }
 
-function RunnerCurrentActivityTail({ status, waitingLabel }: { status: string; waitingLabel?: string | null }) {
+function RunnerCurrentActivityTail({ status, waitingLabel, startupLabel }: {
+  status: string;
+  waitingLabel?: string | null;
+  /** The claimed run's startup step; work in progress, so it shimmers like Thinking. */
+  startupLabel?: string | null;
+}) {
   const shimmer = useTaskChatShimmer("working");
+  const heldStartupLabel = useHeldLabel(waitingLabel ? null : startupLabel ?? null);
   if (isTerminalRunStatus(status)) return null;
   return <div className="mt-2 flex min-h-8 min-w-0 items-center gap-2 px-1 py-1 text-xs text-muted-foreground" data-testid="task-chat-current-activity" data-turn-position="tail">
-    <span className={cn(!waitingLabel && shimmer && "shimmer-text shimmer-text-muted")} aria-live="polite" data-testid="task-chat-current-activity-label">{waitingLabel ?? "Thinking"}</span>
+    <span className={cn(!waitingLabel && shimmer && "shimmer-text shimmer-text-muted")} aria-live="polite" data-testid="task-chat-current-activity-label">{waitingLabel ?? heldStartupLabel ?? "Thinking"}</span>
   </div>;
+}
+
+/**
+ * A queued turn is getting ready from submission, which is also the first
+ * stage the server reports once it claims the run, so the line does not change
+ * at the claim. A claimed run names its current stage until the agent works.
+ */
+function runnerStartupLabel(status: string, stage: RunStartupStage | null, sessionResumed: boolean): string | null {
+  if (status === "queued") return RUN_STARTUP_STAGE_LABELS.getting_ready;
+  return status === "running" ? runStartupStageLabel(stage, sessionResumed) : null;
 }
 
 interface RunnerHeaderProps {
@@ -172,6 +189,8 @@ export function TaskChatRunnerTurn({
   status,
   execution,
   preparationLabel,
+  startupStage = null,
+  startupSessionResumed = false,
   startedAtMs,
   finishedAtMs,
   activityUnavailable = false,
@@ -192,6 +211,9 @@ export function TaskChatRunnerTurn({
   execution?: ExecutionProjection | null;
   /** Presentation only while Send/Retry admission has no run yet. */
   preparationLabel?: string;
+  /** The claimed run's current startup step, until its agent turn starts. */
+  startupStage?: RunStartupStage | null;
+  startupSessionResumed?: boolean;
   startedAtMs: number | null;
   finishedAtMs?: number | null;
   activityUnavailable?: boolean;
@@ -339,7 +361,8 @@ export function TaskChatRunnerTurn({
         </div>
       ) : null}
       {!final && currentActivityItems.length === 0 && !(status === "queued" && runId && (waitingLabel || agentQueueWaitFor({ status, execution })))
-        ? <RunnerCurrentActivityTail status={status} waitingLabel={waitingLabel} /> : null}
+        ? <RunnerCurrentActivityTail status={status} waitingLabel={waitingLabel}
+          startupLabel={runnerStartupLabel(status, startupStage, startupSessionResumed)} /> : null}
     </div></ToolCallProgressRunProvider></TaskChatShimmerScope>
   );
 }

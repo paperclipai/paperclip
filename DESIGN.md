@@ -147,14 +147,23 @@ recipient for a later draft must not change the response already starting.
 Runtime discovery must not replace the turn with a generic spinner or a
 "run started" receipt. Queued and running headers use the same spacing.
 
-A queued turn shows the same `Working` header and shimmering `Thinking` activity
-as a running turn, starting at message submission. Keep specific server holds,
-such as `Waiting for maintenance`, agent setup, or another open task of the same
-routine, visible during admission. Admission normally starts a run within seconds,
+A queued turn shows the same `Working` header as a running turn, with a
+shimmering `Getting ready` activity line, starting at message submission. Keep
+specific server holds, such as `Waiting for maintenance`, agent setup, or another
+open task of the same routine, visible during admission. Admission normally starts a run within seconds,
 so this startup feedback lasts at most 30 seconds: a turn still queued after that
 with no named hold says `Waiting to start`, without spinner or shimmer.
 A queued turn's hold is named once, in the turn header; the turn body adds no
 second line for it.
+Once the run is claimed and until its agent's turn starts, the
+current-activity slot names the run's startup stage. The claim continues
+`Getting ready` without a change, then the stage moves on to `Waking up`,
+`Preparing workspace`, `Restoring session`, `Connecting tools` or
+`Starting agent` (`Resuming session` when the provider resumed a saved
+session). The header keeps `Working`. A stage shimmers like `Thinking`, because
+work is in progress. Show each stage at once, and keep a shown stage for at
+least 500 ms; a change during that time shows the latest stage when it ends.
+`Thinking` begins when the agent's turn starts, and agent activity replaces it.
 A run that waits for one of its agent's concurrency slots is a hold too: show
 `Waiting for <agent> · N slots max · P of Q in line · Configure` (the shared
 `AgentQueueWait` component) with no spinner or elapsed timer, link Configure to the

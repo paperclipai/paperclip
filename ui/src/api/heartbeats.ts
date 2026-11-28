@@ -1,4 +1,4 @@
-import type { AgentAppearance } from "@paperclipai/shared";
+import type { AgentAppearance, RunStartupStage } from "@paperclipai/shared";
 import { HEARTBEAT_RUN_LIST_DEFAULT_LIMIT } from "@paperclipai/shared";
 import type { IssueRecoveryAction } from "@paperclipai/shared";
 import type {
@@ -52,6 +52,8 @@ export interface ActiveRunForIssue {
   currentToolName?: string | null;
   lastAssistantSnippet?: string | null;
   lastEventAt?: string | Date | null;
+  startupStage?: RunStartupStage | null;
+  startupSessionResumed?: boolean;
 }
 
 export interface LiveRunForIssue {
@@ -87,6 +89,8 @@ export interface LiveRunForIssue {
   currentToolName?: string | null;
   lastAssistantSnippet?: string | null;
   lastEventAt?: string | null;
+  startupStage?: RunStartupStage | null;
+  startupSessionResumed?: boolean;
 }
 
 export interface WatchdogDecisionInput {
