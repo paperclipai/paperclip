@@ -16,6 +16,8 @@ interface StatusIconProps extends TaskStatusPresentationInput {
   showLabel?: boolean;
   /** Glyph size (PAP-243a). Default `md` (16px); lists/detail/mentions use `lg` (20px). */
   size?: StatusGlyphSize;
+  /** Live run active. Animates in_review glyph while work continues. */
+  live?: boolean;
 }
 
 /** Shared accessible/tooltip copy, including waiting and covered-blocker states. */
@@ -35,7 +37,7 @@ export function getStatusIconLabel(status: string, externalConversationState?: "
  * glyph — the blocked shape recoloured blue — while the full blocked reason
  * still rides on the accessible label.
  */
-export function StatusIcon({ status, displayStatus: presentationStatus, externalConversationState, blockerAttention, onChange, className, glyphContainerClassName, showLabel, size = "md" }: StatusIconProps) {
+export function StatusIcon({ status, displayStatus: presentationStatus, externalConversationState, blockerAttention, onChange, className, glyphContainerClassName, showLabel, size = "md", live = false }: StatusIconProps) {
   const [open, setOpen] = useState(false);
   const presentation = { status, displayStatus: presentationStatus, externalConversationState, blockerAttention };
   const { glyphStatus, label, ariaLabel } = resolveTaskStatusPresentation(presentation);
@@ -44,6 +46,7 @@ export function StatusIcon({ status, displayStatus: presentationStatus, external
     <StatusGlyph
       status={glyphStatus}
       size={size}
+      live={live}
       className={cn(onChange && !showLabel && "cursor-pointer", className)}
       title={ariaLabel}
     />
