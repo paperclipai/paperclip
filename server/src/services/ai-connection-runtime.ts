@@ -17,6 +17,10 @@ import {
 } from "@paperclipai/shared";
 import { managedProviderRouting } from "./ai-provider-routing.js";
 import { aiConnectionService } from "./ai-connections.js";
+import {
+  provisionManagedHomeKeychain,
+  releaseManagedHomeKeychain,
+} from "./managed-home-keychain.js";
 import { subscriptionService } from "./subscriptions.js";
 import { refreshSubscriptionConnection } from "./subscription-refresh.js";
 import { secretService } from "./secrets.js";
@@ -318,6 +322,7 @@ export async function prepareManagedAiRuntime(
     if (harness === "antigravity_runtime") home = await realpath(home);
     const providerHome = path.join(home, "provider");
     await mkdir(providerHome, { mode: 0o700 });
+    await provisionManagedHomeKeychain(home);
     if (retainedCleanupScope) releaseCredentialHome = bindRetainedAiCredentialHome(providerHome, retainedCleanupScope);
     const env: Record<string, unknown> = {
       ...stripAiAuthBindings(input.config.env),
@@ -412,7 +417,10 @@ export async function prepareManagedAiRuntime(
     let removalOnly = false;
     let deferredWriteback: { cause: unknown } | undefined;
     const removeHome = async () => {
-      if (home) await rm(home, { recursive: true, force: true });
+      if (home) {
+        await releaseManagedHomeKeychain(home);
+        await rm(home, { recursive: true, force: true });
+      }
       homeRemoved = true;
       releaseCredentialHome?.();
     };
@@ -606,7 +614,10 @@ export async function prepareManagedAiRuntime(
       cleanup: cleanupRuntime,
     };
   } catch (error) {
-    if (home) await rm(home, { recursive: true, force: true });
+    if (home) {
+      await releaseManagedHomeKeychain(home);
+      await rm(home, { recursive: true, force: true });
+    }
     releaseCredentialHome?.();
     throw error;
   }
