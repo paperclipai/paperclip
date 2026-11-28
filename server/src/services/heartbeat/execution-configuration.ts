@@ -24,7 +24,7 @@ import type { companySkillService } from "../company-skills.js";
 import { connectionIntentService } from "../connection-intents.js";
 import { PLUGIN_RUNNER_AI_CONNECTION_REQUIRED, pluginEnvironmentRunnerTaskDriver, pluginRunnerAiConnectionRequiredMessage } from "../plugin-runner-ai-connection.js";
 import { prepareConnectionInstructionDelivery } from "../connection-instructions.js";
-import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments } from "../connector-runtime.js";
+import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments, takesRunScopedMetadataInPrompt } from "../connector-runtime.js";
 import { resolveManagedGitHubIdentitySelection } from "../git-credentials.js";
 import { resolveAssignedConnectionInstructionsForRun, resolveMcpConnectionSkillsForRun } from "../native-runtime/assigned-mcp-tools.js";
 import { applyMcpConnectionSkills } from "../mcp-skill-runtime.js";
@@ -452,7 +452,9 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
     endedAtMs: skillsPrepareEndedAtMs,
   });
   const connectorAssignments = preparedAssignments.value;
-  const appliedConnectorSkills = await time("configuration_connector_skills", () => applyConnectorSkills(skillDeliveryConfig, runtimeSkillEntries, connectorAssignments));
+  const appliedConnectorSkills = await time("configuration_connector_skills", () => applyConnectorSkills(skillDeliveryConfig, runtimeSkillEntries, connectorAssignments, {
+    runScopedMetadataInPrompt: takesRunScopedMetadataInPrompt(agent.adapterType, skillDeliveryConfig),
+  }));
   const mcpSkills = await mcpSkillsPreparation;
   if (mcpSkills?.skipped.length) {
     await appendRunEvent(run, { eventType: "skills.mcp_unavailable", stream: "system", level: "warn",
