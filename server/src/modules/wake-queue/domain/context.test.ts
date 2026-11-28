@@ -2,6 +2,43 @@ import { describe, expect, it } from "vitest";
 import { enrichPromotedWakeContext } from "./context.js";
 
 describe("enrichPromotedWakeContext", () => {
+  it.each(["payload", "contextSnapshot"])("restores scope from a UUID task key in %s", (location) => {
+    const taskKey = "11111111-1111-4111-8111-111111111111";
+    const result = enrichPromotedWakeContext({
+      contextSnapshot: location === "contextSnapshot" ? { taskKey } : {},
+      payload: location === "payload" ? { taskKey } : null,
+      reason: "task_retry",
+      source: "on_demand",
+      triggerDetail: "manual",
+    });
+    expect(result.contextSnapshot).toMatchObject({ issueId: taskKey, taskId: taskKey, taskKey });
+    expect(result.taskKey).toBe(taskKey);
+  });
+
+  it("does not interpret a human-readable task key as an issue id", () => {
+    const result = enrichPromotedWakeContext({
+      contextSnapshot: {},
+      payload: { taskKey: "TASK-1" },
+      reason: "task_retry",
+      source: "on_demand",
+      triggerDetail: "manual",
+    });
+    expect(result.contextSnapshot.taskKey).toBe("TASK-1");
+    expect(result.contextSnapshot.issueId).toBeUndefined();
+    expect(result.contextSnapshot.taskId).toBeUndefined();
+  });
+
+  it("keeps explicit payload scope ahead of a UUID task key", () => {
+    const result = enrichPromotedWakeContext({
+      contextSnapshot: { taskKey: "11111111-1111-4111-8111-111111111111" },
+      payload: { issueId: "issue-1" },
+      reason: "task_retry",
+      source: "on_demand",
+      triggerDetail: "manual",
+    });
+    expect(result.contextSnapshot).toMatchObject({ issueId: "issue-1", taskId: "issue-1" });
+  });
+
   it("clears stale derived comment projections when the canonical id list is empty, but keeps an independent interaction continuation", () => {
     const contextSnapshot: Record<string, unknown> = {
       // Normalization already dropped the canonical wake comment ids upstream

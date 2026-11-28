@@ -4,6 +4,7 @@
 // shape; this file holds only the small pieces that are specific to
 // building the release half's promoted-run snapshot.
 
+import { isUuidLike } from "@paperclipai/shared";
 import { extractWakeCommentIds, WAKE_COMMENT_IDS_KEY, wakeChatConversationsConflict } from "../../run-dispatch/index.js";
 import { parseObject, readNonEmptyString } from "./values.js";
 
@@ -153,9 +154,10 @@ export function enrichPromotedWakeContext(
 ): EnrichPromotedWakeContextResult {
   const contextSnapshot = { ...input.contextSnapshot };
   const { reason, source, triggerDetail, payload } = input;
-  const issueIdFromPayload = readNonEmptyString(payload?.["issueId"]) ?? readNonEmptyString(payload?.["taskId"]);
   const commentIdFromPayload = readNonEmptyString(payload?.["commentId"]);
   const taskKey = deriveTaskKey(contextSnapshot, payload);
+  const issueId = readNonEmptyString(payload?.["issueId"]) ?? readNonEmptyString(payload?.["taskId"]) ??
+    (isUuidLike(taskKey) ? taskKey : null);
   const wakeCommentIds = mergeWakeCommentIds(contextSnapshot, commentIdFromPayload);
 
   if (!readNonEmptyString(contextSnapshot["wakeReason"]) && reason) {
@@ -163,11 +165,11 @@ export function enrichPromotedWakeContext(
   }
   // Some durable receipts, such as a board Retry, store only the payload and
   // never had a queued context snapshot. Keep their issue scope.
-  if (!readNonEmptyString(contextSnapshot["issueId"]) && issueIdFromPayload) {
-    contextSnapshot.issueId = issueIdFromPayload;
+  if (!readNonEmptyString(contextSnapshot["issueId"]) && issueId) {
+    contextSnapshot.issueId = issueId;
   }
-  if (!readNonEmptyString(contextSnapshot["taskId"]) && issueIdFromPayload) {
-    contextSnapshot.taskId = issueIdFromPayload;
+  if (!readNonEmptyString(contextSnapshot["taskId"]) && issueId) {
+    contextSnapshot.taskId = issueId;
   }
   if (!readNonEmptyString(contextSnapshot["taskKey"]) && taskKey) {
     contextSnapshot.taskKey = taskKey;
