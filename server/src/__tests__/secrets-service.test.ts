@@ -1487,6 +1487,33 @@ describeEmbeddedPostgres("secretService", () => {
     });
   });
 
+  it("keeps binding ids when a replace-all sync leaves the secret ref unchanged", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `stable-binding-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "stable-value",
+    });
+    const target = { targetType: "agent" as const, targetId: `agent-${randomUUID()}` };
+    const ref = { secretId: secret.id, configPath: "env.API_KEY" };
+
+    await svc.syncSecretRefsForTarget(companyId, target, [ref], { replaceAll: true });
+    const before = await db
+      .select()
+      .from(companySecretBindings)
+      .where(eq(companySecretBindings.targetId, target.targetId));
+    expect(before).toHaveLength(1);
+
+    await svc.syncSecretRefsForTarget(companyId, target, [ref], { replaceAll: true });
+    const after = await db
+      .select()
+      .from(companySecretBindings)
+      .where(eq(companySecretBindings.targetId, target.targetId));
+    expect(after).toHaveLength(1);
+    expect(after[0]!.id).toBe(before[0]!.id);
+  });
+
   it("reports reference counts and resolves binding target labels", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
