@@ -90,7 +90,14 @@ function githubUrl(value: unknown): string | null {
   if (!candidate) return null;
   try {
     const url = new URL(candidate);
-    return url.protocol === "https:" && url.hostname.toLowerCase() === "github.com" ? url.toString() : null;
+    return url.protocol === "https:"
+      && url.hostname.toLowerCase() === "github.com"
+      && !url.username
+      && !url.password
+      && !url.search
+      && !url.hash
+      ? url.toString()
+      : null;
   } catch {
     return null;
   }
