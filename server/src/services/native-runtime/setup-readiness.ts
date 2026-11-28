@@ -6,7 +6,7 @@ import { CODEX_CHATGPT_MODEL_REJECTION_RE, codexChatGptRetirementHint } from "@p
 import { copyBackCodexAuth } from "@paperclipai/adapter-codex-local/server";
 import type { AdapterEnvironmentTestContext, AdapterEnvironmentTestResult } from "@paperclipai/adapter-utils";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
-import { NativeEnvironmentProbeCleanupError, probeNativeRunnerEnvironment, resolveSourceCodexHome } from "../../vendor/paperclip-runner/index.js";
+import { NativeEnvironmentProbeCleanupError, isCodexAppServerLaunchDriver, probeNativeRunnerEnvironment, resolveSourceCodexHome } from "../../vendor/paperclip-runner/index.js";
 import { resolvePaperclipRunnerBinary, resolveRemotePaperclipRunnerBinary } from "./native-codex-runner.js";
 import { readLocalAiCredentialFile } from "../local-ai-credential-file.js";
 import { readRemoteUserHome } from "./remote-user-home.js";
@@ -259,7 +259,7 @@ export async function testNativeRunnerAuthentication(context: AdapterEnvironment
       });
     }
     if (receipt.helloProbePassed !== true || receipt.provider !== provider || typeof receipt.effectiveModel !== "string" || !receipt.effectiveModel.trim() || receipt.effectiveModel === "unknown" || (model !== null && receipt.effectiveModel !== model)
-      || receipt.providerDriver !== "codex_app_server") throw new Error("The selected native runtime returned an incompatible account or model verification receipt.");
+      || !isCodexAppServerLaunchDriver(receipt.providerDriver)) throw new Error("The selected native runtime returned an incompatible account or model verification receipt.");
     return { adapterType: "paperclip_runner", status: "pass", testedAt: new Date().toISOString(), checks: [{ code: `${provider}_hello_probe_passed`, level: "info",
       message: `The native ${provider} runtime verified the selected account and model in ${remote ? "the selected environment" : "the Paperclip host"}.` }] };
   } catch (error) {

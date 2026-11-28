@@ -203,6 +203,7 @@ const SKILLLESS_BASE_CONFIG = {
 
 export function codexCommandEnvironment(
   source: NodeJS.ProcessEnv = process.env,
+  instructionWorkingCopyRoot?: string,
 ): Record<string, string> {
   const environment: Record<string, string> = {};
   for (const key of [
@@ -215,6 +216,9 @@ export function codexCommandEnvironment(
   ] as const) {
     const value = source[key];
     if (value !== undefined) environment[key] = value;
+  }
+  if (instructionWorkingCopyRoot && source.AGENT_HOME === instructionWorkingCopyRoot) {
+    environment.AGENT_HOME = instructionWorkingCopyRoot;
   }
   if (usesPreconfiguredHome(source) && source.HOME) {
     environment.HOME = source.HOME;
@@ -265,6 +269,8 @@ export function createIsolatedCodexAppServerArgs(
   instructionWorkingCopyRoot?: string,
   protectedPaths: string[] = [],
   disableWebSearch = false,
+  commandEnvironmentTransport: "argv" | "thread" = "argv",
+  persistedCommandEnvironment?: Record<string, unknown>,
 ): string[] {
   const explicitSource = source;
   source ??= process.env;
@@ -286,7 +292,11 @@ export function createIsolatedCodexAppServerArgs(
   // Selected task values are inherited, never serialized into configuration argv.
   for (const key of configuredEnvironmentKeys(explicitSource)) delete commandEnvironment[key];
   if (instructionWorkingCopyRoot && source.AGENT_HOME === instructionWorkingCopyRoot) commandEnvironment.AGENT_HOME = instructionWorkingCopyRoot;
-  const shellEnvironmentKeys = [...new Set([...inheritedEnvironmentKeys, ...Object.keys(commandEnvironment)])].sort();
+  const persistedKeys = commandEnvironmentTransport === "thread"
+    ? ["PATH", "PATHEXT", "SystemRoot", "WINDIR", "LANG", "LC_ALL", "HOME", "ZDOTDIR", "BASH_ENV"]
+      .filter((key) => typeof persistedCommandEnvironment?.[key] === "string")
+    : [];
+  const shellEnvironmentKeys = [...new Set([...inheritedEnvironmentKeys, ...Object.keys(commandEnvironment), ...persistedKeys])].sort();
   if (source.PAPERCLIP_GITHUB_LAUNCHER_DIR) readOnlyRoots = [...readOnlyRoots, source.PAPERCLIP_GITHUB_LAUNCHER_DIR];
   const deniedHostRoots = usesPreconfiguredHome(source) ? [] : [
     ...new Set(
@@ -380,7 +390,7 @@ export function createIsolatedCodexAppServerArgs(
       : ["-c", 'shell_environment_policy.inherit="all"',
           "-c", "shell_environment_policy.ignore_default_excludes=true",
           "-c", `shell_environment_policy.include_only=${JSON.stringify(shellEnvironmentKeys)}`]),
-    ...(commandEnv.length > 0
+    ...(commandEnvironmentTransport === "argv" && commandEnv.length > 0
       ? ["-c", `shell_environment_policy.set={${commandEnv}}`]
       : []),
     // Codex ships its update_plan checklist tool disabled. Paperclip renders it

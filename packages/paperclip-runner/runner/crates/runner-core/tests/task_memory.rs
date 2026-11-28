@@ -51,6 +51,8 @@ fn only_the_launch_flag_adds_the_note_and_the_monitor() {
         approval_policy: "never".to_owned(),
         externally_sandboxed: false,
         read_only: false,
+        command_environment: None,
+        instruction_working_copy_root: None,
         include_skill_instructions: None,
         conversation_mode: None,
     };

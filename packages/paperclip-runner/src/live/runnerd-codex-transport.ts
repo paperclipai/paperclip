@@ -7,7 +7,7 @@ import { resolveGrokDisableWebSearch, admittedGrokWebSearchPolicy } from "../dri
 import { PRP_COMPLETION_TOOL_NAME, PRP_COMPLETION_RESULT_BRIDGE_INPUT_SCHEMA } from "../contracts/completion-result.js";
 import { RunnerLaunchPreparationStore } from "./runner-launch-preparation-store.js";
 import type { PreparedRunnerProviderLaunch, RunnerProviderLaunchRequirements } from "./runner-provider-launch.js";
-import { preparedRunnerLaunchWorkingDirectory, validatePreparedRunnerLaunch, runnerLaunchSettingsMatch, runnerProviderLaunchRequirements, createRunnerProviderLaunch, createRunnerdCodexAppServerArgs, trustedRuntimeReadOnlyRoots } from "./runner-provider-launch.js";
+import { preparedRunnerLaunchWorkingDirectory, validatePreparedRunnerLaunch, runnerLaunchSettingsMatch, runnerProviderLaunchRequirements, createRunnerProviderLaunch, createRunnerdCodexAppServerArgs, isCodexAppServerLaunchDriver, trustedRuntimeReadOnlyRoots } from "./runner-provider-launch.js";
 export { createRunnerdCodexAppServerArgs, resolveRunnerdAcpxPermissionMode, trustedRuntimeReadOnlyRoots, withCodexCollaborationRuntimeInstructions } from "./runner-provider-launch.js";
 import { applyProviderObservabilityEnvironment, redactObservabilityDiagnostic } from "../drivers/agent-observability.js";
 import type { RunnerExecutionDriver } from "../control-plane/runner-execution-driver.js";
@@ -58,6 +58,7 @@ import type {
   CodexTransportProcessInfo,
 } from "../drivers/codex/app-server-transport.js";
 import { createSanitizedCodexEnvironment } from "../drivers/codex/app-server-transport.js";
+import { codexCommandEnvironment } from "../drivers/codex/codex-security-config.js";
 import {
   CodexAppServerDriver,
   codexSemanticToolSpecs,
@@ -7301,6 +7302,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         // These controller-owned, token-free paths belong to the new run.
         // Keep the durable provider profile and thread identity unchanged.
         const recordedCommand = record(runAttachTemplate.provider).command;
+        const providerConfig = record(runAttachTemplate.provider);
+        if (providerConfig.commandEnvironment != null) {
+          providerConfig.driver = "codex_app_server_command_environment_v2";
+          providerConfig.instructionWorkingCopyRoot = codexCommandEnvironment(
+            this.options.environment ?? {},
+            runtimeContext?.instructions.workingCopy?.rootPath,
+          ).AGENT_HOME ?? null;
+        }
         runAttachTemplate.runtimeLaunchArgs =
           createRunnerdCodexAppServerArgs({
             args: this.options.codexArgs,
@@ -7310,10 +7319,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             workingDirectory: this.options.resumeWorkingDirectory,
             runtimeStateRoot: this.options.runnerFilesystemRoot ?? this.#root,
             codexCommand: typeof recordedCommand === "string" ? recordedCommand : this.options.codexCommand,
+            persistedCommandEnvironment: record(providerConfig.commandEnvironment),
+            commandEnvironmentTransport:
+              providerConfig.commandEnvironment == null ? "argv" : "thread",
             instructionWorkingCopyRoot: runtimeContext?.instructions.workingCopy?.rootPath,
             disableProjectInstructions: this.options.disableCodexProjectInstructions,
             readOnlyRoots: [
               ...trustedRuntimeReadOnlyRoots(this.options.environment),
+              ...trustedRuntimeReadOnlyRoots({ PATH: String(record(providerConfig.commandEnvironment).PATH ?? "") }),
               ...(runtimeContext
                 ? [
                     resolve(codexHome, "skills"),
@@ -9781,9 +9794,12 @@ export async function probeNativeRunnerEnvironment(options: {
       workingDirectory, signal: controller.signal });
     controller.signal.throwIfAborted();
     const ids = session.ids();
-    const expectedDriver = { codex: "codex_app_server", opencode: "opencode_server", acpx: "acpx_runtime" }[options.provider];
-    if (!ids.driverSessionId || !ids.providerSessionId || bundle.evidence().providerDriver !== expectedDriver) {
-      throw new Error(`The native environment probe returned no matching provider identity (${bundle.evidence().providerDriver ?? "missing driver"}).`);
+    const { providerDriver } = bundle.evidence();
+    const matchingDriver = options.provider === "codex"
+      ? isCodexAppServerLaunchDriver(providerDriver)
+      : providerDriver === (options.provider === "opencode" ? "opencode_server" : "acpx_runtime");
+    if (!ids.driverSessionId || !ids.providerSessionId || !matchingDriver) {
+      throw new Error(`The native environment probe returned no matching provider identity (${providerDriver ?? "missing driver"}).`);
     }
     const events = session.events()[Symbol.asyncIterator]();
     const first = await events.next();

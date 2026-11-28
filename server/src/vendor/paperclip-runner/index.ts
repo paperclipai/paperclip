@@ -262,6 +262,7 @@ export const configuredEnvironment = runner.configuredEnvironment;
 export const PROVIDER_CREDENTIAL_ENVIRONMENT_KEYS = runner.PROVIDER_CREDENTIAL_ENVIRONMENT_KEYS;
 
 export const probeNativeRunnerEnvironment = runner.probeNativeRunnerEnvironment;
+export const isCodexAppServerLaunchDriver = runner.isCodexAppServerLaunchDriver;
 
 export const resolveGrokDisableWebSearch = runner.resolveGrokDisableWebSearch;
 

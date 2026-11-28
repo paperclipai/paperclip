@@ -278,6 +278,7 @@ it.each([
         const attachedEvent = retired.committedEvents.find(
           (entry) => entry.sourceEventId === heldEvent!.sourceEventId,
         )!;
+        expect(attachedEvent).toBeDefined();
         expect(attachedEvent.logicalEffectCount).toBe(1);
         expect(retired.ackedSourceSeq).toBeGreaterThanOrEqual(
           attachedEvent.sourceSeq,

@@ -51,15 +51,17 @@ describe("Codex selected native account verification", () => {
     vi.unstubAllEnvs();
     for (const root of nativeProbeRuntimeDirectories) await rm(root, { recursive: true, force: true });
   });
-  it.each([["codex", "gpt-6.1-sol", "OPENAI_API_KEY"]] as const)("requires the native %s host and only the selected credential", async (provider, model, key) => {
+  it.each(["codex_app_server", "codex_app_server_command_environment_v2"])("requires the native %s host and only the selected credential", async providerDriver => {
+    const [provider, model, key] = ["codex", "gpt-6.1-sol", "OPENAI_API_KEY"] as const;
     vi.stubEnv(key, "ambient-account");
     vi.stubEnv("ANTHROPIC_API_KEY", "ambient-anthropic");
-    nativeProbe.mockImplementation(async input => { await input.onCleanupConfirmed(); return receipt(provider, model); });
+    nativeProbe.mockImplementation(async input => { await input.onCleanupConfirmed(); return { ...receipt(provider, model), providerDriver }; });
     const result = await testNativeRunnerAuthentication({ companyId: "company", adapterType: "paperclip_runner", config: { externallySandboxed: true, env: { [key]: "bound-account", PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "true" }, modelReasoningEffort: "low" } }, provider, model);
     expect(result.status).toBe("pass");
     const input = nativeProbe.mock.calls[0][0];
     expect(input).toMatchObject({ provider, model, timeoutMs: 45_000, environment: { [key]: "bound-account" } });
     expect(input.transportOptions.runnerBinary).toBe("/fixture/bin/paperclip-runnerd");
+    expect(input.transportOptions.codexArgs).toBeUndefined();
     expect(input.transportOptions.externallySandboxed).toBe(false);
     expect(selectedRunner).toHaveBeenCalledOnce();
     expect(input.environment.ANTHROPIC_API_KEY).toBeUndefined();

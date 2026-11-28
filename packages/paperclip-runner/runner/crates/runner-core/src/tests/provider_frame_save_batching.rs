@@ -18,6 +18,8 @@ fn frame_test_state() -> CodexProviderState {
             approval_policy: "never".to_owned(),
             externally_sandboxed: false,
             read_only: false,
+            command_environment: None,
+            instruction_working_copy_root: None,
             include_skill_instructions: None,
             conversation_mode: None,
         },
