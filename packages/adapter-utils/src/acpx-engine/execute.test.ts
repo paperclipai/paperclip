@@ -801,6 +801,24 @@ describe("shared ACPX engine runtime behavior", () => {
     ]);
   });
 
+  it("launches Gemini ACP without the CLI self-relaunch wrapper so a cancel reaches the provider", async () => {
+    const launchEnv = (run: Awaited<ReturnType<typeof runExecutor>>) =>
+      (run.sessionInputs[0]!.sessionOptions as { env: Record<string, string> }).env;
+
+    const gemini = await runExecutor({ agent: "gemini" });
+    expect(launchEnv(gemini).GEMINI_CLI_NO_RELAUNCH).toBe("1");
+
+    // An empty value is how an operator opts back in to Gemini's relaunch.
+    const operatorOverride = await runExecutor({
+      agent: "gemini",
+      env: { GEMINI_CLI_NO_RELAUNCH: "" },
+    });
+    expect(launchEnv(operatorOverride).GEMINI_CLI_NO_RELAUNCH).toBe("");
+
+    const claude = await runExecutor({ agent: "claude" });
+    expect(launchEnv(claude)).not.toHaveProperty("GEMINI_CLI_NO_RELAUNCH");
+  });
+
   it("bounds Codex shell inheritance even without model overrides or an agent identity", async () => {
     const { configOptions, meta } = await runExecutor({ agent: "codex" });
 
