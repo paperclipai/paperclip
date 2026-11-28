@@ -24,6 +24,7 @@ import {
   standingCheckAutomationFixture,
   homeOverviewFixture,
   looseWorkFixture,
+  lpUpdatesStale,
   nothingMeasuredOverviewFixture,
   OUTLINE_DENSE_AREA_IDS,
   outlineDenseOverviewFixture,
@@ -41,7 +42,7 @@ import {
 import { METRIC_SET_FIXTURES, statusReportFixture } from "../../fixtures/responsibility-metrics";
 import { prepareFixtureApi, type FixtureState } from "../../support/capability-gaps/api";
 
-type Variant = "home" | "proposals" | "empty" | "allOnTrack" | "nothingMeasured" | "dense" | "outlineDense" | "outlineNoAreas";
+type Variant = "home" | "proposals" | "empty" | "allOnTrack" | "nothingMeasured" | "dense" | "outlineDense" | "outlineNoAreas" | "outlineRoutineAvatars";
 
 const OVERVIEWS: Record<Variant, ResponsibilityOverview> = {
   home: homeOverviewFixture,
@@ -56,6 +57,29 @@ const OVERVIEWS: Record<Variant, ResponsibilityOverview> = {
   dense: denseBoardOverviewFixture,
   outlineDense: outlineDenseOverviewFixture,
   outlineNoAreas: outlineNoAreasOverviewFixture,
+  outlineRoutineAvatars: responsibilityOverviewFixture(
+    [
+      { ...fundraisingBehind, rollup: { ...fundraisingBehind.rollup, routines: 3, routineAgentIds: ["agent-codex", "agent-qa", "agent-cto"] } },
+      lpUpdatesStale,
+      { ...portfolioOnTrack, rollup: { ...portfolioOnTrack.rollup, routines: 2, routineAgentIds: ["agent-cto", "agent-qa"] } },
+      responsibilityFixture({
+        id: "resp-single-routine",
+        areaId: portfolioOnTrack.areaId,
+        title: "Security reviews",
+        standard: "Every dependency vulnerability is triaged within 24 hours.",
+        rollup: { routines: 1, routineAgentIds: ["agent-codex"] },
+      }),
+      responsibilityFixture({
+        id: "resp-no-routine-team",
+        areaId: "area-team",
+        title: "Hiring",
+        standard: "Two senior engineers have accepted offers by the end of the quarter.",
+        rollup: { routines: 0, routineAgentIds: [] },
+      }),
+    ],
+    [],
+    { loose: EMPTY_LOOSE_WORK },
+  ),
 };
 
 /** Opens a page in one of its views, as if the person had chosen it; restores the previous choice after. */
@@ -729,10 +753,32 @@ export const DashboardOutlineV2: Story = {
     const fundraising = await canvas.findByRole("button", { name: "Fundraising", expanded: true });
     await expect(canvas.getByRole("link", { name: fundraisingBehind.standard! })).toBeInTheDocument();
     await expect(canvas.queryByText(/Behind|At risk|On track|Not measured/)).not.toBeInTheDocument();
+    await expect(canvasElement.querySelector('[data-responsibility-id="resp-fundraising"] [data-routine-agents="agent-codex"]')).toBeInTheDocument();
+    await expect(canvasElement.querySelector('[data-responsibility-id="resp-lp-updates"] [data-routine-agents]')).toBeNull();
     await userEvent.click(fundraising);
     await expect(canvas.getByRole("button", { name: "Fundraising", expanded: false })).toBeInTheDocument();
     await userEvent.click(canvas.getByRole("button", { name: "Fundraising", expanded: false }));
+
+    const filterButton = canvas.getByRole("button", { name: "Filter responsibilities" });
+    await userEvent.click(filterButton);
+    const body = within(canvasElement.ownerDocument.body);
+    await userEvent.click(await body.findByRole("checkbox", { name: "Has routines" }));
+    await expect(canvas.getByRole("link", { name: fundraisingBehind.standard! })).toBeInTheDocument();
+    await expect(canvas.queryByRole("link", { name: lpUpdatesStale.standard! })).not.toBeInTheDocument();
+    await userEvent.click(body.getByRole("checkbox", { name: "No routines" }));
+    await expect(canvas.getByRole("link", { name: lpUpdatesStale.standard! })).toBeInTheDocument();
+    await expect(canvas.queryByRole("link", { name: fundraisingBehind.standard! })).not.toBeInTheDocument();
+    await userEvent.click(body.getByRole("button", { name: "Clear" }));
+    await expect(canvas.getByRole("link", { name: fundraisingBehind.standard! })).toBeInTheDocument();
+    await expect(canvas.getByRole("link", { name: lpUpdatesStale.standard! })).toBeInTheDocument();
   },
+};
+
+/** Dashboard, Outline v2: rows with 1, 2, and 3 slightly overlapping routine-agent avatars alongside rows with no routines. */
+export const DashboardOutlineV2RoutineAvatars: Story = {
+  name: "Dashboard view: Outline v2, routine avatars & filter",
+  parameters: { variant: "outlineRoutineAvatars" satisfies Variant },
+  beforeEach: chooseOutlineV2(),
 };
 
 /** Dashboard, Outline v2, dense: 46 responsibilities in 22 areas, long sentences wrapping, titles where there is no sentence. */

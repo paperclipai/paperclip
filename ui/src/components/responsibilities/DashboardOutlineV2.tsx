@@ -1,9 +1,11 @@
 import { useCallback, useMemo, useState } from "react";
-import type { ResponsibilityWithRollup } from "@paperclipai/shared";
+import type { Agent, ResponsibilityWithRollup } from "@paperclipai/shared";
 import { ChevronRight, Plus } from "lucide-react";
+import { AgentAvatar } from "@/components/AgentAvatar";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import {
+  filterOutlineV2Groups,
   outlineV2Groups,
   outlineV2Href,
   outlineV2Line,
@@ -11,6 +13,7 @@ import {
   searchOutlineV2Groups,
   writeCollapsedAreas,
   type OutlineV2Group,
+  type OutlineV2RoutineFilter,
 } from "@/lib/responsibility-outline-v2";
 import { activeResponsibilities } from "@/lib/responsibility-views";
 import { Link } from "@/lib/router";
@@ -34,15 +37,55 @@ function useCollapsedAreas(scope: string): [ReadonlySet<string>, (key: string) =
   return [collapsed, toggle];
 }
 
-/** One responsibility: its bar sentence (or its title), opening its page. */
-function OutlineV2Row({ responsibility }: { responsibility: ResponsibilityWithRollup }) {
+const MAX_ROUTINE_AVATARS = 4;
+
+/** Slightly overlapping avatars of the agents assigned to a responsibility's routines. */
+function RoutineAgentAvatars({
+  agentIds,
+  agentsById,
+}: {
+  agentIds: readonly string[];
+  agentsById: ReadonlyMap<string, Agent>;
+}) {
+  if (agentIds.length === 0) return null;
+  const shown = agentIds.slice(0, MAX_ROUTINE_AVATARS);
+  const extra = agentIds.length - shown.length;
+  const names = agentIds.map((id) => agentsById.get(id)?.name ?? "An agent");
+  return (
+    <span
+      className="flex shrink-0 items-center gap-1"
+      title={names.join(", ")}
+      aria-hidden="true"
+      data-routine-agents={agentIds.join(",")}
+    >
+      <span className="flex items-center -space-x-1.5">
+        {shown.map((id) => {
+          const agent = agentsById.get(id);
+          return <AgentAvatar key={id} agent={agent ?? { id }} name={agent?.name} size={20} />;
+        })}
+      </span>
+      {extra > 0 ? <span className="text-xs tabular-nums text-muted-foreground">+{extra}</span> : null}
+    </span>
+  );
+}
+
+/** One responsibility: its bar sentence (or its title), opening its page, with routine agent avatars on the right. */
+function OutlineV2Row({
+  responsibility,
+  agentsById,
+}: {
+  responsibility: ResponsibilityWithRollup;
+  agentsById: ReadonlyMap<string, Agent>;
+}) {
+  const routineAgentIds = responsibility.rollup.routines > 0 ? (responsibility.rollup.routineAgentIds ?? []) : [];
   return (
     <li data-responsibility-id={responsibility.id}>
       <Link
         to={outlineV2Href(responsibility.id)}
-        className="block break-words py-3 pl-11 pr-5 text-sm text-foreground transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        className="flex items-center justify-between gap-4 py-3 pl-11 pr-5 text-sm text-foreground transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
       >
-        {outlineV2Line(responsibility)}
+        <span className="min-w-0 break-words">{outlineV2Line(responsibility)}</span>
+        <RoutineAgentAvatars agentIds={routineAgentIds} agentsById={agentsById} />
       </Link>
     </li>
   );
@@ -55,11 +98,13 @@ function OutlineV2Row({ responsibility }: { responsibility: ResponsibilityWithRo
  */
 function OutlineV2Area({
   group,
+  agentsById,
   expanded,
   onToggle,
   onAdd,
 }: {
   group: OutlineV2Group;
+  agentsById: ReadonlyMap<string, Agent>;
   expanded: boolean;
   onToggle: () => void;
   onAdd: () => void;
@@ -103,7 +148,7 @@ function OutlineV2Area({
         {group.items.length > 0 ? (
           <ul className="flex flex-col divide-y divide-border border-t border-border">
             {group.items.map((item) => (
-              <OutlineV2Row key={item.id} responsibility={item} />
+              <OutlineV2Row key={item.id} responsibility={item} agentsById={agentsById} />
             ))}
           </ul>
         ) : canAdd ? (
@@ -128,11 +173,13 @@ function OutlineV2Area({
  * "Edit your dashboard" with an agent, and its saved versions. An empty
  * dashboard shows only the module, offering to create it with an agent.
  *
- * `search` narrows the areas to what matches and opens every match, whatever
- * was folded; the page owns the field, which sits where its headline was.
+ * `search` and `routineFilter` narrow the areas to what matches and open every
+ * match, whatever was folded; the page owns both controls.
  */
 export function DashboardOutlineV2({
   search = "",
+  routineFilter = "all",
+  onClearFilter,
   companyId,
   overview,
   agentsById,
@@ -140,7 +187,11 @@ export function DashboardOutlineV2({
   onAddResponsibility,
   onAddArea,
   onReviewProposals,
-}: DashboardViewProps & { search?: string }) {
+}: DashboardViewProps & {
+  search?: string;
+  routineFilter?: OutlineV2RoutineFilter;
+  onClearFilter?: () => void;
+}) {
   const active = useMemo(() => activeResponsibilities(overview.responsibilities), [overview.responsibilities]);
   const groups = useMemo(
     () => outlineV2Groups(overview.areas, overview.responsibilities, keepEmptyAreas),
@@ -148,13 +199,16 @@ export function DashboardOutlineV2({
   );
   const [collapsed, toggle] = useCollapsedAreas(JSON.stringify([companyId, overview.ownerUserId]));
   const query = search.trim();
-  const shown = useMemo(() => searchOutlineV2Groups(groups, query), [groups, query]);
+  const filtered = useMemo(() => filterOutlineV2Groups(groups, routineFilter), [groups, routineFilter]);
+  const shown = useMemo(() => searchOutlineV2Groups(filtered, query), [filtered, query]);
+  const isNarrowed = query !== "" || routineFilter !== "all";
 
   const renderArea = (group: OutlineV2Group) => (
     <OutlineV2Area
       key={group.key}
       group={group}
-      expanded={query !== "" || !collapsed.has(group.key)}
+      agentsById={agentsById}
+      expanded={isNarrowed || !collapsed.has(group.key)}
       onToggle={() => toggle(group.key)}
       onAdd={() => onAddResponsibility(group.area?.id ?? null)}
     />
@@ -181,9 +235,27 @@ export function DashboardOutlineV2({
       {shown.length > 0 ? (
         shown.map(renderArea)
       ) : query ? (
-        <p className="text-sm text-muted-foreground" role="status" data-outline-v2-no-match="">
-          Nothing matches “{query}”.
-        </p>
+        <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground" role="status" data-outline-v2-no-match="">
+          <span>
+            {routineFilter === "all"
+              ? `Nothing matches “${query}”.`
+              : `Nothing matches “${query}” with this filter.`}
+          </span>
+          {routineFilter !== "all" && onClearFilter ? (
+            <Button type="button" size="xs" variant="ghost" onClick={onClearFilter}>Clear filter</Button>
+          ) : null}
+        </div>
+      ) : routineFilter !== "all" ? (
+        <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground" role="status" data-outline-v2-no-match="">
+          <span>
+            {routineFilter === "has_routines"
+              ? "None of your responsibilities have routines yet."
+              : "Every responsibility has at least one routine."}
+          </span>
+          {onClearFilter ? (
+            <Button type="button" size="xs" variant="ghost" onClick={onClearFilter}>Clear filter</Button>
+          ) : null}
+        </div>
       ) : (
         <p className="text-sm text-muted-foreground">No areas yet.</p>
       )}

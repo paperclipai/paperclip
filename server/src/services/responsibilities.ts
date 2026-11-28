@@ -281,6 +281,7 @@ export interface ResponsibilityWorkRoutine {
   id: string;
   title: string;
   status: string;
+  assigneeAgentId?: string | null;
   lastRunStatus: string | null;
   lastRunAt: Date | null;
   nextRunAt: Date | null;
@@ -471,6 +472,15 @@ export function buildResponsibilityRollup(input: {
     : null;
   const unfinished = input.work.projects.filter(isUnfinishedProject).map((project) => project.targetDate)
     .filter((date): date is string => date !== null).sort();
+  const nonArchivedRoutines = input.work.routines.filter((routine) => routine.status !== "archived");
+  const routineAgentIds: string[] = [];
+  const seenRoutineAgents = new Set<string>();
+  for (const routine of nonArchivedRoutines) {
+    if (routine.assigneeAgentId && !seenRoutineAgents.has(routine.assigneeAgentId)) {
+      seenRoutineAgents.add(routine.assigneeAgentId);
+      routineAgentIds.push(routine.assigneeAgentId);
+    }
+  }
   return {
     health: override ?? computedHealth,
     computedHealth,
@@ -479,7 +489,8 @@ export function buildResponsibilityRollup(input: {
     statusSentence: buildStatusSentence(metric),
     workSummary: buildWorkSummary({ responsibilityId: input.responsibilityId, metric, work: input.work, now }),
     projects: input.work.projects.length,
-    routines: input.work.routines.filter((routine) => routine.status !== "archived").length,
+    routines: nonArchivedRoutines.length,
+    routineAgentIds,
     openTasks: input.counts.openTasks,
     blockedTasks: input.counts.blockedTasks,
     agentTasks: input.counts.agentTasks,
@@ -767,12 +778,14 @@ export function responsibilityService(db: Db, deps: { routines?: ReturnType<type
         id: routines.id,
         title: routines.title,
         status: routines.status,
+        assigneeAgentId: routines.assigneeAgentId,
         lastRunStatus,
         lastRunAt,
         nextRunAt,
       }).from(memberRoutineRows)
         .innerJoin(routines, eq(routines.id, memberRoutineRows.routineId))
-        .where(sql`${routines.status} <> 'archived'`),
+        .where(sql`${routines.status} <> 'archived'`)
+        .orderBy(asc(routines.title), asc(routines.id)),
     ]);
 
     const counts = new Map<string, RollupCounts>();
@@ -819,6 +832,7 @@ export function responsibilityService(db: Db, deps: { routines?: ReturnType<type
         id: row.id,
         title: row.title,
         status: row.status,
+        assigneeAgentId: row.assigneeAgentId,
         lastRunStatus: row.lastRunStatus,
         lastRunAt: row.lastRunAt ? new Date(row.lastRunAt) : null,
         nextRunAt: row.nextRunAt ? new Date(row.nextRunAt) : null,

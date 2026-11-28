@@ -28,6 +28,8 @@ export interface OutlineV2Group {
   items: ResponsibilityWithRollup[];
 }
 
+export type OutlineV2RoutineFilter = "all" | "has_routines" | "no_routines";
+
 /**
  * Every active area, holding what the person owns there or nothing yet, plus
  * any other area (proposed, archived) that holds one of their active
@@ -71,6 +73,25 @@ export function outlineV2CountsLabel({ areas, responsibilities }: OutlineV2Count
   const areaPart = areas === 1 ? "1 area" : `${areas} areas`;
   const responsibilityPart = responsibilities === 1 ? "1 responsibility" : `${responsibilities} responsibilities`;
   return `${areaPart} and ${responsibilityPart}`;
+}
+
+/**
+ * Narrow groups by whether each responsibility has one or more non-archived
+ * routines. `"all"` returns the groups unchanged (including empty areas);
+ * active filters keep only matching responsibilities and drop empty areas.
+ */
+export function filterOutlineV2Groups(
+  groups: readonly OutlineV2Group[],
+  routineFilter: OutlineV2RoutineFilter,
+): OutlineV2Group[] {
+  if (routineFilter === "all") return [...groups];
+  const wantRoutines = routineFilter === "has_routines";
+  const found: OutlineV2Group[] = [];
+  for (const group of groups) {
+    const items = group.items.filter((item) => (item.rollup.routines > 0) === wantRoutines);
+    if (items.length > 0) found.push({ ...group, items });
+  }
+  return found;
 }
 
 /**

@@ -2,9 +2,10 @@ import { useResolvedViewerId } from "@/hooks/useResolvedViewerId";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { ResponsibilityArea, ResponsibilityWithRollup } from "@paperclipai/shared";
-import { Plus } from "lucide-react";
+import { Filter, Plus } from "lucide-react";
 import { describeError } from "@/api/errors";
 import { responsibilitiesApi } from "@/api/responsibilities";
+import { FilterGroup, FilterRow } from "@/components/CollectionFilterOptions";
 import { PageSkeleton } from "@/components/PageSkeleton";
 import { QueryErrorState, QueryView, useQueryView } from "@/components/QueryView";
 import { ToolbarSearch } from "@/components/ToolbarSearch";
@@ -35,6 +36,8 @@ import {
 } from "@/components/responsibilities/ResponsibilityDelegateDialog";
 import { usePageView } from "@/components/responsibilities/usePageView";
 import { Button } from "@/components/ui/button";
+import { FlyoutAppearanceProvider, FlyoutHeader } from "@/components/ui/flyout";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { useAgentlessOnboardingAutoOpen } from "@/hooks/useAgentlessOnboardingAutoOpen";
@@ -44,7 +47,14 @@ import {
   onboardingProvenance,
   type AttentionItem,
 } from "@/lib/responsibilities";
-import { outlineV2Counts, outlineV2CountsLabel, outlineV2Groups } from "@/lib/responsibility-outline-v2";
+import {
+  filterOutlineV2Groups,
+  outlineV2Counts,
+  outlineV2CountsLabel,
+  outlineV2Groups,
+  searchOutlineV2Groups,
+  type OutlineV2RoutineFilter,
+} from "@/lib/responsibility-outline-v2";
 import { DASHBOARD_DEFAULT_VIEW, DASHBOARD_VIEW_OPTIONS } from "@/lib/responsibility-views";
 import { cn, formatShortDate } from "@/lib/utils";
 
@@ -102,6 +112,8 @@ function OwnerDashboard({ selectedCompanyId, ownerUserId }: { selectedCompanyId:
   // One dashboard, no switch between views; reviewing proposals visits the full layout.
   const { view, visiting, visit, leave } = usePageView(DASHBOARD_VIEW_OPTIONS, DASHBOARD_DEFAULT_VIEW);
   const [search, setSearch] = useState("");
+  const [routineFilter, setRoutineFilter] = useState<OutlineV2RoutineFilter>("all");
+  const clearRoutineFilter = useCallback(() => setRoutineFilter("all"), []);
   const { agents, byId: agentsById, query: agentsQuery } = useAgentDirectory(selectedCompanyId);
   const agentsView = useQueryView(agentsQuery);
   // One clock per visit: day-level judgements, and a stable value keeps rows memoized.
@@ -130,13 +142,19 @@ function OwnerDashboard({ selectedCompanyId, ownerUserId }: { selectedCompanyId:
     return counts;
   }, [overview?.responsibilities]);
 
-  // Outline v2's one line of numbers, beside its search. Null on an empty dashboard.
+  const outlineGroups = useMemo(
+    () => (overview ? outlineV2Groups(overview.areas, overview.responsibilities, keepEmptyAreas) : null),
+    [overview, keepEmptyAreas],
+  );
+  // Outline v2's one line of numbers, beside its search and filter. Null on an empty dashboard.
   const outlineCounts = useMemo(() => {
-    if (!overview) return null;
-    const counts = outlineV2Counts(outlineV2Groups(overview.areas, overview.responsibilities, keepEmptyAreas));
+    if (!overview || !outlineGroups) return null;
+    const total = outlineV2Counts(outlineGroups);
     // The same rule as the view's empty state, which shows only the create module.
-    return counts.areas > 0 || counts.responsibilities > 0 || overview.proposed.length > 0 ? counts : null;
-  }, [overview, keepEmptyAreas]);
+    if (total.areas === 0 && total.responsibilities === 0 && overview.proposed.length === 0) return null;
+    const visible = searchOutlineV2Groups(filterOutlineV2Groups(outlineGroups, routineFilter), search.trim());
+    return outlineV2Counts(visible);
+  }, [overview, outlineGroups, routineFilter, search]);
 
   const openAdd = useCallback((areaId: string | null) => setAdding({ areaId }), []);
   const agentName = useCallback((id: string) => agentsById.get(id)?.name, [agentsById]);
@@ -168,16 +186,68 @@ function OwnerDashboard({ selectedCompanyId, ownerUserId }: { selectedCompanyId:
         )}
       >
         {view === "outline_v2" ? (
-          // The breadcrumb bar's heading already names the page: search and the counts take the headline's place.
+          // The breadcrumb bar's heading already names the page: search, filter and the counts take the headline's place.
           outlineCounts ? (
             <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2">
-              <ToolbarSearch
-                query={search}
-                onQueryChange={setSearch}
-                label="Search your dashboard"
-                placeholder="Search"
-                inputType="search"
-              />
+              <div className="design-page-toolbar gap-2">
+                <ToolbarSearch
+                  query={search}
+                  onQueryChange={setSearch}
+                  label="Search your dashboard"
+                  placeholder="Search"
+                  inputType="search"
+                />
+                <FlyoutAppearanceProvider appearance="refreshed">
+                  <Popover>
+                    <PopoverTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        className="design-toolbar-button design-toolbar-icon relative"
+                        title={routineFilter !== "all" ? "Filters: 1" : "Filter"}
+                        aria-label={routineFilter !== "all" ? "Filter responsibilities (1)" : "Filter responsibilities"}
+                        data-active={routineFilter !== "all"}
+                        data-outline-v2-filter=""
+                      >
+                        <Filter aria-hidden="true" />
+                        {routineFilter !== "all" ? (
+                          <span
+                            aria-hidden="true"
+                            className="absolute -right-1 -top-1 flex size-3.5 items-center justify-center rounded-full bg-primary text-(length:--text-nano) font-semibold text-primary-foreground"
+                          >
+                            1
+                          </span>
+                        ) : null}
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent align="start" className="w-56 p-0" aria-label="Filter responsibilities">
+                      <FlyoutHeader className="flex items-center justify-between">
+                        <span>Filters</span>
+                        {routineFilter !== "all" ? (
+                          <Button type="button" variant="ghost" size="xs" onClick={clearRoutineFilter}>
+                            Clear
+                          </Button>
+                        ) : null}
+                      </FlyoutHeader>
+                      <div className="p-3">
+                        <FilterGroup title="Routines" optionsKey="routines">
+                          <FilterRow
+                            label="Has routines"
+                            checked={routineFilter === "has_routines"}
+                            onToggle={() => setRoutineFilter((current) => (current === "has_routines" ? "all" : "has_routines"))}
+                          />
+                          <FilterRow
+                            label="No routines"
+                            checked={routineFilter === "no_routines"}
+                            onToggle={() => setRoutineFilter((current) => (current === "no_routines" ? "all" : "no_routines"))}
+                          />
+                        </FilterGroup>
+                      </div>
+                    </PopoverContent>
+                  </Popover>
+                </FlyoutAppearanceProvider>
+              </div>
               <p className="text-sm text-muted-foreground" data-dashboard-counts="">{outlineV2CountsLabel(outlineCounts)}</p>
             </div>
           ) : null
@@ -251,7 +321,7 @@ function OwnerDashboard({ selectedCompanyId, ownerUserId }: { selectedCompanyId:
           if (view === "full") return <ResponsibilitiesHomeLayout {...layoutProps} />;
           const viewProps = { ...layoutProps, onAddArea: () => setAddingArea(true), onReviewProposals: () => visit("full") };
           if (view === "outline") return <DashboardOutline {...viewProps} />;
-          if (view === "outline_v2") return <DashboardOutlineV2 {...viewProps} search={search} />;
+          if (view === "outline_v2") return <DashboardOutlineV2 {...viewProps} search={search} routineFilter={routineFilter} onClearFilter={clearRoutineFilter} />;
           if (view === "board") return <DashboardBoard {...viewProps} />;
           if (view === "automation") return <DashboardAutomation {...viewProps} />;
           if (view === "agent_status") return <DashboardAgentStatus {...viewProps} />;

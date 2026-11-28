@@ -13,6 +13,7 @@ import {
 import {
   OUTLINE_V2_COLLAPSED_STORAGE_KEY,
   OUTLINE_V2_NO_AREA_KEY,
+  filterOutlineV2Groups,
   outlineV2Counts,
   outlineV2CountsLabel,
   outlineV2Groups,
@@ -120,6 +121,38 @@ describe("searchOutlineV2Groups", () => {
     const word = areaDealFlow.title.split(" ")[0]!;
     expect(shape(searchOutlineV2Groups(groups, `${word} memo`))).toEqual([[areaDealFlow.id, ["resp-diligence"]]]);
     expect(searchOutlineV2Groups(groups, "memo zebra")).toEqual([]);
+  });
+});
+
+describe("filterOutlineV2Groups", () => {
+  const groups = outlineV2Groups(
+    [areaFundraising, areaPortfolio, areaLegal],
+    [fundraisingBehind, lpUpdatesStale, portfolioOnTrack, boardReportingOverridden],
+  );
+  const shape = (found: ReturnType<typeof filterOutlineV2Groups>) =>
+    found.map((group) => [group.key, group.items.map((item) => item.id)]);
+
+  it("returns every group including empty areas when filter is all", () => {
+    expect(shape(filterOutlineV2Groups(groups, "all"))).toEqual([
+      [areaFundraising.id, ["resp-fundraising", "resp-lp-updates"]],
+      [areaPortfolio.id, ["resp-portfolio"]],
+      [areaLegal.id, []],
+      [OUTLINE_V2_NO_AREA_KEY, ["resp-board-reporting"]],
+    ]);
+  });
+
+  it("keeps only responsibilities with routines and drops empty areas", () => {
+    expect(shape(filterOutlineV2Groups(groups, "has_routines"))).toEqual([
+      [areaFundraising.id, ["resp-fundraising"]],
+      [areaPortfolio.id, ["resp-portfolio"]],
+    ]);
+  });
+
+  it("keeps only responsibilities with no routines and drops empty areas", () => {
+    expect(shape(filterOutlineV2Groups(groups, "no_routines"))).toEqual([
+      [areaFundraising.id, ["resp-lp-updates"]],
+      [OUTLINE_V2_NO_AREA_KEY, ["resp-board-reporting"]],
+    ]);
   });
 });
 
