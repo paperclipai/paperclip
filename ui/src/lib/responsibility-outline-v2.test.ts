@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   areaDealFlow,
+  areaFixture,
   areaFundraising,
   areaLegal,
   areaPortfolio,
@@ -13,11 +14,13 @@ import {
 import {
   OUTLINE_V2_COLLAPSED_STORAGE_KEY,
   OUTLINE_V2_NO_AREA_KEY,
+  filterOutlineV2Groups,
   outlineV2Counts,
   outlineV2CountsLabel,
   outlineV2Groups,
   outlineV2Href,
   outlineV2Line,
+  outlineV2VisibleGroups,
   readCollapsedAreas,
   searchOutlineV2Groups,
   writeCollapsedAreas,
@@ -121,6 +124,78 @@ describe("searchOutlineV2Groups", () => {
     expect(shape(searchOutlineV2Groups(groups, `${word} memo`))).toEqual([[areaDealFlow.id, ["resp-diligence"]]]);
     expect(searchOutlineV2Groups(groups, "memo zebra")).toEqual([]);
   });
+});
+
+describe("filterOutlineV2Groups", () => {
+  const groups = outlineV2Groups(
+    [areaFundraising, areaPortfolio, areaLegal],
+    [fundraisingBehind, lpUpdatesStale, portfolioOnTrack, boardReportingOverridden],
+  );
+  const shape = (found: ReturnType<typeof filterOutlineV2Groups>) =>
+    found.map((group) => [group.key, group.items.map((item) => item.id)]);
+
+  it("returns every group including empty areas when filter is all", () => {
+    expect(shape(filterOutlineV2Groups(groups, "all"))).toEqual([
+      [areaFundraising.id, ["resp-fundraising", "resp-lp-updates"]],
+      [areaPortfolio.id, ["resp-portfolio"]],
+      [areaLegal.id, []],
+      [OUTLINE_V2_NO_AREA_KEY, ["resp-board-reporting"]],
+    ]);
+  });
+
+  it("keeps only responsibilities with routines and drops empty areas", () => {
+    expect(shape(filterOutlineV2Groups(groups, "has_routines"))).toEqual([
+      [areaFundraising.id, ["resp-fundraising"]],
+      [areaPortfolio.id, ["resp-portfolio"]],
+    ]);
+  });
+
+  it("keeps only responsibilities with no routines and drops empty areas", () => {
+    expect(shape(filterOutlineV2Groups(groups, "no_routines"))).toEqual([
+      [areaFundraising.id, ["resp-lp-updates"]],
+      [OUTLINE_V2_NO_AREA_KEY, ["resp-board-reporting"]],
+    ]);
+  });
+
+  it.each(["has_routines", "no_routines"] as const)(
+    "bounds large-collection filtering work linearly for %s across 600 responsibilities",
+    (routineFilter) => {
+      const areaCount = 60;
+      const perArea = 10;
+      const total = areaCount * perArea;
+      const areas = Array.from({ length: areaCount }, (_, index) =>
+        areaFixture({ id: `area-${index}`, title: `Area ${index}`, sortOrder: index }),
+      );
+      let rowReads = 0;
+      const responsibilities = Array.from({ length: total }, (_, index) => {
+        const hasRoutine = index % 2 === 0;
+        const item = responsibilityFixture({
+          id: `resp-${index}`,
+          areaId: `area-${Math.floor(index / perArea)}`,
+          title: `Responsibility ${index}`,
+          standard: hasRoutine ? `Automated standard ${index}` : `Manual standard ${index}`,
+          rollup: {
+            routines: hasRoutine ? 2 : 0,
+            routineAgentIds: hasRoutine ? [`agent-${index % 500}`, `agent-${(index + 1) % 500}`] : [],
+          },
+        });
+        return new Proxy(item, {
+          get(target, property, receiver) {
+            if (++rowReads > total * 16) {
+              throw new Error("Outline v2 filtering exceeded linear collection work bound");
+            }
+            return Reflect.get(target, property, receiver);
+          },
+        });
+      });
+
+      const grouped = outlineV2Groups(areas, responsibilities);
+      const visible = outlineV2VisibleGroups(grouped, { routineFilter, search: "standard" });
+      expect(outlineV2Counts(visible)).toEqual({ areas: areaCount, responsibilities: total / 2 });
+      expect(rowReads).toBeGreaterThanOrEqual(total);
+      expect(rowReads).toBeLessThanOrEqual(total * 16);
+    },
+  );
 });
 
 describe("collapsed areas in storage", () => {

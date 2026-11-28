@@ -1338,5 +1338,50 @@ describeEmbeddedPostgres("responsibility routes", () => {
       const [row] = await db.select().from(responsibilities).where(eq(responsibilities.id, item.id));
       expect(row?.areaId).toBe(to.body.id);
     });
+
+    it("returns distinct routineAgentIds on overview rollups for direct and project-linked non-archived routines", async () => {
+      await enable();
+      const company = await seedCompany();
+      const agentA = await seedAgent(company.id, "Alpha");
+      const agentB = await seedAgent(company.id, "Beta");
+      const agentArchived = await seedAgent(company.id, "ArchivedAgent");
+      const board = createApp(db, localBoardActor());
+      const withRoutines = await createResponsibility(board, company.id, { title: "Has routines" });
+      const withoutRoutines = await createResponsibility(board, company.id, { title: "No routines" });
+      const [project] = await db.insert(projects).values({ companyId: company.id, name: "Ops", status: "in_progress" }).returning();
+      const [directRoutineA] = await db.insert(routines).values({
+        companyId: company.id, title: "A direct", status: "active", assigneeAgentId: agentA.id,
+      }).returning();
+      const [directRoutineDup] = await db.insert(routines).values({
+        companyId: company.id, title: "B duplicate agent", status: "paused", assigneeAgentId: agentA.id,
+      }).returning();
+      const [archivedRoutine] = await db.insert(routines).values({
+        companyId: company.id, title: "C archived", status: "archived", assigneeAgentId: agentArchived.id,
+      }).returning();
+      await db.insert(routines).values({
+        companyId: company.id, title: "D via project", status: "active", assigneeAgentId: agentB.id, projectId: project!.id,
+      });
+      await db.insert(responsibilityLinks).values([
+        { companyId: company.id, responsibilityId: withRoutines.id, routineId: directRoutineA!.id },
+        { companyId: company.id, responsibilityId: withRoutines.id, routineId: directRoutineDup!.id },
+        { companyId: company.id, responsibilityId: withRoutines.id, routineId: archivedRoutine!.id },
+        { companyId: company.id, responsibilityId: withRoutines.id, projectId: project!.id },
+      ]);
+
+      const overview = await request(board).get(`/api/companies/${company.id}/responsibilities`);
+      expect(overview.status).toBe(200);
+      const byId = new Map(
+        (overview.body.responsibilities as Array<{ id: string; rollup: { routines: number; routineAgentIds: string[] } }>)
+          .map((item) => [item.id, item.rollup]),
+      );
+      expect(byId.get(withRoutines.id)).toMatchObject({
+        routines: 3,
+        routineAgentIds: [agentA.id, agentB.id],
+      });
+      expect(byId.get(withoutRoutines.id)).toMatchObject({
+        routines: 0,
+        routineAgentIds: [],
+      });
+    });
   });
 });
