@@ -568,6 +568,20 @@ do not change workspace isolation or grant credentials or connection access.
 task tools; `approve-reads` allows assigned reads; `deny-all` rejects requests.
 None of these restrictive modes is the default.
 
+For Claude, the automatic rules apply to the exact tools assigned to the run
+on its Paperclip connection:
+
+| Mode | Examples of automatic actions when assigned |
+| --- | --- |
+| `approve-reads` | `get_task_context`, `get_task_history`, `read_document`, `get_approval` |
+| `approve-paperclip` | The same reads, plus workflow actions such as `report_progress`, `write_document`, `finish_task`, and `block_task` |
+
+Use `get_task_context` and `get_task_history` for the run's assigned task.
+The generic `call_api` tool still requires a permission decision, including
+for a GET request. The automatic workflow list also excludes
+`comment_on_task`. Company scope and action authorization apply to
+every call, including the automatic actions.
+
 `prepare_repository` requires a provider permission decision in restrictive
 modes, including `approve-paperclip`: repository acquisition can clone onto the
 controller and is not automatically approved as a planning action. Full auto
