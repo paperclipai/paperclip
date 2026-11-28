@@ -1183,24 +1183,31 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
         if (!decision.allowed) throw forbidden(`${decision.explanation} Importing new agents is hiring; a board user can import them instead.`, authorizationDeniedDetails(decision));
       } } : {}),
     });
-    await logActivity(db, {
-      companyId: result.company.id,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      entityType: "company",
-      entityId: result.company.id,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      agentApiKeyId: actor.agentApiKeyId,
-      action: "company.imported",
-      details: {
-        include: body.include ?? null,
-        agentCount: result.agents.length,
-        warningCount: result.warnings.length,
-        companyAction: result.company.action,
-        importMode: "agent_safe",
-      },
-    });
+    try {
+      await logActivity(db, {
+        companyId: result.company.id,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        entityType: "company",
+        entityId: result.company.id,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "company.imported",
+        details: {
+          include: body.include ?? null,
+          agentCount: result.agents.length,
+          warningCount: result.warnings.length,
+          companyAction: result.company.action,
+          importMode: "agent_safe",
+        },
+      });
+    } catch (activityError) {
+      logger.warn(
+        { err: activityError, companyId: result.company.id },
+        "failed to write the company.imported activity entry for a committed import",
+      );
+    }
     res.json(result);
   });
 

@@ -1273,6 +1273,23 @@ describe("company portability routes", () => {
     );
   });
 
+  it("returns the committed CEO-safe import result when the activity write fails", async () => {
+    const importResult = createImportResult("created");
+    mockCompanyPortabilityService.importBundle.mockResolvedValueOnce(importResult);
+    mockLogActivity.mockRejectedValueOnce(new Error("activity log unavailable"));
+    const app = await createApp({ type: "agent", agentId: ceoAgentId, companyId, source: "agent_key", runId: "run-1" });
+
+    const res = await request(app).post(`/api/companies/${companyId}/imports/apply`).send(importRequest);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.company.id).toBe(importResult.company.id);
+    expect(mockCompanyPortabilityService.importBundle).toHaveBeenCalledTimes(1);
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "company.imported",
+      details: expect.objectContaining({ importMode: "agent_safe" }),
+    }));
+  });
+
   it("refuses a CEO agent whose hiring is denied when its import would create agents", async () => {
     (mockAccessService as Record<string, unknown>).decide = vi.fn(async () => ({
       allowed: false, action: "agents:create", reason: "deny_missing_grant", explanation: "Missing permission: agents:create.",
