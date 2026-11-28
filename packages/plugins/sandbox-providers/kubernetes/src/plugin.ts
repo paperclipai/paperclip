@@ -27,7 +27,7 @@ import { createKubeConfig, makeKubeClients } from "./kube-client.js";
 import { getAdapterDefaults, buildAdapterEnv, resolveRunAdapterType } from "./adapter-defaults.js";
 import { resolveImage } from "./image-allowlist.js";
 import { buildJobManifest } from "./pod-spec-builder.js";
-import { buildSandboxCrManifest } from "./sandbox-cr-builder.js";
+import { AGENT_WORKSPACE_DIR, buildSandboxCrManifest } from "./sandbox-cr-builder.js";
 import { ensureTenant } from "./tenant-orchestrator.js";
 import { createPerRunSecret } from "./secret-manager.js";
 import { FastUploadInterceptor } from "./upload-interceptor.js";
@@ -460,6 +460,7 @@ const plugin = definePlugin({
       // exposes one. Flag the job backend so the server keeps the base64 fallback
       // rather than routing its sync to a hook that would reject immediately.
       nativeFileSyncUnsupported: config.backend !== "sandbox-cr",
+      ...(config.backend === "sandbox-cr" ? { agentWorkspaceDir: AGENT_WORKSPACE_DIR } : {}),
     };
 
     return {
@@ -539,6 +540,9 @@ const plugin = definePlugin({
       // See acquireLease: only the sandbox-cr backend has a pod-exec channel for
       // native sync, so a resumed job lease must keep the base64 fallback.
       nativeFileSyncUnsupported: leaseBackend !== "sandbox-cr",
+      ...(typeof params.leaseMetadata?.agentWorkspaceDir === "string"
+        ? { agentWorkspaceDir: params.leaseMetadata.agentWorkspaceDir }
+        : {}),
     };
 
     return {
@@ -553,13 +557,9 @@ const plugin = definePlugin({
   async onEnvironmentRealizeWorkspace(
     params: PluginEnvironmentRealizeWorkspaceParams,
   ): Promise<PluginEnvironmentRealizeWorkspaceResult> {
-    // The agent pod already has /workspace mounted as an emptyDir at pod
-    // scheduling time (see pod-spec-builder). Nothing to provision here —
-    // we just hand back the cwd. Honor a caller-supplied remotePath if set.
-    const cwd =
-      params.workspace.remotePath && params.workspace.remotePath.trim().length > 0
-        ? params.workspace.remotePath.trim()
-        : "/workspace";
+    const supplied = params.workspace.remotePath?.trim();
+    const agentWorkspaceDir = params.lease.metadata?.agentWorkspaceDir;
+    const cwd = supplied || (typeof agentWorkspaceDir === "string" && agentWorkspaceDir ? agentWorkspaceDir : "/workspace");
     return {
       cwd,
       metadata: {

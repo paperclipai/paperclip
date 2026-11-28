@@ -87,6 +87,27 @@ describe("onEnvironmentResumeLease", () => {
     );
   });
 
+  it("keeps the agent workspace directory of a resumed Sandbox lease", async () => {
+    h.clients = {
+      custom: { getNamespacedCustomObject: vi.fn().mockResolvedValue(readySandboxCr("pc-abc-pod")) },
+      core: {
+        readNamespacedPod: vi.fn().mockResolvedValue({
+          metadata: { name: "pc-abc-pod" },
+          status: { phase: "Running" },
+        }),
+      },
+    };
+    const lease = await plugin.definition.onEnvironmentResumeLease!({
+      driverKey: "kubernetes",
+      companyId: "acme",
+      environmentId: "env-1",
+      config: CONFIG,
+      providerLeaseId: "pc-abc",
+      leaseMetadata: leaseMetadata({ agentWorkspaceDir: "/workspace/paperclip-workspace" }),
+    });
+    expect(lease.metadata).toMatchObject({ agentWorkspaceDir: "/workspace/paperclip-workspace" });
+  });
+
   it("flags a resumed job-backend lease as native-sync-unsupported so the server keeps the base64 fallback", async () => {
     h.clients = {
       batch: {
