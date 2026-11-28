@@ -426,6 +426,17 @@ describeAttentionEmbeddedPostgres("attention service", () => {
         updatedAt: new Date("2026-07-09T12:09:30.000Z"),
         finishedAt: new Date("2026-07-09T12:09:30.000Z"),
       },
+      {
+        id: randomUUID(),
+        companyId,
+        agentId: reviewerId,
+        invocationSource: "automation",
+        status: "scheduled_retry",
+        retryOfRunId: transientRunId,
+        contextSnapshot: { issueId: interactionIssueId },
+        createdAt: new Date("2026-07-09T12:09:45.000Z"),
+        updatedAt: new Date("2026-07-09T12:09:45.000Z"),
+      },
     ]);
     await db.insert(heartbeatRunEvents).values({
       companyId,
@@ -875,19 +886,26 @@ describeAttentionEmbeddedPostgres("attention service", () => {
     // Assert the database result itself: JavaScript feed deduplication used to
     // hide the thousands of full run contexts already loaded into memory.
     const rows = await listAttentionExhaustedRuns(db, companyId);
-    expect(rows).toHaveLength(2);
+    expect(rows).toHaveLength(3);
     expect(rows.find((row) => row.id === failedId)).toMatchObject({
       exhaustionMessage: "Bounded retry exhausted receipt 2500",
       contextSnapshot: { issueId, taskId: null },
+      failedAttemptCount: 1,
     });
     expect(rows.find((row) => row.id === timedOutId)?.contextSnapshot).toEqual({ issueId: null, taskId });
+    expect(rows.find((row) => row.id === noReceiptId)).toMatchObject({
+      exhaustionMessage: null,
+      failedAttemptCount: 1,
+    });
     expect(Buffer.byteLength(JSON.stringify(rows))).toBeLessThan(4096);
 
     const feed = await attentionService(db).list(companyId, {
       includeDismissed: true, all: true, allowUnscopedAll: true,
     });
     const failures = feed.items.filter((item) => item.sourceKind === "failed_run");
-    expect(failures.map((item) => item.subject.id).sort()).toEqual([failedId, timedOutId].sort());
+    expect(failures.map((item) => item.subject.id).sort()).toEqual([failedId, timedOutId, noReceiptId].sort());
     expect(failures.find((item) => item.subject.id === timedOutId)?.relatedIssue?.id).toBe(taskId);
+    expect(failures.find((item) => item.subject.id === noReceiptId)?.whyNow)
+      .toBe("Run failed and no newer run replaced it.");
   });
 });
