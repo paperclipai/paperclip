@@ -1,6 +1,7 @@
 import { QueryErrorState } from "./QueryView";
 import { ISSUE_SORT_FIELDS, sortIssues, type IssueSort, type IssueSortField } from "../lib/issue-sort";
 import { saveTaskCollectionPreferences } from "../lib/task-collection-preferences";
+import { claimViewportFill } from "../lib/issue-list-viewport-fill";
 import { useWarmTaskDetailCode } from "@/hooks/useWarmTaskDetailCode";
 import { topRenderedNavEntryRefs, usePreloadTaskChats } from "../hooks/usePreloadTaskChats";
 import { useShowAgentCreatedTasks } from "../hooks/useShowAgentCreatedTasks";
@@ -793,7 +794,8 @@ export function IssuesList({
   const [hierarchyRowBudget, setHierarchyRowBudget] = useState(INITIAL_ISSUE_ROW_RENDER_LIMIT);
   const [visibleIssueColumns, setVisibleIssueColumns] = useState<InboxIssueColumn[]>(() => loadIssueColumns(scopedKey));
   const renderedIssueIdsRef = useRef("");
-  const initialServerFillRequestedRef = useRef(false);
+  // See claimViewportFill.
+  const initialServerFillRequestedRef = useRef<Issue[] | null>(null);
   const deferredIssueSearch = useDeferredValue(issueSearch);
   const normalizedIssueSearch = deferredIssueSearch.trim().toLowerCase();
 
@@ -1628,8 +1630,7 @@ export function IssuesList({
         const threshold = scrollHeight - ISSUE_SCROLL_LOAD_THRESHOLD_PX;
         if (scrollBottom >= threshold) {
           if (trigger === "initial" && !hasMoreRenderedRows && hasMoreIssues && !hasScrollableOverflow) {
-            if (initialServerFillRequestedRef.current) return;
-            initialServerFillRequestedRef.current = true;
+            if (!claimViewportFill(initialServerFillRequestedRef, issues)) return;
           }
           loadMoreIssueRows();
         }
@@ -1647,7 +1648,7 @@ export function IssuesList({
       window.removeEventListener("resize", handleResize);
       if (animationFrameId !== null) window.cancelAnimationFrame(animationFrameId);
     };
-  }, [canLoadMoreIssues, hasMoreIssues, hasMoreRenderedRows, loadMoreIssueRows]);
+  }, [canLoadMoreIssues, hasMoreIssues, hasMoreRenderedRows, issues, loadMoreIssueRows]);
 
   const newIssueDefaults = useCallback((group?: { key: string; items: Issue[] }) => {
     const groupKey = group?.key;
