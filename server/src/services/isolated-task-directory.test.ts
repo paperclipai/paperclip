@@ -18,18 +18,34 @@ const policy = {
   workspaceStrategies: [undefined, null, {}],
 };
 
-describe("repository-free low-trust workspace selection", () => {
-  it("selects a private directory for sandbox tasks without a repository", () => {
+describe("repository-free workspace selection", () => {
+  it("selects a private directory for low-trust sandbox tasks without a repository", () => {
     expect(shouldUseIsolatedTaskDirectory(policy)).toBe(true);
+    expect(shouldUseIsolatedTaskDirectory({ ...policy, hasSelectedExecutionWorkspace: true })).toBe(true);
   });
 
   it.each([
-    { trustPreset: "standard" },
-    { environmentDriver: "local" },
+    { trustPreset: "standard", environmentDriver: "local" },
+    { trustPreset: "standard", environmentDriver: null },
+    { trustPreset: "standard", environmentDriver: "sandbox" },
+    { trustPreset: "standard", environmentDriver: "plugin" },
+  ])("selects a private directory for standard repository-free tasks: %j", (override) => {
+    expect(shouldUseIsolatedTaskDirectory({ ...policy, ...override })).toBe(true);
+  });
+
+  it.each([
+    { trustPreset: "low_trust_review", environmentDriver: "local" },
+    { trustPreset: "low_trust_review", environmentDriver: "plugin" },
+    { trustPreset: "low_trust_review", environmentDriver: null },
+    { trustPreset: "denied", environmentDriver: "sandbox" },
     { environmentDriver: "ssh" },
+    { trustPreset: "standard", environmentDriver: "ssh" },
     { mode: "shared_workspace" },
     { hasProjectWorkspace: true },
     { projectWorkspaceId: "workspace-1" },
+    { trustPreset: "standard", environmentDriver: "local", hasSelectedExecutionWorkspace: true },
+    { trustPreset: "standard", environmentDriver: "sandbox", hasSelectedExecutionWorkspace: true },
+    { trustPreset: "standard", environmentDriver: "plugin", hasSelectedExecutionWorkspace: true },
     { workspaceStrategies: [{ type: "git_worktree" }] },
     { workspaceStrategies: [{ existingBranch: "main" }] },
     { workspaceStrategies: [{ provisionCommand: "setup" }] },
@@ -72,6 +88,37 @@ describe("isolated task directories", () => {
     await expect(materializeIsolatedTaskDirectory({ ...identity, issueId: "issue-2" }))
       .rejects.toThrow("not a private directory");
   });
+
+  it("reuses only the exact private task directory, including a prior fresh attempt", async () => {
+    const identity = await setup();
+    for (const attemptId of [undefined, "previous-attempt"]) {
+      const cwd = await materializeIsolatedTaskDirectory({ ...identity, attemptId });
+      await writeFile(path.join(cwd, "saved.txt"), "preserved");
+      expect(await materializeIsolatedTaskDirectory({ ...identity, reuseCwd: cwd })).toBe(cwd);
+      expect(await readFile(path.join(cwd, "saved.txt"), "utf8")).toBe("preserved");
+    }
+  });
+
+  it.each(["other-company", "other-issue", "outside", "traversal", "missing", "symlink"])(
+    "does not admit or recreate a reused task directory with %s binding", async change => {
+      const identity = await setup();
+      const cwd = await materializeIsolatedTaskDirectory({ ...identity, attemptId: "prior-attempt" });
+      await writeFile(path.join(cwd, "saved.txt"), "preserved");
+      let reuseCwd = cwd;
+      if (change === "other-company") reuseCwd = cwd.replace(identity.companyId, "other-company");
+      if (change === "other-issue") reuseCwd = cwd.replace(identity.issueId, "other-issue");
+      if (change === "outside") reuseCwd = path.dirname(path.dirname(cwd));
+      if (change === "traversal") reuseCwd = `${cwd}/../prior-attempt`;
+      if (change === "missing") reuseCwd = path.join(path.dirname(cwd), "missing-attempt");
+      if (change === "symlink") {
+        reuseCwd = path.join(path.dirname(cwd), "linked-attempt");
+        await symlink(cwd, reuseCwd);
+      }
+      await expect(materializeIsolatedTaskDirectory({ ...identity, reuseCwd })).rejects.toThrow();
+      if (change === "missing") await expect(readFile(path.join(reuseCwd, "saved.txt"))).rejects.toThrow();
+      expect(await readFile(path.join(cwd, "saved.txt"), "utf8")).toBe("preserved");
+    },
+  );
 
   it("round-trips sandbox output into the task directory and stages it on the next turn", async () => {
     const identity = await setup();

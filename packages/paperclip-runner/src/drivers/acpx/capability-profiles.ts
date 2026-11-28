@@ -1,13 +1,19 @@
-import type { QualifiedAcpxAgent } from "./qualified-profiles.js";
+import { QUALIFIED_ACPX_PROFILES, type QualifiedAcpxAgent } from "./qualified-profiles.js";
+
+/** Antigravity's interactive claims follow its declaration: 1.5.2 questions
+ * arrive as `interaction_*` permission callbacks that the admission guard turns
+ * into forms, and every other permission goes through the interactive runner
+ * policy. They take effect with the qualification flip and not before. */
+const ANTIGRAVITY_RELEASED = QUALIFIED_ACPX_PROFILES.antigravity.qualificationStatus !== "pending";
 
 export interface AcpxCapabilityProfile {
   readonly displayName: string;
   readonly qualification: "qualified" | "pending";
-  readonly models: "explicit-provider-verified";
-  readonly permissions: "runner-policy" | "interactive";
+  readonly models: "explicit-provider-verified" | "unverified";
+  readonly permissions: "runner-policy" | "interactive" | "unverified";
   readonly questions: "form" | "cursor-extension" | "semantic-only" | "not-exposed";
   readonly plans: "native" | "cursor-decision" | "semantic-only";
-  readonly tools: "authenticated-mcp" | "owned-extension";
+  readonly tools: "authenticated-mcp" | "owned-extension" | "unverified";
   readonly recovery: "session-load" | "unverified";
   readonly toolRefreshOnResume?: boolean;
   readonly usage: "reported" | "unverified";
@@ -20,6 +26,14 @@ export interface AcpxCapabilityProfile {
 
 /** These are runner integration claims, not a proxy for everything a harness can do. */
 export const ACPX_CAPABILITY_PROFILES: Readonly<Record<QualifiedAcpxAgent, AcpxCapabilityProfile>> = {
+  antigravity: {
+    displayName: "Google Antigravity", qualification: ANTIGRAVITY_RELEASED ? "qualified" : "pending",
+    models: ANTIGRAVITY_RELEASED ? "explicit-provider-verified" : "unverified",
+    permissions: ANTIGRAVITY_RELEASED ? "interactive" : "unverified", questions: ANTIGRAVITY_RELEASED ? "form" : "not-exposed",
+    plans: "semantic-only", tools: "unverified",
+    recovery: "unverified", usage: "unverified", steering: "unsupported", followUp: "controller-queue",
+    artifacts: "policy_disabled", extensionRequests: [], extensionNotifications: [],
+  },
   claude: {
     toolRefreshOnResume: true,
     displayName: "Claude", qualification: "qualified", models: "explicit-provider-verified",
@@ -55,6 +69,12 @@ export const ACPX_CAPABILITY_PROFILES: Readonly<Record<QualifiedAcpxAgent, AcpxC
     recovery: "session-load", usage: "reported", steering: "unsupported", followUp: "controller-queue",
     artifacts: "references-pending", extensionRequests: [],
     extensionNotifications: ["github.com/copilot/sessionEvent"],
+  },
+  kimi: {
+    displayName: "Kimi Code", qualification: "qualified", models: "explicit-provider-verified",
+    permissions: "interactive", questions: "semantic-only", plans: "semantic-only", tools: "authenticated-mcp",
+    recovery: "unverified", usage: "unverified", steering: "unsupported", followUp: "controller-queue",
+    artifacts: "policy_disabled", extensionRequests: [], extensionNotifications: [],
   },
   pi: {
     displayName: "Pi", qualification: "qualified", models: "explicit-provider-verified",

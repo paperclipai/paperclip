@@ -6,6 +6,7 @@ import {
   CODEX_BLOCK_TOOL_NAME,
 } from "../../contracts/codex.js";
 import { validatePrpStructuredRunResult } from "../../protocol/replay-contract.js";
+import { prpSemanticResultConflictMessage } from "../../contracts/completion-result.js";
 import type { CodexRpcServerRequest } from "./app-server-transport.js";
 import {
   boundedCodexValue,
@@ -208,7 +209,7 @@ async function handleServerRequestBody(
         };
       }
       if (
-        !toolAcceptsResult(tool, validation.result)
+        !toolAcceptsResult(tool, validation.result, completionInput !== request.params.arguments)
       ) {
         return {
           success: false,
@@ -218,7 +219,7 @@ async function handleServerRequestBody(
               text:
                 tool === CODEX_BLOCK_TOOL_NAME
                   ? "paperclip_block requires reportedWorkDisposition=blocked."
-                  : "paperclip_finish accepts done, needs_review, or yielded with a response_wake or persisted monitor continuation.",
+                  : "paperclip_finish accepts done, needs_review, or yielded with a response, monitor, handoff, or server-resolved workspace continuation.",
             },
           ],
         };
@@ -235,9 +236,7 @@ async function handleServerRequestBody(
       }
       const admission = admitResult(state, validation.result, callId, turnId);
       if (admission === "conflict") {
-        return rejectedToolCall(
-          "A different semantic result was already committed.",
-        );
+        return rejectedToolCall(prpSemanticResultConflictMessage(state.result));
       }
       return {
         success: true,

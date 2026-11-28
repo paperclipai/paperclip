@@ -8,6 +8,8 @@ import type { BootstrapReadProof } from "./native-bootstrap-read-proof.js";
 import type { ActiveStopPending } from "./copilot-active-stop-evidence.js";
 
 /** Closed selector shared by local and remote observers. It accepts no caller PID.
+ * Copilot runs from the runner's sealed verified store (`<store>/<closure>/distribution/copilot`);
+ * the regex is inline because this function is serialized into the remote observer.
  * Only a live native executable under an already owned run root is eligible. */
 export function selectOwnedCopilotProcess<T extends { pid: number; parent: number }>(
   rootPid: number, journal: readonly T[], live: readonly number[], argv: ReadonlyMap<number, readonly string[]>, fixedArguments: readonly string[] = COPILOT_LAUNCH_ARGUMENTS,
@@ -17,7 +19,7 @@ export function selectOwnedCopilotProcess<T extends { pid: number; parent: numbe
   const candidates = journal.filter(row => {
     if (row.pid === rootPid || !live.includes(row.pid)) return false;
     const command = argv.get(row.pid);
-    if (!command || command.length !== fixedArguments.length + 1 || !/^\/[^\u0000-\u0020]*\/paperclip-acpx-native-[A-Za-z0-9_-]+\/distribution\/copilot$/u.test(command[0] ?? "") || !fixedArguments.every((arg, i) => command[i + 1] === arg)) return false;
+    if (!command || command.length !== fixedArguments.length + 1 || !/^\/[^\u0000-\u0020]*\/paperclip-verified-native-[A-Za-z0-9_-]+\/[a-f0-9]{64}\/distribution\/copilot$/u.test(command[0] ?? "") || !fixedArguments.every((arg, i) => command[i + 1] === arg)) return false;
     const seen = new Set<number>(); let parent = row.parent;
     while (parent !== rootPid) {
       if (seen.has(parent) || !live.includes(parent)) return false;
@@ -38,7 +40,7 @@ export function canonicalRemoteCopilotCommand(
   executableIdentity: { dev: string; ino: string },
   descriptor?: { path: string; dev: string; ino: string },
 ): readonly string[] {
-  if (!/^\/[^\u0000-\u0020]*\/paperclip-acpx-native-[A-Za-z0-9_-]+\/distribution\/copilot$/u.test(executable)) return command;
+  if (!/^\/[^\u0000-\u0020]*\/paperclip-verified-native-[A-Za-z0-9_-]+\/[a-f0-9]{64}\/distribution\/copilot$/u.test(executable)) return command;
   if (command[0] === executable) return command;
   if (!/^\/proc\/self\/fd\/(?:3|7)$/u.test(command[0] ?? "") || !descriptor
     || descriptor.path !== executable || descriptor.dev !== executableIdentity.dev || descriptor.ino !== executableIdentity.ino) return command;

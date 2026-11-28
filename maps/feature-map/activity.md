@@ -43,7 +43,7 @@ Manual: Compare the dashboard with the known fixture tasks and runs. Start and f
 
 ### `activity-audit`
 
-Automated: [activity service](../../server/src/__tests__/activity-service.test.ts), [audit runs](../../ui/src/pages/audit/AuditRuns.test.tsx), and [routine audit](../../ui/src/pages/audit/RoutineAuditActivity.test.tsx) cover these separate data/host layers.
+Automated: [activity service](../../server/src/__tests__/activity-service.test.ts) covers the server data layer (UI component tests for audit runs and routine audit were removed; verify UI behavior manually or via Storybook).
 
 Manual: Find a known mutation by actor/resource and a known run by status. Change filters, load more, and follow the source links. Reload the chosen view and verify no company leakage or duplicate events. Inspect a routine run from its audit entry.
 
@@ -56,10 +56,10 @@ events from `case_events` appear alongside the already recorded handoffs and
 document events, without duplicating those mirrored records. Combined history
 passes retained case access before cursor pagination.
 
-Focused regressions: [Audit feed](../../ui/src/pages/audit/AuditFeed.test.tsx),
-[Audit routing](../../ui/src/pages/audit/AuditHub.test.tsx), and
-[Postgres audit routes](../../server/src/__tests__/agent-action-audit-routes.test.ts).
-These prove the component/API boundaries separately; follow the case-to-Audit
+Focused regressions:
+[Postgres audit routes](../../server/src/__tests__/agent-action-audit-routes.test.ts)
+cover the API boundary (mocked Audit feed and Audit routing UI tests were removed;
+follow the case-to-Audit link in the actual app to verify the UI and assembled journey).
 link in the actual app to verify the assembled journey.
 
 Issue activity is also available through `GET /api/issues/{id}/activity`.
@@ -69,9 +69,9 @@ regressions cover this route separately from company-wide audit. Live sandbox
 agent access remains unverified; use the companion recipe.
 
 Audit-event Load more and run listings differ: Runs currently loads at most 200
-entries without pagination. The tested RoutineAuditActivity component has no
-registered activity-route host; inspect execution links actually offered by
-the routine rather than treating that component test as a reachable journey.
+entries without pagination. RoutineAuditActivity is reachable as the routine
+page's Audit log (`/routines/:routineId/activity`); inspect execution links
+from there rather than treating its component test as the journey.
 
 ### `agent-commentary`
 
@@ -106,4 +106,4 @@ Company run history defaults to 200 rows and caps explicit limits at 1,000.
 Summary contexts omit stored prompts and expand JSON once per returned row.
 The array response and run visibility/redaction checks remain in place.
 Agent detail links resolve older runs by ID outside the recent history page.
-Sources: Source: [AuditRuns.tsx](../../ui/src/pages/audit/AuditRuns.tsx), [heartbeats.ts](../../ui/src/api/heartbeats.ts), [routines.ts](../../ui/src/api/routines.ts). Tests: [AuditRuns.test.tsx](../../ui/src/pages/audit/AuditRuns.test.tsx), [heartbeat-run-privacy-routes.test.ts](../../server/src/__tests__/heartbeat-run-privacy-routes.test.ts), [routines-service.test.ts](../../server/src/__tests__/routines-service.test.ts)
+Sources: Source: [AuditRuns.tsx](../../ui/src/pages/audit/AuditRuns.tsx), [heartbeats.ts](../../ui/src/api/heartbeats.ts), [routines.ts](../../ui/src/api/routines.ts). Tests: [heartbeat-run-privacy-routes.test.ts](../../server/src/__tests__/heartbeat-run-privacy-routes.test.ts), [routines-service.test.ts](../../server/src/__tests__/routines-service.test.ts)
