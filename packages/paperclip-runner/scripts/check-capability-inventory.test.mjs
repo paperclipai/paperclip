@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { test } from "node:test";
 
@@ -92,4 +94,25 @@ test("capability inventory validator rejects missing, duplicate, and unknown MCP
   const errors = validateInventories(inventories);
   assert.ok(errors.some((error) => error.includes("must be folded exactly once")));
   assert.ok(errors.some((error) => error.includes("unknown normative row")));
+});
+
+test("skills-only inventory checks work without the external eval corpus", async () => {
+  const directory = await mkdtemp(resolve(tmpdir(), "paperclip-skills-inventory-"));
+  try {
+    const generator = resolve(import.meta.dirname, "generate-capability-inventory.mjs");
+    const options = {
+      env: { ...process.env, PAPERCLIP_EVALS_ROOT: resolve(directory, "missing") },
+      encoding: "utf8",
+    };
+    const offline = spawnSync(process.execPath, [generator, "--skills-only", "--check"], options);
+    assert.ifError(offline.error);
+    assert.equal(offline.status, 0, offline.stderr);
+
+    const full = spawnSync(process.execPath, [generator, "--check"], options);
+    assert.ifError(full.error);
+    assert.notEqual(full.status, 0);
+    assert.match(full.stderr, /ENOENT/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });

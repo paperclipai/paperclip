@@ -54,15 +54,18 @@ The contract has three parts:
 
 ## Regenerating and checking
 
-Generation reads the live in-repo skill/reference sources, the legacy MCP tool
-source, and the Paperclip Evals corpus, so it **requires** the external eval
-repository (via `PAPERCLIP_EVALS_ROOT` or a known local path) and is not part of
-the offline path. Checking and testing read only the checked-in derivatives
-under `spec/capability/` and need no external repository.
+Full generation reads the live skill references, legacy MCP tools, and the
+external Paperclip Evals corpus. Set `PAPERCLIP_EVALS_ROOT` to the corpus.
+When editing only skill references, regenerate the skill inventory with the
+checked-in eval and MCP inventories. All validation still runs in this mode.
 
 ```sh
 # Rewrite every generated file. Requires the external Paperclip Evals corpus.
 pnpm --filter @paperclipai/paperclip-runner generate:capability-inventory
+
+# Refresh the contracts after a skill-reference edit. Works offline.
+pnpm --filter @paperclipai/paperclip-runner generate:capability-contract
+pnpm --filter @paperclipai/paperclip-runner generate:capability-inventory --skills-only
 
 # Validate counts, uniqueness, normative dispositions, one-to-one MCP folds,
 # required fields, and generated-file drift. Offline; no external eval repo.
