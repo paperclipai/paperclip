@@ -26,6 +26,7 @@ export function cursorNativeDistributionSpec(
     executable: distribution.executable,
     entrypoint: distribution.entrypoint,
     fixedArguments: [...CURSOR_FIXED_ARGUMENTS],
+    storeFamily: "cursor",
   };
 }
 

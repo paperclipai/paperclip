@@ -14,6 +14,7 @@ Create a separate task only for a useful boundary: another owner or permission,
 independent parallel output, a real prerequisite, independent review, or substantial
 follow-up that needs its own lifecycle. Check the available agents before assigning.
 Give each delegate enough context and a clear deliverable to work independently.
+People read these descriptions: reference other tasks and documents with identifier links (for example `[BRA-2](/BRA/issues/BRA-2#document-plan)`), never raw UUIDs.
 
 Set real dependencies through `blockedByIssueIds` (or the native dependency tool).
 Parent/child nesting and prose do not delay execution. Independent work can start

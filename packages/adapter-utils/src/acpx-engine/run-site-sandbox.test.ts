@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createSandboxRunSite,
   type ManagedHomeSeamResult,
+  type ManagedHomeRunBinding,
   type SandboxRunSiteOptions,
   type StagedRuntimeStoreEntry,
 } from "./run-site-sandbox.js";
@@ -244,11 +245,15 @@ describe("sandbox run site", () => {
 
   it("test_sandbox_site_borrow_yields_files_and_runtime_is_still_created", async () => {
     const cachedRuntime = makeStagedRuntime("cached");
+    let observedLocalHome: string | undefined;
+    const binding: ManagedHomeRunBinding = { env: { CODEX_HOME: "/current/local-home" }, onLog: async () => {} };
+    const rebindRun = vi.fn(async (current: ManagedHomeRunBinding) => { observedLocalHome = current.env.CODEX_HOME; });
     const stagedRuntimes = new Map<string, StagedRuntimeStoreEntry>([
       [
         "paperclip:c:a:t:fp",
         {
           stagedRuntime: cachedRuntime,
+          rebindRun,
           envDelta: { CODEX_HOME: "/remote/home" },
           teardown: async () => ({ ok: true }),
           dispose: async () => {},
@@ -256,7 +261,7 @@ describe("sandbox run site", () => {
         },
       ],
     ]);
-    const { site, env } = makeSite({ stagedRuntimes, isCompatibleResume: true });
+    const { site, env } = makeSite({ stagedRuntimes, isCompatibleResume: true, managedHomeRunBinding: binding });
 
     // A borrow reads the staged entry without removal, so an overlapping run of
     // the same session still reads it.
@@ -272,10 +277,25 @@ describe("sandbox run site", () => {
     expect(site.staged?.reused).toBe(true);
     expect(site.staged?.stagedRuntime).toBe(cachedRuntime);
     expect(env.CODEX_HOME).toBe("/remote/home");
+    expect(rebindRun).toHaveBeenCalledWith(binding);
+    expect(observedLocalHome).toBe("/current/local-home");
     const candidate: SandboxReuseCandidate = site.reuseCandidate(makeReady(cachedRuntime));
     expect(candidate).toEqual({ stagedRuntime: cachedRuntime });
     expect("runtime" in candidate).toBe(false);
     expect("sessionHandle" in candidate).toBe(false);
+  });
+
+  it("releases the staging lease if rebinding a retained managed home fails", async () => {
+    const rebindRun = vi.fn(async () => { throw new Error("fixture binding failed"); });
+    const entry = { stagedRuntime: makeStagedRuntime("cached"), envDelta: { CODEX_HOME: "/remote/home" },
+      rebindRun, teardown: null, dispose: null, lastUsedAt: 500 };
+    const stagedRuntimes = new Map([["s", entry]]);
+    const { site, stagingLocks, env } = makeSite({ stagedRuntimes, isCompatibleResume: true,
+      managedHomeRunBinding: { env: { CODEX_HOME: "/current/local-home" }, onLog: async () => {} } });
+    await expect(site.placeWorkspace(makeContext("s"))).rejects.toThrow("fixture binding failed");
+    expect(stagingLocks.size).toBe(0);
+    expect(env.CODEX_HOME).toBeUndefined();
+    expect(stagedRuntimes.get("s")).toBe(entry);
   });
 
   it("test_site_plan_supplies_session_cwd_spawn_cwd_and_tracing_before_the_fingerprint_build", () => {

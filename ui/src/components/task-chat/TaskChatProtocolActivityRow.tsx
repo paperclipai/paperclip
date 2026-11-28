@@ -9,8 +9,10 @@ import {
 } from "lucide-react";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { WorkspaceFileLink } from "@/components/WorkspaceFileLink";
+import { useSecondTick } from "@/hooks/useSecondTick";
 import { cn } from "@/lib/utils";
 import { useTaskChatShimmer } from "./TaskChatShimmer";
+import { AutoApprovedBadge, AutoReviewDetail } from "./TaskChatAutoReview";
 import type {
   TaskChatProtocolDetail,
   TaskChatProtocolItem,
@@ -20,14 +22,18 @@ import type {
   TaskChatWorkspaceFileItem,
 } from "./task-chat-model";
 import {
+  durationLabel,
   protocolActivityIsRunning,
   protocolActivityLabel,
   protocolActivityPresentation,
   providerNoticeSeverity,
 } from "./task-chat-activity-presentation";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { safeNavigableUrl } from "@/lib/safe-url";
 
 const COMPACT_RESEARCH_RESULT_LIMIT = 5;
 const COMPACT_WORKSPACE_FILE_LIMIT = 8;
+const RESEARCH_SOURCE_PREVIEW_LIMIT = 3;
 
 function StatusIcon({ status }: { status: "running" | "completed" | "failed" | "interrupted" | "informational" }) {
   if (status === "running") return <Loader2 className="h-3.5 w-3.5 animate-spin text-(--status-agent-running)" aria-hidden />;
@@ -44,7 +50,7 @@ function stepStatusIcon(status: TaskChatProtocolStep["status"], neutral = false)
   return <Circle className="h-3 w-3 text-muted-foreground" aria-hidden />;
 }
 
-function DetailList({ details }: { details: readonly TaskChatProtocolDetail[] }) {
+export function DetailList({ details }: { details: readonly TaskChatProtocolDetail[] }) {
   if (details.length === 0) return null;
   return (
     <dl className="flex min-w-0 flex-col gap-1.5" data-testid="task-chat-provider-detail-list">
@@ -172,7 +178,7 @@ function ProviderDetails({ item, neutral = false }: { item: TaskChatProviderActi
         <DetailList details={item.details} />
       ) : null}
       {item.output ? (
-        <pre className="max-h-(--sz-64) overflow-auto whitespace-pre-wrap rounded-sm bg-muted/50 p-2 font-mono text-(length:--text-micro) text-foreground">{item.output}</pre>
+        <pre className={cn("max-h-(--sz-64) overflow-auto whitespace-pre-wrap rounded-sm bg-muted/50 p-2 font-mono text-(length:--text-micro) text-foreground", ANALYTICS_MASK_CLASS)}>{item.output}</pre>
       ) : null}
       {item.outputTruncated ? <p className="text-muted-foreground">Output truncated to 8 KiB.</p> : null}
     </div>
@@ -220,7 +226,7 @@ function WorkspaceFileDetails({ item }: { item: TaskChatWorkspaceFileItem }) {
         item.presentation === "document" ? (
           <div className="max-h-(--sz-64) overflow-auto rounded-sm bg-muted/30 p-2 text-foreground"><MarkdownBody>{item.preview}</MarkdownBody></div>
         ) : (
-          <pre className="max-h-(--sz-64) overflow-auto whitespace-pre-wrap rounded-sm bg-muted/50 p-2 font-mono text-(length:--text-micro) text-foreground">{item.preview}</pre>
+          <pre className={cn("max-h-(--sz-64) overflow-auto whitespace-pre-wrap rounded-sm bg-muted/50 p-2 font-mono text-(length:--text-micro) text-foreground", ANALYTICS_MASK_CLASS)}>{item.preview}</pre>
         )
       ) : <p className="text-muted-foreground">Preview unavailable.</p>}
       {item.previewTruncated ? <p className="text-muted-foreground">Preview truncated by the runner.</p> : null}
@@ -228,9 +234,29 @@ function WorkspaceFileDetails({ item }: { item: TaskChatWorkspaceFileItem }) {
   );
 }
 
+/** One-line outcome for a check: its detail, or why it did not run. */
+export function verificationOutcome(item: TaskChatProviderActivityItem): string | undefined {
+  const detail = item.details.find((entry) => entry.label === "Detail")?.value;
+  if (detail) return detail;
+  const reason = item.details.find((entry) => entry.label === "Reason Code")?.value;
+  return reason ? reason.replaceAll("_", " ").replace(/^\w/, (letter) => letter.toUpperCase()) : undefined;
+}
+
+/** The full check: command and untruncated outcome, wrapped. */
+function VerificationDetails({ item }: { item: TaskChatProviderActivityItem }) {
+  const outcome = verificationOutcome(item);
+  return (
+    <div className="flex min-w-0 flex-col gap-1.5" data-testid="task-chat-verification-details">
+      {item.summary ? <p className="min-w-0 break-all font-mono text-foreground">{item.summary}</p> : null}
+      {outcome ? <p className="min-w-0 whitespace-pre-wrap break-words">{outcome}</p> : null}
+    </div>
+  );
+}
+
 function detailContent(item: TaskChatProtocolItem, neutral = false): ReactNode | null {
   switch (item.surface) {
     case "provider_activity": {
+      if (item.family === "verification") return verificationOutcome(item) ? <VerificationDetails item={item} /> : null;
       const expandable = item.details.length > 0 || item.steps.length > 0 || item.links.length > 0 || item.children.length > 0 || Boolean(item.output) || Boolean(item.outputTruncated);
       return expandable ? <ProviderDetails item={item} neutral={neutral} /> : null;
     }
@@ -244,30 +270,69 @@ function detailContent(item: TaskChatProtocolItem, neutral = false): ReactNode |
   }
 }
 
-function safeActivityHref(value: string | null | undefined): string | undefined {
-  if (!value) return undefined;
-  try {
-    // A fixed HTTPS base accepts relative app paths and fragments as well as
-    // external HTTP(S) resources, but never executable or local-file schemes.
-    const url = new URL(value, "https://paperclip.invalid");
-    return url.protocol === "https:" || url.protocol === "http:" ? value : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 export function hasTaskChatProtocolActivityDetails(item: TaskChatProtocolItem): boolean {
-  if (item.surface === "resource") return Boolean(safeActivityHref(item.href));
+  if (item.surface === "provider_activity" && item.autoReview) return true;
+  // A check expands only when it has an outcome that may not fit on one line.
+  if (item.surface === "provider_activity" && item.family === "verification") return detailContent(item) !== null;
+  if (item.surface === "resource") return Boolean(safeNavigableUrl(item.href));
   return detailContent(item) !== null || (item.surface === "provider_activity" && Boolean(item.summary?.trim()));
 }
 
 export function TaskChatProtocolActivityDetails({ item, neutral = false }: { item: TaskChatProtocolItem; neutral?: boolean }) {
   const detail = detailContent(item, neutral);
   if (item.surface === "resource") {
-    const href = safeActivityHref(item.href);
+    const href = safeNavigableUrl(item.href);
     return href ? <a href={href} className="text-foreground underline">{item.title}</a> : <p>{item.title}</p>;
   }
-  return <>{item.surface === "provider_activity" && item.summary ? <p className="whitespace-pre-wrap break-words">{item.summary}</p> : null}{detail}</>;
+  return <>{item.surface === "provider_activity" && item.family !== "verification" && item.summary ? <p className="whitespace-pre-wrap break-words">{item.summary}</p> : null}{detail}{item.surface === "provider_activity" && item.autoReview ? <AutoReviewDetail review={item.autoReview} /> : null}</>;
+}
+
+/** Source domains under a finished web search, so results are visible without expanding. */
+export function ResearchSourceStrip({ item }: { item: TaskChatProviderActivityItem }) {
+  const seen = new Set<string>();
+  const sources = item.links.flatMap((link) => {
+    const host = sourceHostname(link.href);
+    if (seen.has(host)) return [];
+    seen.add(host);
+    return [{ ...link, host }];
+  });
+  if (sources.length === 0) return null;
+  const visible = sources.slice(0, RESEARCH_SOURCE_PREVIEW_LIMIT);
+  const hidden = item.links.length - visible.length;
+  return (
+    <div className="ml-7 flex min-w-0 flex-wrap items-center gap-1 pb-0.5" data-testid="task-chat-research-sources">
+      {visible.map((source) => (
+        <a
+          key={source.href}
+          className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border border-border px-2 py-0.5 text-(length:--text-nano) text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+          href={source.href}
+          target="_blank"
+          rel="noreferrer"
+          title={source.label}
+        >
+          <span className="truncate">{source.host}</span>
+        </a>
+      ))}
+      {hidden > 0 ? <span className="text-(length:--text-nano) text-muted-foreground">+{hidden} more</span> : null}
+    </div>
+  );
+}
+
+/** Live "12s left" for an intentional wait with a planned duration. */
+export function WaitCountdown({ item }: { item: TaskChatProviderActivityItem }) {
+  useSecondTick(true);
+  const planned = Number(item.details.find((detail) => detail.label === "Planned Duration Ms")?.value);
+  const startedAtMs = item.startedAt ? Date.parse(item.startedAt) : Number.NaN;
+  if (!Number.isFinite(planned) || !Number.isFinite(startedAtMs)) return null;
+  const remaining = Math.max(0, planned - (Date.now() - startedAtMs));
+  return <span className="shrink-0 tabular-nums" data-testid="task-chat-wait-countdown">{durationLabel(String(remaining))} left</span>;
+}
+
+export function verificationTone(item: TaskChatProviderActivityItem): string | undefined {
+  const status = item.details.find((detail) => detail.label === "Status")?.value;
+  if (status === "passed") return "text-(--status-task-icon-done)";
+  if (status === "failed") return "text-destructive";
+  return undefined;
 }
 
 function itemStatus(item: TaskChatProtocolItem): "running" | "completed" | "failed" | "interrupted" | "informational" {
@@ -304,7 +369,12 @@ export function TaskChatProtocolActivityRow({ item }: { item: TaskChatProtocolIt
       </div>
     );
   }
-  const detail = detailContent(item);
+  const verification = item.surface === "provider_activity" && item.family === "verification" ? item : null;
+  const runningWait = item.surface === "provider_activity" && item.family === "wait" && item.status === "running" ? item : null;
+  const research = item.surface === "provider_activity" && item.family === "research" && item.status !== "running" ? item : null;
+  const detail = item.surface === "provider_activity" && item.autoReview
+    ? <>{detailContent(item)}<AutoReviewDetail review={item.autoReview} /></>
+    : detailContent(item);
   const expandable = detail !== null;
   const Icon = presentation.icon;
   const label = protocolActivityLabel(item, presentation);
@@ -313,25 +383,32 @@ export function TaskChatProtocolActivityRow({ item }: { item: TaskChatProtocolIt
   const row = (
     <>
       <span className="flex w-5 shrink-0 items-center justify-center">
-        <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden data-testid="task-chat-protocol-activity-icon" />
+        <Icon className={cn("h-3.5 w-3.5 shrink-0", verification && verificationTone(verification), (presentation.tone === "blocked" || presentation.tone === "failed") && "text-destructive")} aria-hidden data-testid="task-chat-protocol-activity-icon" />
       </span>
       <span data-conversation-tool-running={active && shimmer && item.surface === "provider_activity" && item.family === "tool_execution" ? "true" : undefined} className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
         <span className={cn("shrink-0 font-medium", active && shimmer && "shimmer-text shimmer-text-muted")}>{label}{active ? "…" : ""}</span>
         {presentation.detail ? <span className="task-chat-collapsed-line-fade min-w-0 flex-1 font-mono text-(length:--text-micro)">{presentation.detail}</span> : null}
+        {verification && verificationOutcome(verification) ? (
+          <span className="min-w-0 shrink truncate" data-testid="task-chat-verification-detail">
+            {verificationOutcome(verification)}
+          </span>
+        ) : null}
+        {runningWait ? <WaitCountdown item={runningWait} /> : null}
       </span>
       <span className="ml-auto flex shrink-0 items-center gap-2">
+        {item.surface === "provider_activity" && item.autoReview ? <AutoApprovedBadge review={item.autoReview} /> : null}
         {expandable ? (
           <ChevronRight
             className={cn("tc-hover-disclosure-caret h-3 w-3 transition-[opacity,transform] group-hover/activity:opacity-80 group-focus-visible/activity:opacity-80", open ? "rotate-90 opacity-80" : "opacity-0")}
             aria-hidden
           />
         ) : null}
-        <StatusIcon status={status} />
+        {verification ? null : <StatusIcon status={status} />}
       </span>
     </>
   );
 
-  const resourceHref = item.surface === "resource" ? safeActivityHref(item.href) : undefined;
+  const resourceHref = item.surface === "resource" ? (safeNavigableUrl(item.href) ?? undefined) : undefined;
   if (resourceHref) {
     return (
       <a className="group/activity -mx-1.5 flex min-h-6 w-full min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-sm px-1.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground" href={resourceHref} data-testid="task-chat-protocol-activity-row">
@@ -359,6 +436,12 @@ export function TaskChatProtocolActivityRow({ item }: { item: TaskChatProtocolIt
   return (
     <div className="flex min-w-0 flex-col text-xs" data-testid="task-chat-protocol-activity-row" data-activity-family={item.surface === "provider_activity" ? item.family : item.surface}>
       {activityRow}
+      {presentation.note ? (
+        <p className="min-w-0 whitespace-pre-wrap break-words pb-1 pl-7 text-muted-foreground" data-testid="task-chat-governance-note">
+          {presentation.note}
+        </p>
+      ) : null}
+      {research && !open ? <ResearchSourceStrip item={research} /> : null}
       {open && detail ? (
         <div id={detailId} className="ml-2.5 mt-0.5 border-l-2 border-border py-1 pl-2.5" data-testid="task-chat-protocol-activity-detail">
           {detail}

@@ -32,7 +32,7 @@ const support = await getEmbeddedPostgresTestSupport();
     });
     const [issue] = await db.insert(issues).values({
       companyId, title: "Promote backlog with retained monitor", status: "backlog", assigneeAgentId: agent!.id,
-      executionPolicy: policy,
+      executionPolicy: policy as Record<string, unknown> | null,
       ...buildInitialIssueMonitorFields({ policy, status: "in_progress", assigneeAgentId: agent!.id }),
     }).returning();
     const app = express();
@@ -76,7 +76,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const probeDb = createDb(temporary.connectionString, { maxConnections: 1 });
     let holderPid = 0;
     const edit = editDb.transaction(async (tx) => {
-      await tx.update(issues).set({ executionPolicy: replacementPolicy }).where(eq(issues.id, issue.id));
+      await tx.update(issues).set({ executionPolicy: replacementPolicy as Record<string, unknown> | null }).where(eq(issues.id, issue.id));
       holderPid = (await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`))[0]!.pid;
       ready();
       await gate;

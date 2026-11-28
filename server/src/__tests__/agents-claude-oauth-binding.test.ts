@@ -1103,7 +1103,6 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
       companyId: scope.companyId,
       ownerUserId: scope.ownerUserId,
       adapterType: "claude_local",
-      environmentId: scope.environmentId,
     });
     const writer = createSetupTokenSecretWriter({ db });
 

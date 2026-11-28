@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "slug": "circleback",
+  "name": "Circleback",
+  "description": "Search meeting notes, transcripts, action items, calendar events and emails, and show meetings as cards in chat.",
+  "categories": [
+    "productivity"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/circleback.png"
+  },
+  "urlPatterns": [
+    "https://circleback.ai/*",
+    "https://app.circleback.ai/*"
+  ],
+  "docsUrl": "https://circleback.ai/docs/support/platform/circleback-mcp",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "label": "Sign in with Circleback",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for Circleback's hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://circleback.ai/api/mcp",
+        "scopesHint": [
+          "user",
+          "user:write"
+        ]
+      },
+      "guidanceMd": "Sign in to Circleback and approve access. The connection acts as the Circleback user who signs in and sees the meetings, action items, calendar events and connected email that user can see. Write tools start enabled and remain governed by Paperclip's action policies.",
+      "warnings": [
+        "A Circleback account. The connection reads the signed-in user's meetings, transcripts, calendar and connected email.",
+        "Circleback share tools can share meetings and folders with other people or anyone with the link, and delete tools cannot be undone. Set share and delete actions to Ask first before agents run unattended."
+      ],
+      "consoleLinks": {
+        "docs": "https://circleback.ai/docs/support/platform/circleback-mcp"
+      },
+      "riskTier": "S3",
+      "capabilityProfile": {
+        "key": "write",
+        "label": "Read and write",
+        "description": "Search and read meetings, transcripts, action items, calendar events and email, and manage action items, tags, folders and meeting notes. Circleback share tools can share meetings and folders with other people or anyone with the link, and delete tools cannot be undone. Set share and delete actions to Ask first before agents run unattended."
+      }
+    }
+  ]
+}
