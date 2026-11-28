@@ -94,6 +94,23 @@ import {
   withAccountHomeSecretMutationLock,
 } from "@paperclipai/adapter-codex-local/server";
 
+const secretRefSyncLocks = new Map<string, Promise<void>>();
+
+async function withSecretRefSyncLock<T>(key: string, run: () => Promise<T>): Promise<T> {
+  const previous = secretRefSyncLocks.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const queued = previous.then(() => gate);
+  secretRefSyncLocks.set(key, queued);
+  await previous;
+  try {
+    return await run();
+  } finally {
+    release();
+    if (secretRefSyncLocks.get(key) === queued) secretRefSyncLocks.delete(key);
+  }
+}
+
 function latestDate(a: Date | null, b: Date | null): Date | null {
   if (!a) return b;
   if (!b) return a;
@@ -5024,11 +5041,16 @@ export function secretService(db: Db | DbTransaction) {
       }
 
       const pathPrefixes = [...new Set(normalizedRefs.map((ref) => ref.configPath.split(".")[0]))];
+      const syncKey = `${companyId}\u0000${target.targetType}\u0000${target.targetId}`;
 
-      await db.transaction(async (tx) => {
+      await withSecretRefSyncLock(syncKey, () => db.transaction(async (tx) => {
+        const bindingKey = (secretId: string, configPath: string, versionSelector: string) =>
+          `${secretId}\u0000${configPath}\u0000${versionSelector}`;
+        const keptKeys = new Set<string>();
         if (options?.replaceAll) {
-          await tx
-            .delete(companySecretBindings)
+          const existing = await tx
+            .select()
+            .from(companySecretBindings)
             .where(
               and(
                 eq(companySecretBindings.companyId, companyId),
@@ -5036,6 +5058,33 @@ export function secretService(db: Db | DbTransaction) {
                 eq(companySecretBindings.targetId, target.targetId),
               ),
             );
+          const byKey = new Map<string, (typeof existing)[number]>();
+          for (const row of existing) {
+            const key = bindingKey(row.secretId, row.configPath, row.versionSelector);
+            if (!byKey.has(key)) byKey.set(key, row);
+          }
+          for (const ref of normalizedRefs) {
+            const key = bindingKey(ref.secretId, ref.configPath, String(ref.versionSelector));
+            const row = byKey.get(key);
+            if (!row) continue;
+            keptKeys.add(key);
+            byKey.delete(key);
+            await tx
+              .update(companySecretBindings)
+              .set({
+                required: ref.required,
+                label: ref.label,
+                projectionClass: ref.projectionClass,
+                projectionAllowlistKey: ref.projectionAllowlistKey,
+              })
+              .where(eq(companySecretBindings.id, row.id));
+          }
+          const staleIds = [...byKey.values()].map((row) => row.id);
+          if (staleIds.length > 0) {
+            await tx
+              .delete(companySecretBindings)
+              .where(inArray(companySecretBindings.id, staleIds));
+          }
         } else if (pathPrefixes.length > 0) {
           for (const pathPrefix of pathPrefixes) {
             await tx
@@ -5063,9 +5112,14 @@ export function secretService(db: Db | DbTransaction) {
               ),
             );
         }
-        if (normalizedRefs.length === 0) return;
+        const toInsert = normalizedRefs.filter(
+          (ref) => !keptKeys.has(
+            bindingKey(ref.secretId, ref.configPath, String(ref.versionSelector)),
+          ),
+        );
+        if (toInsert.length === 0) return;
         await tx.insert(companySecretBindings).values(
-          normalizedRefs.map((ref) => ({
+          toInsert.map((ref) => ({
             companyId,
             secretId: ref.secretId,
             targetType: target.targetType,
@@ -5078,7 +5132,7 @@ export function secretService(db: Db | DbTransaction) {
             projectionAllowlistKey: ref.projectionAllowlistKey,
           })),
         );
-      });
+      }));
       return normalizedRefs;
     },
 
