@@ -6,16 +6,17 @@ import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import type { Db, heartbeatRuns } from "@paperclipai/db";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDurableRunLogStore } from "../run-log-store.js";
 import type { StorageProvider } from "../../storage/types.js";
-import { createHeartbeatRunOutput, isNewRunLog } from "./run-output.js";
+import { ACTIVE_RUN_OUTPUT_PROGRESS_FLUSH_INTERVAL_MS, createHeartbeatRunOutput, isNewRunLog } from "./run-output.js";
 import { createAgentIdentityRedactor, secretEnvironmentValues } from "../agent-identity-redaction.js";
 import { formatNativeRunLogEvent } from "../native-runtime/native-run-log-export.js";
 import { generateKeyPairSync } from "node:crypto";
 import { reportStorageOutageWaitsTo, runInOwnStorageScope } from "../../storage/storage-unavailable.js";
 import { clearAllHeartbeatRunRuntimeStatuses, getHeartbeatRunRuntimeStatus } from "../heartbeat-run-runtime-status.js";
 import { createStorageWaitNotice, STORAGE_WAIT_PHASE } from "./storage-wait-notice.js";
+import { logger } from "../../middleware/logger.js";
 
 vi.mock("../live-events.js", () => ({ publishLiveEvent: vi.fn() }));
 
@@ -472,6 +473,73 @@ describe("object-backed diagnostic recording", () => {
     expect(begun).toBe(deferNativeLogRecovery);
     releaseRead();
     await beginning.catch(() => undefined);
+  });
+});
+
+describe("run output progress write failures", () => {
+  it("resolves onLog and keeps the progress pending when the throttled progress write fails", async () => {
+    const { publishLiveEvent } = await import("../live-events.js");
+    vi.mocked(publishLiveEvent).mockClear();
+    const row = { ...newRunRow };
+    const base = createRunRowDb(row);
+    let databaseDown = true;
+    let progressAttempts = 0;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-25T00:00:00Z"));
+    onTestFinished(() => { vi.useRealTimers(); });
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => logger);
+    onTestFinished(() => { warn.mockRestore(); });
+    const db = {
+      ...base,
+      async transaction<T>(write: (tx: Db) => Promise<T>): Promise<T> {
+        progressAttempts += 1;
+        if (databaseDown) {
+          throw Object.assign(new Error("the database system is shutting down"), { code: "57P03" });
+        }
+        return write(base);
+      },
+    } as unknown as Db;
+    const events = vi.fn(async () => undefined);
+    const output = createHeartbeatRunOutput(db, {
+      run: row as Run,
+      runId: row.id!,
+      issueId: null,
+      runLogStore: {
+        begin: async () => ({ store: "local_file", logRef: "company/agent/run.ndjson" }),
+        append: async (_handle, event) => Buffer.byteLength(event.chunk),
+        enqueue: undefined,
+        flush: async () => undefined,
+      },
+      identityRedactor: { chunk: (_stream, chunk) => chunk, redact: value => value },
+      secretKeys: new Set(),
+      appendRunEvent: events,
+      getCurrentUserRedactionOptions: async () => ({ enabled: false }),
+    });
+    const handlers = await output.begin(row as Run);
+
+    await expect(handlers.onLog("stdout", "first\n")).resolves.toBeUndefined();
+    await expect(handlers.onLog("stderr", "second\n")).resolves.toBeUndefined();
+
+    const logEvents = vi.mocked(publishLiveEvent).mock.calls
+      .map(([event]) => event)
+      .filter(event => event.type === "heartbeat.run.log");
+    expect(logEvents.map(event => event.payload?.seq)).toEqual([1, 2]);
+    expect(output.outputProgressState.pending).toMatchObject({ seq: 2, stream: "stderr", bytes: 13 });
+    expect(row.lastOutputSeq).toBe(0);
+    expect(events).toHaveBeenCalledWith(expect.objectContaining({ id: row.id }),
+      expect.objectContaining({ level: "warn", message: "Run log persistence is incomplete" }));
+    expect(progressAttempts).toBe(1);
+
+    vi.setSystemTime(new Date(Date.now() + ACTIVE_RUN_OUTPUT_PROGRESS_FLUSH_INTERVAL_MS));
+    await expect(handlers.onLog("stdout", "third\n")).resolves.toBeUndefined();
+    expect(progressAttempts).toBe(2);
+    expect(warn.mock.calls.filter(([, message]) => message === "Failed to record run output progress; will retry")).toHaveLength(1);
+
+    databaseDown = false;
+    await output.flushOutputProgress({ force: true });
+    expect(progressAttempts).toBe(3);
+    expect(row).toMatchObject({ lastOutputSeq: 3, lastOutputBytes: 19, lastOutputStream: "stdout" });
+    expect(output.outputProgressState.pending).toBeNull();
   });
 });
 

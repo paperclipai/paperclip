@@ -1,6 +1,7 @@
 import { notifyActiveRunSilence } from "../live-run-recovery-notifications.js";
 import { retryThroughStorageOutage, storageOutageWaitFor } from "../../storage/storage-unavailable.js";
 import { eq } from "drizzle-orm";
+import { logger } from "../../middleware/logger.js";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
 import type { AdapterInvocationMeta, AdapterRuntimeEvent } from "../../adapters/index.js";
 import { redactCurrentUserText, type CurrentUserRedactionOptions } from "../../log-redaction.js";
@@ -85,6 +86,8 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
   let persistedLogBytes = Number(run.logBytes ?? 0);
   let progressWrite: Promise<void> | null = null;
   let recordingFailureReported = false;
+  let progressFailureStreak = false;
+  let progressRetryNotBefore: number | null = null;
   let deferredLogRecovery: Promise<void> | null = null;
   const flushOutputProgress = async (opts?: { force?: boolean }) => {
     if (progressWrite) {
@@ -100,6 +103,7 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
       pendingOutputProgress.at.getTime() - lastOutputFlushAt.getTime() >=
         ACTIVE_RUN_OUTPUT_PROGRESS_FLUSH_INTERVAL_MS;
     if (!shouldFlush) return;
+    if (opts?.force !== true && progressRetryNotBefore !== null && Date.now() < progressRetryNotBefore) return;
     progressWrite = db.transaction(async tx => {
       await notifyActiveRunSilence(tx, { companyId: run.companyId, runId: run.id });
       await tx.update(heartbeatRuns)
@@ -113,9 +117,14 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
       .where(eq(heartbeatRuns.id, run.id));
     })
       .then(() => {
+        progressRetryNotBefore = null;
+        progressFailureStreak = false;
         lastOutputFlushAt = pendingOutputProgress.at;
         if (outputProgressState.pending === pendingOutputProgress)
           outputProgressState.pending = null;
+      }, (error: unknown) => {
+        progressRetryNotBefore = Date.now() + ACTIVE_RUN_OUTPUT_PROGRESS_FLUSH_INTERVAL_MS;
+        throw error;
       })
       .finally(() => {
         progressWrite = null;
@@ -206,7 +215,15 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
           stream,
           bytes: persistedLogBytes,
         };
-        await flushOutputProgress();
+        await flushOutputProgress().catch(
+          (error: unknown) => {
+            if (!progressFailureStreak) {
+              progressFailureStreak = true;
+              logger.warn({ err: error, runId: run.id }, "Failed to record run output progress; will retry");
+            }
+            void reportRecordingFailure();
+          },
+        );
 
         // Streamed CLI output is real run activity: keep the in-memory
         // runtime status ("Working... / X ago") fresh between structured
