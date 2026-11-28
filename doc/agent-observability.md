@@ -63,6 +63,13 @@ The URL does not grant access. Run telemetry permission, company membership and
 task privacy checks still apply. The reference is absent when prompt capture is
 disabled. Tool argument values remain excluded from company traces.
 
+Each OpenCode model usage span includes a finite, nonnegative provider-reported
+USD charge as `braintrust.metrics.estimated_cost`. Braintrust maps this attribute
+to `metrics.estimated_cost` for cost totals without a model-pricing lookup.
+`paperclip.cost.usd` remains available as metadata. A reported zero stays zero;
+an unknown charge stays absent. Repeated updates replace the same message's
+usage span. Parent and tool spans do not repeat the charge.
+
 The exporter sends once at turn completion with a three-second deadline, at most
 four requests in flight and no idle polling or persistent queue. Closing drains
 pending requests and marks an unfinished turn failed. Export failures emit a

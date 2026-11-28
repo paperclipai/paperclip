@@ -209,7 +209,8 @@ export function createOpenCodeCompanyObservability(input: {
           const values: Attributes = { "gen_ai.operation.name": "chat", "gen_ai.request.model": input.model };
           for (const [name, value] of Object.entries({ "gen_ai.usage.input_tokens": usage.input, "gen_ai.usage.output_tokens": usage.output,
             "gen_ai.usage.cache_read.input_tokens": cache.read, "gen_ai.usage.cache_creation.input_tokens": cache.write,
-            "paperclip.cost.usd": usage.costUsd })) if (finite(value)) values[name] = value;
+            "paperclip.cost.usd": usage.costUsd,
+            "braintrust.metrics.estimated_cost": usage.costUsd })) if (finite(value)) values[name] = value;
           const previous = turn.usage.get(key);
           turn.usage.set(key, { ...makeSpan("opencode.model.usage", previous?.start ?? time, values), id: previous?.id ?? id(), end: time });
         } else turn.truncated = true;
