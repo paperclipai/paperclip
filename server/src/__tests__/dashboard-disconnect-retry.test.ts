@@ -33,6 +33,8 @@ function fixture(failures: Error[] = [], options: {
       const query = {
         where(value: SQL) { condition = value; return query; },
         groupBy() { return query; },
+        orderBy() { return query; },
+        limit() { return query; },
         then(resolve: (value: unknown[]) => unknown, reject: (error: unknown) => unknown) {
           return Promise.resolve().then(() => {
             reads.push(name);
@@ -51,6 +53,7 @@ function fixture(failures: Error[] = [], options: {
             if (name === "issues") return [{ status: "in_progress", count: 1 }];
             if (name === "approvals") return [{ count: 3 }];
             if (name === "cost_events") return [{ monthSpend: 125 }];
+            if (name === "heartbeat_runs") return [];
             throw new Error(`Unexpected dashboard read: ${name}`);
           }).then(resolve, reject);
         },
@@ -87,7 +90,7 @@ describe("dashboard read connection recovery", () => {
         pendingApprovals: 3,
       });
       expect(test.companyParameters).toEqual([[companyId], [companyId]]);
-      expect(test.reads).toEqual(["companies", "companies", "agents", "issues", "approvals", "cost_events"]);
+      expect(test.reads).toEqual(["companies", "companies", "agents", "issues", "approvals", "cost_events", "heartbeat_runs"]);
       expect(test.execute).toHaveBeenCalledTimes(1);
       expect(overview).toHaveBeenCalledExactlyOnceWith(companyId);
     },
@@ -135,8 +138,8 @@ describe("dashboard read connection recovery", () => {
     expect(overview).toHaveBeenCalledTimes(1);
   });
 
-  const tables = ["companies", "agents", "issues", "approvals", "cost_events"];
-  it.each(["agents", "issues", "approvals", "cost_events"])("retries only the failed %s read", async (table) => {
+  const tables = ["companies", "agents", "issues", "approvals", "cost_events", "heartbeat_runs"];
+  it.each(["agents", "issues", "approvals", "cost_events", "heartbeat_runs"])("retries only the failed %s read", async (table) => {
     const test = fixture([], { readFailures: { [table]: [disconnected()] } });
     await expect(test.service.summary(companyId)).resolves.toMatchObject({ companyId });
     const prefix = tables.slice(0, tables.indexOf(table) + 1);
@@ -180,7 +183,7 @@ describe("dashboard read connection recovery", () => {
     const failures = [disconnected(), disconnected(), disconnected()];
     const test = fixture([], { activityFailures: failures });
     await expect(test.service.summary(companyId)).rejects.toBe(failures[2]);
-    expect(test.reads).toEqual(tables);
+    expect(test.reads).toEqual(tables.slice(0, tables.indexOf("heartbeat_runs")));
     expect(test.execute).toHaveBeenCalledTimes(3);
     expect(overview).not.toHaveBeenCalled();
   });
