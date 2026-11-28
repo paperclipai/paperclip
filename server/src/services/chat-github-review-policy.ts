@@ -122,13 +122,17 @@ export function githubReviewSchedulingDecision(input: {
     input.activeSponsorUserIds.has(person.sponsorUserId);
   if (!linkedAllowed && !guestAllowed)
     return { allowed: false, reason: "person_not_authorized" };
+  const automaticResponsibleUserId =
+    configuration.automaticResponsibleUser === "pull_request_author" && linkedAllowed
+      ? input.linkedMemberUserId!
+      : configuration.responsibleUserId;
   const responsibleUserId = input.manual
     ? linkedAllowed
       ? input.linkedMemberUserId!
       : person!.kind === "guest"
         ? person!.sponsorUserId
         : configuration.responsibleUserId
-    : configuration.responsibleUserId;
+    : automaticResponsibleUserId;
   if (!input.activeSponsorUserIds.has(responsibleUserId))
     return { allowed: false, reason: "responsible_user_unavailable" };
   const policy = effectiveGitHubReviewPolicy(

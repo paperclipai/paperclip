@@ -76,6 +76,7 @@ export const githubChatConfigurationSchema = z
     version: z.literal(1),
     toolsEnabled: z.boolean(),
     responsibleUserId: z.string().min(1),
+    automaticResponsibleUser: z.enum(["configured", "pull_request_author"]).optional(),
     memberAccess: z.enum(["all_linked", "selected"]),
     people: z.array(githubAllowedPersonSchema).max(500),
     defaults: githubReviewPolicySchema,

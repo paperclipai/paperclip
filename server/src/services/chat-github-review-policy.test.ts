@@ -181,6 +181,27 @@ describe("GitHub review authorization and scheduling", () => {
       }).allowed,
     ).toBe(false);
   });
+  it("makes a linked author responsible for their own automatic work only when the bot opts in", () => {
+    const config = configuration();
+    const author = { linkedMemberUserId: "author-user", activeSponsorUserIds: new Set(["owner", "author-user"]) };
+    expect(decide(config, author)).toMatchObject({ allowed: true, responsibleUserId: "owner" });
+    config.automaticResponsibleUser = "configured";
+    expect(decide(config, author).responsibleUserId).toBe("owner");
+    config.automaticResponsibleUser = "pull_request_author";
+    expect(decide(config, author)).toMatchObject({ allowed: true, reason: "automatic_review", responsibleUserId: "author-user", guest: false });
+    config.defaults.issueOpened = true;
+    const issue: GitHubIssueEventContext = {
+      event: "issue_opened", deliveryId: "issue-delivery", repositoryId: "12",
+      repository: "test/repo", issueNumber: 2, title: "Question", body: "",
+      author: context.author, sender: context.sender, labels: [],
+    };
+    expect(decide(config, { ...author, context: issue })).toMatchObject({ allowed: true, reason: "automatic_issue", responsibleUserId: "author-user" });
+    expect(decide(config, { ...author, context: { ...context, draft: true } }).reason).toBe("draft");
+    config.defaults.invocation = "allowed_authors";
+    config.people = [{ kind: "guest", githubUserId: "42", login: "author", sponsorUserId: "sponsor", permissionProfile: "restricted" }];
+    expect(decide(config, { linkedMemberUserId: null, activeSponsorUserIds: new Set(["owner", "sponsor"]) }))
+      .toMatchObject({ allowed: true, responsibleUserId: "owner", guest: true });
+  });
   it("manual requests bypass scheduling filters but never repository or actor authorization", () => {
     const config = configuration();
     config.defaults.invocation = "mentions_only";

@@ -50,6 +50,8 @@ export interface GitHubChatConfiguration {
   /** Enabling the feature and bot tools is explicit for existing endpoints. */
   toolsEnabled: boolean;
   responsibleUserId: string;
+  /** Absent or "configured": responsibleUserId owns automatic tasks. "pull_request_author": a linked, allowed author owns their own. */
+  automaticResponsibleUser?: "configured" | "pull_request_author";
   memberAccess: "all_linked" | "selected";
   people: GitHubAllowedPerson[];
   defaults: GitHubReviewPolicy;

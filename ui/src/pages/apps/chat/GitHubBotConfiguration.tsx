@@ -933,6 +933,17 @@ export function GitHubAccessEditor({
             Only company owners, company admins, and instance admins can select
             another person as a sponsor or responsible member.
           </p>
+          <GitHubToggle
+            label="Make the pull request author responsible"
+            description="A linked, allowed author is responsible for automatic tasks on their own pull requests and issues. An agent that uses the responsible person's AI account then runs on the author's account. Other authors stay with the member above."
+            checked={configuration.automaticResponsibleUser === "pull_request_author"}
+            onChange={(enabled) =>
+              onChange({
+                ...configuration,
+                automaticResponsibleUser: enabled ? "pull_request_author" : "configured",
+              })
+            }
+          />
         </div>
       </GitHubSettingsDisclosure>
       {error && (

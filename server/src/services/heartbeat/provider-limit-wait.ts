@@ -1,7 +1,7 @@
 import { and, eq, gt, inArray, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
-import { agents, heartbeatRuns } from "@paperclipai/db";
+import { agents, connectionGrants, heartbeatRuns } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
 import { AI_CONNECTION_POOL_WAIT_RETRY_REASON } from "../../modules/run-dispatch/index.js";
 import { aiRuntimeConnectionBindingSchema } from "@paperclipai/shared";
@@ -195,8 +195,17 @@ async function agentProviderLimitCredential(
   } catch {
     // A run that cannot select an account fails on its own setup check. An
     // explicit binding still names the account that check would use.
-    return binding.mode === "responsible_user" ? { kind: "unresolved" } : { kind: "grants", grantIds: [binding.grantId] };
+    if (binding.mode !== "responsible_user") return { kind: "grants", grantIds: [binding.grantId] };
+    // The run can use only its own user's accounts, so another user's limit never holds it.
+    return { kind: "grants", grantIds: responsibleUserId ? await personalGrantIds(db, agent.companyId, responsibleUserId) : [] };
   }
+}
+
+async function personalGrantIds(db: Db, companyId: string, userId: string): Promise<string[]> {
+  const rows = await db.select({ id: connectionGrants.id }).from(connectionGrants).where(and(
+    eq(connectionGrants.companyId, companyId), eq(connectionGrants.kind, "user"), eq(connectionGrants.subjectUserId, userId),
+  ));
+  return rows.map(row => row.id);
 }
 
 export type ProviderLimitWaitRelease =
