@@ -107,6 +107,13 @@ In the Paperclip UI or via API, create an agent with adapter type `hermes_local`
 This mode shells out to the local `hermes` CLI. Paperclip injects runtime
 environment variables and captures stdout/stderr from the child process.
 
+When `extraArgs` selects a profile (`-p` or `--profile`), or the child environment
+selects another Hermes home through `HOME` or `HERMES_HOME`, `model: "auto"`
+leaves model selection to Hermes. Provider selection also stays with Hermes
+unless `provider` explicitly overrides it, including when a concrete `model`
+is configured. The adapter does not copy the server's default config or infer
+a provider from that model name for these runs.
+
 ### 3. Create a Hermes gateway agent in Paperclip
 
 Start Hermes with its API server enabled first:

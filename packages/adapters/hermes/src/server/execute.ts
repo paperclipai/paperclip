@@ -19,6 +19,7 @@
  */
 
 import fs from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 
 import type {
@@ -83,6 +84,47 @@ function cfgEnvString(v: unknown): string | undefined {
 
 export function resolveHermesCommand(config: Record<string, unknown>): string {
   return cfgString(config.hermesCommand) || cfgString(config.command) || HERMES_CLI;
+}
+
+export function splitHermesGlobalExtraArgs(extraArgs: string[] | undefined): {
+  preCommandArgs: string[];
+  postCommandArgs: string[];
+} {
+  if (!extraArgs?.length) {
+    return { preCommandArgs: [], postCommandArgs: [] };
+  }
+
+  const preCommandArgs: string[] = [];
+  const postCommandArgs: string[] = [];
+
+  for (let i = 0; i < extraArgs.length; i += 1) {
+    const arg = extraArgs[i];
+    const combinedProfileArg = arg.match(/^(--profile|-p)\s+(.+)$/);
+
+    if (combinedProfileArg) {
+      preCommandArgs.push(combinedProfileArg[1], combinedProfileArg[2].trim());
+      continue;
+    }
+
+    if (arg === "--profile" || arg === "-p") {
+      preCommandArgs.push(arg);
+      const nextArg = extraArgs[i + 1];
+      if (typeof nextArg === "string" && nextArg.length > 0) {
+        preCommandArgs.push(nextArg);
+        i += 1;
+      }
+      continue;
+    }
+
+    if (arg.startsWith("--profile=") || arg.startsWith("-p=")) {
+      preCommandArgs.push(arg);
+      continue;
+    }
+
+    postCommandArgs.push(arg);
+  }
+
+  return { preCommandArgs, postCommandArgs };
 }
 
 // ---------------------------------------------------------------------------
@@ -349,12 +391,20 @@ export async function execute(
 
   // ── Resolve configuration ──────────────────────────────────────────────
   const hermesCmd = resolveHermesCommand(config);
-  const model = cfgString(config.model) || DEFAULT_MODEL;
+  let model = cfgString(config.model) || DEFAULT_MODEL;
   const timeoutSec = cfgNumber(config.timeoutSec) || DEFAULT_TIMEOUT_SEC;
   const graceSec = cfgNumber(config.graceSec) || DEFAULT_GRACE_SEC;
   const maxTurns = cfgNumber(config.maxTurnsPerRun);
   const toolsets = cfgString(config.toolsets) || cfgStringArray(config.enabledToolsets)?.join(",");
   const extraArgs = cfgStringArray(config.extraArgs);
+  const { preCommandArgs, postCommandArgs } = splitHermesGlobalExtraArgs(extraArgs);
+  const hasProfileArg = preCommandArgs.length > 0;
+  const userEnv = config.env as Record<string, string> | undefined;
+  const defaultHome = homedir();
+  const hermesHome = cfgString(userEnv?.HERMES_HOME ?? process.env.HERMES_HOME)
+    || path.join(cfgString(userEnv?.HOME) || defaultHome, ".hermes");
+  const deferToHermesConfig = hasProfileArg
+    || path.resolve(hermesHome) !== path.join(defaultHome, ".hermes");
   const persistSession = cfgBoolean(config.persistSession) !== false;
   const worktreeMode = cfgBoolean(config.worktreeMode) === true;
   const checkpoints = cfgBoolean(config.checkpoints) === true;
@@ -394,12 +444,16 @@ export async function execute(
   let detectedConfig: Awaited<ReturnType<typeof detectModel>> | null = null;
   const explicitProvider = cfgString(config.provider);
 
-  if (!explicitProvider) {
+  if (!explicitProvider && !deferToHermesConfig) {
     try {
       detectedConfig = await detectModel();
     } catch {
       // Non-fatal — detection failure shouldn't block execution
     }
+  }
+
+  if (model.toLowerCase() === "auto" && detectedConfig?.model && detectedConfig.model.toLowerCase() !== "auto") {
+    model = detectedConfig.model;
   }
 
   const { provider: resolvedProvider, resolvedFrom } = resolveProvider({
@@ -409,7 +463,7 @@ export async function execute(
     detectedBaseUrl: detectedConfig?.baseUrl,
     detectedHasApiKey: detectedConfig?.hasApiKey,
     detectedApiMode: detectedConfig?.apiMode,
-    model,
+    model: deferToHermesConfig ? undefined : model,
   });
 
   // ── Load agent instructions file (Paperclip instruction bundles) ──────
@@ -455,11 +509,13 @@ export async function execute(
   // ── Build command args ─────────────────────────────────────────────────
   // Use -Q (quiet) to get clean output: just response + session_id line
   const useQuiet = cfgBoolean(config.quiet) === true; // default false
-  const args: string[] = ["chat", "-q", prompt];
+  const args: string[] = [...preCommandArgs, "chat", "-q", prompt];
   if (useQuiet) args.push("-Q");
 
-  if (model) {
-    args.push("-m", model);
+  const effectiveModel =
+    typeof model === "string" && model.toLowerCase() !== "auto" ? model : undefined;
+  if (effectiveModel) {
+    args.push("-m", effectiveModel);
   }
 
   // Always pass --provider when we have a resolved one (not "auto").
@@ -493,10 +549,9 @@ export async function execute(
 
   // Failed resumes remain failures. Do not infer a safe restart from CLI text.
   if (sessionId) args.push("--resume", sessionId);
-  if (extraArgs?.length) args.push(...extraArgs);
+  if (postCommandArgs.length) args.push(...postCommandArgs);
 
   // ── Build environment ──────────────────────────────────────────────────
-  const userEnv = config.env as Record<string, string> | undefined;
   const env: Record<string, string> = {
     ...(process.env as Record<string, string>),
     ...(userEnv && typeof userEnv === "object" ? userEnv : {}),
