@@ -65,6 +65,7 @@ Common optional fields:
 | `namespacePrefix` | `"paperclip-"` | Prefix for the per-company tenant namespace. |
 | `companySlug` | derived from companyId | Override the auto-derived company slug. |
 | `imageRegistry` | (none) | Override the default registry for agent runtime images. |
+| `runtimeImage` | (none) | Full runtime image reference (versioned tag or `@sha256` digest). Overrides `imageRegistry`. Pods pull `IfNotPresent`, so use a new tag or digest to roll out an image update. |
 | `imageAllowList` | `[]` | Glob patterns of allowed `target.imageOverride` values. Empty = no override permitted. |
 | `imagePullSecrets` | `[]` | Names of pre-created Docker image pull secrets in the tenant namespace. |
 | `egressAllowFqdns` | `[]` | Additional FQDNs (beyond adapter defaults like `api.anthropic.com`). |
