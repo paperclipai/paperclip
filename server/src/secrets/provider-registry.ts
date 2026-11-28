@@ -5,6 +5,7 @@ import {
   gcpSecretManagerProvider,
   vaultProvider,
 } from "./external-stub-providers.js";
+import { infisicalProvider } from "./infisical-provider.js";
 import type { SecretProviderHealthCheck, SecretProviderModule } from "./types.js";
 import { unprocessable } from "../errors.js";
 
@@ -13,6 +14,7 @@ const providers: SecretProviderModule[] = [
   awsSecretsManagerProvider,
   gcpSecretManagerProvider,
   vaultProvider,
+  infisicalProvider,
 ];
 
 const providerById = new Map<SecretProvider, SecretProviderModule>(
