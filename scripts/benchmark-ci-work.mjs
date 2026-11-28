@@ -11,7 +11,7 @@ const output = path.resolve(process.argv[3] ?? path.join(candidate, '.ci-benchma
 mkdirSync(output, { recursive: true });
 const results = [];
 const commands = [
-  ['serialized', process.execPath, ['scripts/run-vitest-stable.mjs', '--mode', 'serialized', '--shard-index', '0', '--shard-count', '9']],
+  ['general-server', process.execPath, ['scripts/run-vitest-stable.mjs', '--mode', 'general', '--group', 'general-server-without-chat-or-native-runner', '--shard-index', '0', '--shard-count', '12']],
   ['fixtures', 'pnpm', ['exec', 'vitest', 'run', '--project', '@paperclipai/server',
     'server/src/services/workspace-git-snapshot-streaming.test.ts', 'server/src/__tests__/workspace-runtime.test.ts',
     '-t', 'streams.*all four real Git|commits fixed-port reservations']],
@@ -47,7 +47,7 @@ for (const [name] of commands) {
   const after = results.find((result) => result.variant === 'candidate' && result.name === name);
   assert.ok(before.tests.length > 0, `${name}: missing test evidence`);
   assert.deepEqual(after.files, before.files, `${name}: file inventory changed`);
-  if (name === 'serialized') assert.deepEqual(after.tests, before.tests, 'serialized case inventory changed');
+  if (name === 'general-server') assert.deepEqual(after.tests, before.tests, 'general server case inventory changed');
   else {
     const contracts = (tests) => {
       const found = new Set();

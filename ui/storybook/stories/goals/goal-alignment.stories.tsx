@@ -1,6 +1,8 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { Routes, Route } from "@/lib/router";
+import { Layout } from "@/components/Layout";
 import { GoalDetail } from "@/pages/GoalDetail";
+import { PluginLauncherProvider } from "@/plugins/launchers";
 import { expect, userEvent, within } from "storybook/test";
 import {
   storybookGoals,
@@ -102,4 +104,21 @@ export const Loading: Story = { parameters: { fixtureState: "loading" } };
 export const Failed: Story = { parameters: { fixtureState: "failure" } };
 export const PermissionDenied: Story = {
   parameters: { fixtureState: "permission" },
+};
+export const GoalDetailMobile: Story = {
+  globals: { viewport: { value: "mobile", isRotated: false } },
+  parameters: {
+    layout: "fullscreen",
+    waitForViewport: true,
+    initialEntries: ["/PAP/goals/goal-gap"],
+  },
+  render: () => (
+    <PluginLauncherProvider>
+      <Routes>
+        <Route path="/:companyPrefix" element={<Layout />}>
+          <Route path="goals/:goalId" element={<GoalDetail />} />
+        </Route>
+      </Routes>
+    </PluginLauncherProvider>
+  ),
 };

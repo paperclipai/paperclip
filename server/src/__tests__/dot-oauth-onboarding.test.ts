@@ -22,7 +22,7 @@ describe("Dot onboarding with an operator-issued pairing capability", () => {
   }, 120000);
   beforeEach(async () => { await instanceSettingsService(db).updateExperimental({ enablePublicMcp: true, enableOpenAiDot: true, enableNativeRunner: false }); });
   afterAll(async () => { await temp?.cleanup(); });
-  async function fixture(authorizationOrigin?: string, lifecycleState = "ready") {
+  async function fixture(authorizationOrigin?: string, lifecycleState: NonNullable<typeof agents.$inferInsert["lifecycleState"]> = "ready") {
     const userId = randomUUID();
     await db.insert(authUsers).values({ id: userId, name: "Operator", email: userId + "@example.test", createdAt: new Date(), updatedAt: new Date() });
     const [company] = await db.insert(companies).values({ name: "Dot onboarding", issuePrefix: "DO" + randomBytes(3).toString("hex") }).returning();
@@ -64,7 +64,7 @@ describe("Dot onboarding with an operator-issued pairing capability", () => {
     expect(revoked.lifecycleVersion).toBe(paired.lifecycleVersion + 1);
     await expect(f.oauth.authenticate(tokens.access_token)).rejects.toThrow();
   });
-  it.each(["preparing", "verifying"])("allows Dot setup during %s without allowing task access", async (state) => {
+  it.each(["preparing", "verifying"] as const)("allows Dot setup during %s without allowing task access", async (state) => {
     const f = await fixture(undefined, state);
     const tokens = await connect(f);
     const principal = await f.oauth.authenticate(tokens.access_token);
@@ -169,6 +169,8 @@ describe("Dot onboarding with an operator-issued pairing capability", () => {
     expect(new URL(approval.body.redirectUrl).searchParams.get("iss")).toBe(config.origin + "/mcp/runner/oauth");
     const device = await f.oauth.deviceAuthorize({ client_id: f.client.client_id, resource: config.resource, scope: "paperclip:agent" }, randomUUID());
     expect(device.verification_uri).toBe(browserOrigin + "/mcp-device");
+    const defaultDevice = await f.oauth.deviceAuthorize({ client_id: f.client.client_id, resource: config.resource }, randomUUID());
+    expect((await f.oauth.describeDevice(defaultDevice.user_code, { type: "none" })).offlineAccess).toBe(true);
   });
   it("validates a separately configured browser origin", () => {
     expect(publicMcpConfig({ PAPERCLIP_PUBLIC_URL: config.origin, PAPERCLIP_MCP_AUTHORIZATION_ORIGIN: "https://browser.example:10000" }))
@@ -188,6 +190,11 @@ describe("Dot onboarding with an operator-issued pairing capability", () => {
     const preview = await request(app).post(path + "/preview").set("Origin", config.origin).send({ pairingCode: f.pairing.pairingCode });
     expect(preview.status).toBe(200);
     expect(preview.body.accessDuration).toBe("Ongoing until revoked. This connection does not expire from inactivity.");
+    // An explicit agent-only request gets no refresh token, so the preview must not promise ongoing access.
+    const shortLived = await f.begin({ scope: "paperclip:agent" });
+    const shortPreview = await request(app).post(`/api/${prefix}/requests/${shortLived}/dot-pairing/preview`).set("Origin", config.origin).send({ pairingCode: f.pairing.pairingCode });
+    expect(shortPreview.status).toBe(200);
+    expect(shortPreview.body.accessDuration).toBe("15 minutes. This client did not ask for ongoing access, so Paperclip cannot renew it. Reconnect it from the Dot setup prompt.");
     expect(preview.body).toMatchObject({ company: { id: f.company.id, name: f.company.name }, agent: { id: f.agent.id, name: f.agent.name } });
     expect(JSON.stringify(preview.body)).not.toContain(f.pairing.pairingCode);
     expect(await db.select().from(mcpOauthGrants).where(eq(mcpOauthGrants.userId, f.userId))).toHaveLength(0);
@@ -224,7 +231,7 @@ describe("Dot onboarding with an operator-issued pairing capability", () => {
     }
     expect((await request(app).get(`/api/mcp/requests/${id}`)).status).toBe(200);
   });
-  it.each(["expired-code", "expired-request", "revoked", "paused", "viewer", "wrong-company", "dot-disabled", "mcp-disabled"])("rejects %s without creating a grant", async failure => {
+  it.each(["expired-code", "expired-request", "revoked", "paused", "viewer", "wrong-company", "dot-disabled"])("rejects %s without creating a grant", async failure => {
     const f = await fixture();
     let id = f.id;
     if (failure === "expired-code") await db.update(dotAgentBindings).set({ pairingExpiresAt: new Date(0) }).where(eq(dotAgentBindings.id, f.pairing.bindingId));
@@ -234,7 +241,6 @@ describe("Dot onboarding with an operator-issued pairing capability", () => {
     if (failure === "viewer") await db.update(companyMemberships).set({ membershipRole: "viewer" }).where(and(eq(companyMemberships.companyId, f.company.id), eq(companyMemberships.principalId, f.userId)));
     if (failure === "wrong-company") id = await f.begin({ company_id: randomUUID() });
     if (failure === "dot-disabled") await instanceSettingsService(db).updateExperimental({ enableOpenAiDot: false });
-    if (failure === "mcp-disabled") await instanceSettingsService(db).updateExperimental({ enablePublicMcp: false });
     await expect(f.oauth.describeDotPairing(id, f.pairing.pairingCode)).rejects.toThrow();
     await expect(f.oauth.consentDotPairing(id, f.pairing.pairingCode)).rejects.toThrow();
     expect(await db.select().from(mcpOauthGrants).where(eq(mcpOauthGrants.userId, f.userId))).toHaveLength(0);

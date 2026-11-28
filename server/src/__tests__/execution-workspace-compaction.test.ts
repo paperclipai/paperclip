@@ -247,15 +247,16 @@ describeEmbeddedPostgres("terminal workspace compaction", () => {
     expect(await fs.readFile(path.join(worktreePath, "README.md"), "utf8")).toContain("uncommitted edit");
   }
 
-  it("compacts an undelivered no-PR workspace with leftover files and keeps every source change", async () => {
+  it.each([false, true])("compacts an undelivered workspace and preserves source with Git expiration %s", async gitCacheExpirationEnabled => {
     const seeded = await seedWorkspace({ commitOnBranch: true });
     const headBefore = await git(seeded.worktreePath, ["rev-parse", "HEAD"]);
     const statusBefore = await git(seeded.worktreePath, ["status", "--porcelain", "--untracked-files=all"]);
 
-    const sweep = await service().sweepTerminalWorkspaces();
+    const sweep = await service({ gitCacheExpirationEnabled }).sweepTerminalWorkspaces();
 
     // The branch carries unmerged work, so the reaper keeps the workspace.
-    expect(sweep).toMatchObject({ compacted: 1, compactionFailed: 0, archived: 0, skippedUndelivered: 1 });
+    expect(sweep).toMatchObject({ compacted: 1, compactionFailed: 0, archived: 0 });
+    if (!gitCacheExpirationEnabled) expect(sweep.skippedUndelivered).toBe(1);
     expect(await workspaceStatus(seeded.executionWorkspaceId)).toBe("active");
     await expectRegenerablePresent(seeded.worktreePath, false);
     await expectWorkPreserved(seeded.worktreePath);
@@ -291,9 +292,9 @@ describeEmbeddedPostgres("terminal workspace compaction", () => {
     expect(await exists(path.join(seeded.worktreePath, "notes/findings.md"))).toBe(true);
   }, 30_000);
 
-  it("defers compaction when a sweep skips it, and compacts on the next sweep", async () => {
+  it.each([false, true])("retains skipped startup compaction for the next sweep with Git expiration %s", async gitCacheExpirationEnabled => {
     const seeded = await seedWorkspace();
-    const svc = service({ workspaceReaperCooldownDays: 7 });
+    const svc = service({ workspaceReaperCooldownDays: 7, gitCacheExpirationEnabled, gitCacheExpirationDryRun: true });
 
     expect(await svc.sweepTerminalWorkspaces(50, undefined, { compact: false })).toMatchObject({ compacted: 0 });
     await expectRegenerablePresent(seeded.worktreePath, true);

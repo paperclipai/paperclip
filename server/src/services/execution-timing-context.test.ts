@@ -7,7 +7,8 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { getStartupTraceContext, getStartupTracer } from "../instrumentation.js";
 import { prepareVerifiedRemoteProviderPack } from "./native-runtime/remote-provider-pack.js";
 import { createNativeRunTrace } from "./native-runtime/native-run-trace.js";
-import { beginRunPhase, createRunPreparationTiming, getRunExecutionTraceContext, measureRunPhase, withRunExecutionTiming } from "./execution-preparation-timing.js";
+import { beginRunPhase, createRunPreparationTiming, getRunExecutionTraceContext, measureRunPhase, measureToolDiscovery, withRunExecutionTiming } from "./execution-preparation-timing.js";
+import { createToolDiscoveryScheduler } from "./tool-discovery-scheduler.js";
 
 let exporter: InMemorySpanExporter;
 let provider: TracerProvider;
@@ -31,11 +32,29 @@ afterEach(async () => {
 
 it("parents overlapping preparation and response work to their own execution attempts independently of ingress sampling", async () => {
   const trigger = { traceId: "1".repeat(32), spanId: "2".repeat(16), traceFlags: TraceFlags.NONE, isRemote: true };
+  const overlappingSpanIds = new Map<string, { source: string | undefined; readers: string | undefined }>();
   await context.with(trace.setSpanContext(context.active(), trigger), () => Promise.all(["one", "two"].map(runId =>
     withRunExecutionTiming(runId, async () => {
+      let sourceSpan: ReturnType<typeof trace.getActiveSpan>, readersSpan: ReturnType<typeof trace.getActiveSpan>;
+      let started!: () => void, checked!: () => void;
+      const bothStarted = new Promise<void>(resolve => { started = resolve; });
+      const bothChecked = new Promise<void>(resolve => { checked = resolve; });
+      let arrivals = 0, observations = 0;
+      const assertOverlap = async () => {
+        if (++arrivals === 2) started();
+        await bothStarted;
+        try {
+          expect(sourceSpan?.isRecording()).toBe(true);
+          expect(readersSpan?.isRecording()).toBe(true);
+        } finally {
+          if (++observations === 2) checked();
+        }
+        await bothChecked;
+      };
       await createRunPreparationTiming(runId)("workspace", () => Promise.all([
         measureRunPhase("workspace.sources", async () => {
-          await Promise.resolve();
+          sourceSpan = trace.getActiveSpan();
+          await assertOverlap();
           await measureRunPhase("workspace.sources.alias_scan", () => {
             const parent = getActiveStepContext()?.parentContext;
             expect(parent).toBeDefined();
@@ -43,8 +62,12 @@ it("parents overlapping preparation and response work to their own execution att
             expect(getRunExecutionTraceContext(runId === "one" ? "two" : "one")).toBeUndefined();
           });
         }),
-        measureRunPhase("workspace.readers", async () => { await Promise.resolve(); }),
+        measureRunPhase("workspace.readers", async () => {
+          readersSpan = trace.getActiveSpan();
+          await assertOverlap();
+        }),
       ]));
+      overlappingSpanIds.set(runId, { source: sourceSpan?.spanContext().spanId, readers: readersSpan?.spanContext().spanId });
       await measureRunPhase("response.add_comment", () => undefined);
     }),
   )));
@@ -67,9 +90,7 @@ it("parents overlapping preparation and response work to their own execution att
     expect(readers.parentSpanContext?.spanId).toBe(phase.spanContext().spanId);
     expect(aliases.parentSpanContext?.spanId).toBe(source.spanContext().spanId);
     expect(reply.parentSpanContext?.spanId).toBe(attempt.spanContext().spanId);
-    const ns = (time: readonly [number, number]) => time[0] * 1e9 + time[1];
-    expect(ns(readers.startTime)).toBeLessThanOrEqual(ns(source.endTime));
-    expect(ns(source.startTime)).toBeLessThanOrEqual(ns(readers.endTime));
+    expect(overlappingSpanIds.get(runId)).toEqual({ source: source.spanContext().spanId, readers: readers.spanContext().spanId });
     expect(owned).toHaveLength(6);
   }
   expect(getRunExecutionTraceContext("one")).toBeUndefined();
@@ -90,6 +111,54 @@ it("uses a link for a native session whose queue history predates the current at
   expect(session.links.map(link => link.context.spanId)).toContain(attempt.spanContext().spanId);
   expect(response.parentSpanContext?.spanId).toBe(attempt.spanContext().spanId);
   expect(session.startTime[0]).toBeLessThan(attempt.startTime[0]);
+});
+
+it("keeps queued discovery under its initiating run when another run releases the slot", async () => {
+  const scheduler = createToolDiscoveryScheduler(1, 1);
+  let release!: () => void, started!: () => void, enqueued!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const ready = new Promise<void>(resolve => { started = resolve; });
+  const waiting = new Promise<void>(resolve => { enqueued = resolve; });
+  const first = withRunExecutionTiming("discovery-owner", () => measureToolDiscovery(
+    work => scheduler.run(work), async () => { started(); await gate; },
+  ));
+  await ready;
+  const runHash = createHash("sha256").update("discovery-waiter").digest("hex").slice(0, 12);
+  const value = {};
+  const work = vi.fn(async () => {
+    expect(getRunExecutionTraceContext("discovery-owner")).toBeUndefined();
+    expect(getRunExecutionTraceContext("discovery-waiter")).toBeDefined();
+    expect(exporter.getFinishedSpans().filter(span => span.name === "connectors.discovery.queue"
+      && span.attributes["paperclip.task.run.run_id"] === runHash)).toHaveLength(1);
+    await measureRunPhase("connectors.discovery.policy", () => undefined);
+    return value;
+  });
+  const second = withRunExecutionTiming("discovery-waiter", () => measureToolDiscovery(
+    work => { const pending = scheduler.run(work); enqueued(); return pending; }, work,
+  ));
+  await waiting;
+  try {
+    expect(work).not.toHaveBeenCalled();
+    expect(exporter.getFinishedSpans().some(span => span.attributes["paperclip.task.run.run_id"] === runHash)).toBe(false);
+  } finally {
+    release();
+    await first;
+  }
+  await expect(second).resolves.toBe(value);
+  expect(work).toHaveBeenCalledOnce();
+  const spans = exporter.getFinishedSpans();
+  const owned = spans.filter(span => span.attributes["paperclip.task.run.run_id"] === runHash);
+  const attempt = owned.find(span => span.name === "task.execution_attempt")!;
+  const scheduled = owned.find(span => span.name === "connectors.discovery.scheduled")!;
+  const build = owned.find(span => span.name === "connectors.discovery.build")!;
+  const queue = owned.filter(span => span.name === "connectors.discovery.queue");
+  expect(queue).toHaveLength(1);
+  expect(owned).toHaveLength(5);
+  expect(owned.every(span => span.spanContext().traceId === attempt.spanContext().traceId)).toBe(true);
+  expect(scheduled.parentSpanContext?.spanId).toBe(attempt.spanContext().spanId);
+  expect(build.parentSpanContext?.spanId).toBe(scheduled.spanContext().spanId);
+  expect(queue[0].parentSpanContext?.spanId).toBe(scheduled.spanContext().spanId);
+  expect(owned.find(span => span.name === "connectors.discovery.policy")?.parentSpanContext?.spanId).toBe(build.spanContext().spanId);
 });
 
 it("caps repeated detail spans and ends failed scopes without content or exception text", async () => {

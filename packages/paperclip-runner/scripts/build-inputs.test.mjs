@@ -73,7 +73,7 @@ async function makeRepo() {
     "pnpm-lock.yaml": "lockfileVersion: 9\n",
     "pnpm-workspace.yaml": "packages:\n  - packages/*\n",
     "tsconfig.base.json": "{}\n",
-    "patches/acpx@0.13.1.patch": "--- a\n+++ b\n",
+    "patches/acpx@0.22.0.patch": "--- a\n+++ b\n",
     "patches/pi-acp@0.0.33.patch": "--- c\n+++ d\n",
     "packages/paperclip-runner/package.json": '{"name":"@paperclipai/paperclip-runner"}\n',
     "packages/paperclip-runner/src/index.ts": "export const one = 1;\n",
@@ -121,7 +121,7 @@ test("the input set covers sources, the eval kernel, root patches and root confi
       "packages/paperclip-runner/package.json",
       "packages/paperclip-runner/runner/src/main.rs",
       "packages/paperclip-runner/src/index.ts",
-      "patches/acpx@0.13.1.patch",
+      "patches/acpx@0.22.0.patch",
       "patches/pi-acp@0.0.33.patch",
       "pnpm-lock.yaml",
       "pnpm-workspace.yaml",
@@ -160,6 +160,7 @@ test("the digest is stable, ignores outputs and caches, and tracks every kind of
       "packages/paperclip-runner/node_modules/dep/index.js": "changed\n",
       "packages/paperclip-runner/.vite/cache.json": '{"changed":true}\n',
       "packages/paperclip-runner/runner/target/release/paperclip-runnerd": "rebuilt\n",
+      "packages/paperclip-runner/provider-assets/copilot/copilot": "installed by the build\n",
       "packages/paperclip-eval-kernel/dist/index.js": "changed\n",
     });
     assert.equal(computeBuildInputsDigest(repoRoot).digest, before.digest, "an output changed the digest");
@@ -177,7 +178,7 @@ test("the digest is stable, ignores outputs and caches, and tracks every kind of
     await expectChange("a Rust source", { "packages/paperclip-runner/runner/src/main.rs": "fn main() { }\n" });
     await expectChange("an eval-kernel source", { "packages/paperclip-eval-kernel/src/index.ts": "export const kernel = 2;\n" });
     await expectChange("the pi-acp patch the build copies into dist", { "patches/pi-acp@0.0.33.patch": "--- c\n+++ d\n+e\n" });
-    await expectChange("the acpx patch the profile check hashes", { "patches/acpx@0.13.1.patch": "--- a\n+++ b\n+c\n" });
+    await expectChange("the acpx patch the profile check hashes", { "patches/acpx@0.22.0.patch": "--- a\n+++ b\n+c\n" });
     await expectChange("a new patch", { "patches/brace-expansion@5.0.9.patch": "--- x\n+++ y\n" });
     await expectChange("the lockfile", { "pnpm-lock.yaml": "lockfileVersion: 9\nchanged: true\n" });
     await expectChange("the base tsconfig", { "tsconfig.base.json": '{"compilerOptions":{}}\n' });
@@ -491,26 +492,34 @@ test("two chains run by separate shells at the same time both record", { skip: p
   await withRepo(async ({ repoRoot, packageRoot }) => {
     const pendingDirectory = buildInputsPendingDirectory(packageRoot);
     const marker = path.join(repoRoot, "release-the-chains");
-    const records = () => (existsSync(pendingDirectory) ? readdirSync(pendingDirectory).sort() : []);
+    const records = () => (existsSync(pendingDirectory) ? readdirSync(pendingDirectory).filter(name => name.endsWith(".json")).sort() : []);
 
-    const first = runChainInShell("sh", packageRoot, marker);
-    await waitFor(() => records().length === 1, "the first chain's record");
-    const second = runChainInShell("sh", packageRoot, marker);
-    await waitFor(() => records().length === 2, "the second chain's record");
-    const [firstId, secondId] = records().map((name) => name.replace(/\.json$/, ""));
-    assert.notEqual(firstId, secondId);
-    for (const id of [firstId, secondId]) {
-      assert.match(id, /^\d+$/, "a chain's record is named after its shell's pid");
-      assert.equal(readBuildInputsStamp(buildInputsPendingPath(packageRoot, id)).buildId, id);
+    const staged = path.join(pendingDirectory, "999999.json.999999.tmp");
+    const chains = [runChainInShell("sh", packageRoot, marker)];
+    let results;
+    try {
+      await waitFor(() => records().length === 1, "the first chain's record");
+      await writeFile(staged, "{");
+      chains.push(runChainInShell("sh", packageRoot, marker));
+      await waitFor(() => records().length === 2, "the second chain's record");
+      const [firstId, secondId] = records().map((name) => name.replace(/\.json$/, ""));
+      assert.notEqual(firstId, secondId);
+      for (const id of [firstId, secondId]) {
+        assert.match(id, /^\d+$/, "a chain's record is named after its shell's pid");
+        assert.equal(readBuildInputsStamp(buildInputsPendingPath(packageRoot, id)).buildId, id);
+      }
+    } finally {
+      await rm(staged, { force: true });
+      await writeFile(marker, "go\n");
+      results = await Promise.allSettled(chains);
     }
 
-    await writeFile(marker, "go\n");
-    const results = await Promise.all([first, second]);
     for (const result of results) {
-      assert.match(result.stdout, new RegExp(`${BUILD_INPUTS_SCHEMA} begin: `));
-      assert.match(result.stdout, new RegExp(`${BUILD_INPUTS_SCHEMA} recorded: `), "a chain finished without recording");
+      assert.equal(result.status, "fulfilled", result.reason?.message);
+      assert.match(result.value.stdout, new RegExp(`${BUILD_INPUTS_SCHEMA} begin: `));
+      assert.match(result.value.stdout, new RegExp(`${BUILD_INPUTS_SCHEMA} recorded: `), "a chain finished without recording");
     }
-    assert.deepEqual(records(), []);
+    assert.deepEqual(await readdir(pendingDirectory), []);
     assert.equal(assessRunnerBuild({ repoRoot, packageRoot }).current, true);
 
     // The same chain under bash, which may exec its last command: `--finish`

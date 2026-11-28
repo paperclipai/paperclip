@@ -41,6 +41,22 @@ function receiptNotice(version: 1 | 2 = 1): Record<string, any> {
 const receiptSchemaValue = (notice: Record<string, any>) => notice.details.find((detail: any) => detail.name === "schema").value;
 
 describe("redaction", () => {
+  it.each([1, 2, 3] as const)("preserves structured panel activation and redacts adjacent secrets in PRP v%s", version => {
+    const event = { schema: `paperclip.prp.event.v${version}`, schemaVersion: version,
+      eventType: "runtime.activity.recorded", payload: { namespace: "example.runtime", activityKey: "desktop.used" } };
+    expect(redactEventPayload({ prpEvent: event })).toEqual({ prpEvent: event });
+    expect(redactEventPayload({ prpEvent: { ...event, payload: { ...event.payload, apiKey: "secret-sentinel" } } }))
+      .toEqual({ prpEvent: { ...event, payload: { ...event.payload, apiKey: REDACTED_EVENT_VALUE } } });
+  });
+  it.each([1, 2, 3] as const)("preserves credential update metadata and masks adjacent secrets in PRP v%s", version => {
+    const event = { schema: `paperclip.prp.event.v${version}`, schemaVersion: version,
+      eventType: "auth.credentials.updated", payload: { schema: "paperclip.auth.credentials.updated.v1",
+        provider: "codex", bindingId: "harness-auth", revision: 1, detection: "credential_store" } };
+    expect(redactEventPayload({ prpEvent: event })).toEqual({ prpEvent: event });
+    expect(redactEventPayload({ prpEvent: { ...event, payload: { ...event.payload, refresh_token: "secret-sentinel" } } }))
+      .toEqual({ prpEvent: { ...event, payload: { ...event.payload, refresh_token: REDACTED_EVENT_VALUE } } });
+  });
+
   it("preserves the actual Copilot receipt producer discriminator through nested durable redaction", () => {
     const events: Array<Record<string, any>> = [];
     const projector = createCopilotToolEvidence({ sessionId: "session", turnId: "turn", workingDirectory: "/workspace",
@@ -302,6 +318,11 @@ describe("redaction", () => {
         providerValue: input.nested.providerValue,
       },
     });
+    expect(sanitizeRecord({ schema: "paperclip.native-execution-input.v9" })).toEqual({ schema: "paperclip.native-execution-input.v9" });
+    expect(sanitizeRecord({ schema: "paperclip.native-execution-input.v7", runtimeSchema: "paperclip.native-execution-input.v8" })).toEqual({
+      schema: "paperclip.native-execution-input.v7",
+      runtimeSchema: "paperclip.native-execution-input.v8",
+    });
     expect(sanitizeRecord({ schema: "paperclip.native-execution-input.v4", runtimeSchema: "paperclip.native-model-envelope.v2" })).toEqual({
       schema: "paperclip.native-execution-input.v4",
       runtimeSchema: "paperclip.native-model-envelope.v2",
@@ -378,6 +399,9 @@ describe("redaction", () => {
       "runner.prp.route.register",
       "runner.transport.connect",
       "runner.session.bootstrap",
+      "runner.runtime.stage",
+      "runner.process.launch",
+      "provider.session.load",
       "runner.turn.submit",
       "runner.session.startup",
       "provider_pack.select",
@@ -876,5 +900,139 @@ second-line\" status=401`,
       command: "pnpm agent:run",
       apiKey: REDACTED_EVENT_VALUE,
     });
+  });
+});
+
+describe("redaction of long letter/digit runs", () => {
+  const typescriptSource = [
+    "export function compactRunLogChunk(chunk: string, maxChars = 65536) {",
+    "  const normalized = redactSensitiveText(chunk);",
+    "  if (normalized.length <= maxChars) return normalized;",
+    "  return normalized.slice(0, maxChars);",
+    "}",
+    "",
+  ].join("\n");
+
+  function base64OfTypeScriptSource(length: number) {
+    const repeatedSource = typescriptSource.repeat(Math.ceil(length / typescriptSource.length));
+    return Buffer.from(repeatedSource).toString("base64").slice(0, length);
+  }
+
+  function redactWithinTimeBudget(input: string) {
+    const startedAt = performance.now();
+    const output = redactSensitiveText(input);
+    expect(performance.now() - startedAt).toBeLessThan(1_000);
+    return output;
+  }
+
+  it("redacts secret field names that carry a prefix in plain and escaped JSON", () => {
+    const cases = [
+      [`{"myApiKey": "plain-prefixed-secret"}`, `{"myApiKey": "${REDACTED_EVENT_VALUE}"}`],
+      [`{"x_auth_token":"snake-prefixed-secret","status":"ok"}`, `{"x_auth_token":"${REDACTED_EVENT_VALUE}","status":"ok"}`],
+      [`GITHUB_TOKEN: "upper-prefixed-secret"`, `GITHUB_TOKEN: "${REDACTED_EVENT_VALUE}"`],
+      [`{'db_password': 'single-quoted-secret'}`, `{'db_password': '${REDACTED_EVENT_VALUE}'}`],
+      [`text"apiKey":"glued-quote-secret"`, `text"apiKey":"${REDACTED_EVENT_VALUE}"`],
+      [`aGVsbG8apiKey:"glued-run-secret"`, `aGVsbG8apiKey:"${REDACTED_EVENT_VALUE}"`],
+      [String.raw`{\"myApiKey\":\"escaped-prefixed-secret\"}`, String.raw`{\"myApiKey\":\"${REDACTED_EVENT_VALUE}\"}`],
+      [
+        String.raw`{\"x_auth_token\":\"escaped-snake-secret\",\"status\":\"ok\"}`,
+        String.raw`{\"x_auth_token\":\"${REDACTED_EVENT_VALUE}\",\"status\":\"ok\"}`,
+      ],
+      [String.raw`aGVsbG8\"GITHUB_TOKEN\":\"escaped-glued-secret\"`, String.raw`aGVsbG8\"GITHUB_TOKEN\":\"${REDACTED_EVENT_VALUE}\"`],
+    ];
+
+    for (const [input, expected] of cases) {
+      expect(redactSensitiveText(input)).toBe(expected);
+      expect(redactSensitiveText(expected)).toBe(expected);
+    }
+  });
+
+  it("keeps base64 of source text intact and fast while redacting a secret glued to its end", () => {
+    const blob = base64OfTypeScriptSource(48 * 1024);
+    expect(blob).toMatch(/^[A-Za-z0-9]+$/);
+
+    const shellCommand = `printf '%s' '${blob}' | base64 -d > src/compact.ts`;
+    expect(redactWithinTimeBudget(shellCommand)).toBe(shellCommand);
+
+    const toolCallLine = JSON.stringify({ type: "tool_use", input: { command: shellCommand } });
+    expect(redactWithinTimeBudget(toolCallLine)).toBe(toolCallLine);
+    const serializedToolCallLine = JSON.stringify(toolCallLine);
+    expect(redactWithinTimeBudget(serializedToolCallLine)).toBe(serializedToolCallLine);
+
+    const gluedSecret = redactWithinTimeBudget(`${blob}apiKey:"run-glued-secret"`);
+    expect(gluedSecret).toBe(`${blob}apiKey:"${REDACTED_EVENT_VALUE}"`);
+  });
+
+  it("scans long dash-separated runs in linear time", () => {
+    for (const run of ["a-".repeat(60_000), "a--".repeat(40_000)]) {
+      expect(redactWithinTimeBudget(`${run} Authorization: Bearer dash-run-secret`))
+        .toBe(`${run} Authorization: ${REDACTED_EVENT_VALUE}`);
+      expect(redactWithinTimeBudget(`${run}Authorization: Bearer glued-run-secret`))
+        .toBe(`${run}Authorization: ${REDACTED_EVENT_VALUE}`);
+    }
+  });
+});
+
+describe("secret-shaped env var names and tokens", () => {
+  const githubPat = ["github", "pat", "11ABCDEF0123456789", "secretTokenValue99"].join("_");
+  const ghpToken = ["ghp", "0123456789abcdef0123456789abcdef"].join("_");
+  const openaiKey = ["sk", "proj", "secretApiKey1234567890abcdef"].join("-");
+
+  it("redacts secret-shaped keys in redactAgentAdapterConfig without leaking the key name", () => {
+    const redacted = redactAgentAdapterConfig({
+      model: "claude",
+      env: {
+        GH_TOKEN: { type: "plain", value: "plain-secret" },
+        [githubPat]: { type: "plain", value: "accidental" },
+        [ghpToken]: { type: "secret_ref", secretId: "11111111-1111-4111-8111-111111111111", version: "latest" },
+        [openaiKey]: "raw-value",
+      },
+    });
+    const serialized = JSON.stringify(redacted);
+    expect(serialized).not.toContain(githubPat);
+    expect(serialized).not.toContain(ghpToken);
+    expect(serialized).not.toContain(openaiKey);
+    expect((redacted.env as Record<string, unknown>).GH_TOKEN).toEqual({
+      type: "plain",
+      value: REDACTED_EVENT_VALUE,
+    });
+  });
+
+  it("redacts secret-shaped object keys in sanitizeRecord and redactEventPayload", () => {
+    const sanitized = redactEventPayload({
+      env: {
+        [githubPat]: "x",
+        [ghpToken]: { type: "plain", value: "y" },
+        SAFE_KEY: "visible",
+      },
+    });
+    const serialized = JSON.stringify(sanitized);
+    expect(serialized).not.toContain(githubPat);
+    expect(serialized).not.toContain(ghpToken);
+    expect((sanitized?.env as Record<string, unknown>).SAFE_KEY).toBe("visible");
+  });
+
+  it("redacts github_pat_ tokens in free-form text logs", () => {
+    const out = redactSensitiveText(`Exported ${githubPat} and ${ghpToken} and ${openaiKey}`);
+    expect(out).not.toContain(githubPat);
+    expect(out).not.toContain(ghpToken);
+    expect(out).not.toContain(openaiKey);
+  });
+
+  it("redacts thousands of distinct credential-shaped keys in linear time", () => {
+    const env: Record<string, unknown> = {};
+    const prefix = ["xoxb", "1234567890"].join("-");
+    for (let index = 0; index < 4_000; index += 1) {
+      env[`${prefix}-${String(index).padStart(6, "0")}abcdef`] = { type: "plain", value: "v" };
+    }
+    const startedAt = performance.now();
+    const redactedAdapter = redactAgentAdapterConfig({ env });
+    const sanitized = sanitizeRecord(env);
+    const elapsedMs = performance.now() - startedAt;
+    expect(elapsedMs).toBeLessThan(1_000);
+    expect(Object.keys(redactedAdapter.env as Record<string, unknown>)).toHaveLength(4_000);
+    expect(Object.keys(sanitized)).toHaveLength(4_000);
+    expect(JSON.stringify(redactedAdapter)).not.toContain(prefix);
+    expect(JSON.stringify(sanitized)).not.toContain(prefix);
   });
 });

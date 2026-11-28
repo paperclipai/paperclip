@@ -1,7 +1,7 @@
 import { and, eq, lt, or, isNull } from "drizzle-orm";
 import { aiSubscriptions, aiSubscriptionConnections, type Db } from "@paperclipai/db";
 import { aiConnectionService } from "./ai-connections.js";
-import { subscriptionService, type SubscriptionConnection } from "./subscriptions.js";
+import { subscriptionService, subscriptionSession, type SubscriptionConnection } from "./subscriptions.js";
 import { probeSubscriptionIdentity } from "./subscription-identity.js";
 import { logger } from "../middleware/logger.js";
 import { tooManyRequests } from "../errors.js";
@@ -58,9 +58,10 @@ export function refreshCompanySubscriptions(db: Db, companyId: string, userId: s
     for (const row of await service.subscriptionAccounts(companyId, userId)) {
       if (row.summary.status !== "connected") continue;
       try {
+        const session = await subscriptionSession(db, companyId, row.grant.credentialSecretRefs);
         const credential = await service.credential(row);
         const input: SubscriptionConnection = { companyId, connectionId: row.connection.id, grantId: row.grant.id,
-          provider: row.summary.provider, name: row.connection.name, ownerUserId: row.grant.subjectUserId, credential };
+          provider: row.summary.provider, name: row.connection.name, ownerUserId: row.grant.subjectUserId, credential, session };
         const id = await subscriptionService(db).register(input);
         // Accepted discovery must not silently skip an account. At most twenty
         // discovery tasks can wait here; never create an unbounded provider queue.

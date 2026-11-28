@@ -73,39 +73,20 @@ describe("SidebarContext", () => {
   it("keeps the global navigation expanded even when legacy collapsed state exists", () => {
     active = renderProvider();
 
-    expect(capturedValue?.collapsed).toBe(false);
-    expect(capturedValue?.collapseLocked).toBe(false);
-    expect(capturedValue?.peeking).toBe(false);
+    expect(capturedValue?.sidebarOpen).toBe(true);
+    expect(capturedValue?.isMobile).toBe(false);
   });
 
-  it("keeps the legacy collapse API inert", () => {
+  it("opens and closes the mobile drawer", () => {
+    window.innerWidth = 600;
     active = renderProvider();
-
-    act(() => capturedValue?.setCollapsed(true));
-    act(() => capturedValue?.toggleCollapsed());
-    act(() => capturedValue?.setForceCollapsed(true));
-    act(() => capturedValue?.setPeeking(true));
-
-    expect(capturedValue?.collapsed).toBe(false);
-    expect(capturedValue?.collapseLocked).toBe(false);
-    expect(capturedValue?.peeking).toBe(false);
-  });
-
-  it("tracks route requests for compatibility without collapsing the navigation", () => {
-    active = renderProvider();
-
-    act(() => capturedValue?.setRouteRequestsCollapsed(true));
-
-    expect(capturedValue?.routeRequestsCollapsed).toBe(true);
-    expect(capturedValue?.collapsed).toBe(false);
-  });
-
-  it("retains sidebarOpen and toggleSidebar for the mobile drawer", () => {
-    active = renderProvider();
-    const initial = capturedValue?.sidebarOpen;
+    expect(capturedValue?.isMobile).toBe(true);
+    expect(capturedValue?.sidebarOpen).toBe(false);
 
     act(() => capturedValue?.toggleSidebar());
 
-    expect(capturedValue?.sidebarOpen).toBe(!initial);
+    expect(capturedValue?.sidebarOpen).toBe(true);
+    act(() => capturedValue?.setSidebarOpen(false));
+    expect(capturedValue?.sidebarOpen).toBe(false);
   });
 });
