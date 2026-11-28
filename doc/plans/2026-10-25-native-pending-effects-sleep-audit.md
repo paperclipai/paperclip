@@ -160,6 +160,12 @@ deadline repair (`/tmp/sleep47-deadlines-typecheck.log`,
 `/tmp/sleep47-deadlines-build.log`). The final worker/startup run now passes 158
 cases, giving 683 distinct passing cases with the earlier unaffected consumers.
 
+## Remote acceptance
+
+Published as [#17690](https://github.com/paperclipai/paperclip/pull/17690).
+Exact head `56c3601ea605b333141e86e0a810ed790fb6ce48`: all 53 checks pass;
+Greptile 5/5 with no actionable findings or review threads; mergeable parent.
+The PR remains draft and unmerged. This accepts slice 47 only, not the full stack.
 
 ## Current migration411 integration and complete acceptance
 

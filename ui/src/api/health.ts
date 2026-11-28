@@ -18,6 +18,8 @@ export type DevServerHealthStatus = {
 };
 
 export type CloudInstanceHealthStatus = {
+  /** Operator-supplied harness IDs. Absent means unrestricted; [] allows none. */
+  availableHarnesses?: string[];
   managed: true;
   managedBy: "paperclip-cloud";
   stackSlug: string | null;
@@ -33,6 +35,7 @@ export type HealthStatus = {
   deploymentMode?: "local_trusted" | "authenticated";
   deploymentExposure?: "private" | "public";
   localAiLoginSupported?: boolean;
+  hostedGoogleAiLoginSupported?: boolean;
   authReady?: boolean;
   bootstrapStatus?: "ready" | "bootstrap_pending";
   bootstrapInviteActive?: boolean;

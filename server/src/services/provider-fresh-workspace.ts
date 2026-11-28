@@ -1,3 +1,4 @@
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { assertTaskWorkspaceExecutionAccess } from "./task-workspace-access.js";
 import { isDeepStrictEqual } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
@@ -32,6 +33,31 @@ export function isBoundFreshPluginTaskDirectory(input: {
       !isDeepStrictEqual(workspace.metadata?.runnerTaskWorkspaceOwner, input.owner)) return false;
   const fresh = freshWorkspaceSchema.safeParse(workspace.metadata?.runnerTaskFreshWorkspace);
   return fresh.success && fresh.data.attemptId === workspace.id;
+}
+
+export function isBoundPluginTaskDirectory(input: {
+  companyId: string; issueId: string; workspaceId: string | null;
+  workspace: ExecutionWorkspace | null;
+  owner: { agentId: string; environmentId: string; pluginKey: unknown; driverKey: unknown };
+}): boolean {
+  if (isBoundFreshPluginTaskDirectory(input)) return true;
+  const workspace = input.workspace;
+  return Boolean(
+    workspace &&
+    workspace.id === input.workspaceId &&
+    workspace.companyId === input.companyId &&
+    workspace.sourceIssueId === input.issueId &&
+    workspace.status === "active" &&
+    !workspace.projectWorkspaceId &&
+    workspace.mode === "isolated_workspace" &&
+    workspace.strategyType === "project_primary" &&
+    workspace.providerType === "adapter_managed" &&
+    !workspace.repoUrl &&
+    !workspace.branchName &&
+    workspace.cwd === `/workspaces/${input.issueId}` &&
+    workspace.metadata?.runnerTaskFreshWorkspace === undefined &&
+    isDeepStrictEqual(workspace.metadata?.runnerTaskWorkspaceOwner, input.owner),
+  );
 }
 
 export async function stageProviderFreshWorkspace(input: {
@@ -152,6 +178,7 @@ export async function reserveFreshPluginTaskWorkspace(input: {
       providerType: "adapter_managed", cwd: `/workspaces/${input.fresh.attemptId}`,
       metadata: { runnerTaskFreshWorkspace: input.fresh, runnerTaskWorkspaceOwner: input.owner },
     });
+    await notifyStatusCardIssueChange(tx, input.companyId);
     await tx.update(issues).set({ executionWorkspaceId: input.fresh.attemptId, executionWorkspacePreference: "reuse_existing",
       workspaceBindingRevision: task.workspaceBindingRevision + 1,
       workspacePendingSelection: task.workspacePendingSelection?.expectedBindingRevision === task.workspaceBindingRevision

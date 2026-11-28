@@ -20,8 +20,10 @@ for (const { unfinishedWrite, stopResponse, sendSavedQueue = false } of [
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-stop-browser-"));
     const company = await json(await request.post("/api/companies", { data: { name: `ACP Stop ${Date.now()}` } }));
     const originalSettings = await json(await request.get("/api/instance/settings/experimental"));
+    await page.route("**/api/instance/settings/experimental", route => route.fulfill({ json: {
+      ...originalSettings, enableClassicTaskInterface: false,
+    } }));
     try {
-      await json(await request.patch("/api/instance/settings/experimental", { data: { enableClassicTaskInterface: false } }));
       const owner = await json(await request.post(`/api/companies/${company.id}/agents`, { data: {
         name: "ACP Stop fixture", role: "engineer", adapterType: "claude_local", runner: "legacy",
         adapterConfig: { engine: "acp", cwd: root, stateDir: path.join(root, "state"),
@@ -47,7 +49,7 @@ for (const { unfinishedWrite, stopResponse, sendSavedQueue = false } of [
         .toContain("List my recent Drive files.");
 
       // Both actions stop the response; composer Stop must not create a task hold.
-      let stopped;
+      let stopped!: { status: string; resultJson?: { executionCancellation?: { state?: string } } | null };
       if (stopResponse) {
         await page.getByRole("button", { name: "Stop", exact: true }).click();
       } else {
@@ -58,7 +60,7 @@ for (const { unfinishedWrite, stopResponse, sendSavedQueue = false } of [
         return stopped.resultJson?.executionCancellation?.state;
       }, { timeout: 30_000 }).toBe("acknowledged");
       expect(stopped.status).toBe("cancelled");
-      expect(stopped.resultJson.executionCancellation.state).toBe("acknowledged");
+      expect(stopped.resultJson?.executionCancellation?.state).toBe("acknowledged");
       const writesAtStop = unfinishedWrite ? await readFile(path.join(root, "writes"), "utf8") : null;
       await page.reload();
       if (stopResponse) {
@@ -92,7 +94,6 @@ for (const { unfinishedWrite, stopResponse, sendSavedQueue = false } of [
       await expect(page.getByRole("dialog")).toHaveCount(0);
     } finally {
       await request.patch(`/api/companies/${company.id}`, { data: { status: "archived" } });
-      await request.patch("/api/instance/settings/experimental", { data: { enableClassicTaskInterface: originalSettings.enableClassicTaskInterface } });
       await rm(root, { recursive: true, force: true });
     }
   });

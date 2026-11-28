@@ -1,3 +1,4 @@
+import { FILE_DROP_TARGET_ATTRIBUTE } from "@/lib/file-drop-target";
 import { TextAttachmentContext } from "@/context/TextAttachmentContext";
 import { isTextAttachment } from "@/lib/issue-attachments";
 import { useContext, useMemo, useState, type DragEvent, type ReactNode } from "react";
@@ -272,6 +273,7 @@ export function IssueAttachmentsSection({
         "space-y-3 rounded-lg transition-colors",
         dragActive && "bg-primary/5",
       )}
+      {...(onDrop ? { [FILE_DROP_TARGET_ATTRIBUTE]: "" } : {})}
       onDragEnter={onDragEnter}
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
@@ -291,7 +293,7 @@ export function IssueAttachmentsSection({
       )}
 
       {imageAttachments.length > 0 && (
-        <div className="grid grid-cols-4 gap-2">
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
           {imageAttachments.map((attachment) => (
             <div
               key={attachment.id}

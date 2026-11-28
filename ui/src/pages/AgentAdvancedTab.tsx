@@ -1,3 +1,4 @@
+import { describeError } from "@/api/errors";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { basicSetup } from "codemirror";
@@ -13,6 +14,9 @@ import { queryKeys } from "../lib/queryKeys";
 import { parseAgentConfigurationYaml, serializeAgentConfigurationDocument } from "../lib/agent-configuration-yaml";
 import { loadAgentConfiguration, type AgentConfigurationSnapshot } from "../lib/agent-configuration/load";
 import { ConfigurationSaveInterrupted, planAgentConfiguration, saveAgentConfiguration, type ConfigurationReceipt } from "../lib/agent-configuration/save";
+import { compactAgentConfiguration } from "../lib/agent-configuration/compact";
+
+const editableYaml = (configuration: AgentConfigurationSnapshot) => serializeAgentConfigurationDocument(compactAgentConfiguration(configuration.document));
 
 const yamlHighlightStyle = HighlightStyle.define([
   { tag: tags.propertyName, class: "text-primary" },
@@ -41,7 +45,7 @@ export function AgentAdvancedTab(props: AgentAdvancedTabProps) {
   }, [initial, query.data, query.isFetching]);
   if (!initial) {
     if (query.error) return <div role="alert" className="space-y-3 text-sm">
-      <p>{query.error.message}</p>
+      <p>{describeError(query.error).body}</p>
       <Button variant="outline" onClick={() => query.refetch()}>Retry</Button>
     </div>;
     return <p role="status" className="text-sm text-muted-foreground">Loading configuration…</p>;
@@ -53,7 +57,7 @@ function ConfigurationEditor({ agent, initial, onDirtyChange, onSaved, onSavingC
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const [saved, setSaved] = useState(initial);
-  const [source, setSource] = useState(() => serializeAgentConfigurationDocument(initial.document));
+  const [source, setSource] = useState(() => editableYaml(initial));
   const [error, setError] = useState<string | null>(null);
   const [reloadRequired, setReloadRequired] = useState(false);
   const [progress, setProgress] = useState("");
@@ -61,7 +65,7 @@ function ConfigurationEditor({ agent, initial, onDirtyChange, onSaved, onSavingC
   const operationPending = useRef(false);
   const active = useRef(true);
   useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
-  const original = useMemo(() => serializeAgentConfigurationDocument(saved.document), [saved]);
+  const original = useMemo(() => editableYaml(saved), [saved]);
   const dirty = source !== original;
   const validation = useMemo(() => {
     try {
@@ -80,7 +84,6 @@ function ConfigurationEditor({ agent, initial, onDirtyChange, onSaved, onSavingC
         receipt => { if (active.current) setReceipts(current => [...current, receipt]); },
         label => { if (active.current) setProgress(label); });
     },
-    retry: false,
     onSuccess: configuration => {
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
@@ -88,7 +91,7 @@ function ConfigurationEditor({ agent, initial, onDirtyChange, onSaved, onSavingC
       queryClient.setQueryData(["agent-configuration-yaml", agent.companyId, agent.id], configuration);
       if (!active.current) return;
       setSaved(configuration);
-      setSource(serializeAgentConfigurationDocument(configuration.document));
+      setSource(editableYaml(configuration));
       setError(null);
       onDirtyChange(false);
       setReloadRequired(false);
@@ -113,7 +116,7 @@ function ConfigurationEditor({ agent, initial, onDirtyChange, onSaved, onSavingC
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(agent.companyId) });
-      if (active.current) { setSaved(updated); setSource(serializeAgentConfigurationDocument(updated.document)); setError(null); setReloadRequired(false); onSaved(updated.agent); }
+      if (active.current) { setSaved(updated); setSource(editableYaml(updated)); setError(null); setReloadRequired(false); onSaved(updated.agent); }
     },
     onSettled: () => { operationPending.current = false; },
     onError: cause => setError(cause.message),
@@ -122,6 +125,7 @@ function ConfigurationEditor({ agent, initial, onDirtyChange, onSaved, onSavingC
   useEffect(() => { onSavingChange?.(busy); }, [busy, onSavingChange]);
   useEffect(() => () => onSavingChange?.(false), [onSavingChange]);
   return <div className="space-y-4">
+    <p className="text-sm text-muted-foreground">Omitted settings stay unchanged. Instruction file contents, inherited access, and history are available in their settings tabs.</p>
     {receipts.length > 0 && <div className="space-y-3 rounded-md border border-border p-4" aria-label="Created credentials">
       {receipts.map((receipt, index) => <div key={`${receipt.id}-${index}`} className="space-y-2 text-sm">
         <p className="font-medium">{receipt.label}</p>
@@ -138,10 +142,13 @@ function ConfigurationEditor({ agent, initial, onDirtyChange, onSaved, onSavingC
       <p className="mt-2 text-muted-foreground">Changes save in this order. If one fails, earlier changes remain saved.</p>
     </details>}
     {(validation.error || error) && <p role="alert" className="whitespace-pre-wrap text-sm text-destructive">{validation.error || error}</p>}
-    <footer className="sticky bottom-0 z-10 flex items-center justify-between gap-3 border-t border-border bg-background py-4">
+    <footer className="mobile-nav-composer sticky bottom-(--tc-composer-bottom) z-20 flex flex-wrap items-center justify-between gap-3 border-t border-border bg-background py-4 md:bottom-0">
       <Button variant="ghost" disabled={busy} onClick={() => { if (!operationPending.current) { operationPending.current = true; reload.mutate(); } }}>Reload saved</Button>
-      <div className="flex items-center gap-3">
-        <span role="status" className="text-xs text-muted-foreground">{save.isPending ? `Saving: ${progress || "configuration"}…` : reload.isPending ? "Loading configuration…" : dirty ? validation.document && !validation.changes.length ? "No configuration changes" : "Unsaved changes" : ""}</span>
+      <div className="flex flex-wrap items-center gap-3">
+        <span role="status" className="flex items-center gap-2 text-xs text-muted-foreground">
+          {!save.isPending && !reload.isPending && dirty ? <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-(--agent-detail-dot-unsaved)" /> : null}
+          {save.isPending ? `Saving: ${progress || "configuration"}…` : reload.isPending ? "Loading configuration…" : dirty ? validation.document && !validation.changes.length ? "No configuration changes" : "Unsaved changes" : "No unsaved changes"}
+        </span>
         <Button disabled={!dirty || busy || reloadRequired || !validation.document || !validation.changes.length} onClick={() => { if (!operationPending.current) { operationPending.current = true; save.mutate(); } }}>{save.isPending ? "Saving…" : "Save changes"}</Button>
       </div>
     </footer>
@@ -180,5 +187,5 @@ function AgentYamlEditor({ value, onChange, readOnly }: { value: string; onChang
     const view = editor.current;
     if (view && view.state.doc.toString() !== value) view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value } });
   }, [value]);
-  return <div ref={container} className="agent-yaml-editor overflow-hidden rounded-md border border-border" />;
+  return <div ref={container} className="agent-yaml-editor overflow-hidden rounded-lg" />;
 }

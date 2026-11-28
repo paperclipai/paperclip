@@ -1,0 +1,424 @@
+{
+  "ingestedAt": "2026-11-17T12:00:00.000Z",
+  "rawTaskId": "6f1f3c2a-9b8e-4d7c-a1b2-c3d4e5f60718",
+  "hashedTaskId": "9c1e5b7a3d2f4e60",
+  "envelope": {
+    "app": "paperclip",
+    "schemaVersion": "1",
+    "installId": "11111111-2222-4333-8444-555555555555",
+    "version": "2026.1117.0",
+    "batchId": "fixture-batch-0001",
+    "events": [
+      {
+        "name": "server.started",
+        "occurredAt": "2026-11-17T11:58:00.000Z",
+        "dimensions": {
+          "os_platform": "linux"
+        }
+      },
+      {
+        "name": "agent.task_run",
+        "occurredAt": "2026-11-17T11:58:01.000Z",
+        "dimensions": {
+          "agent_id": "2f6c7d1e-0a4b-4c3d-9e8f-112233445566",
+          "state": "succeeded",
+          "adapter_type": "claude_local",
+          "agent_role": "engineer",
+          "model": "claude-opus-5-5",
+          "duration_seconds": 42,
+          "input_tokens": 1200,
+          "output_tokens": 300,
+          "task_id": "9c1e5b7a3d2f4e60"
+        }
+      },
+      {
+        "name": "agent.created",
+        "occurredAt": "2026-11-17T11:58:02.000Z",
+        "dimensions": {
+          "agent_id": "3a7b8c9d-1e2f-4a5b-8c6d-778899aabbcc",
+          "agent_role": "astronaut"
+        }
+      },
+      {
+        "name": "install.completed",
+        "occurredAt": "2026-11-17T11:58:03.000Z",
+        "dimensions": {
+          "adapter_type": "future_adapter"
+        }
+      },
+      {
+        "name": "skill.imported",
+        "occurredAt": "2026-11-17T11:58:04.000Z",
+        "dimensions": {
+          "source_type": "mystery_source"
+        }
+      },
+      {
+        "name": "interaction.resolved",
+        "occurredAt": "2026-11-17T11:58:05.000Z",
+        "dimensions": {
+          "interaction_kind": "suggest_tasks",
+          "status": "accepted",
+          "resolved_by_kind": "user",
+          "option_count": 3,
+          "selected_option_count": 2,
+          "legacy_inherited_restriction": false
+        }
+      },
+      {
+        "name": "routine.created",
+        "occurredAt": "2026-11-17T11:58:06.000Z",
+        "dimensions": {}
+      },
+      {
+        "name": "question_response.delivery",
+        "occurredAt": "2026-11-17T11:58:07.000Z",
+        "dimensions": {
+          "outcome": "delivered"
+        }
+      }
+    ]
+  },
+  "canonicalRecords": [
+    {
+      "source": "client",
+      "event_id": "a77f7fdef12def432e98412718b080efc3db2b4c0735bbbd623f7051dc4e6e76",
+      "app": "paperclip",
+      "schema_version": "1",
+      "version": "2026.1117.0",
+      "envelope_version": 2,
+      "app_version": "2026.1117.0",
+      "event_name": "server.started",
+      "occurred_at": "2026-11-17T11:58:00.000Z",
+      "ingested_at": "2026-11-17T12:00:00.000Z",
+      "install_id": "cf4c4732fd3b8f8a55b60871950a2f22c893ea7afd75d2146826534e3f67cc49",
+      "dimensions": {
+        "os_platform": "linux"
+      },
+      "normalized_properties": [],
+      "backfilled": false,
+      "deployment_source": "cloud",
+      "event_date": "2026-11-17",
+      "hour": "11"
+    },
+    {
+      "source": "client",
+      "event_id": "a4d9c57bc5d720ce3c7c25cf145499eb98e62639f782a545fd360717cdc8c635",
+      "app": "paperclip",
+      "schema_version": "1",
+      "version": "2026.1117.0",
+      "envelope_version": 2,
+      "app_version": "2026.1117.0",
+      "event_name": "agent.task_run",
+      "occurred_at": "2026-11-17T11:58:01.000Z",
+      "ingested_at": "2026-11-17T12:00:00.000Z",
+      "install_id": "cf4c4732fd3b8f8a55b60871950a2f22c893ea7afd75d2146826534e3f67cc49",
+      "dimensions": {
+        "agent_id": "282a1c1fae5df6996043f35138b162af4e794c00cf68087665b1a39c8b4980ca",
+        "state": "succeeded",
+        "adapter_type": "claude_local",
+        "agent_role": "engineer",
+        "model": "claude-opus-5-5",
+        "duration_seconds": 42,
+        "input_tokens": 1200,
+        "output_tokens": 300,
+        "task_id": "9c1e5b7a3d2f4e60"
+      },
+      "normalized_properties": [],
+      "backfilled": false,
+      "deployment_source": "cloud",
+      "event_date": "2026-11-17",
+      "hour": "11"
+    },
+    {
+      "source": "client",
+      "event_id": "22fae133df11fcfd31fe83847aa7206f90c4254a54b1a924c589ad4cec119846",
+      "app": "paperclip",
+      "schema_version": "1",
+      "version": "2026.1117.0",
+      "envelope_version": 2,
+      "app_version": "2026.1117.0",
+      "event_name": "agent.created",
+      "occurred_at": "2026-11-17T11:58:02.000Z",
+      "ingested_at": "2026-11-17T12:00:00.000Z",
+      "install_id": "cf4c4732fd3b8f8a55b60871950a2f22c893ea7afd75d2146826534e3f67cc49",
+      "dimensions": {
+        "agent_id": "9532a2b6bf43a010107bb5c09020418d34165f50155dfba097c49ae53269afb0",
+        "agent_role": "other"
+      },
+      "normalized_properties": [
+        "agent_role"
+      ],
+      "backfilled": false,
+      "deployment_source": "cloud",
+      "event_date": "2026-11-17",
+      "hour": "11"
+    },
+    {
+      "source": "client",
+      "event_id": "f66fe4effe5ef14500271e97791576ade468152b3e6b15e56dfc2c9deaa4333b",
+      "app": "paperclip",
+      "schema_version": "1",
+      "version": "2026.1117.0",
+      "envelope_version": 2,
+      "app_version": "2026.1117.0",
+      "event_name": "install.completed",
+      "occurred_at": "2026-11-17T11:58:03.000Z",
+      "ingested_at": "2026-11-17T12:00:00.000Z",
+      "install_id": "cf4c4732fd3b8f8a55b60871950a2f22c893ea7afd75d2146826534e3f67cc49",
+      "dimensions": {
+        "adapter_type": "other"
+      },
+      "normalized_properties": [
+        "adapter_type"
+      ],
+      "backfilled": false,
+      "deployment_source": "cloud",
+      "event_date": "2026-11-17",
+      "hour": "11"
+    },
+    {
+      "source": "client",
+      "event_id": "ec19908cf8c99d58357929b2ee9c494ba3af8f04a5ade3e26eeac1188bc2560c",
+      "app": "paperclip",
+      "schema_version": "1",
+      "version": "2026.1117.0",
+      "envelope_version": 2,
+      "app_version": "2026.1117.0",
+      "event_name": "skill.imported",
+      "occurred_at": "2026-11-17T11:58:04.000Z",
+      "ingested_at": "2026-11-17T12:00:00.000Z",
+      "install_id": "cf4c4732fd3b8f8a55b60871950a2f22c893ea7afd75d2146826534e3f67cc49",
+      "dimensions": {
+        "source_type": "unknown"
+      },
+      "normalized_properties": [
+        "source_type"
+      ],
+      "backfilled": false,
+      "deployment_source": "cloud",
+      "event_date": "2026-11-17",
+      "hour": "11"
+    },
+    {
+      "source": "client",
+      "event_id": "2d7c541d00ca3b5971d56d8cf43f02d79e1bbae41fc526b1490c4640a627e2fe",
+      "app": "paperclip",
+      "schema_version": "1",
+      "version": "2026.1117.0",
+      "envelope_version": 2,
+      "app_version": "2026.1117.0",
+      "event_name": "interaction.resolved",
+      "occurred_at": "2026-11-17T11:58:05.000Z",
+      "ingested_at": "2026-11-17T12:00:00.000Z",
+      "install_id": "cf4c4732fd3b8f8a55b60871950a2f22c893ea7afd75d2146826534e3f67cc49",
+      "dimensions": {
+        "interaction_kind": "suggest_tasks",
+        "status": "accepted",
+        "resolved_by_kind": "user",
+        "option_count": 3,
+        "selected_option_count": 2,
+        "legacy_inherited_restriction": false
+      },
+      "normalized_properties": [],
+      "backfilled": false,
+      "deployment_source": "cloud",
+      "event_date": "2026-11-17",
+      "hour": "11"
+    },
+    {
+      "source": "client",
+      "event_id": "369e2de4dbd5da7871377958422888401120642e2b0edafa3f3002e58f1d6fe9",
+      "app": "paperclip",
+      "schema_version": "1",
+      "version": "2026.1117.0",
+      "envelope_version": 2,
+      "app_version": "2026.1117.0",
+      "event_name": "routine.created",
+      "occurred_at": "2026-11-17T11:58:06.000Z",
+      "ingested_at": "2026-11-17T12:00:00.000Z",
+      "install_id": "cf4c4732fd3b8f8a55b60871950a2f22c893ea7afd75d2146826534e3f67cc49",
+      "dimensions": {},
+      "normalized_properties": [],
+      "backfilled": false,
+      "deployment_source": "cloud",
+      "event_date": "2026-11-17",
+      "hour": "11"
+    }
+  ],
+  "loaderEvents": [
+    {
+      "event": "server.started",
+      "distinct_id": "5564e194c3d2f9a37a7e3c1443f5abfaf922f4c4ee8de2b821eb1491b36d19fb",
+      "timestamp": "2026-11-17T11:58:00.000Z",
+      "uuid": "a77f7fde-f12d-4f43-ae98-412718b080ef",
+      "disableGeoip": true,
+      "sendFeatureFlags": false,
+      "properties": {
+        "app": "paperclip",
+        "schema_version": "1",
+        "source": "client",
+        "deployment_source": "cloud",
+        "ingested_at": "2026-11-17T12:00:00.000Z",
+        "event_date": "2026-11-17",
+        "hour": "11",
+        "normalized_properties": [],
+        "version": "2026.1117.0",
+        "os_platform": "linux",
+        "distinct_id": "5564e194c3d2f9a37a7e3c1443f5abfaf922f4c4ee8de2b821eb1491b36d19fb",
+        "$process_person_profile": false
+      }
+    },
+    {
+      "event": "agent.task_run",
+      "distinct_id": "5564e194c3d2f9a37a7e3c1443f5abfaf922f4c4ee8de2b821eb1491b36d19fb",
+      "timestamp": "2026-11-17T11:58:01.000Z",
+      "uuid": "a4d9c57b-c5d7-40ce-bc7c-25cf145499eb",
+      "disableGeoip": true,
+      "sendFeatureFlags": false,
+      "properties": {
+        "app": "paperclip",
+        "schema_version": "1",
+        "source": "client",
+        "deployment_source": "cloud",
+        "ingested_at": "2026-11-17T12:00:00.000Z",
+        "event_date": "2026-11-17",
+        "hour": "11",
+        "normalized_properties": [],
+        "version": "2026.1117.0",
+        "agent_id": "282a1c1fae5df6996043f35138b162af4e794c00cf68087665b1a39c8b4980ca",
+        "state": "succeeded",
+        "adapter_type": "claude_local",
+        "agent_role": "engineer",
+        "model": "claude-opus-5-5",
+        "duration_seconds": 42,
+        "input_tokens": 1200,
+        "output_tokens": 300,
+        "task_id": "9c1e5b7a3d2f4e60",
+        "distinct_id": "5564e194c3d2f9a37a7e3c1443f5abfaf922f4c4ee8de2b821eb1491b36d19fb",
+        "$process_person_profile": false
+      }
+    },
+    {
+      "event": "agent.created",
+      "distinct_id": "5564e194c3d2f9a37a7e3c1443f5abfaf922f4c4ee8de2b821eb1491b36d19fb",
+      "timestamp": "2026-11-17T11:58:02.000Z",
+      "uuid": "22fae133-df11-4cfd-b1fe-83847aa7206f",
+      "disableGeoip": true,
+      "sendFeatureFlags": false,
+      "properties": {
+        "app": "paperclip",
+        "schema_version": "1",
+        "source": "client",
+        "deployment_source": "cloud",
+        "ingested_at": "2026-11-17T12:00:00.000Z",
+        "event_date": "2026-11-17",
+        "hour": "11",
+        "normalized_properties": [
+          "agent_role"
+        ],
+        "version": "2026.1117.0",
+        "agent_id": "9532a2b6bf43a010107bb5c09020418d34165f50155dfba097c49ae53269afb0",
+        "agent_role": "other",
+        "distinct_id": "5564e194c3d2f9a37a7e3c1443f5abfaf922f4c4ee8de2b821eb1491b36d19fb",
+        "$process_person_profile": false
+      }
+    },
+    {
+      "event": "install.completed",
+      "distinct_id": "5564e194c3d2f9a37a7e3c1443f5abfaf922f4c4ee8de2b821eb1491b36d19fb",
+      "timestamp": "2026-11-17T11:58:03.000Z",
+      "uuid": "f66fe4ef-fe5e-4145-8027-1e97791576ad",
+      "disableGeoip": true,
+      "sendFeatureFlags": false,
+      "properties": {
+        "app": "paperclip",
+        "schema_version": "1",
+        "source": "client",
+        "deployment_source": "cloud",
+        "ingested_at": "2026-11-17T12:00:00.000Z",
+        "event_date": "2026-11-17",
+        "hour": "11",
+        "normalized_properties": [
+          "adapter_type"
+        ],
+        "version": "2026.1117.0",
+        "adapter_type": "other",
+        "distinct_id": "5564e194c3d2f9a37a7e3c1443f5abfaf922f4c4ee8de2b821eb1491b36d19fb",
+        "$process_person_profile": false
+      }
+    },
+    {
+      "event": "skill.imported",
+      "distinct_id": "5564e194c3d2f9a37a7e3c1443f5abfaf922f4c4ee8de2b821eb1491b36d19fb",
+      "timestamp": "2026-11-17T11:58:04.000Z",
+      "uuid": "ec19908c-f8c9-4d58-b579-29b2ee9c494b",
+      "disableGeoip": true,
+      "sendFeatureFlags": false,
+      "properties": {
+        "app": "paperclip",
+        "schema_version": "1",
+        "source": "client",
+        "deployment_source": "cloud",
+        "ingested_at": "2026-11-17T12:00:00.000Z",
+        "event_date": "2026-11-17",
+        "hour": "11",
+        "normalized_properties": [
+          "source_type"
+        ],
+        "version": "2026.1117.0",
+        "source_type": "unknown",
+        "distinct_id": "5564e194c3d2f9a37a7e3c1443f5abfaf922f4c4ee8de2b821eb1491b36d19fb",
+        "$process_person_profile": false
+      }
+    },
+    {
+      "event": "interaction.resolved",
+      "distinct_id": "5564e194c3d2f9a37a7e3c1443f5abfaf922f4c4ee8de2b821eb1491b36d19fb",
+      "timestamp": "2026-11-17T11:58:05.000Z",
+      "uuid": "2d7c541d-00ca-4b59-b1d5-6d8cf43f02d7",
+      "disableGeoip": true,
+      "sendFeatureFlags": false,
+      "properties": {
+        "app": "paperclip",
+        "schema_version": "1",
+        "source": "client",
+        "deployment_source": "cloud",
+        "ingested_at": "2026-11-17T12:00:00.000Z",
+        "event_date": "2026-11-17",
+        "hour": "11",
+        "normalized_properties": [],
+        "version": "2026.1117.0",
+        "interaction_kind": "suggest_tasks",
+        "status": "accepted",
+        "resolved_by_kind": "user",
+        "option_count": 3,
+        "selected_option_count": 2,
+        "legacy_inherited_restriction": false,
+        "distinct_id": "5564e194c3d2f9a37a7e3c1443f5abfaf922f4c4ee8de2b821eb1491b36d19fb",
+        "$process_person_profile": false
+      }
+    },
+    {
+      "event": "routine.created",
+      "distinct_id": "5564e194c3d2f9a37a7e3c1443f5abfaf922f4c4ee8de2b821eb1491b36d19fb",
+      "timestamp": "2026-11-17T11:58:06.000Z",
+      "uuid": "369e2de4-dbd5-4a78-b137-795842288840",
+      "disableGeoip": true,
+      "sendFeatureFlags": false,
+      "properties": {
+        "app": "paperclip",
+        "schema_version": "1",
+        "source": "client",
+        "deployment_source": "cloud",
+        "ingested_at": "2026-11-17T12:00:00.000Z",
+        "event_date": "2026-11-17",
+        "hour": "11",
+        "normalized_properties": [],
+        "version": "2026.1117.0",
+        "distinct_id": "5564e194c3d2f9a37a7e3c1443f5abfaf922f4c4ee8de2b821eb1491b36d19fb",
+        "$process_person_profile": false
+      }
+    }
+  ]
+}

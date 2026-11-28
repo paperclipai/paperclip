@@ -1,5 +1,10 @@
+import { notifyMuseContactVerification } from "../modules/external-agents/index.js";
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
-import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
+import { notifyChatCompanyAuthorityChange } from "./chat-run-milestone-notifications.js";
 import { notifyVoiceChange } from "./voice/voice-recovery-notifications.js";
 import { notifyChatEndpointWork } from "./chat-work-notifications.js";
 import { notifyToolConnectionHealth } from "./tool-connection-health-notifications.js";
@@ -25,6 +30,7 @@ import { conflict } from "../errors.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import { authorizationService, type AuthorizationActor, type AuthorizationResource } from "./authorization.js";
 import { ensureHumanRoleDefaultGrants } from "./principal-access-compatibility.js";
+import { deleteGoogleContentWhenAccessEnds } from "./tool-access/connections/google-content-retention.js";
 
 type MembershipRow = typeof companyMemberships.$inferSelect;
 type GrantInput = {
@@ -92,6 +98,7 @@ export function accessService(db: Db) {
     const ownedGrants = await tx.select({
       id: connectionGrants.id,
       connectionId: connectionGrants.connectionId,
+      status: connectionGrants.status,
       credentialSecretRefs: connectionGrants.credentialSecretRefs,
     }).from(connectionGrants).where(and(
       eq(connectionGrants.companyId, companyId),
@@ -288,6 +295,15 @@ export function accessService(db: Db) {
         eq(connectionGrants.companyId, companyId),
         inArray(connectionGrants.id, grantIds),
       ));
+    }
+    const endedConnectionIds = [...new Set(ownedGrants.filter((grant) => grant.status !== "revoked").map((grant) => grant.connectionId))];
+    if (endedConnectionIds.length > 0) {
+      const ended = await tx.select({ id: toolConnections.id, companyId: toolConnections.companyId, config: toolConnections.config })
+        .from(toolConnections)
+        .where(and(eq(toolConnections.companyId, companyId), inArray(toolConnections.id, endedConnectionIds)));
+      for (const connection of ended) {
+        await deleteGoogleContentWhenAccessEnds(tx as unknown as Db, connection, "member_removed");
+      }
     }
     if (ownedSecretIds.length > 0) {
       for (const grant of grantRefs) {
@@ -556,9 +572,13 @@ export function accessService(db: Db) {
         data.membershipRole !== undefined ? data.membershipRole : existing.membershipRole;
       const nextStatus = data.status ?? existing.status;
 
+      if(nextStatus==="active"&&(existing.principalType==="agent"||nextMembershipRole!=="viewer")
+        &&(existing.status!=="active"||existing.principalType==="user"&&existing.membershipRole==="viewer"))
+        await notifyMuseContactVerification(tx,{companyId,...(existing.principalType==="user"?{operatorId:existing.principalId}:{agentId:existing.principalId})});
+
       if (existing.principalType === "user" && nextStatus === "active" && nextMembershipRole !== "viewer"
         && (existing.status !== "active" || existing.membershipRole === "viewer")) {
-        await notifyChatRunMilestones(tx, { companyId });
+        await notifyChatCompanyAuthorityChange(tx, { companyId });
       }
 
       if (
@@ -740,6 +760,11 @@ export function accessService(db: Db) {
         eq(issues.assigneeUserId, existing.principalId),
         sql`${issues.status} not in ('done', 'cancelled')`,
       );
+      await notifyNativeStatusReassessment(tx, { companyId });
+      await notifyDeferredExecutionEligibility(tx, { companyId });
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+      await notifyStatusCardIssueChange(tx, companyId);
       const resetInProgress = await tx
         .update(issues)
         .set({
@@ -894,7 +919,10 @@ export function accessService(db: Db) {
         const existingMembership = existingByCompany.get(companyId);
         if (existingMembership) {
           if (existingMembership.status !== "active") {
-            if (existingMembership.membershipRole !== "viewer") await notifyChatRunMilestones(tx, { companyId });
+            if (existingMembership.membershipRole !== "viewer") {
+              await notifyChatCompanyAuthorityChange(tx, { companyId });
+              await notifyMuseContactVerification(tx,{companyId,operatorId:userId});
+            }
             await tx
               .update(companyMemberships)
               .set({
@@ -906,7 +934,8 @@ export function accessService(db: Db) {
           }
           continue;
         }
-        await notifyChatRunMilestones(tx, { companyId });
+        await notifyChatCompanyAuthorityChange(tx, { companyId });
+        await notifyMuseContactVerification(tx,{companyId,operatorId:userId});
         await tx.insert(companyMemberships).values({
           companyId,
           principalType: "user",
@@ -934,9 +963,12 @@ export function accessService(db: Db) {
       )).for("update").then(rows => rows[0] ?? null);
       if (existing) {
         if (existing.status !== status || existing.membershipRole !== membershipRole) {
+          if(status==="active"&&(principalType==="agent"||membershipRole!=="viewer")
+            &&(existing.status!=="active"||principalType==="user"&&existing.membershipRole==="viewer"))
+            await notifyMuseContactVerification(tx,{companyId,...(principalType==="user"?{operatorId:principalId}:{agentId:principalId})});
           if (principalType === "user" && status === "active" && membershipRole !== "viewer"
             && (existing.status !== "active" || existing.membershipRole === "viewer")) {
-            await notifyChatRunMilestones(tx, { companyId });
+            await notifyChatCompanyAuthorityChange(tx, { companyId });
           }
           const updated = await tx
             .update(companyMemberships)
@@ -949,8 +981,9 @@ export function accessService(db: Db) {
         return existing;
       }
 
+      if(status==="active"&&(principalType==="agent"||membershipRole!=="viewer"))await notifyMuseContactVerification(tx,{companyId,...(principalType==="user"?{operatorId:principalId}:{agentId:principalId})});
       if (principalType === "user" && status === "active" && membershipRole !== "viewer") {
-        await notifyChatRunMilestones(tx, { companyId });
+        await notifyChatCompanyAuthorityChange(tx, { companyId });
       }
       return tx
         .insert(companyMemberships)
@@ -1144,9 +1177,13 @@ export function accessService(db: Db) {
         data.membershipRole !== undefined ? data.membershipRole : existing.membershipRole;
       const nextStatus = data.status ?? existing.status;
 
+      if(nextStatus==="active"&&(existing.principalType==="agent"||nextMembershipRole!=="viewer")
+        &&(existing.status!=="active"||existing.principalType==="user"&&existing.membershipRole==="viewer"))
+        await notifyMuseContactVerification(tx,{companyId,...(existing.principalType==="user"?{operatorId:existing.principalId}:{agentId:existing.principalId})});
+
       if (existing.principalType === "user" && nextStatus === "active" && nextMembershipRole !== "viewer"
         && (existing.status !== "active" || existing.membershipRole === "viewer")) {
-        await notifyChatRunMilestones(tx, { companyId });
+        await notifyChatCompanyAuthorityChange(tx, { companyId });
       }
 
       if (

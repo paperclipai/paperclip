@@ -2,7 +2,7 @@ import { and, asc, eq, exists, gt, inArray, isNotNull, ne } from "drizzle-orm";
 import { heartbeatRuns, issues, nativeRunFinalizations, statusDecisionEffects, type Db } from "@paperclipai/db";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
-import type { NativePendingEffectScope } from "../native-pending-effect-notifications.js";
+import type { NativeFinalizationWorkScope } from "../native-finalization-notifications.js";
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
 import { dispatchPendingNativeStatusEffects, nativePendingEffectDueAt } from "./status-decision-committer.js";
 
@@ -15,7 +15,7 @@ export function pendingNativeStatusEffectsCondition(db: Db) {
   )));
 }
 
-function findPendingEffects(db: Db, scope?: NativePendingEffectScope, after?: string) {
+function findPendingEffects(db: Db, scope?: NativeFinalizationWorkScope, after?: string) {
   return db.select({
     id: nativeRunFinalizations.runId, companyId: nativeRunFinalizations.companyId,
     issueId: nativeRunFinalizations.issueId, decisionId: nativeRunFinalizations.decisionId,
@@ -36,7 +36,7 @@ function findPendingEffects(db: Db, scope?: NativePendingEffectScope, after?: st
 
 export function registerNativePendingEffectWork(db: Db, coordinator: ReturnType<typeof createDeliveryWorkCoordinator>, canRun: () => boolean) {
   type Entry = { id: string; companyId: string; dueAt: number };
-  async function load(scope?: NativePendingEffectScope, signal?: AbortSignal): Promise<Entry[]> {
+  async function load(scope?: NativeFinalizationWorkScope, signal?: AbortSignal): Promise<Entry[]> {
     const entries: Entry[] = [];
     let after: string | undefined;
     while (canRun() && !signal?.aborted) {
@@ -49,8 +49,8 @@ export function registerNativePendingEffectWork(db: Db, coordinator: ReturnType<
   }
   return registerScopedDeadlineWork(coordinator, {
     queue: DELIVERY_QUEUES.nativePendingEffects, batchSize: 25,
-    decodeScope: (hint: string): NativePendingEffectScope | undefined => hint === "*" ? undefined : JSON.parse(hint),
-    matches: (entry: Entry, scope?: NativePendingEffectScope) => !scope || entry.companyId === scope.companyId && (!scope.runId || entry.id === scope.runId),
+    decodeScope: (hint: string): NativeFinalizationWorkScope | undefined => hint === "*" ? undefined : JSON.parse(hint),
+    matches: (entry: Entry, scope?: NativeFinalizationWorkScope) => !scope || entry.companyId === scope.companyId && (!scope.runId || entry.id === scope.runId),
     load,
     check: async (entry: Entry, signal?: AbortSignal) => {
       if (!canRun() || signal?.aborted) throw new Error("Native pending effect recovery stopped");

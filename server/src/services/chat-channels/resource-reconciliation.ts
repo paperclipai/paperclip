@@ -1,4 +1,4 @@
-import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
+import { notifyChatRunMilestones, notifyChatCompanyAuthorityChange } from "../chat-run-milestone-notifications.js";
 import { notifyChatEndpointConfiguration } from "./configuration-work-notifications.js";
 import { notifyChatConnectionHealth } from "./connection-health-notifications.js";
 import type { ConnectionManagementContext } from "../connection-management.js";
@@ -287,7 +287,7 @@ export function createChatResourceReconciliation(db: Db, options: ResourceReconc
               after: { enabled: finalEnabled.get(row.id)!, ...(JSON.stringify(row.executionDefaults) !== JSON.stringify(finalDefaults.get(row.id)) ? { executionDefaults: finalDefaults.get(row.id) } : {}) },
             }));
           if (changes.some(change => !change.before.enabled && change.after.enabled)) {
-            await notifyChatRunMilestones(tx, { companyId: endpoint.companyId });
+            await notifyChatCompanyAuthorityChange(tx, { companyId: endpoint.companyId });
           }
           if (bulk) {
             // One atomic database update, independent of pagination/search and

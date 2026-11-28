@@ -1,9 +1,10 @@
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Activity,
-  BadgeDollarSign,
-  BookOpenText,
   FileCode2,
+  Fingerprint,
+  Gauge,
   History,
   KeyRound,
   Library,
@@ -15,52 +16,52 @@ import {
   Sparkles,
   Wrench,
 } from "lucide-react";
+import { useAgentEnvironmentSlots } from "@/plugins/useAgentEnvironmentSlots";
 import { usePluginSlots } from "@/plugins/slots";
 import { agentsApi } from "@/api/agents";
 import { useCompany } from "@/context/CompanyContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { ContextualSidebarFrame } from "./ContextualSidebarFrame";
+import { MobileContextualNav, type MobileContextualNavGroup } from "./MobileContextualNav";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { contextualSidebarStyles } from "./contextual-sidebar-styles";
 import {
   AGENT_DETAIL_NAVIGATION,
   agentDetailHref,
-  agentScopedAuditHref,
   type AgentLocalDetailView,
 } from "@/pages/agent-detail-navigation";
 
 const localIcons = {
   overview: Sparkles,
-  instructions: BookOpenText,
+  instructions: Fingerprint,
   skills: Library,
   runtime: Settings2,
-  secrets: ShieldCheck,
+  secrets: KeyRound,
   tools: Wrench,
   channels: MessageSquare,
   permissions: ShieldCheck,
   "api-keys": KeyRound,
   revisions: History,
   advanced: FileCode2,
+  activity: Activity,
+  runs: PlayCircle,
+  costs: ReceiptText,
+  budgets: Gauge,
 } satisfies Record<AgentLocalDetailView, typeof Sparkles>;
 
-const auditItems = [
-  { section: "activity", label: "Activity", icon: Activity },
-  { section: "runs", label: "Runs", icon: PlayCircle },
-  { section: "costs", label: "Costs", icon: ReceiptText },
-  { section: "budgets", label: "Budgets", icon: BadgeDollarSign },
-] as const;
-
-export function AgentContextualSidebar({
-  agentRef,
-  agentId,
-  agentName,
-  labels = { secrets: "Secrets & variables" },
-}: {
+interface AgentContextualNavigationProps {
   agentRef: string;
   agentId?: string;
   agentName?: string;
   labels?: Partial<Record<AgentLocalDetailView, string>>;
-}) {
+}
+
+function useAgentContextualNavigation({
+  agentRef,
+  agentId,
+  agentName,
+  labels,
+}: AgentContextualNavigationProps) {
   const { selectedCompanyId } = useCompany();
   const shouldResolveAgent = !agentId || !agentName;
   const { data: resolvedAgent } = useQuery({
@@ -69,8 +70,51 @@ export function AgentContextualSidebar({
     enabled: shouldResolveAgent && Boolean(agentRef && selectedCompanyId),
   });
   const resolvedId = agentId ?? resolvedAgent?.id;
-  const { slots: pluginTabs } = usePluginSlots({ slotTypes: ["detailTab"], entityType: "agent", companyId: resolvedAgent?.companyId ?? selectedCompanyId, enabled: Boolean(resolvedId) });
+  const { slots: declaredTabs } = usePluginSlots({
+    slotTypes: ["detailTab"],
+    entityType: "agent",
+    companyId: resolvedAgent?.companyId ?? selectedCompanyId,
+    enabled: Boolean(resolvedId),
+  });
+  const { slots: pluginTabs } = useAgentEnvironmentSlots(
+    declaredTabs,
+    resolvedId,
+    resolvedAgent?.companyId ?? selectedCompanyId,
+  );
   const resolvedName = agentName ?? resolvedAgent?.name ?? "Agent";
+
+  const groups = useMemo<MobileContextualNavGroup[]>(() => {
+    const result: MobileContextualNavGroup[] = [];
+    for (const section of AGENT_DETAIL_NAVIGATION) {
+      if (section.label === "Audit" && pluginTabs.length > 0) {
+        result.push({
+          key: "Apps",
+          items: pluginTabs.map((slot) => ({
+            key: `plugin:${slot.pluginKey}:${slot.id}`,
+            to: `/agents/${encodeURIComponent(agentRef)}/${encodeURIComponent(`plugin:${slot.pluginKey}:${slot.id}`)}`,
+            label: slot.displayName,
+            icon: Wrench,
+          })),
+        });
+      }
+      result.push({
+        key: section.label,
+        items: section.items.map((item) => ({
+          key: item.value,
+          to: agentDetailHref(agentRef, item.value),
+          label: labels?.[item.value] ?? item.label,
+          icon: localIcons[item.value],
+        })),
+      });
+    }
+    return result;
+  }, [agentRef, labels, pluginTabs]);
+
+  return { resolvedName, groups };
+}
+
+export function AgentContextualSidebar(props: AgentContextualNavigationProps) {
+  const { resolvedName, groups } = useAgentContextualNavigation(props);
 
   return (
     <ContextualSidebarFrame
@@ -85,62 +129,36 @@ export function AgentContextualSidebar({
         data-slot="contextual-sidebar-nav"
         className={contextualSidebarStyles.nav}
       >
-        {AGENT_DETAIL_NAVIGATION.map((section) => (
-          <div
-            key={section.label}
-            data-slot="contextual-sidebar-section"
-            className={contextualSidebarStyles.section}
-          >
-            <p
-              data-slot="contextual-sidebar-section-label"
-              className={contextualSidebarStyles.sectionLabel}
-            >
-              {section.label}
+        {groups.map((section) => (
+          <div key={section.key} data-slot="contextual-sidebar-section" className={contextualSidebarStyles.section}>
+            <p data-slot="contextual-sidebar-section-label" className={contextualSidebarStyles.sectionLabel}>
+              {section.key}
             </p>
             <div data-slot="contextual-sidebar-group" className={contextualSidebarStyles.group}>
-              {section.items
-                .map((item) => {
-                  const href = agentDetailHref(agentRef, item.value);
-                  return (
-                    <SidebarNavItem
-                      key={item.value}
-                      to={href}
-                      label={labels?.[item.value] ?? item.label}
-                      icon={localIcons[item.value]}
-                    />
-                  );
-                })}
+              {section.items.map((item) => (
+                <SidebarNavItem
+                  key={item.key}
+                  to={item.to}
+                  label={item.label}
+                  icon={item.icon ?? Wrench}
+                />
+              ))}
             </div>
           </div>
         ))}
-
-        {pluginTabs.length > 0 && <div data-slot="contextual-sidebar-section" className={contextualSidebarStyles.section}>
-          <p className={contextualSidebarStyles.sectionLabel}>Apps</p>
-          <div className={contextualSidebarStyles.group}>
-            {pluginTabs.map(slot => <SidebarNavItem key={`${slot.pluginKey}:${slot.id}`} to={`/agents/${encodeURIComponent(agentRef)}/${encodeURIComponent(`plugin:${slot.pluginKey}:${slot.id}`)}`} label={slot.displayName} icon={Wrench} />)}
-          </div>
-        </div>}
-        <div data-slot="contextual-sidebar-section" className={contextualSidebarStyles.section}>
-          <p
-            data-slot="contextual-sidebar-section-label"
-            className={contextualSidebarStyles.sectionLabel}
-          >
-            Audit
-          </p>
-          <div data-slot="contextual-sidebar-group" className={contextualSidebarStyles.group}>
-            {resolvedId ? auditItems.map((item) => (
-              <SidebarNavItem
-                key={item.section}
-                to={agentScopedAuditHref(resolvedId, item.section)}
-                label={item.label}
-                icon={item.icon}
-              />
-            )) : (
-              <p className="px-2 py-1.5 text-xs text-muted-foreground">Loading audit links…</p>
-            )}
-          </div>
-        </div>
       </nav>
     </ContextualSidebarFrame>
+  );
+}
+
+export function AgentContextualMobileNav(props: AgentContextualNavigationProps) {
+  const { resolvedName, groups } = useAgentContextualNavigation(props);
+
+  return (
+    <MobileContextualNav
+      surface="agent"
+      ariaLabel={`${resolvedName} navigation`}
+      groups={groups}
+    />
   );
 }

@@ -1,9 +1,10 @@
 import { isAlias, parseDocument, stringify, visit } from "yaml";
 import {
-  agentConfigurationDocumentSchema,
+  agentConfigurationInputSchema,
   agentConfigurationSpec,
   canonicalAgentConfiguration,
   type AgentConfigurationDocument,
+  type AgentConfigurationInput,
   type AgentConfigurationSource,
 } from "@paperclipai/shared";
 
@@ -11,7 +12,7 @@ export function serializeAgentConfiguration(agent: AgentConfigurationSource): st
   return serializeAgentConfigurationDocument({ apiVersion: "paperclip/v1", kind: "Agent", spec: agentConfigurationSpec(agent) } as AgentConfigurationDocument);
 }
 
-export function serializeAgentConfigurationDocument(document: AgentConfigurationDocument): string {
+export function serializeAgentConfigurationDocument(document: AgentConfigurationDocument | AgentConfigurationInput): string {
   return stringify(document, {
     lineWidth: 0, aliasDuplicateObjects: false,
   });
@@ -34,7 +35,7 @@ function assertJson(value: unknown, depth = 0): void {
   throw new Error("Configuration must contain only JSON-compatible values (no NaN or infinity).");
 }
 
-export function parseAgentConfigurationYaml(source: string): AgentConfigurationDocument {
+export function parseAgentConfigurationYaml(source: string): AgentConfigurationInput {
   if (source.length > 8 * 1024 * 1024 || new TextEncoder().encode(source).byteLength > 8 * 1024 * 1024) throw new Error("Configuration must be smaller than 8 MiB.");
   const document = parseDocument(source, { version: "1.2", schema: "core", uniqueKeys: true, stringKeys: true });
   const problem = document.errors[0] ?? document.warnings[0];
@@ -47,17 +48,18 @@ export function parseAgentConfigurationYaml(source: string): AgentConfigurationD
   });
   const value: unknown = document.toJS({ maxAliasCount: 0 });
   assertJson(value);
-  const parsed = agentConfigurationDocumentSchema.safeParse(value);
+  const parsed = agentConfigurationInputSchema.safeParse(value);
   if (!parsed.success) {
     throw new Error(parsed.error.issues.map(issue => `${issue.path.join(".") || "document"}: ${issue.message}`).join("\n"));
   }
   return parsed.data;
 }
 
-export function agentConfigurationPatch(document: AgentConfigurationDocument, saved: AgentConfigurationSource) {
+export function agentConfigurationPatch(document: AgentConfigurationInput, saved: AgentConfigurationSource) {
   const before = agentConfigurationSpec(saved);
   const patch: Record<string, unknown> = {};
   for (const key of Object.keys(before) as Array<keyof typeof before>) {
+    if (!Object.hasOwn(document.spec, key)) continue;
     const value = document.spec[key];
     if (canonicalAgentConfiguration(value) !== canonicalAgentConfiguration(before[key as keyof typeof before])) {
       patch[key] = value;

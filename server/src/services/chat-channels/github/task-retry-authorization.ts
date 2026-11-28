@@ -116,10 +116,12 @@ type GitHubRetryBinding = {
 
 export function createGitHubTaskRetryBatchAuthority<T extends GitHubRetryBinding>(authorize: (
   tx: DbOrTransaction, action: typeof chatActions.$inferSelect,
-  notice: { nonblocking: true; terminal: boolean; taskRetry: TaskRetryWakeAuthority },
+  notice: { nonblocking: true; terminal: boolean; taskRetry: TaskRetryWakeAuthority;
+    onEndpointContention?: () => never },
 ) => Promise<T>) {
   async function authorizeGitHubTaskRetryBatch(tx: DbOrTransaction, actions: Array<typeof chatActions.$inferSelect>,
-    notice: { nonblocking: true; terminal: boolean; taskRetry: TaskRetryWakeAuthority }) {
+    notice: { nonblocking: true; terminal: boolean; taskRetry: TaskRetryWakeAuthority;
+      onEndpointContention?: () => never }) {
     const deny = chatWakeAuthorityDenied;
     const first = actions[0];
     if (!first) throw deny("batch_scope");

@@ -20,8 +20,12 @@ import {
   Loader2,
   MessageSquareQuote,
   Plug,
+  Repeat,
+  LayoutList,
   Search,
+  Target,
   X,
+  Zap,
 } from "lucide-react";
 import type { IssueDocument } from "@paperclipai/shared";
 import type {
@@ -30,7 +34,12 @@ import type {
 } from "@paperclipai/adapter-utils";
 import { InteractionPreparationNotice } from "@/components/InteractionPreparationNotice";
 import { IssueThreadInteractionCard } from "@/components/IssueThreadInteractionCard";
+import { ToolActionAuditHashCopy } from "@/components/ToolActionAuditHashCopy";
 import { ConnectionIntentInteractionBody } from "@/features/connections/ConnectionIntentInteractionBody";
+import { RoutineSuggestionCard } from "@/components/RoutineSuggestionCard";
+import { BarProposalCard } from "@/components/responsibilities/BarProposalCard";
+import { AutomationProposalCard } from "@/components/responsibilities/AutomationProposalCard";
+import { DashboardChangesCard } from "@/components/responsibilities/DashboardChangesCard";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import type { MentionOption } from "@/components/MarkdownEditor";
 import { Button } from "@/components/ui/button";
@@ -60,6 +69,7 @@ import {
   type SuggestTasksInteraction,
   type SuggestedTaskTreeNode,
 } from "@/lib/issue-thread-interactions";
+import { claimReviseDraftWork, clearReviseDraft, getReviseDraft, releaseReviseDraftWork, reviseDraftKey, updateReviseDraft, useReviseDraft } from "@/lib/revise-draft-store";
 import { cn } from "@/lib/utils";
 import { QuestionForm } from "./QuestionForm";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
@@ -74,6 +84,7 @@ import {
 } from "./TaskChatComposerTakeoverContext";
 import { TaskChatPlanPreviewCard } from "./TaskChatPlanPreviewCard";
 import { TaskChatRichInput } from "./TaskChatRichInput";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 const TAKEOVER_TEXTAREA_CLASS =
   "min-h-16 resize-y border-0 bg-muted/35 text-sm shadow-none focus-visible:ring-0 focus-visible:ring-offset-0";
@@ -122,6 +133,26 @@ const KIND_COPY = {
     fallbackTitle: "Connect service",
     label: "Connection",
     icon: Plug,
+  },
+  suggest_routine: {
+    fallbackTitle: "Routine offer",
+    label: "Routine",
+    icon: Repeat,
+  },
+  propose_responsibility_bar: {
+    fallbackTitle: "Proposed bar",
+    label: "Bar",
+    icon: Target,
+  },
+  propose_automation: {
+    fallbackTitle: "Proposed automation",
+    label: "Automation",
+    icon: Zap,
+  },
+  propose_dashboard_changes: {
+    fallbackTitle: "Proposed dashboard changes",
+    label: "Dashboard",
+    icon: LayoutList,
   },
 } as const;
 
@@ -305,7 +336,13 @@ function CompactTarget({
   if (!target || !label) return null;
   const href = target.type === "issue_attachment"
     ? `/api/attachments/${encodeURIComponent(target.attachmentId)}/content`
-    : target.href ? normalizeRequestConfirmationTargetHref(target.href) : null;
+    : target.href ? normalizeRequestConfirmationTargetHref(target.href)
+      // A document on this chat opens in its document panel, like a reply's
+      // `#document-<key>` link, so the person can read what they are asked to review.
+      // Plan reviews keep their header chip; their plan preview opens the plan.
+      : target.type === "issue_document" && target.key !== "plan" && (target.issueId ?? interaction.issueId) === interaction.issueId
+        ? `#document-${encodeURIComponent(target.key)}`
+        : null;
   if (href) {
     return (
       <a
@@ -359,6 +396,17 @@ function PlanReviewPreview({
       ariaLabel={`Open ${target.label ?? (targetRevision == null ? "plan" : `plan revision ${targetRevision}`)}`}
     />
   );
+}
+
+/** Plan approvals read as decisions on a named plan revision, not a generic confirmation. */
+function planReviewReceiptSummary(interaction: IssueThreadInteraction, reason: string | null): string | null {
+  if (interaction.kind !== "request_confirmation") return null;
+  const target = interaction.payload.target;
+  if (target?.type !== "issue_document" || target.key !== "plan") return null;
+  const plan = target.revisionNumber == null ? "the plan" : `Plan v${target.revisionNumber}`;
+  if (interaction.status === "accepted") return `Approved ${plan}`;
+  if (interaction.status === "rejected") return reason ? `Requested changes to ${plan}: ${reason}` : `Requested changes to ${plan}`;
+  return null;
 }
 
 function receiptReason(interaction: IssueThreadInteraction): string | null {
@@ -441,7 +489,9 @@ function ReceiptDisclosure({
       .map((option) => option.label);
     request = (
       <div>
-        <p className="text-sm text-foreground">{interaction.payload.prompt}</p>
+        <MarkdownBody className="text-sm text-foreground" externalReferences={externalReferences} mediaMode="reference">
+          {interaction.payload.prompt}
+        </MarkdownBody>
         {interaction.status === "accepted" ? (
           <p className="mt-1 text-sm font-medium text-foreground">
             Answer:{" "}
@@ -527,10 +577,36 @@ function ReceiptDisclosure({
         {interaction.payload.serviceName}.
       </p>
     );
+  } else if (interaction.kind === "suggest_routine") {
+    request = (
+      <p className="text-sm text-foreground">
+        Repeat {interaction.payload.title}: {interaction.payload.cadenceLabel}.
+      </p>
+    );
+  } else if (interaction.kind === "propose_responsibility_bar") {
+    request = (
+      <p className="text-sm text-foreground">
+        {interaction.payload.bar.standard} ({interaction.payload.templateLabel}: {interaction.payload.targetLabel}).
+      </p>
+    );
+  } else if (interaction.kind === "propose_automation") {
+    request = (
+      <p className="text-sm text-foreground">
+        {interaction.payload.title}: {interaction.payload.startLabel}.
+      </p>
+    );
+  } else if (interaction.kind === "propose_dashboard_changes") {
+    request = (
+      <p className="text-sm text-foreground">
+        {interaction.payload.message ?? (interaction.payload.changes.length === 1 ? "1 change to the dashboard." : `${interaction.payload.changes.length} changes to the dashboard.`)}
+      </p>
+    );
   } else {
     request = (
       <div className="grid gap-2">
-        <p className="text-sm text-foreground">{interaction.payload.prompt}</p>
+        <MarkdownBody className="text-sm text-foreground" externalReferences={externalReferences} mediaMode="reference">
+          {interaction.payload.prompt}
+        </MarkdownBody>
         {interaction.payload.detailsMarkdown ? (
           <div className="text-sm">
             <MarkdownBody externalReferences={externalReferences}>
@@ -544,23 +620,21 @@ function ReceiptDisclosure({
               <strong>{interaction.payload.toolAction.toolDisplayName}</strong>{" "}
               · {interaction.payload.toolAction.risk} risk
             </p>
-            <p className="mt-1">
+            {interaction.payload.toolAction.expiresAt ? <p className="mt-1">
               Expires{" "}
               {new Date(
                 interaction.payload.toolAction.expiresAt,
               ).toLocaleString()}
-            </p>
+            </p> : null}
             <div className="mt-2">
               <MarkdownBody externalReferences={externalReferences}>
                 {interaction.payload.toolAction.previewMarkdown}
               </MarkdownBody>
             </div>
-            <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-xs">
+            <pre className={cn("mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-xs", ANALYTICS_MASK_CLASS)}>
               {interaction.payload.toolAction.argumentsSummaryJson}
             </pre>
-            <p className="mt-1 break-all font-mono text-xs text-muted-foreground">
-              {interaction.payload.toolAction.argumentsHash}
-            </p>
+            <ToolActionAuditHashCopy hash={interaction.payload.toolAction.argumentsHash} />
           </div>
         ) : null}
         {interaction.payload.secretProposal ? (
@@ -617,7 +691,8 @@ function ReceiptDisclosure({
       interaction.kind === "ask_user_questions" &&
       interaction.status === "answered"
         ? "Questions answered"
-        : buildIssueThreadInteractionSummary(interaction);
+        : planReviewReceiptSummary(interaction, answerReason)
+          ?? buildIssueThreadInteractionSummary(interaction);
     return (
       <details
         className="group"
@@ -828,24 +903,35 @@ function ConfirmationCard({
   mentions?: MentionOption[];
 }) {
   const preparingApproval = isInteractionPreparingApproval(interaction);
-  const [rejecting, setRejecting] = useState(false);
-  const [reason, setReason] = useState(() =>
-    draftKey ? loadStructuredDraft(draftKey, "") : "",
-  );
-  const [working, setWorking] = useState<"accept" | "reject" | null>(null);
+  const target = interaction.payload.target;
+  const sharedKey = reviseDraftKey(interaction.id, target?.type === "issue_document" ? target.revisionId : null);
+  const [draft, updateDraft] = useReviseDraft(sharedKey);
+  const { revising: rejecting, reason, working } = draft;
+  const setRejecting = (revising: boolean) => revising ? updateDraft({ revising }) : clearReviseDraft(sharedKey);
+  const setReason = (value: string) => updateDraft({ reason: value });
   const [actionError, setActionError] = useState<string | null>(null);
   const [revisionUploading, setRevisionUploading] = useState(false);
+  const isPlanConfirmation =
+    interaction.payload.target?.type === "issue_document" &&
+    interaction.payload.target.key === "plan";
   const collectsRejectReason = Boolean(
+    isPlanConfirmation ||
     interaction.payload.rejectRequiresReason ||
     interaction.payload.allowDeclineReason ||
     interaction.payload.declineReasonPlaceholder,
   );
-  const isPlanConfirmation =
-    interaction.payload.target?.type === "issue_document" &&
-    interaction.payload.target.key === "plan";
   useEffect(() => {
-    if (draftKey) saveStructuredDraft(draftKey, reason);
-  }, [draftKey, reason]);
+    if (!draftKey) return;
+    const legacyReason = loadStructuredDraft(draftKey, "");
+    const current = getReviseDraft(sharedKey);
+    if (legacyReason && !current.reason && !current.revising && !current.working) {
+      updateReviseDraft(sharedKey, { reason: legacyReason, revising: true });
+    }
+    clearDraft(draftKey);
+  }, [draftKey, sharedKey]);
+  useEffect(() => {
+    if (interaction.status !== "pending") clearReviseDraft(sharedKey);
+  }, [interaction.status, sharedKey]);
   async function resolve(action: "accept" | "reject") {
     if (
       action === "reject" &&
@@ -853,16 +939,17 @@ function ConfirmationCard({
       !reason.trim()
     )
       return;
-    setWorking(action);
+    if (!claimReviseDraftWork(sharedKey, action)) return;
     setActionError(null);
     try {
       if (action === "accept") await onAcceptInteraction?.(interaction);
       else await onRejectInteraction?.(interaction, reason.trim() || undefined);
       if (draftKey) clearDraft(draftKey);
+      clearReviseDraft(sharedKey);
     } catch (error) {
       setActionError(errorMessage(error));
     } finally {
-      setWorking(null);
+      releaseReviseDraftWork(sharedKey);
     }
   }
 
@@ -875,11 +962,11 @@ function ConfirmationCard({
         />
       ) : isPlanConfirmation && rejecting ? null : (
         <div className="space-y-2">
-          <p className="whitespace-pre-line break-words text-sm leading-5 text-foreground">
+          <MarkdownBody className="text-sm leading-5 text-foreground" externalReferences={externalReferences} mediaMode="reference">
             {isPlanConfirmation
               ? "Do you accept this plan?"
               : interaction.payload.prompt}
-          </p>
+          </MarkdownBody>
           {!isPlanConfirmation ? (
             <CompactTarget interaction={interaction} />
           ) : null}
@@ -906,26 +993,24 @@ function ConfirmationCard({
             >
               {interaction.payload.toolAction.risk} risk
             </span>
-            <span className="ml-auto text-xs text-muted-foreground">
+            {interaction.payload.toolAction.expiresAt ? <span className="ml-auto text-xs text-muted-foreground">
               Expires{" "}
               {new Date(
                 interaction.payload.toolAction.expiresAt,
               ).toLocaleString()}
-            </span>
+            </span> : null}
           </div>
           <MarkdownBody externalReferences={externalReferences}>
             {interaction.payload.toolAction.previewMarkdown}
           </MarkdownBody>
           <details>
             <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
-              Arguments and audit hash
+              Arguments
             </summary>
-            <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-xs text-foreground">
+            <pre className={cn("mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-xs text-foreground", ANALYTICS_MASK_CLASS)}>
               {interaction.payload.toolAction.argumentsSummaryJson}
             </pre>
-            <p className="mt-1 break-all font-mono text-xs text-muted-foreground">
-              {interaction.payload.toolAction.argumentsHash}
-            </p>
+            <ToolActionAuditHashCopy hash={interaction.payload.toolAction.argumentsHash} />
           </details>
         </div>
       ) : null}
@@ -1165,15 +1250,17 @@ function CheckboxConfirmationCard({
   return (
     <div>
       <div className="space-y-2">
-        <p className="whitespace-pre-line break-words text-sm leading-5 text-foreground">
-          {interaction.payload.prompt}
-        </p>
+        <div id={`${interaction.id}-prompt`}>
+          <MarkdownBody className="text-sm leading-5 text-foreground" externalReferences={externalReferences} mediaMode="reference">
+            {interaction.payload.prompt}
+          </MarkdownBody>
+        </div>
         <CompactTarget interaction={interaction} />
       </div>
       <div
         className="mt-3 grid gap-1"
         role="group"
-        aria-label={interaction.payload.prompt}
+        aria-labelledby={`${interaction.id}-prompt`}
       >
         {interaction.payload.options.length > 10 ? (
           <label className="relative mb-1 block">
@@ -1961,6 +2048,20 @@ export function TaskChatCompactInteractionCard({
     && interaction.kind !== "request_item_verdicts"
     && !(interaction.kind === "request_confirmation" && (interaction.payload.toolAction || interaction.payload.secretProposal || interaction.payload.connectionAuthorization))) {
     return <CoordinatorInteractionReceipt interaction={interaction} />;
+  }
+
+  if (interaction.kind === "suggest_routine") {
+    return <RoutineSuggestionCard interaction={interaction} />;
+  }
+
+  if (interaction.kind === "propose_responsibility_bar") {
+    return <BarProposalCard interaction={interaction} />;
+  }
+  if (interaction.kind === "propose_automation") {
+    return <AutomationProposalCard interaction={interaction} />;
+  }
+  if (interaction.kind === "propose_dashboard_changes") {
+    return <DashboardChangesCard interaction={interaction} />;
   }
 
   if (interaction.kind === "connection_intent") {

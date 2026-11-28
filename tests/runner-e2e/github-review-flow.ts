@@ -19,8 +19,6 @@ export async function runGitHubReviewFlow(input: {
   authenticateRegistration?(page: Page): Promise<void>;
 }) {
   const { page, github, api, config, resources, evidence } = input;
-  const capabilities = await api.get('/api/instance/settings/experimental');
-  if (capabilities.enableGitHubReviewBots !== true) throw new ConnectionBlock("blocked_target", "github_review_capability_unavailable");
   const company = await api.get(`/api/companies/${config.target.companyId}`);
   const agent = await api.get(`/api/agents/${config.agent.id}`);
   if (company.id !== config.target.companyId || agent.companyId !== company.id || agent.name !== config.agent.name || !["idle", "running"].includes(agent.status)) throw new ConnectionBlock("blocked_target", "configured_review_agent_unavailable");
@@ -42,7 +40,7 @@ export async function runGitHubReviewFlow(input: {
   await enterGitHubJourneyCompany(page, api.origin, company);
   await input.checkpoint("agent", page);
   await input.phase("connector_navigation");
-  await page.getByRole("link", { name: "Connectors", exact: true }).click();
+  await page.getByRole("link", { name: "Plugins", exact: true }).click();
   const botCard = page.getByRole("listitem").filter({ has: page.getByRole("heading", { name: "GitHub Code Review Bot", exact: true }) });
   await botCard.getByRole("button", { name: /^(?:Connect|Add connection) GitHub Code Review Bot$/ }).click();
   await page.getByRole("button", { name: /Select agent/ }).click();
