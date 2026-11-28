@@ -65,6 +65,7 @@ export function assertHarnessTestPassed(result: AdapterEnvironmentTestResult) {
       : has("_cwd_invalid") ? "harness_cwd_invalid"
       : has("_hello_probe_timed_out") ? "harness_probe_timed_out"
       : has("_hello_probe_unexpected_output") ? "harness_probe_unexpected_output"
+      : result.adapterType === "claude_local" && !verified && result.checks.some(check => check.code === "claude_hello_probe_skipped_custom_command") ? "harness_custom_command_unverified"
       : "harness_test_failed";
     throw Object.assign(new Error("The harness test failed"), { code });
   }

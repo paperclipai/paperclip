@@ -24,6 +24,10 @@ describe("saved harness verification", () => {
       expect(error).toMatchObject({ code, message: "The harness test failed" });
     }
   });
+  it("identifies a skipped custom Claude command probe as a configuration failure", () => {
+    const skipped = { ...result("pass", ["claude_hello_probe_skipped_custom_command"]), adapterType: "claude_local" };
+    expect(() => assertHarnessTestPassed(skipped)).toThrow(expect.objectContaining({ code: "harness_custom_command_unverified" }));
+  });
   it("classifies a plugin Runner-task target without a managed AI connection before retryable checks", () => {
     const refused = result("fail", ["ai_connection_required", "opencode_cwd_invalid"]);
     refused.checks[1] = { ...refused.checks[1], level: "error", retryable: true };
