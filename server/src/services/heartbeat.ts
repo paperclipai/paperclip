@@ -48,6 +48,7 @@ import { hasStoppedLocalProcessTree, legacyAdapterNeedsLocalProcessSettlement } 
 import { dotRunnerBroker } from "./dot-runner-broker.js";
 import { withRunExecutionTiming, measureRunPhase, measureWorkspaceSyncPhase, isWorkspaceSyncDetailPhase } from "./execution-preparation-timing.js";
 import { createHeartbeatPreparationTiming } from "./heartbeat/preparation-timing.js";
+import { beginRunStartupStages, endRunStartup, finishRunStartupStages } from "./run-startup-stage.js";
 import { createHeartbeatInstructionCopyRelease, createHeartbeatInstructionWorkingCopy } from "./heartbeat/instruction-working-copy.js";
 import { AgentDirectoryPreparationDeferral, deferRunForBusyAgentDirectory, prepareWithAgentDirectoryDeferral, REATTACH_AGENT_DIRECTORY_WAIT_MS } from "./heartbeat/agent-directory-busy.js";
 import { preparePredecessorRetirementFallback } from "./heartbeat/predecessor-retirement-fallback.js";
@@ -2129,6 +2130,10 @@ export function heartbeatService(
     if (run.runtimeMode === "legacy" && run.controllerBootId &&
         run.controllerBootId !== legacyControllerBootId) return;
     activeRunExecutions.add(run.id);
+    try {
+      beginRunStartupStages({ id: run.id, companyId: run.companyId, agentId: run.agentId,
+        issueId: run.issueId ?? (typeof run.contextSnapshot?.issueId === "string" ? run.contextSnapshot.issueId : null) });
+    } catch (error) { logger.warn({ runId: run.id, error }, "Could not start run startup status"); }
     const timePreparation = createHeartbeatPreparationTiming(run.id);
     const executionControl = createAdapterExecutionControl();
     endStorageOutageWaitOn(executionControl.controller.signal);
@@ -3834,6 +3839,8 @@ export function heartbeatService(
             onNativeDispatchStarted: () => { nativeDispatchStarted = true; },
             onLegacyAdapterEntered: () => {
               legacyAdapterEntered = true;
+              // A direct adapter reports its own progress from here on.
+              try { endRunStartup(run.id); } catch { /* Status display never blocks dispatch. */ }
               legacyLocalAdapterEntered = legacyAdapterNeedsLocalProcessSettlement({
                 adapterType: adapter.type, executionTargetKind: executionTarget?.kind,
               });
@@ -4397,6 +4404,7 @@ export function heartbeatService(
       } finally {
         controllerLease.stop();
         activeRunExecutions.delete(run.id);
+        try { finishRunStartupStages(run.id); } catch { /* Status display never blocks settlement. */ }
         heartbeatQueue.releaseClaimBackoffsForTask(run);
         if (restartClaimLapsed || detachedWithoutHandoff) scheduleNativeSessionResumeDispatch(run.id, new Date(), "restart");
         // A failed owned Stop remains visible until this exact executor settles,

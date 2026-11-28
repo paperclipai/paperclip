@@ -13,6 +13,8 @@ import { skillVersionCachePaths, withSkillVersionCacheLock } from "../services/s
 import { registerServerAdapter, unregisterServerAdapter, type AdapterExecutionContext } from "../adapters/index.js";
 import { HttpError } from "../errors.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { subscribeCompanyLiveEvents } from "../services/live-events.js";
+import { getRunStartupStage } from "../services/run-startup-stage.js";
 import { bindHeartbeatRunnerHomeMode, prepareHeartbeatExecutionConfiguration, type HeartbeatExecutionConfigurationInput } from "../services/heartbeat/execution-configuration.js";
 import { buildEffectiveRunSessionConfigMetadata, resolveTaskSessionConfigFreshness } from "../services/heartbeat/workspaces.js";
 import { aiConnectionBindingSchema, type Environment } from "@paperclipai/shared";
@@ -202,6 +204,30 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     expect(finished).toBeDefined();
     return { finished, input: captured.get(run!.id) };
   }
+
+  it("ends a direct adapter's startup stage when the adapter takes over", async () => {
+    const f = await seed();
+    const stagesByRun = new Map<unknown, unknown[]>();
+    const unsubscribe = subscribeCompanyLiveEvents(f.companyId, event => {
+      if (event.type !== "heartbeat.run.startup_stage") return;
+      stagesByRun.set(event.payload.runId, [...stagesByRun.get(event.payload.runId) ?? [], event.payload.stage]);
+    });
+    let duringExecution: ReturnType<typeof getRunStartupStage> | undefined;
+    inspect.set(f.agentId, async input => { duringExecution = getRunStartupStage(input.runId); });
+    try {
+      await execute(f);
+    } finally {
+      unsubscribe();
+      inspect.delete(f.agentId);
+    }
+    // The adapter reports its own progress, so no startup stage covers its work.
+    expect(duringExecution).toEqual({ stage: null, sessionResumed: false });
+    // Each run (the wake and any follow-up it starts) moves forward once.
+    expect(stagesByRun.size).toBeGreaterThan(0);
+    for (const stages of stagesByRun.values()) {
+      expect(stages).toEqual(["getting_ready", "starting_environment", "preparing_workspace", null]);
+    }
+  });
 
   it.each([
     { saved: "isolated", managed: true, failure: "saved managed login required" },

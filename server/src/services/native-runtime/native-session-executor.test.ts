@@ -22,6 +22,7 @@ import { trace } from "@opentelemetry/api";
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
 import { configuredEnvironment, configuredEnvironmentProjection } from "../../vendor/paperclip-runner/index.js";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { beginRunStartupStages, finishRunStartupStages, getRunStartupStage } from "../run-startup-stage.js";
 import { TOOL_CALL_LOOP_REFUSAL_LIMIT, ToolCallLoopError, toolCallLoopContinuationKey } from "./repeated-tool-failure-guard.js";
 import { enableReattachPhase, isReattachPhaseActive, joinReattachPhase, onReattachPhaseEnd, resetReattachPhaseForTests, type ReattachPhaseSummary } from "../heartbeat/run-admission.js";
 import { createSystemRecovery, failSystemRecovery, reserveSystemRecoveryAttempt, SystemRecoveryFailure } from "../system-recovery-state.js";
@@ -10451,6 +10452,37 @@ describe("native terminal-turn accounting", () => {
       expect(onUsage).toHaveBeenLastCalledWith(expect.objectContaining({ complete: scenario.startsWith("turn."), costUsd: 0.25, usageBasis: "per_run", usage: { inputTokens: 20, cachedInputTokens: 100, outputTokens: 10 } }));
       expect(onUsage.mock.calls[0]?.[0]).toMatchObject({ complete: false });
     }
+  });
+});
+
+describe("native startup stage after a restart", () => {
+  it.each(["a replayed turn start", "new agent output"] as const)("ends startup when a reattached run sees %s", async (mode) => {
+    const runId = execution.binding.runId;
+    const event = (eventType: string, payload: Record<string, unknown>) => ({
+      eventType, payload, itemId: "message", emittedAt: new Date().toISOString(),
+    }) as PrpEvent;
+    beginRunStartupStages({ id: runId, companyId: execution.binding.companyId, agentId: execution.binding.agentId, issueId: null });
+    let before: unknown, after: unknown;
+    state.execute.mockReset().mockImplementationOnce(async () => {
+      before = getRunStartupStage(runId)?.stage;
+      // The turn's start was saved before the restart, so this attempt sees it
+      // only as duplicates; new output arrives with no turn.started of its own.
+      if (mode === "a replayed turn start") {
+        await accountingEvents.duplicate!(event("turn.submitted", {}));
+        await accountingEvents.duplicate!(event("turn.started", {}));
+      } else {
+        await accountingEvents.committed!(event("item.delta", { kind: "agentMessage", text: "resumed text" }));
+      }
+      after = getRunStartupStage(runId);
+      return { result: { summary: "cancelled" }, terminal: { runTerminalState: "cancelled" },
+        turnId: "turn", normalizedSessionId: "session", providerSessionId: null,
+        driverKind: "test", driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1 };
+    });
+    try {
+      await executePaperclipNativeSession({ db: leaseDb(), execution, runnerInstanceId: "runner", onEvent: async () => {} });
+    } finally { finishRunStartupStages(runId); }
+    expect(before).not.toBeNull();
+    expect(after).toEqual({ stage: null, sessionResumed: false });
   });
 });
 

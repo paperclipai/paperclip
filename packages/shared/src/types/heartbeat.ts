@@ -4,6 +4,7 @@ import type {
   HeartbeatInvocationSource,
   HeartbeatRunStatus,
   RunLivenessState,
+  RunStartupStage,
   WakeupTriggerDetail,
   WakeupRequestStatus,
 } from "../constants.js";
@@ -242,6 +243,25 @@ export interface HeartbeatRun {
   currentToolName?: string | null;
   lastAssistantSnippet?: string | null;
   lastEventAt?: Date | string | null;
+  /**
+   * Ephemeral, process-local startup step of an active run that has not yet
+   * started its agent turn. Like `currentStatusMessage`, it is never persisted
+   * and is null once the turn starts, the run ends, or the server restarts.
+   */
+  startupStage?: RunStartupStage | null;
+  /** True once the provider confirmed it resumed a saved session for this run. */
+  startupSessionResumed?: boolean;
+}
+
+/** Payload of the `heartbeat.run.startup_stage` live event. */
+export interface HeartbeatRunStartupStageEvent {
+  runId: string;
+  agentId: string;
+  issueId: string | null;
+  /** Null once the agent's turn has started or the run ended. */
+  stage: RunStartupStage | null;
+  sessionResumed: boolean;
+  updatedAt: string;
 }
 
 /**
