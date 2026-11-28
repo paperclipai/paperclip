@@ -163,7 +163,9 @@ function runProcessCommand(command: string, args: string[]) {
       args,
       {
         encoding: "utf8",
-        timeout: 1_500,
+        // Windows shell startup plus CIM can exceed 1.5s on an otherwise
+        // responsive host. Keep the identity probe bounded without dropping it.
+        timeout: process.platform === "win32" ? 5_000 : 1_500,
         windowsHide: true,
       },
       (error, stdout) => {
@@ -201,8 +203,13 @@ export async function readProcessStartedAt(
 
   if (platform === "win32") {
     const script = [
-      `$process = Get-Process -Id ${pid} -ErrorAction Stop`,
-      "$process.StartTime.ToUniversalTime().ToString('o')",
+      "$startedAt = $null",
+      `try { $startedAt = (Get-Process -Id ${pid} -ErrorAction Stop).StartTime } catch { }`,
+      // Protected processes can hide StartTime while CIM still exposes their
+      // creation time. This distinguishes a recycled PID without signaling it.
+      `if ($null -eq $startedAt) { $startedAt = (Get-CimInstance -ClassName Win32_Process -Filter 'ProcessId = ${pid}' -ErrorAction Stop).CreationDate }`,
+      "if ($null -eq $startedAt) { throw 'Process creation time is unavailable' }",
+      "$startedAt.ToUniversalTime().ToString('o')",
     ].join("; ");
     let stdout: string;
     try {

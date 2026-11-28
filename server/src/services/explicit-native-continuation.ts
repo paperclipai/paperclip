@@ -1,3 +1,4 @@
+import { preservedResultHasStop } from "./native-runtime/preserved-native-result-finalization.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
 import { nativeEffectiveRunTerminalStateSql, nativeEffectiveRunTerminalStateSqlText } from "./native-runtime/native-accepted-outcome.js";
 import { agentDirectoryPreparationWaitPredicate, isAgentDirectoryPreparationWait } from "./pre-dispatch-execution-evidence.js";
@@ -18,7 +19,7 @@ import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { canContinueCancelledRun, userStopBoundaryAt } from "./run-cancellation.js";
 import { readQueuedInteractionResponse } from "./queued-interaction-response.js";
 import { isCancelledNativeStartup, isFailedNativePreparation, isFailedNativePreparationRetryAncestor } from "./cancelled-native-startup.js";
-import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession, nativeGatedRunNeverLaunched, nativeRunNeverLaunched, recordedLocalExecutionStopped, recordUnidentifiedLocalRunnerStop } from "./native-local-process-stop.js";
+import { releaseSettledNativeRunProcess, hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession, nativeGatedRunNeverLaunched, nativeRunNeverLaunched, recordedLocalExecutionStopped, recordUnidentifiedLocalRunnerStop } from "./native-local-process-stop.js";
 import { completeTerminatedLocalNativeSessionCleanup, completeTerminatedRemoteNativeSessionCleanup, nativeSessionCleanupBlock } from "../vendor/paperclip-runner/index.js";
 import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt, remoteLeaseCleanupScope } from "./remote-execution-termination.js";
 import { z } from "zod";
@@ -355,11 +356,12 @@ export async function admitExplicitNativeContinuation(input: {
       eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, taskRetry.sourceRunId), eq(heartbeatRuns.agentId, agentId),
     )).for("update");
     if (!source || (source.nativeIssueId ?? source.issueId ?? source.contextSnapshot?.issueId) !== issueId
-      || adapterExecutionControls.has(source.id) ||
-      !(await isFailedNativePreparation(db, source, coordinator)
-        || source.errorCode === "adapter_failed" && await isFailedNativePreparationRetryAncestor(db, source, coordinator)
-        || await isPreDispatchExecutionWaitVerified(db, source))) return refused("previous_execution_unverified", PREVIOUS_EXECUTION_UNVERIFIED);
-    sourceChecks.push({ cause: "legacy_execution_requires_reconciliation", evidence: { runId: source.id } });
+      || adapterExecutionControls.has(source.id)) return refused("previous_execution_unverified", PREVIOUS_EXECUTION_UNVERIFIED);
+    const nativeFailure = Boolean(blocker) && source.runtimeMode === "native" && ["failed", "timed_out"].includes(source.status) && Boolean(source.finishedAt);
+    if (!nativeFailure && !(await isFailedNativePreparation(db, source, coordinator)
+      || source.errorCode === "adapter_failed" && await isFailedNativePreparationRetryAncestor(db, source, coordinator)
+      || await isPreDispatchExecutionWaitVerified(db, source))) return refused("previous_execution_unverified", PREVIOUS_EXECUTION_UNVERIFIED);
+    sourceChecks.push({ cause: nativeFailure ? "native_continuation_requires_reconciliation" : "legacy_execution_requires_reconciliation", evidence: { runId: source.id } });
   }
   if (!sourceChecks.length && !nativeQueuedSend) return null;
   if (blocker && blocker.recoveryActionId === null) return null;
@@ -396,6 +398,14 @@ export async function admitExplicitNativeContinuation(input: {
     if (!lockedRun || lockedRun.status !== run.status || lockedRun.agentId !== run.agentId ||
         lockedRun.finishedAt?.getTime() !== run.finishedAt.getTime()) return refused("execution_settling", "Waiting for the previous run to stop. Your message will start automatically.");
     run = lockedRun;
+    let continuityStopped = false;
+    if (run.errorCode === "native_session_continuity_unverified" || action.evidence.nativeContinuityRefusal === true) {
+      const { verifyUnstartedAttachmentForContinuation } = await import("./native-runtime/native-session-executor.js");
+      const proof = await verifyUnstartedAttachmentForContinuation(db, run);
+      if (!proof) return blocked("local_cleanup", "The saved session still needs verification. Your message is saved.");
+      stoppedSessions.push({ evidence: { ...proof.evidence, runId: run.id }, retire: proof.retire });
+      continuityStopped = true;
+    }
     // A user's message written after their Stop request is new direction even
     // when the stopped native run settled later.
     const stoppedAt = userStopBoundaryAt(run)!;
@@ -531,15 +541,17 @@ export async function admitExplicitNativeContinuation(input: {
     if (cancelledStartup) cancelledStartupIds.add(run.id);
     if (run.runtimeMode !== "native" && !unusedAdmission && !legacyUserTurn && !cancelledStartup) return refused("previous_execution_unverified", PREVIOUS_EXECUTION_UNVERIFIED);
     // A provider failure can finish the normal result/assessment commit path.
-    // Its accepted failed result is immutable history, not a live controller.
+    // A matching committed cancellation also remains history for a task Retry
+    // without a recorded Stop. Neither accepted result is a live controller.
     // Only a new user turn may pass this gate; the process/lease stop proofs
     // below remain mandatory and no previous action is automatically replayed.
-    const [committedFailure] = coordinator?.phase === "committed" && coordinator.resultId && run.status === "failed"
+    const committedCancelledRetry = Boolean(taskRetry && run.status === "cancelled" && !preservedResultHasStop(run.resultJson));
+    const [committedTerminalResult] = coordinator?.phase === "committed" && coordinator.resultId && (run.status === "failed" || committedCancelledRetry)
       ? await db.select({ id: nativeRunResults.id }).from(nativeRunResults).where(and(
           eq(nativeRunResults.companyId, companyId), eq(nativeRunResults.issueId, issueId),
           eq(nativeRunResults.runId, run.id), eq(nativeRunResults.id, coordinator.resultId),
           eq(nativeRunResults.schemaStatus, "accepted"),
-          sql`${nativeEffectiveRunTerminalStateSql(nativeRunResults.resultJson)} = 'failed'`,
+          sql`${nativeEffectiveRunTerminalStateSql(nativeRunResults.resultJson)} = ${run.status}`,
         )).limit(1)
       : [];
     // A terminal failure may retain a result accepted before checkpoint or
@@ -558,7 +570,7 @@ export async function admitExplicitNativeContinuation(input: {
     const preservedFailure = migratedSource?.issueId === issueId
       && migratedSource.unresolvedFinalization?.phase === coordinator?.phase;
     if (!cancelledStartup && coordinator && (
-        (coordinator.phase !== "terminal_failure" && !committedFailure && !preservedFailure) || coordinator.leaseOwner ||
+        (coordinator.phase !== "terminal_failure" && !committedTerminalResult && !preservedFailure) || coordinator.leaseOwner ||
         coordinator.failureDetail?.successorRunId)) return blocked("controller_settling",
           run.status === "cancelled" && !coordinator.leaseOwner
             ? "The cancelled run still needs verified cleanup. Your message is saved. Inspect the run and its environment for details."
@@ -583,6 +595,9 @@ export async function admitExplicitNativeContinuation(input: {
       if (!unusedAdmission && !cancelledStartup && !failedPreparation) {
         if (freshIntent && (run.processPid || run.processGroupId) && !await recordedLocalExecutionStopped(db, run))
           return blocked("process_identity_missing", "Paperclip is verifying that the previous session stopped.");
+        if (!input.dryRun && run.runtimeMode === "native" && !run.processPid && !run.processGroupId &&
+            !await hasNativeLocalProcessStop(db, companyId, run.id))
+          await releaseSettledNativeRunProcess(db, run.id);
         // A missing process identity is not evidence that a provider exited.
         // Remote HTTP gateway adapters (hermes_gateway) never spawn a local OS child process;
         // require a saved terminal response from the gateway before clearing the hold so an
@@ -608,16 +623,16 @@ export async function admitExplicitNativeContinuation(input: {
     // and its release wakes deferred execution; the held input then starts.
     const retainedCleanup = !remote && run.runtimeMode === "native"
       ? nativeSessionCleanupBlock({ companyId, issueId }) : null;
-    if (retainedCleanup === "pending" && run.errorCode !== "native_session_cleanup_quarantined")
+    if (!continuityStopped && retainedCleanup === "pending" && run.errorCode !== "native_session_cleanup_quarantined")
       return blocked("local_cleanup", "Waiting for the previous provider session to finish cleanup. Your message will start automatically.");
-    if (!remote && run.runtimeMode === "native" &&
+    if (!continuityStopped && !remote && run.runtimeMode === "native" &&
         (run.errorCode === "native_session_cleanup_quarantined" || retainedCleanup === "operator_required")) {
       // Never permission to resume the interrupted turn: new input and a
       // native Retry both start a fresh provider conversation, and only after
       // the old runner, provider and tools are proven stopped.
       const { verifyStoppedNativeSessionForContinuation, provenStoppedOwnNativeSession, retireStoppedSessionCleanupGates } =
         await import("./native-runtime/native-session-executor.js");
-      let stopped = await verifyStoppedNativeSessionForContinuation(db, run);
+      let stopped = await verifyStoppedNativeSessionForContinuation(db, run, { cleanup: input.dryRun !== true });
       // The run's own session (s9107 t04): its saved state may be past the
       // states the inventory proof reads, but its exact runner and every
       // provider process it recorded are durably proven stopped.

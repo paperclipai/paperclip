@@ -91,6 +91,25 @@ describe("board confirmation that an unrecorded owner stopped", () => {
     expect(await actionFor(issueId)).toMatchObject({ status: "active" });
   });
 
+  it("retains an authentication-blocked recovery action while its source run is held", async () => {
+    const { companyId, issueId, runId } = await seed();
+    await db.update(heartbeatRuns).set({ status: "running", runtimeMode: "native", nativePhase: "terminal_failure",
+      errorCode: "native_execution_ownership_unverified", contextSnapshot: { issueId } }).where(eq(heartbeatRuns.id, runId));
+    const [action] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId,
+      kind: "active_run_watchdog", status: "active", ownerType: "board",
+      cause: "native_adopted_runner_authentication_timeout", fingerprint: runId,
+      evidence: { runId }, nextAction: "Reconcile the stopped provider." }).returning();
+    await recoveryService(db, { enqueueWakeup: vi.fn() } as never).reconcileActiveRecoveryActions({ companyId });
+    const [saved] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action!.id));
+    expect(saved).toMatchObject({ status: "active" });
+    const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+    await db.insert(heartbeatRuns).values({ companyId, agentId: source!.agentId, issueId, status: "running",
+      invocationSource: "on_demand", contextSnapshot: { issueId } });
+    await recoveryService(db, { enqueueWakeup: vi.fn() } as never).reconcileActiveRecoveryActions({ companyId });
+    const [recovered] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action!.id));
+    expect(recovered).toMatchObject({ status: "resolved", resolutionNote: "new_source_execution_path" });
+  });
   it("closes the request without attesting when the lease was released another way", async () => {
     const { companyId, issueId, leaseId } = await seed();
     await pass();

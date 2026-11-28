@@ -77,6 +77,7 @@ import {
   PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
   ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
   requiresExecutionReconciliation,
+  isUuidLike,
   type IssueCommentMetadata,
   type IssueCommentPresentation,
 } from "@paperclipai/shared";
@@ -3781,6 +3782,20 @@ export function recoveryService(
       if (action.cause === OWNER_UNPROVABLE_CAUSE) {
         result.skipped += 1;
         continue;
+      }
+      // The held source is not a replacement execution. Keep its board action
+      // until ownership and the provider's side effects have been reconciled.
+      if (action.kind === "active_run_watchdog" && action.ownerType === "board") {
+        const sourceRunId = readNonEmptyString(parseObject(action.evidence).runId);
+        if (isUuidLike(sourceRunId)) {
+          const [sourceRun] = await db.select({ runtimeMode: heartbeatRuns.runtimeMode, status: heartbeatRuns.status,
+            errorCode: heartbeatRuns.errorCode, nativePhase: heartbeatRuns.nativePhase }).from(heartbeatRuns)
+            .where(and(eq(heartbeatRuns.companyId, action.companyId), eq(heartbeatRuns.id, sourceRunId!))).limit(1);
+          if (sourceRun && isNativeRunnerOwnershipHeld(sourceRun)) {
+            result.skipped += 1;
+            continue;
+          }
+        }
       }
       if (await hasUnverifiedNativeWorkspaceFinalizationOwner(db, action)) {
         result.skipped += 1;

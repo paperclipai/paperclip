@@ -1,4 +1,5 @@
 import { notifyLiveRunRecovery } from "./live-run-recovery-notifications.js";
+import { notifyDeferredWakesForIssue } from "./deferred-execution-notifications.js";
 import { notifyInstructionCollection, notifyInstructionCopyStopEvidence, notifyInstructionCopyStopEvidenceForRuns } from "./instruction-collection-notifications.js";
 import { notifyDirectoryCleanup } from "./directory-cleanup-notifications.js";
 import { and, desc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
@@ -9,7 +10,7 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { NATIVE_SESSION_PROVIDER_EVENT_TYPES } from "./native-runtime/native-session-resume.js";
 import os from "node:os";
-import { currentProcessSpaceHash, UNKNOWN_PROCESS_SPACE } from "./controller-process-identity.js";
+import { currentProcessSpaceHash, sameProcessSpace, UNKNOWN_PROCESS_SPACE } from "./controller-process-identity.js";
 import { proveOwnerGone } from "./owner-proof.js";
 import { beginRunIntake } from "./run-intake-stall-watch.js";
 
@@ -398,7 +399,8 @@ function settledNativeProcessReleaseCondition() {
   const unrecordedSpace = or(isNull(heartbeatRuns.processHostHash), eq(heartbeatRuns.processHostHash, UNKNOWN_PROCESS_SPACE));
   return and(eq(heartbeatRuns.runtimeMode, "native"), inArray(heartbeatRuns.status, SETTLED_RUN_STATUSES),
     isNotNull(heartbeatRuns.finishedAt),
-    or(isNotNull(heartbeatRuns.processPid), isNotNull(heartbeatRuns.processGroupId), isNotNull(heartbeatRuns.processStartedAt)),
+    or(isNotNull(heartbeatRuns.processPid), isNotNull(heartbeatRuns.processGroupId), isNotNull(heartbeatRuns.processStartedAt),
+      clearedNativeProcessIdentityCondition()),
     or(ownSpace, eq(heartbeatRuns.processHostHash, "remote"), isNull(heartbeatRuns.processHostHash),
       eq(heartbeatRuns.processHostHash, UNKNOWN_PROCESS_SPACE)),
     or(ownSpace, remoteLease, and(unrecordedSpace, sql`(select settled_identity.payload->>'hostname' from heartbeat_run_events settled_identity
@@ -430,14 +432,20 @@ export async function settledNativeProcessCandidates(db: Pick<Db, "execute">, in
 
 type SettledProcessFacts = {
   companyId: string; agentId: string; runtimeMode: string; status: string; finished: boolean;
+  nativeIssueId: string | null; processHostHash: string | null; finishedAt: Date | string;
   processPid: number | null; processGroupId: number | null; processStartedAt: string | null; apiDriver: boolean | null;
   hasSessionCheckpoint: boolean; phase: string | null; providerEvidence: boolean; remoteLeases: boolean;
   localLeasePending: boolean; identityMatches: boolean | null;
+  /** The run's finalization coordinator row, and whether this check could lock it (another writer holds it otherwise). */
+  coordinatorExists: boolean; coordinatorLocked: boolean; leaseOwner: string | null;
+  latestIdentity: { eventType: string; agentId: string | null; payload: Record<string, unknown> | null } | null;
 };
 
 function readSettledProcessFacts(tx: Db, runId: string) {
   return tx.execute(sql`select r.company_id as "companyId", r.agent_id as "agentId", r.runtime_mode as "runtimeMode",
-      r.status, r.finished_at is not null as "finished", r.process_pid as "processPid", r.process_group_id as "processGroupId",
+      r.status, r.finished_at is not null as "finished", r.native_issue_id as "nativeIssueId",
+      r.process_host_hash as "processHostHash", r.finished_at as "finishedAt",
+      r.process_pid as "processPid", r.process_group_id as "processGroupId",
       to_char(r.process_started_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as "processStartedAt",
       r.driver_kind = 'cursor_cloud_api' as "apiDriver",
       coalesce(r.runner_profile_json->'sessionCheckpoint', 'null'::jsonb) <> 'null'::jsonb as "hasSessionCheckpoint",
@@ -456,8 +464,30 @@ function readSettledProcessFacts(tx: Db, runId: string) {
             else coalesce(r.process_pid > 1 and r.process_group_id = r.process_pid, false) end
         from (select e.payload from heartbeat_run_events e where e.company_id = r.company_id and e.run_id = r.id
           and e.event_type = ${PROCESS_IDENTITY_RECORDED}::text and e.source_event_id is null order by e.seq desc limit 1) identity
-      ) as "identityMatches"
+      ) as "identityMatches",
+      exists (select 1 from native_run_finalizations f where f.run_id = r.id) as "coordinatorExists",
+      exists (select 1 from (select f.run_id from native_run_finalizations f where f.run_id = r.id
+        for update skip locked) locked) as "coordinatorLocked",
+      (select f.lease_owner from native_run_finalizations f where f.run_id = r.id limit 1) as "leaseOwner",
+      (select jsonb_build_object('eventType', e.event_type, 'agentId', e.agent_id, 'payload', e.payload)
+        from heartbeat_run_events e where e.company_id = r.company_id and e.run_id = r.id and e.source_event_id is null
+          and (e.event_type in (${PROCESS_START_REQUESTED}::text, ${PROCESS_IDENTITY_RECORDED}::text)
+            or (e.event_type = ${LOCAL_PROCESS_STOPPED}::text and r.process_pid is null
+              and r.process_group_id is null and r.process_started_at is null))
+        order by e.seq desc limit 1) as "latestIdentity"
     from heartbeat_runs r where r.id = ${runId}::uuid for update of r`) as unknown as Promise<SettledProcessFacts[]>;
+}
+
+export function clearedNativeProcessIdentityCondition() {
+  const space = currentProcessSpaceHash();
+  if (space === "unknown") return sql`false`;
+  return and(eq(heartbeatRuns.processHostHash, space), isNull(heartbeatRuns.processPid), isNull(heartbeatRuns.processGroupId), isNull(heartbeatRuns.processStartedAt),
+    sql`exists (select 1 from (select e.event_type, e.agent_id, e.payload from heartbeat_run_events e
+      where e.company_id = ${heartbeatRuns.companyId} and e.run_id = ${heartbeatRuns.id} and e.source_event_id is null
+        and e.event_type in ('native.process_start_requested', 'native.process_identity_recorded', 'native.local_process_stopped')
+      order by e.seq desc limit 1) latest
+      where latest.event_type = 'native.process_identity_recorded' and latest.agent_id = ${heartbeatRuns.agentId}
+        and latest.payload->>'targetKind' = 'local' and latest.payload->>'hostname' = ${os.hostname()})`);
 }
 
 export async function releaseSettledNativeRunProcess(db: Db, runId: string, options: { onDeferredDeadline?: (at: number) => void } = {}): Promise<SettledProcessRelease> {
@@ -471,28 +501,48 @@ export async function inspectSettledNativeRunProcess(db: Db, runId: string, opti
     const [run] = await readSettledProcessFacts(tx, runId);
     if (!run) return "skipped";
     remoteStop = run.remoteLeases || (run.status === "cancelled" && run.apiDriver === true);
-    if (run.runtimeMode !== "native" || !SETTLED_RUN_STATUSES.includes(run.status) || !run.finished ||
-        (run.processPid === null && run.processGroupId === null && run.processStartedAt === null)) return "skipped";
-    if (run.phase !== null && !SETTLED_COORDINATOR_PHASES.includes(run.phase)) return "skipped";
+    if (run.runtimeMode !== "native" || !SETTLED_RUN_STATUSES.includes(run.status) || !run.finished) return "skipped";
+    const cleared = run.processPid === null && run.processGroupId === null && run.processStartedAt === null;
+    if (cleared && !sameProcessSpace(run.processHostHash)) return "skipped";
+    // A coordinator row another writer holds is still finalizing: check again later.
+    if (run.coordinatorExists && !run.coordinatorLocked) {
+      options.onDeferredDeadline?.(Date.now() + 30_000);
+      return "pending";
+    }
+    if (run.coordinatorExists && (run.leaseOwner || !run.phase || !SETTLED_COORDINATOR_PHASES.includes(run.phase))) return "skipped";
     if (!run.hasSessionCheckpoint && !run.providerEvidence) return "skipped";
     if (run.remoteLeases) {
+      if (cleared) return "skipped";
       const leases = await tx.select().from(environmentLeases).where(and(
         eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, runId),
       ));
       if (!leases.every(hasRemoteTerminationReceipt)) return "pending";
     } else {
       if (run.localLeasePending) return "pending";
-      if (run.identityMatches !== true) return "skipped";
-      if ((!run.processPid && !run.processGroupId) || (run.processPid && !absent(run.processPid))
-          || (run.processGroupId && !absent(-run.processGroupId))) {
+      const identity = run.latestIdentity;
+      const proof = identity?.payload;
+      if (identity?.eventType !== PROCESS_IDENTITY_RECORDED || identity.agentId !== run.agentId ||
+          proof?.targetKind !== "local" || proof.hostname !== os.hostname()) return "skipped";
+      let observed = run;
+      if (cleared) {
+        const pid = proof.processPid, group = proof.processGroupId;
+        const birth = typeof proof.processStartedAt === "string" ? new Date(proof.processStartedAt) : null;
+        if (!run.coordinatorExists || !Number.isSafeInteger(pid) || typeof pid !== "number" || pid <= 1 ||
+            (group !== null && group !== pid) || !birth || !Number.isFinite(birth.getTime()) ||
+            birth > new Date(run.finishedAt)) return "skipped";
+        observed = { ...run, processPid: pid, processGroupId: group as number | null, processStartedAt: birth.toISOString() };
+      } else if (run.identityMatches !== true) return "skipped";
+      if ((!observed.processPid && !observed.processGroupId) || (observed.processPid && !absent(observed.processPid))
+          || (observed.processGroupId && !absent(-observed.processGroupId))) {
         options.onDeferredDeadline?.(Date.now() + 30_000);
         return "pending";
       }
       await appendLocalProcessStop(tx, { id: runId, companyId: run.companyId, agentId: run.agentId,
-        processPid: run.processPid, processGroupId: run.processGroupId, processStartedAt: run.processStartedAt });
+        processPid: observed.processPid, processGroupId: observed.processGroupId, processStartedAt: observed.processStartedAt });
     }
     await notifyLiveRunRecovery(tx, { companyId: run.companyId, runId, agentId: run.agentId });
     await notifyRetainedNativeSessionCleanup(tx, { companyId: run.companyId, runId });
+    if (run.nativeIssueId) await notifyDeferredWakesForIssue(tx, { companyId: run.companyId, issueId: run.nativeIssueId });
     // Local and remote stops both close the run's usage source.
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, run.companyId);
     await tx.update(heartbeatRuns).set({

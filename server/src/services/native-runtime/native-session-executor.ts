@@ -134,7 +134,7 @@ import { createNativeProviderFailureObservation, nativeProviderUsageLimitFromEve
 import { explainNativeTurnFailure } from "./native-run-failure-explanation.js";
 import { nativeStartupRetryExhaustedAction, nativeStartupRetryWait, planNativeStartupRetry } from "./native-startup-retry.js";
 import { admitUnclaimedNativeBootstrapRetry } from "./native-bootstrap-retry.js";
-import { attemptLaunchesFreshBootstrap, RUNNERD_CONTROL_PLANE_STATE_SCHEMAS, runnerdStateIsIncompleteBootstrap,
+import { attemptLaunchesFreshBootstrap, RUNNERD_CONTROL_PLANE_STATE_SCHEMAS, runnerdStateIsIncompleteBootstrap, runnerdStateIsFailedSessionBeforeTurn,
   runnerdStateHasNoProviderTurn, runnerdStateIsOpenedSessionBeforeTurn, runnerdStateIsUnconnectedBootstrap } from "./native-bootstrap-proof.js";
 import { createNativeDeliverableTextObservation } from "./native-deliverable-text.js";
 import { reconcileControllerJournalWithRunner, refreshRetiredWarmOwnerProjection } from "./warm-controller-journal.js";
@@ -2664,7 +2664,8 @@ function runnerdStateBase(): string {
  * when the caller passes `launchRequestedAt` because every earlier runner of
  * the run was proven stopped, when that state's command journal and lineage
  * files all predate the launch request: a provider starts only from a command
- * the runner journals first.
+ * the runner journals first. A saved state whose session failed before any
+ * provider turn, with its processes proven gone, also leaves the run free.
  */
 export async function unidentifiedLocalRunnerProvenAbsent(input: {
   runId: string; execution: unknown; launchRequestedAt?: number | null;
@@ -2692,8 +2693,13 @@ export async function unidentifiedLocalRunnerProvenAbsent(input: {
   for (const candidate of candidates) {
     if (!existsSync(resolve(candidate, "control-plane", "control-plane-state.json"))) continue;
     try {
-      if (record(readRunnerdControlPlaneState(candidate).identity).runId === input.runId &&
-          !runnerStateUnchangedSince(candidate, input.launchRequestedAt)) return false;
+      const state = readRunnerdControlPlaneState(candidate);
+      if (record(state.identity).runId === input.runId &&
+          !runnerStateUnchangedSince(candidate, input.launchRequestedAt) &&
+          !runnerdStateIsFailedSessionBeforeTurn(state, readRunnerdBootstrapJournal(candidate), {
+            localProcesses: process.platform !== "win32",
+            processGone: (id, group) => localProcessDefinitelyGone(id, group),
+          })) return false;
     } catch {
       return false;
     }
@@ -2721,10 +2727,31 @@ function runnerStateUnchangedSince(root: string, requestedAt: number | null | un
  * slow process listing proves nothing, so it keeps the caller blocked. */
 export async function noLocalRunnerProcessForRun(runId: string): Promise<boolean> {
   const listing = await new Promise<string | null>(resolve => {
-    execFile("ps", ["-axww", "-o", "command="], { encoding: "utf8", timeout: 5_000, maxBuffer: 64 * 1024 * 1024 },
+    const windows = process.platform === "win32";
+    execFile(windows ? "powershell.exe" : "ps", windows
+      ? ["-NoProfile", "-NonInteractive", "-Command",
+          "$ErrorActionPreference = 'Stop'; @(Get-CimInstance Win32_Process | Select-Object Name,CommandLine) | ConvertTo-Json -Compress"]
+      : ["-axww", "-o", "command="],
+      { encoding: "utf8", timeout: 10_000, maxBuffer: 64 * 1024 * 1024, windowsHide: true },
       (error, stdout) => resolve(error ? null : stdout));
   });
-  return listing !== null && !listing.split("\n").some(line => line.includes(`--run-id ${runId}`));
+  if (listing === null) return false;
+  let commands: string[];
+  if (process.platform === "win32") {
+    try {
+      const rows: unknown = JSON.parse(listing);
+      if (!Array.isArray(rows) || !rows.length) return false;
+      commands = [];
+      for (const row of rows) {
+        if (!row || typeof row.Name !== "string") return false;
+        if (typeof row.CommandLine === "string") commands.push(row.CommandLine);
+        else if (/^(?:node|paperclip-runnerd)(?:\.exe)?$/i.test(row.Name)) return false;
+      }
+    } catch { return false; }
+  } else commands = listing.split("\n");
+  const escapedRunId = runId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const argument = new RegExp(`(?:^|\\s)"?--run-id"?(?:\\s+|=)"?${escapedRunId}(?:"|\\s|$)`);
+  return !commands.some(line => argument.test(line));
 }
 
 export function scopedRunnerdStateRoot(execution: NativeExecutionInput): string {
@@ -3667,6 +3694,7 @@ export async function verifyStoppedNativeSessionForContinuation(
   run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId" | "runtimeMode" |
     "status" | "finishedAt" | "nativeIssueId" | "nativeSessionId" | "runnerInstanceId" | "runnerProfileJson" |
     "errorCode" | "createdAt" | "processPid" | "processGroupId" | "processStartedAt">,
+  options: { cleanup?: boolean } = {},
 ): Promise<{ evidence: Record<string, unknown>; retire: () => boolean } | null> {
   try {
     if (run.runtimeMode !== "native" || !["failed", "cancelled", "interrupted", "timed_out"].includes(run.status) ||
@@ -3737,6 +3765,21 @@ export async function verifyStoppedNativeSessionForContinuation(
       if (ownerLeases.some(lease => lease.provider !== "local" || !lease.releasedAt ||
           lease.status === "pending_cleanup" || lease.cleanupStatus === "failed")) return null;
       owner = retained;
+    }
+    if (process.platform === "win32" && execution.provider.kind === "codex") {
+      if (typeof ownerExecution.workspace.cwd !== "string") return null;
+      const { proveStoppedWindowsReadOnlySession } = await import("./native-stopped-windows-session.js");
+      const proof = await proveStoppedWindowsReadOnlySession({ db, owner, root, cwd: ownerExecution.workspace.cwd, snapshot, cleanup: options.cleanup,
+        unchanged: () => idle() && !activeNativeSessions.has(owner.id) &&
+          cleanupStateSnapshot(root, providerFile).fingerprint === snapshot.fingerprint });
+      if (!proof) return null;
+      return { evidence: { ...proof.evidence, ownerRunId: owner.id,
+          executionWorkspaceId: execution.binding.executionWorkspaceId, workspaceCwd: execution.workspace.cwd },
+        retire: () => {
+          try { return proof.unchanged() && [owner.id, run.id].every(runId => completeTerminatedLocalNativeSessionCleanup({
+            companyId: run.companyId, runId, runnerInstanceId: run.runnerInstanceId!,
+          })); } catch { return false; }
+        } };
     }
     let stop = await readNativeLocalProcessStop(db, owner.companyId, owner.id);
     if (!stop && owner.processPid && owner.processPid > 1 && owner.processGroupId === owner.processPid &&
@@ -3963,8 +4006,8 @@ export async function verifyStoppedNativeSessionForAutomaticReplacement(
   run: typeof heartbeatRuns.$inferSelect,
 ): Promise<{ evidence: Record<string, unknown>; retire: () => boolean } | null> {
   const replacement = await verifyStoppedNativeSessionForReplacement(db, run);
-  if (replacement || run.errorCode !== "native_session_cleanup_quarantined") return replacement;
-  return verifyStoppedNativeSessionForContinuation(db, run);
+  if (replacement || process.platform !== "win32" && run.errorCode !== "native_session_cleanup_quarantined") return replacement;
+  return verifyStoppedNativeSessionForContinuation(db, run, { cleanup: true });
 }
 
 const SESSION_OPEN_EVENT_TYPES = ["session.started", "session.resumed", "session.reconciled"] as const;
@@ -6824,7 +6867,28 @@ async function migrateRunnerdStateRoot(input: {
 // A terminal warm run can lose its controller before session.suspend. Older
 // controllers quarantined even fully settled state in that case. Recover the
 // exact provider thread, never bootstrap a replacement from an ambiguous root.
-async function recoverQuiescentRunnerdState(input: {
+export async function verifyUnstartedAttachmentForContinuation(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
+  "id" | "companyId" | "agentId" | "nativeIssueId" | "nativeSessionId" | "runnerInstanceId" | "runnerProfileJson">) {
+  try {
+    const execution = parseNativeExecutionInput(record(run.runnerProfileJson).nativeExecutionInput);
+    if (execution.binding.runId !== run.id || execution.binding.companyId !== run.companyId ||
+      execution.binding.agentId !== run.agentId || execution.binding.issueId !== run.nativeIssueId ||
+      execution.session.normalizedSessionId !== run.nativeSessionId || !run.runnerInstanceId) return null;
+    const scoped = scopedRunnerdStateRoot(execution), quarantine = resolve(runnerdStateBase(), "quarantine");
+    if (existsSync(scoped) && (!isSafeNativeStateDirectory(scoped) || readdirSync(scoped).length > 0) || !isSafeNativeStateDirectory(quarantine)) return null;
+    const candidates = readdirSync(quarantine).filter(name => name.startsWith(`${basename(scoped)}.identity_indeterminate.`));
+    if (candidates.length !== 1) return null;
+    const { proveUnstartedAttachmentQuarantine } = await import("./native-unstarted-attachment.js");
+    const proof = await proveUnstartedAttachmentQuarantine({ db, execution, root: resolve(quarantine, candidates[0]!),
+      sameScope: source => nativeSessionScopeKey(source) === nativeSessionScopeKey(execution) });
+    if (!proof || activeNativeSessions.has(String(proof.evidence.ownerRunId))) return null;
+    return { evidence: proof.evidence, retire: () => proof.unchanged() &&
+      completeTerminatedLocalNativeSessionCleanup({ companyId: run.companyId, runId: String(proof.evidence.ownerRunId), runnerInstanceId: String(proof.evidence.runnerInstanceId) }) &&
+      completeTerminatedLocalNativeSessionCleanup({ companyId: run.companyId, runId: run.id, runnerInstanceId: run.runnerInstanceId! }) };
+  } catch { return null; }
+}
+
+export async function recoverQuiescentRunnerdState(input: {
   db: Db;
   execution: NativeExecutionInput;
   scoped: string;
@@ -6850,14 +6914,12 @@ async function recoverQuiescentRunnerdState(input: {
     : [input.scoped];
   if (
     currentEmpty &&
-    candidates.filter(
-      (root) =>
-        isSafeNativeStateDirectory(root) && readdirSync(root).length > 0,
-    ).length > 1
+    candidates.length > 1
   ) {
     // Do not roll back to an older valid checkpoint when a newer quarantined
     // root contains unconfirmed work, even if the newer root is unreadable.
-    throw new Error("runner_state_identity_mismatch: quarantine_candidates_ambiguous");
+    const { refuseUnverifiedNativeContinuity } = await import("./native-unstarted-attachment.js");
+    return refuseUnverifiedNativeContinuity({ ...input, reason: "quarantine_candidates_ambiguous" });
   }
   const verified: Array<{
     root: string;
@@ -7040,16 +7102,29 @@ async function recoverQuiescentRunnerdState(input: {
     }
   }
   if (verified.length !== 1) {
+    if (currentEmpty && candidates.length === 1) {
+      const { proveUnstartedAttachmentQuarantine } = await import("./native-unstarted-attachment.js");
+      const proof = await proveUnstartedAttachmentQuarantine({ db: input.db, execution: input.execution, root: candidates[0]!,
+        sameScope: source => nativeSessionScopeKey(source) === nativeSessionScopeKey(input.execution) });
+      if (proof) {
+        await appendHeartbeatRunEvent(input.db, { ...input.execution.binding,
+          eventType: "native.unstarted_attachment_verified", stream: "system", level: "info",
+          message: "The prior attachment stopped before receiving a turn. Preserved its state and admitted a new provider startup.", payload: proof.evidence });
+        if (!proof.unchanged() || existsSync(input.scoped) && readdirSync(input.scoped).length !== 0) {
+          const { refuseUnverifiedNativeContinuity } = await import("./native-unstarted-attachment.js");
+          return refuseUnverifiedNativeContinuity({ ...input, reason: "recovery_evidence_changed" });
+        }
+        return;
+      }
+    }
     if (
       currentEmpty &&
-      candidates.some(
-        (root) =>
-          isSafeNativeStateDirectory(root) && readdirSync(root).length > 0,
-      )
+      candidates.length > 0
     ) {
       // Known provider history is not permission to start a replacement when
       // recovery cannot prove a unique, settled owner.
-      throw new Error("runner_state_identity_mismatch: quarantine_owner_unverified");
+      const { refuseUnverifiedNativeContinuity } = await import("./native-unstarted-attachment.js");
+      return refuseUnverifiedNativeContinuity({ ...input, reason: "quarantine_owner_unverified" });
     }
     return;
   }
@@ -7235,6 +7310,8 @@ export function runnerdStateProvesIncompleteBootstrap(
     const state = readRunnerdControlPlaneState(root);
     const journal = readRunnerdBootstrapJournal(root);
     return runnerdStateIsIncompleteBootstrap(state, journal) ||
+      runnerdStateIsFailedSessionBeforeTurn(state, journal, { localProcesses: options.localProcesses && process.platform !== "win32",
+        processGone: (id, group) => localProcessDefinitelyGone(id, group) }) ||
       runnerdStateIsOpenedSessionBeforeTurn(state, journal, {
         localProcesses: options.localProcesses,
         processGone: (id, group) => localProcessDefinitelyGone(id, group),
