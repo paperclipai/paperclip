@@ -355,6 +355,10 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): 
   });
 }
 
+function isSandboxGoneError(error: unknown): boolean {
+  return error instanceof Error && /\bno such sandbox\b/i.test(error.message);
+}
+
 function toBuffer(bytes: Buffer | Uint8Array | ArrayBuffer): Buffer {
   if (Buffer.isBuffer(bytes)) return bytes;
   if (bytes instanceof ArrayBuffer) return Buffer.from(bytes);
@@ -956,6 +960,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
     claim: "unclaimed" | "handler" | "abandon";
     controller: AbortController;
     finalized: boolean;
+    dropped?: boolean;
     backstopTimer?: ReturnType<typeof setTimeout>;
   };
   const inFlightRequestGuards = new Map<string, RequestFinalizeGuard>();
@@ -1029,6 +1034,13 @@ export async function startSandboxCallbackBridgeWorker(input: {
           return;
         } catch (error) {
           lastWriteError = error instanceof Error ? error.message : String(error);
+          if (isSandboxGoneError(error)) {
+            guard.dropped = true;
+            console.warn(
+              `[paperclip] sandbox callback bridge dropped the response for ${response.id}: the sandbox no longer exists: ${lastWriteError}`,
+            );
+            return;
+          }
           console.warn(
             `[paperclip] sandbox callback bridge failed to write response for ${response.id} (attempt ${attempt}/${MAX_BACKSTOP_WRITE_ATTEMPTS}): ${lastWriteError}`,
           );
@@ -1211,7 +1223,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
       // so the guard must stay in the map. The poll loop then skips the file and
       // does not re-run a possibly-committed mutation before the backstop writes
       // its 504.
-      if (guard.backstopTimer === undefined && inFlightRequestGuards.get(fileName) === guard) {
+      if (guard.backstopTimer === undefined && !guard.dropped && inFlightRequestGuards.get(fileName) === guard) {
         inFlightRequestGuards.delete(fileName);
       }
     }
@@ -1258,8 +1270,16 @@ export async function startSandboxCallbackBridgeWorker(input: {
         await input.client.remove(requestPath).catch(() => undefined);
         return;
       } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        if (isSandboxGoneError(error)) {
+          guard.dropped = true;
+          console.warn(
+            `[paperclip] sandbox callback bridge dropped the 504 backstop for ${requestId}: the sandbox no longer exists: ${errorMessage}`,
+          );
+          return;
+        }
         console.warn(
-          `[paperclip] sandbox callback bridge failed to write 504 backstop for ${requestId} (attempt ${attempt}/${MAX_BACKSTOP_WRITE_ATTEMPTS}): ${error instanceof Error ? error.message : String(error)}`,
+          `[paperclip] sandbox callback bridge failed to write 504 backstop for ${requestId} (attempt ${attempt}/${MAX_BACKSTOP_WRITE_ATTEMPTS}): ${errorMessage}`,
         );
         if (attempt < MAX_BACKSTOP_WRITE_ATTEMPTS) {
           await new Promise((resolve) => setTimeout(resolve, BACKSTOP_WRITE_RETRY_MS));

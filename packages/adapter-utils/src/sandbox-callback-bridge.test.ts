@@ -2461,6 +2461,194 @@ describe("sandbox callback bridge", () => {
     await worker.stop({ drainTimeoutMs: 10 });
   });
 
+  const SANDBOX_GONE_ERROR =
+    'Broker request failed with status 404: {"error":"not_found","message":"No such sandbox"}';
+
+  it("stops re-arming the 504 backstop once the provider reports the sandbox is gone", async () => {
+    const waitFor = createWorkerWaiter();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const queueDir = "/virtual-bridge/queue";
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
+    const requestPath = path.posix.join(directories.requestsDir, "req-gone.json");
+
+    const requestBodies = new Map<string, string>();
+    requestBodies.set(requestPath, bridgeRequestJson("req-gone"));
+    let writeAttempts = 0;
+    let handlerCalls = 0;
+    let settleHandler: (value: { status: number; body?: string }) => void = () => {};
+
+    const client: SandboxCallbackBridgeQueueClient = {
+      ...virtualQueueReadClient(directories, requestBodies),
+      writeResponseFile: async () => {
+        writeAttempts += 1;
+        throw new Error(SANDBOX_GONE_ERROR);
+      },
+      rename: async () => {},
+      remove: async (remotePath) => {
+        requestBodies.delete(remotePath);
+      },
+    };
+
+    const { runtimeSpan } = createWorkerErrorCapture();
+
+    const worker = await startSandboxCallbackBridgeWorker({
+      client,
+      queueDir,
+      pollIntervalMs: 5,
+      iterationTimeoutMs: 50,
+      watchdogTimeoutMs: 10_000,
+      abortedHandlerGraceMs: 20,
+      runtimeSpan,
+      authorizeRequest: async () => null,
+      handleRequest: () => {
+        handlerCalls += 1;
+        return new Promise<{ status: number; body?: string }>((resolve) => {
+          settleHandler = resolve;
+        });
+      },
+    });
+
+    try {
+      await waitFor(() => writeAttempts > 0, 3_000);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      settleHandler({ status: 200, body: "{}" });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      expect(writeAttempts).toBe(1);
+      expect(handlerCalls).toBe(1);
+      expect(requestBodies.has(requestPath)).toBe(true);
+      const lines = warn.mock.calls
+        .map((call) => String(call[0]))
+        .filter((line) => line.includes("req-gone") && /backstop|response/.test(line));
+      expect(lines).toEqual([
+        expect.stringContaining("dropped the 504 backstop for req-gone: the sandbox no longer exists"),
+      ]);
+    } finally {
+      await worker.stop({ drainTimeoutMs: 10 });
+      warn.mockRestore();
+    }
+  });
+
+  it("drops a handler response for a gone sandbox once and never runs the handler again", async () => {
+    const waitFor = createWorkerWaiter();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const queueDir = "/virtual-bridge/queue";
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
+    const requestPath = path.posix.join(directories.requestsDir, "req-gone-finalize.json");
+
+    const requestBodies = new Map<string, string>();
+    requestBodies.set(requestPath, bridgeRequestJson("req-gone-finalize"));
+    let writeAttempts = 0;
+    let handlerCalls = 0;
+
+    const client: SandboxCallbackBridgeQueueClient = {
+      ...virtualQueueReadClient(directories, requestBodies),
+      writeResponseFile: async () => {
+        writeAttempts += 1;
+        throw new Error(SANDBOX_GONE_ERROR);
+      },
+      rename: async () => {},
+      remove: async (remotePath) => {
+        requestBodies.delete(remotePath);
+      },
+    };
+
+    const { runtimeSpan } = createWorkerErrorCapture();
+
+    const worker = await startSandboxCallbackBridgeWorker({
+      client,
+      queueDir,
+      pollIntervalMs: 5,
+      iterationTimeoutMs: 50,
+      watchdogTimeoutMs: 10_000,
+      abortedHandlerGraceMs: 20,
+      runtimeSpan,
+      authorizeRequest: async () => null,
+      handleRequest: () => {
+        handlerCalls += 1;
+        if (handlerCalls > 1) {
+          return new Promise<{ status: number; body?: string }>(() => {});
+        }
+        return Promise.resolve({ status: 200, body: "{}" });
+      },
+    });
+
+    try {
+      await waitFor(() => writeAttempts > 0, 3_000);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      expect(handlerCalls).toBe(1);
+      expect(writeAttempts).toBe(1);
+      expect(requestBodies.has(requestPath)).toBe(true);
+      const lines = warn.mock.calls
+        .map((call) => String(call[0]))
+        .filter((line) => line.includes("req-gone-finalize") && /backstop|response/.test(line));
+      expect(lines).toEqual([
+        expect.stringContaining("dropped the response for req-gone-finalize: the sandbox no longer exists"),
+      ]);
+    } finally {
+      await worker.stop({ drainTimeoutMs: 10 });
+      warn.mockRestore();
+    }
+  });
+
+  it("keeps re-arming the 504 backstop for a 404 that does not say the sandbox is gone", async () => {
+    const waitFor = createWorkerWaiter();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const queueDir = "/virtual-bridge/queue";
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
+    const requestPath = path.posix.join(directories.requestsDir, "req-404.json");
+
+    const requestBodies = new Map<string, string>();
+    requestBodies.set(requestPath, bridgeRequestJson("req-404"));
+    let writeAttempts = 0;
+    let failWrites = true;
+
+    const client: SandboxCallbackBridgeQueueClient = {
+      ...virtualQueueReadClient(directories, requestBodies),
+      writeResponseFile: async () => {
+        writeAttempts += 1;
+        if (failWrites) {
+          throw new Error('Request failed with status 404: {"error":"not_found"}');
+        }
+        return { wrote: true };
+      },
+      rename: async () => {},
+      remove: async (remotePath) => {
+        requestBodies.delete(remotePath);
+      },
+    };
+
+    const { runtimeSpan } = createWorkerErrorCapture();
+
+    const worker = await startSandboxCallbackBridgeWorker({
+      client,
+      queueDir,
+      iterationTimeoutMs: 50,
+      watchdogTimeoutMs: 10_000,
+      abortedHandlerGraceMs: 20,
+      runtimeSpan,
+      authorizeRequest: async () => null,
+      handleRequest: () => new Promise<{ status: number; body?: string }>(() => {}),
+    });
+
+    try {
+      await waitFor(() => writeAttempts > 3, 3_000);
+      expect(warn.mock.calls.some((call) => String(call[0]).includes("the sandbox no longer exists"))).toBe(false);
+    } finally {
+      failWrites = false;
+      try {
+        await waitFor(() => !requestBodies.has(requestPath), 3_000);
+      } finally {
+        await worker.stop({ drainTimeoutMs: 10 });
+        warn.mockRestore();
+      }
+    }
+  });
+
   it("retries a handler response write that fails transiently and delivers the real response, not a retryable 503", async () => {
     // A handler settles with its own response, but the terminal write fails
     // once. `finalize` must retry the write and deliver the real response. It
