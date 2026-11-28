@@ -254,8 +254,10 @@ export const heartbeatsApi = {
     }),
   liveRunsForIssue: (issueId: string) =>
     api.get<LiveRunForIssue[]>(`/issues/${issueId}/live-runs`),
-  activeRunForIssue: (issueId: string) =>
-    api.get<ActiveRunForIssue | null>(`/issues/${issueId}/active-run`),
+  activeRunForIssue: (issueId: string): Promise<ActiveRunForIssue | null> =>
+    api
+      .get<ActiveRunForIssue | null | undefined>(`/issues/${issueId}/active-run`)
+      .then((run) => run ?? null),
   liveRunsForCompany: (
     companyId: string,
     options?: number | { minCount?: number; limit?: number; distinctTasks?: boolean },

@@ -55,6 +55,25 @@ describe("heartbeatsApi.list", () => {
   });
 });
 
+describe("heartbeatsApi.activeRunForIssue", () => {
+  beforeEach(() => {
+    mockApi.get.mockReset();
+  });
+
+  it("returns the run payload when the issue has an active run", async () => {
+    mockApi.get.mockResolvedValue({ id: "run-1" });
+
+    await expect(heartbeatsApi.activeRunForIssue("issue-1")).resolves.toEqual({ id: "run-1" });
+    expect(mockApi.get).toHaveBeenCalledWith("/issues/issue-1/active-run");
+  });
+
+  it("normalizes the 204 no-active-run response to null", async () => {
+    mockApi.get.mockResolvedValue(undefined);
+
+    await expect(heartbeatsApi.activeRunForIssue("issue-1")).resolves.toBeNull();
+  });
+});
+
 describe("heartbeatsApi.liveRunsForCompany", () => {
   beforeEach(() => {
     mockApi.get.mockReset();
