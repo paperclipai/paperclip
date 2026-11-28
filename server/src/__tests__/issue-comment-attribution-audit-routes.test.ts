@@ -57,14 +57,19 @@ describeEmbeddedPostgres("issue comment attribution and patch audit routes", () 
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    const [startedDb, { activityRoutes }, { issueRoutes }] = await Promise.all([
+    const [dbResult, activityResult, issueResult] = await Promise.allSettled([
       startEmbeddedPostgresTestDatabase("paperclip-comment-attribution-audit-"),
       import("../routes/activity.js"),
       import("../routes/issues.js"),
     ]);
-    tempDb = startedDb;
-    loadedActivityRoutes = activityRoutes;
-    loadedIssueRoutes = issueRoutes;
+    if (dbResult.status === "fulfilled") {
+      tempDb = dbResult.value;
+    }
+    if (dbResult.status === "rejected") throw dbResult.reason;
+    if (activityResult.status === "rejected") throw activityResult.reason;
+    if (issueResult.status === "rejected") throw issueResult.reason;
+    loadedActivityRoutes = activityResult.value.activityRoutes;
+    loadedIssueRoutes = issueResult.value.issueRoutes;
     db = createDb(tempDb.connectionString);
   }, 30_000);
 

@@ -2096,13 +2096,11 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
     });
     afterEach(async () => {
-      try {
-        await coordinator?.stop();
-      } finally {
-        coordinator = undefined;
-        vi.useRealTimers();
-        vi.restoreAllMocks();
-      }
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+      const activeCoordinator = coordinator;
+      coordinator = undefined;
+      await activeCoordinator?.stop();
       expect(errors).toEqual([]);
     });
     async function seedEffects(state = "pending", tenant = { companyId, agentId }) {
@@ -2285,13 +2283,11 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
     });
     afterEach(async () => {
-      try {
-        await coordinator?.stop();
-      } finally {
-        coordinator = undefined;
-        vi.useRealTimers();
-        vi.restoreAllMocks();
-      }
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+      const activeCoordinator = coordinator;
+      coordinator = undefined;
+      await activeCoordinator?.stop();
       if (kind === "obsolete policy") await dismissObsoleteNativePolicyReviews(db);
       else await dismissAutomaticCompletionReviews(db);
       expect(errors).toEqual([]);
