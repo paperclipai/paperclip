@@ -935,7 +935,7 @@ describe("managed AI connections", () => {
         blocked = exchanges === 1 && rows.length > 0;
         if (!blocked) await new Promise(resolve => setTimeout(resolve, 25));
       }
-      expect(blocked).toBe(true);
+      expect(blocked, `Receiver fixture did not reach the save barrier (loopback requests: ${exchanges}, child status: ${child.exitCode ?? child.signalCode ?? "running"})`).toBe(true);
       child.kill("SIGKILL"); await exited;
     } finally {
       if (child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await exited; }
