@@ -6,6 +6,7 @@ import { environmentLeases, heartbeatRuns, nativeRunFinalizations, type Db } fro
 import { hasNativeLocalProcessStop } from "./native-local-process-stop.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { isCancelledNativeStartup } from "./cancelled-native-startup.js";
+import { isSettledCancelledLegacyPreparation } from "./settled-legacy-preparation-stop-proof.js";
 
 /** Cancellation changes admission. Process and lease evidence controls cleanup. */
 export async function agentExecutionsHaveStopped(db: Db, agentIds: string[]) {
@@ -64,7 +65,8 @@ export async function agentExecutionStopBlocker(db: Db, agentIds: string[]): Pro
     if (run.runtimeMode === "legacy" && !run.processPid && !run.processGroupId &&
         (run.resultJson?.executionCancellation as Record<string, unknown> | undefined)?.state !== "acknowledged" &&
         !(run.executionStage === "settled" && !await runUsedConversationAdapter(db, run)) &&
-        !await isCancelledNativeStartup(db, run, coordinators.find(row => row.runId === run.id))) return "legacy_stop_unproven";
+        !await isCancelledNativeStartup(db, run, coordinators.find(row => row.runId === run.id)) &&
+        !await isSettledCancelledLegacyPreparation(db, run, coordinators.find(row => row.runId === run.id))) return "legacy_stop_unproven";
   }
   // Release an expired owner only after its cancelled execution has stop proof.
   for (const coordinator of abandoned) {
