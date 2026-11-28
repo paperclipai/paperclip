@@ -4275,6 +4275,13 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             defaultRules: RUNTIME_DEFAULT_RULES,
           },
         ) as Record<string, unknown>;
+        const sourceHeartbeat = isPlainRecord(agent.runtimeConfig) ? agent.runtimeConfig.heartbeat : null;
+        if (isPlainRecord(sourceHeartbeat) && sourceHeartbeat.enabled === false) {
+          portableRuntimeConfig.heartbeat = {
+            enabled: false,
+            ...(isPlainRecord(portableRuntimeConfig.heartbeat) ? portableRuntimeConfig.heartbeat : {}),
+          };
+        }
         const portablePermissions = pruneDefaultLikeValue(agent.permissions ?? {}, { dropFalseBooleans: true }) as Record<string, unknown>;
         if (Object.hasOwn(agent.permissions ?? {}, "interactions")) {
           delete portablePermissions.interactions;
