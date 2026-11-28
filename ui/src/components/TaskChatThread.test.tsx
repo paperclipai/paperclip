@@ -2922,6 +2922,33 @@ describe("TaskChatThread runtime transcript selection", () => {
   );
 
   it.each(["legacy", "native"] as const)(
+    "hides a superseded chat completion turn (%s)",
+    (runtimeMode) => {
+      renderThread({
+        comments: [],
+        onAdd: async () => {},
+        linkedRuns: [
+          {
+            runId: "superseded-completion-turn",
+            runtimeMode,
+            status: "cancelled",
+            errorCode: "chat_completion_superseded",
+            startedAt: "2026-09-07T18:00:00.500Z",
+            agentId: "agent-1",
+            agentName: "Runner",
+            adapterType: "paperclip_runner",
+            createdAt: "2026-09-07T18:00:00.000Z",
+            finishedAt: "2026-09-07T18:00:01.000Z",
+          },
+        ],
+      });
+      expect(container.textContent).not.toContain("retry this message");
+      expect(container.textContent).not.toContain("Run cancelled");
+      expect(container.textContent).not.toContain("Stopped");
+    },
+  );
+
+  it.each(["legacy", "native"] as const)(
     "keeps a cancellation visible when the %s run had already started",
     (runtimeMode) => {
       renderThread({
