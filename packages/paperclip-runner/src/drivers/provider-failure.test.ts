@@ -96,6 +96,21 @@ describe("provider failure boundary", () => {
     }
   });
 
+  it("classifies an out-of-credits Codex terminal as an exhausted allowance (#20506)", () => {
+    const generic = "ACP agent reported a terminal failure.";
+    const failed = { status: "failed", error: { code: "RUNTIME", message: generic } };
+    expect(acpxTerminalResult(failed, "codex", {}, { category: "limit", title: "Your workspace is out of credits" }))
+      .toMatchObject({ status: "failed", error: { providerFailure: {
+        provider: "openai", phase: "turn", category: "quota_exhausted", retryability: "requires_action",
+        message: `${generic}\nYour workspace is out of credits` } } });
+    expect(acpxProviderFailure(new Error("Your workspace is out of credits"), "codex", "turn", {}, true))
+      .toMatchObject({ category: "quota_exhausted", provider: "openai" });
+    for (const title of ["This Codex session reached its configured budget.", "Codex hit a context window limit"]) {
+      expect(acpxTerminalResult(failed, "codex", {}, { category: "limit", title }))
+        .toMatchObject({ error: { providerFailure: { category: "unknown" } } });
+    }
+  });
+
   it("keeps the ACPX terminal cause when the raw result exceeds its payload limit", () => {
     const terminal = acpxTerminalResult({ status: "failed", error: { ...acp,
       data: { ...acp.data, responseBody: "private-body".repeat(7000) } } }, "claude");
