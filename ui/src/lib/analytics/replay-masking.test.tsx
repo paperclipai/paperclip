@@ -6,6 +6,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router-dom";
 import type { ConnectionGrant, DocumentRevision } from "@paperclipai/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AccountQuotaPanels } from "@/components/AccountQuotaPanels";
@@ -20,11 +21,25 @@ import { RunInvocationCard } from "@/components/run-log/RunDetails";
 import { ChatConversationList } from "@/pages/apps/chat/ChatConversationList";
 import { VoiceTranscript } from "@/components/voice/VoiceTranscript";
 import { RunTranscriptView } from "@/components/transcript/RunTranscriptView";
+import { IssueQuicklookCard } from "@/components/IssueLinkQuicklook";
+import * as CompanyContext from "@/context/CompanyContext";
+import * as MarkdownPlainText from "@/lib/markdown-plain-text";
 import { buildPostHogInitOptions } from "./product-analytics";
-import { ANALYTICS_MASK_CLASS, ANALYTICS_MASK_TEXT_SELECTOR, ANALYTICS_NO_CAPTURE_CLASS } from "./privacy";
+import {
+  ANALYTICS_MASK_CLASS,
+  ANALYTICS_MASK_TEXT_SELECTOR,
+  ANALYTICS_NO_CAPTURE_CLASS,
+  ANALYTICS_WORK_CONTENT_CLASS,
+  REPLAY_WORK_CONTENT_ATTRIBUTE,
+  maskReplayText,
+  redactReplaySecrets,
+  workContentClassForCompany,
+} from "./privacy";
 import { isBlockedFromReplay, replayLeaks } from "./replay-recording.test-utils";
 
 vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+
+const stars = (text: string) => text.replace(/\S/g, "*");
 
 const UI_SRC = join(import.meta.dirname, "../..");
 
@@ -36,7 +51,8 @@ const options = buildPostHogInitOptions(
 function recordedText(node: Text): string {
   const parent = node.parentElement;
   const masked = parent?.closest(options.session_recording.maskTextSelector) != null;
-  return masked ? node.data.replace(/\S/g, "*") : node.data;
+  // Like rrweb: text inside the selector goes through `maskTextFn`.
+  return masked ? options.session_recording.maskTextFn(node.data, parent) : node.data;
 }
 
 function recordedTextOf(html: string, text: string): string {
@@ -49,10 +65,38 @@ function recordedTextOf(html: string, text: string): string {
   throw new Error(`text not rendered: ${text}`);
 }
 
+function renderTaskPreview(description: string): string {
+  return renderToStaticMarkup(
+    <MemoryRouter>
+      <IssueQuicklookCard
+        issue={{
+          id: "task-1", companyId: "co-1", title: "Review access", status: "todo",
+          priority: "medium", updatedAt: new Date(0), description,
+        }}
+        linkTo="/ACME/issues/ACME-1"
+      />
+    </MemoryRouter>,
+  );
+}
+
+/**
+ * Work content: masked unless the company holds no Google or Slack data
+ * (`ANALYTICS_WORK_CONTENT_CLASS`). Task descriptions, document bodies and
+ * artifact contents.
+ */
+const WORK_CONTENT_SURFACES: Array<{ file: string; content: string }> = [
+  { file: "components/IssueLinkQuicklook.tsx", content: "data-slot=\"task-preview-description\"" },
+  { file: "components/task-side-panel/TaskAttachmentPanel.tsx", content: "File is empty." },
+  { file: "components/artifacts/ArtifactCard.tsx", content: "{preview}" },
+  { file: "components/artifacts/RichArtifactCards.tsx", content: "<PatchLines text={body} />" },
+  { file: "components/artifacts/RichArtifactCards.tsx", content: "<ReactMarkdown" },
+  { file: "components/artifacts/RichArtifactCards.tsx", content: "{columns.map(" },
+  { file: "components/FileViewerSheet.tsx", content: "{lines.map(" },
+];
+
 const MASKED_SURFACES: Array<{ file: string; content: string }> = [
   { file: "components/LinkPreview.tsx", content: "{preview.title}" },
   { file: "components/LinkPreview.tsx", content: "{target.canonicalUrl}" },
-  { file: "components/IssueLinkQuicklook.tsx", content: "data-slot=\"task-preview-description\"" },
   { file: "components/ExternalObjectPill.tsx", content: "{valueLabel}" },
   { file: "components/ExternalObjectPill.tsx", content: "{labelText}" },
   { file: "components/issue-properties/external-object-rows.tsx", content: "{displayKey}</span>" },
@@ -147,11 +191,6 @@ const MASKED_SURFACES: Array<{ file: string; content: string }> = [
   { file: "pages/CaseDetail.tsx", content: "{caseData.summary}" },
   { file: "pages/CaseDetail.tsx", content: "{files.map(" },
   { file: "components/CaseFieldsPanel.tsx", content: "aria-label=\"Case fields\"" },
-  { file: "components/task-side-panel/TaskAttachmentPanel.tsx", content: "File is empty." },
-  { file: "components/artifacts/ArtifactCard.tsx", content: "{preview}" },
-  { file: "components/artifacts/RichArtifactCards.tsx", content: "<PatchLines text={body} />" },
-  { file: "components/artifacts/RichArtifactCards.tsx", content: "<ReactMarkdown" },
-  { file: "components/artifacts/RichArtifactCards.tsx", content: "{columns.map(" },
   { file: "components/AttentionQueueRow.tsx", content: "{detailLine}" },
   { file: "components/AttentionObligationEvidence.tsx", content: "{attentionEvidenceLabel(item, entry)}" },
   { file: "components/coordinator/NeedsYouCardKit.tsx", content: "{children}</p>" },
@@ -272,9 +311,412 @@ describe("session replay text masking", () => {
     expect(recordedTextOf(`<div contenteditable="false"><p>Read only</p></div>`, "Read only")).toBe("Read only");
   });
 
-  it("sends only the marker selector to session replay", () => {
+  it("masks work content unless the page allows it", () => {
+    const html = `<div class="${ANALYTICS_WORK_CONTENT_CLASS}"><p>Ship the Q3 plan</p></div>`;
+    expect(recordedTextOf(html, "Ship the Q3 plan")).toBe("**** *** ** ****");
+    document.documentElement.setAttribute(REPLAY_WORK_CONTENT_ATTRIBUTE, "visible");
+    try {
+      expect(recordedTextOf(html, "Ship the Q3 plan")).toBe("Ship the Q3 plan");
+      document.documentElement.setAttribute(REPLAY_WORK_CONTENT_ATTRIBUTE, "pending");
+      expect(recordedTextOf(html, "Ship the Q3 plan")).toBe("**** *** ** ****");
+    } finally {
+      document.documentElement.removeAttribute(REPLAY_WORK_CONTENT_ATTRIBUTE);
+    }
+  });
+
+  it("keeps strict markers inside visible work content masked", () => {
+    document.documentElement.setAttribute(REPLAY_WORK_CONTENT_ATTRIBUTE, "visible");
+    try {
+      const work = (inner: string) => `<div class="${ANALYTICS_WORK_CONTENT_CLASS}"><p>Plan <span>${inner}</span></p></div>`;
+      expect(recordedTextOf(work(`</span><span class="${ANALYTICS_MASK_CLASS}">ana@acme.com`), "ana@acme.com")).toBe("************");
+      expect(recordedTextOf(work(`</span><span contenteditable="true">Draft`), "Draft")).toBe("*****");
+      expect(recordedTextOf(`<div class="${ANALYTICS_WORK_CONTENT_CLASS} ${ANALYTICS_MASK_CLASS}"><p>Both markers</p></div>`, "Both markers")).toBe("**** *******");
+      // A work row inside a masked container shows (the task chat description).
+      expect(recordedTextOf(`<div class="${ANALYTICS_MASK_CLASS}"><div class="${ANALYTICS_WORK_CONTENT_CLASS}"><p>Brief</p></div><p>Reply</p></div>`, "Brief")).toBe("Brief");
+      expect(recordedTextOf(`<div class="${ANALYTICS_MASK_CLASS}"><div class="${ANALYTICS_WORK_CONTENT_CLASS}"><p>Brief</p></div><p>Reply</p></div>`, "Reply")).toBe("*****");
+    } finally {
+      document.documentElement.removeAttribute(REPLAY_WORK_CONTENT_ATTRIBUTE);
+    }
+  });
+
+  it("masks secrets inside visible work content", () => {
+    document.documentElement.setAttribute(REPLAY_WORK_CONTENT_ATTRIBUTE, "visible");
+    try {
+      const work = (text: string) => `<div class="${ANALYTICS_WORK_CONTENT_CLASS}"><pre>${text}</pre></div>`;
+      expect(recordedTextOf(work("OPENAI_API_KEY=sk-proj-abcdefghijklmnop1234"), "OPENAI_API_KEY="))
+        .toBe(`OPENAI_API_KEY=${stars("sk-proj-abcdefghijklmnop1234")}`);
+      expect(recordedTextOf(work("Deploy the Q3 plan"), "Deploy the Q3 plan")).toBe("Deploy the Q3 plan");
+    } finally {
+      document.documentElement.removeAttribute(REPLAY_WORK_CONTENT_ATTRIBUTE);
+    }
+  });
+
+  it.each([
+    ["an OpenAI key", "key sk-proj-abcdefghijklmnop1234 here", "sk-proj-abcdefghijklmnop1234"],
+    ["an Anthropic key", "sk-ant-api03-AbCdEfGhIjKlMnOpQr", "sk-ant-api03-AbCdEfGhIjKlMnOpQr"],
+    ["a GitHub token", "ghp_abcdefghijklmnopqrstuvwxyz0123", "ghp_abcdefghijklmnopqrstuvwxyz0123"],
+    ["a Slack token", "xoxb-123456789012-abcdefABCDEF", "xoxb-123456789012-abcdefABCDEF"],
+    ["an AWS key id", "id AKIAABCDEFGHIJKLMNOP", "AKIAABCDEFGHIJKLMNOP"],
+    ["a Google API key", "AIzaSyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q", "AIzaSyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q"],
+    ["a JWT", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefgh1234", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefgh1234"],
+    ["an env assignment", "DATABASE_PASSWORD=hunter2", "hunter2"],
+    ["a JSON field", "\"apiKey\": \"abc123secret\"", "abc123secret"],
+    ["a YAML field", "client_secret: s3cr3t-value", "s3cr3t-value"],
+    ["a quoted password with spaces", "password=\"correct horse battery staple\"", "correct horse battery staple"],
+    ["a single-quoted secret with punctuation", "secret: 'p@ss, word; 42!'", "p@ss, word; 42!"],
+    ["an unquoted YAML password with spaces", "password: correct horse battery staple", "correct horse battery staple"],
+    ["a quoted value with an escaped quote", "\"token\": \"ab\\\"cd ef\"", "ab\\\"cd ef"],
+    ["a bearer header", "Authorization: Bearer abcdef123456", "abcdef123456"],
+    ["URL credentials", "postgres://admin:pa55word@db.internal:5432/app", "admin:pa55word"],
+    ["a random token", "value Xk9pQ2mZ7rT4vB8nL3wY6sD1fH5jK0aC", "Xk9pQ2mZ7rT4vB8nL3wY6sD1fH5jK0aC"],
+    ["a private key", "-----BEGIN RSA PRIVATE KEY-----\nMIIBOg\n-----END RSA PRIVATE KEY-----", "-----BEGIN RSA PRIVATE KEY-----\nMIIBOg\n-----END RSA PRIVATE KEY-----"],
+  ])("redactReplaySecrets masks %s", (_label, input, secret) => {
+    expect(redactReplaySecrets(input)).toBe(input.replace(secret, stars(secret)));
+  });
+
+  it("masks only the secret value in JSON, leaving the next field", () => {
+    expect(redactReplaySecrets("{\"password\": \"correct horse\", \"title\": \"Q3 plan\"}"))
+      .toBe("{\"password\": \"******* *****\", \"title\": \"Q3 plan\"}");
+  });
+
+  it("masks an unclosed quoted secret to the end of its line", () => {
+    expect(redactReplaySecrets("password=\"correct horse\nnext line")).toBe("password=\"******* *****\nnext line");
+  });
+
+  it("masks a secret value longer than any length limit in full", () => {
+    const hex = "0123456789abcdef".repeat(400);
+    expect(redactReplaySecrets(`COOKIE=${hex}`)).toBe(`COOKIE=${stars(hex)}`);
+    expect(redactReplaySecrets(`"cookie": "${hex}", "title": "Q3"`)).toBe(`"cookie": "${stars(hex)}", "title": "Q3"`);
+  });
+
+  it("masks secrets behind long names, after other assignments, and long URL passwords", () => {
+    const longName = `${"SERVICE_".repeat(12)}PASSWORD`;
+    expect(redactReplaySecrets(`${longName}=hunter2`)).toBe(`${longName}=*******`);
+    expect(redactReplaySecrets("user=bob password=hunter2")).toBe("user=bob password=*******");
+    const longPassword = "p".repeat(400);
+    expect(redactReplaySecrets(`postgres://admin:${longPassword}@db:5432/app`))
+      .toBe(`postgres://${stars(`admin:${longPassword}`)}@db:5432/app`);
+    const longFlag = `--${"service-".repeat(500)}password`;
+    expect(redactReplaySecrets(`${longFlag} hunter2 --region us`)).toBe(`${longFlag} ******* --region us`);
+  });
+
+  it.each([
+    ["a spaced label", "API key: 8f3a9c2e41b7d605", "8f3a9c2e41b7d605"],
+    ["a spaced label after other words", "The staging private key: 8f3a9c2e41b7d605", "8f3a9c2e41b7d605"],
+    ["a session id label", "Session ID: 9f8e7d6c5b4a", "9f8e7d6c5b4a"],
+    ["a name that ends in key", "ENCRYPTION_KEY=0f1e2d3c4b5a", "0f1e2d3c4b5a"],
+    ["a camel-case key name", "signingKey: 'left right'", "left right"],
+    ["a short password name", "DB_PASS=hunter2", "hunter2"],
+    ["a PIN", "PIN: 4821", "4821"],
+    ["a passphrase", "passphrase: correct horse", "correct horse"],
+    ["a bold Markdown label in a raw file", "**Password**: hunter2", "hunter2"],
+    ["a command-line flag", "mysql --password hunter2 --host db", "hunter2"],
+    ["a quoted command-line flag", "deploy --api-key \"left right\" --region us", "\"left right\""],
+    ["a quoted flag value with escaped quotes", "mysql --password \"correct \\\"horse\\\" battery staple\" --host db", "\"correct \\\"horse\\\" battery staple\""],
+    ["a single-quoted flag value with an escaped quote", "run --token 'it\\'s a secret' --dry-run", "'it\\'s a secret'"],
+    ["a flag name with an underscore", "run --verbose --db_password hunter2 --host db", "hunter2"],
+  ])("redactReplaySecrets masks %s", (_label, input, secret) => {
+    expect(redactReplaySecrets(input)).toBe(input.replace(secret, stars(secret)));
+  });
+
+  describe("a secret split across the nodes of one line", () => {
+    // rrweb records one text node at a time. Markdown and syntax highlighting
+    // put a label and its value in different nodes of the same line.
+    const work = (inner: string) => `<div class="${ANALYTICS_WORK_CONTENT_CLASS}">${inner}</div>`;
+
+    function withVisibleWorkContent(run: () => void) {
+      document.documentElement.setAttribute(REPLAY_WORK_CONTENT_ATTRIBUTE, "visible");
+      try {
+        run();
+      } finally {
+        document.documentElement.removeAttribute(REPLAY_WORK_CONTENT_ATTRIBUTE);
+      }
+    }
+
+    it("masks a value after a bold label", () => withVisibleWorkContent(() => {
+      expect(recordedTextOf(work("<p><strong>Password:</strong> hunter2</p>"), "hunter2")).toBe(" *******");
+      expect(recordedTextOf(work("<p><strong>Password:</strong> hunter2</p>"), "Password")).toBe("Password:");
+    }));
+
+    it("masks a value in inline code after its label", () => withVisibleWorkContent(() => {
+      expect(recordedTextOf(work("<p>Password: <code>hunter2</code></p>"), "hunter2")).toBe("*******");
+      expect(recordedTextOf(work("<p><strong>API key</strong>: <code>8f3a9c2e41b7d605</code></p>"), "8f3a")).toBe("****************");
+      expect(recordedTextOf(work("<ul><li>Staging token: <code>blue-green-42</code></li><li>Owner: <code>ana</code></li></ul>"), "blue-green")).toBe("*************");
+      expect(recordedTextOf(work("<ul><li>Staging token: <code>blue-green-42</code></li><li>Owner: <code>ana</code></li></ul>"), "ana")).toBe("ana");
+    }));
+
+    it("masks a quoted value with formatting inside it, and shows the text after its closing quote", () => withVisibleWorkContent(() => {
+      const html = work('<p>Password: "correct <strong>horse</strong> battery <em>staple</em>" and then sign in</p>');
+      expect(recordedTextOf(html, "Password")).toBe('Password: "******* ');
+      expect(recordedTextOf(html, "horse")).toBe("*****");
+      expect(recordedTextOf(html, "battery")).toBe(" ******* ");
+      expect(recordedTextOf(html, "staple")).toBe("******");
+      expect(recordedTextOf(html, "and then sign in")).toBe('" and then sign in');
+    }));
+
+    it("shows the sentence after an inline assignment, and masks a later secret in it", () => withVisibleWorkContent(() => {
+      const html = work("<p>Set <code>API_KEY=abc123</code> in the env file, then use password: hunter2</p>");
+      expect(recordedTextOf(html, "API_KEY")).toBe("API_KEY=******");
+      expect(recordedTextOf(html, "in the env file")).toBe(" in the env file, then use password: *******");
+    }));
+
+    it("masks a value whose label follows an inline assignment in an earlier node", () => withVisibleWorkContent(() => {
+      // The first value ends with its inline code, so the scan reads on and
+      // finds the label that sits between the two code elements.
+      const html = work("<p>Set <code>API_KEY=abc123</code> and password: <code>hunter2</code> today</p>");
+      expect(recordedTextOf(html, "hunter2")).toBe("*******");
+      expect(recordedTextOf(html, "today")).toBe(" today");
+      const quoted = work("<p>Use <code>token=\"abc123\"</code> with pin: <code>4821</code></p>");
+      expect(recordedTextOf(quoted, "4821")).toBe("****");
+    }));
+
+    it("masks an unquoted value with formatting inside it, to the end of its line", () => withVisibleWorkContent(() => {
+      const html = work("<p><strong>Password:</strong> correct <em>horse</em> battery<br>Next line</p>");
+      expect(recordedTextOf(html, "correct")).toBe(" ******* ");
+      expect(recordedTextOf(html, "horse")).toBe("*****");
+      expect(recordedTextOf(html, "battery")).toBe(" *******");
+      expect(recordedTextOf(html, "Next line")).toBe("Next line");
+    }));
+
+    it("masks a value split across syntax highlight spans", () => withVisibleWorkContent(() => {
+      const env = work("<pre><code><span>PASSWORD</span>=abc<span>$def</span>\n<span>REGION</span>=us</code></pre>");
+      expect(recordedTextOf(env, "=abc")).toBe("=***");
+      expect(recordedTextOf(env, "$def")).toBe("****");
+      expect(recordedTextOf(env, "=us")).toBe("=us");
+      const json = work("<pre><code>{<span>\"password\"</span><span>:</span> <span>\"correct horse\"</span>, <span>\"title\"</span>: <span>\"Q3 plan\"</span>}</code></pre>");
+      expect(recordedTextOf(json, "correct horse")).toBe("\"******* *****\"");
+      expect(recordedTextOf(json, "Q3 plan")).toBe("\"Q3 plan\"");
+    }));
+
+    it("reads the label through the file viewer's line-number gutter", () => withVisibleWorkContent(() => {
+      const line = work("<pre><div><span aria-hidden=\"true\">12</span><code><span>db_password</span>: <span>hunter2</span></code></div><div><span aria-hidden=\"true\">13</span><code>region: us</code></div></pre>");
+      expect(recordedTextOf(line, "hunter2")).toBe("*******");
+      expect(recordedTextOf(line, "region")).toBe("region: us");
+    }));
+
+    it("keeps a label on its own line or block", () => withVisibleWorkContent(() => {
+      expect(recordedTextOf(work("<p>Reset the password:</p><p>Open the settings page</p>"), "Open")).toBe("Open the settings page");
+      expect(recordedTextOf(work("<p>Reset the password:<br>Open the settings page</p>"), "Open")).toBe("Open the settings page");
+      expect(recordedTextOf(work("<table><tr><td>Password</td><td>rotated weekly</td></tr></table>"), "rotated")).toBe("rotated weekly");
+    }));
+
+    it("masks every candidate when sibling nodes hold the same text", () => withVisibleWorkContent(() => {
+      // rrweb passes the text and its parent, not the node, so the two
+      // " abc " nodes cannot be told apart: one follows a secret label.
+      const html = work("<p><b>Token:</b> abc <b>Owner:</b> abc </p>");
+      document.body.innerHTML = html;
+      const texts = Array.from(document.querySelector("p")!.childNodes).filter((node) => node.nodeType === Node.TEXT_NODE) as Text[];
+      expect(texts.map(recordedText)).toEqual([" *** ", " *** "]);
+    }));
+
+    it("never shows more with line context than without it", () => {
+      // A gutter number glued to a key breaks the word boundary of the known
+      // formats. The text is still redacted by itself.
+      expect(redactReplaySecrets("sk-proj-abcdefghijklmnop1234", { before: "12", continues: () => true }))
+        .toBe(stars("sk-proj-abcdefghijklmnop1234"));
+      expect(redactReplaySecrets("password: hunter2", { before: "note: ", continues: () => false })).toBe("password: *******");
+      expect(redactReplaySecrets("plain words", { before: "note: ", continues: () => false })).toBe("plain words");
+    });
+
+    it("masks every line of a private key that the file viewer renders line by line", () => withVisibleWorkContent(() => {
+      // `FileContentViewer`: one <div> per line, a gutter number and a <code>.
+      const lines = [
+        "notes for the deploy", "-----BEGIN RSA PRIVATE KEY-----", "Proc-Type: 4,ENCRYPTED", "\u200b",
+        "abcdefghijklmnop", "QRSTUVWX", "tail12==", "-----END RSA PRIVATE KEY-----", "done", "abcdefghijklmnop",
+      ];
+      document.body.innerHTML = work(`<pre>${lines.map((line, index) => `<div><span aria-hidden="true">${index + 1}</span><code>${line}</code></div>`).join("")}</pre>`);
+      const recorded = Array.from(document.querySelectorAll("code")).map((code) => recordedText(code.firstChild as Text));
+      expect(recorded).toEqual([
+        "notes for the deploy", stars("-----BEGIN RSA PRIVATE KEY-----"), "Proc-Type: 4,ENCRYPTED", "\u200b",
+        "****************", "********", "********", "-----END RSA PRIVATE KEY-----", "done", "abcdefghijklmnop",
+      ]);
+    }));
+
+    it("masks a PGP private key block line by line", () => withVisibleWorkContent(() => {
+      const lines = ["-----BEGIN PGP PRIVATE KEY BLOCK-----", "Version: 2", "\u200b", "abcdefghijkl", "=AbCd", "-----END PGP PRIVATE KEY BLOCK-----", "after"];
+      document.body.innerHTML = work(`<pre>${lines.map((line) => `<div><code>${line}</code></div>`).join("")}</pre>`);
+      const recorded = Array.from(document.querySelectorAll("code")).map((code) => recordedText(code.firstChild as Text));
+      expect(recorded).toEqual([stars(lines[0]!), "Version: 2", "\u200b", "************", "*****", lines[5], "after"]);
+    }));
+
+    it("masks the rest of a private key that ends inside a later node", () => withVisibleWorkContent(() => {
+      const html = work("<pre><code><span>-----BEGIN PRIVATE KEY-----\n</span><span>abcdefgh\n</span><span>ijkl==\n-----END PRIVATE KEY-----\nsafe words</span></code></pre>");
+      expect(recordedTextOf(html, "abcdefgh")).toBe("********\n");
+      expect(recordedTextOf(html, "ijkl")).toBe("******\n-----END PRIVATE KEY-----\nsafe words");
+    }));
+
+    // rrweb calls the mask function for every text node, so its work per node
+    // must not grow with the page. A wall-clock bound depends on the machine,
+    // so these count how often the function reads the text of a node: to scan
+    // siblings again for every node it would have to read each of them again.
+    function textReadsWhileRecording(html: string): { reads: number; nodes: number } {
+      document.body.innerHTML = html;
+      const texts: Text[] = [];
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      while (walker.nextNode()) texts.push(walker.currentNode as Text);
+      const readData = Object.getOwnPropertyDescriptor(CharacterData.prototype, "data")!.get!;
+      let reads = 0;
+      const spy = vi.spyOn(CharacterData.prototype, "data", "get").mockImplementation(function (this: CharacterData) {
+        reads += 1;
+        return readData.call(this);
+      });
+      try {
+        for (const node of texts) recordedText(node);
+      } finally {
+        spy.mockRestore();
+      }
+      return { reads, nodes: texts.length };
+    }
+
+    // The line context reads at most 64 earlier nodes for one node.
+    const MAX_TEXT_READS_PER_NODE = 100;
+
+    it("does linear work on a long paragraph of prose between inline elements", () => withVisibleWorkContent(() => {
+      // Every text child of the <p> differs, so each one is its own candidate.
+      const parts = Array.from({ length: 1_500 }, (_unused, index) => `prose number ${index} goes on <b>bold ${index}</b> `).join("");
+      const { reads, nodes } = textReadsWhileRecording(work(`<p>${parts}</p>`));
+      // 1,500 prose nodes, 1,500 bold nodes and the space after the last one.
+      expect(nodes).toBe(3_001);
+      expect(reads).toBeLessThan(nodes * MAX_TEXT_READS_PER_NODE);
+    }));
+
+    it("does linear work on a long highlighted line", () => withVisibleWorkContent(() => {
+      const spans = Array.from({ length: 1_000 }, (_unused, index) => `<span>part${index}</span> `).join("");
+      const { reads, nodes } = textReadsWhileRecording(work(`<pre><code>${spans}</code></pre>`));
+      expect(nodes).toBe(2_000);
+      expect(reads).toBeLessThan(nodes * MAX_TEXT_READS_PER_NODE);
+    }));
+  });
+
+  it("redacts a large text node quickly", () => {
+    // rrweb calls this for every recorded text node, so it must stay linear.
+    const inputs = [
+      "tokentoken".repeat(20_000),
+      "a".repeat(200_000),
+      "password_".repeat(20_000) + "=x",
+      "https://" + "a:".repeat(50_000),
+      ("const value = computeTotal(lineItems); // TODO token budget\n").repeat(3_000),
+      "password=\"" + "\\a".repeat(100_000),
+      "secret: " + "x".repeat(200_000),
+    ];
+    const started = performance.now();
+    for (const input of inputs) redactReplaySecrets(input);
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
+  it.each([
+    "Ship the Q3 launch plan by Friday",
+    "commit 3f786850e387550fdab836ed7e6dc881de23001b",
+    "id 123e4567-e89b-12d3-a456-426614174000",
+    "The token budget was 4k per run.",
+    "See https://github.com/paperclipai/paperclip/pull/22820",
+    "Key findings: revenue grew 12% in Q3",
+    "Pass rate: 98% across the suite",
+    "Keyboard shortcut: Ctrl+K",
+    "OAuth: enabled for every workspace",
+    "Next step: run pnpm verify --full",
+  ])("redactReplaySecrets leaves ordinary text alone: %s", (input) => {
+    expect(redactReplaySecrets(input)).toBe(input);
+  });
+
+  it("shows a task preview as work content only for the selected company's own task", () => {
+    // A preview loads a task by id, so it can belong to another company than
+    // the one whose source check set the page's visible flag.
+    expect(workContentClassForCompany("co-1", "co-1")).toBe(ANALYTICS_WORK_CONTENT_CLASS);
+    expect(workContentClassForCompany("co-2", "co-1")).toBe(ANALYTICS_MASK_CLASS);
+    expect(workContentClassForCompany(undefined, "co-1")).toBe(ANALYTICS_MASK_CLASS);
+    expect(workContentClassForCompany("co-1", null)).toBe(ANALYTICS_MASK_CLASS);
+    expect(workContentClassForCompany(null, null)).toBe(ANALYTICS_MASK_CLASS);
+    const quicklook = readFileSync(join(UI_SRC, "components/IssueLinkQuicklook.tsx"), "utf8");
+    expect(quicklook).toContain("workContentClassForCompany(issue.companyId, selectedCompanyId)");
+  });
+
+  it.each([
+    ["glpat", "-", "AbCdEfGhIjKlMnOpQr12"],
+    ["ghp", "_", "AbCdEfGhIjKlMnOpQr12"],
+    ["sk-proj", "-", "AbCdEfGhIjKlMnOpQr12"],
+  ])("masks a %s credential in the rendered task preview", (prefix, separator, value) => {
+    const token = [prefix, value].join(separator);
+    const company = vi.spyOn(CompanyContext, "useOptionalCompany").mockReturnValue({
+      selectedCompanyId: "co-1",
+    } as ReturnType<typeof CompanyContext.useOptionalCompany>);
+    document.documentElement.setAttribute(REPLAY_WORK_CONTENT_ATTRIBUTE, "visible");
+    try {
+      const html = renderTaskPreview(`Use **${token}** for the review.`);
+      expect(recordedTextOf(html, value)).toBe(`Use ${stars(token)} for the review.`);
+      expect(document.querySelector('[data-slot="task-preview-description"]')?.textContent)
+        .toBe(`Use ${token} for the review.`);
+    } finally {
+      company.mockRestore();
+      document.documentElement.removeAttribute(REPLAY_WORK_CONTENT_ATTRIBUTE);
+    }
+  });
+
+  it("masks a cut task preview whose text holds a credential", () => {
+    // The preview shows 177 characters. A credential that crosses that cut is
+    // too short to match its format, so its first characters would record.
+    const lead = "Please rotate the deploy credential for the staging cluster before the Friday release and tell the team in the channel when it is done so nobody is blocked on it. ";
+    const company = vi.spyOn(CompanyContext, "useOptionalCompany").mockReturnValue({
+      selectedCompanyId: "co-1",
+    } as ReturnType<typeof CompanyContext.useOptionalCompany>);
+    document.documentElement.setAttribute(REPLAY_WORK_CONTENT_ATTRIBUTE, "visible");
+    try {
+      for (const token of ["ghp_abcdefghijklmnopqrstuvwxyz0123", "sk-proj-AbCdEfGhIjKlMnOpQrStUvWx1234", "Xk9pQ2mZ7rT4vB8nL3wY6sD1fH5jK0aCXk9pQ2mZ7rT4"]) {
+        const html = renderTaskPreview(`${lead}${token} and confirm.`);
+        const rendered = document.createElement("div");
+        rendered.innerHTML = html;
+        const shown = rendered.querySelector('[data-slot="task-preview-description"]')?.textContent ?? "";
+        // The person sees the cut text, with the start of the credential.
+        expect(shown.endsWith("...")).toBe(true);
+        expect(shown).toContain(token.slice(0, 8));
+        // The replay records none of it.
+        expect(recordedTextOf(html, "Please rotate")).toBe(stars(shown));
+      }
+      // A cut preview with no credential still shows.
+      const plain = renderTaskPreview(`${lead}${lead}`);
+      expect(recordedTextOf(plain, "Please rotate")).toContain("Please rotate the deploy credential");
+    } finally {
+      company.mockRestore();
+      document.documentElement.removeAttribute(REPLAY_WORK_CONTENT_ATTRIBUTE);
+    }
+  });
+
+  it.each(["`", "*", "_", "["])("bounds %s runs before converting a task preview", (marker) => {
+    const convert = MarkdownPlainText.markdownToPlainText;
+    const conversion = vi.spyOn(MarkdownPlainText, "markdownToPlainText").mockImplementation((markdown) => {
+      expect(markdown.length).toBeLessThanOrEqual(2_048);
+      return convert(markdown);
+    });
+    const company = vi.spyOn(CompanyContext, "useOptionalCompany").mockReturnValue({
+      selectedCompanyId: "co-1",
+    } as ReturnType<typeof CompanyContext.useOptionalCompany>);
+    document.documentElement.setAttribute(REPLAY_WORK_CONTENT_ATTRIBUTE, "visible");
+    try {
+      const html = renderTaskPreview(`Use ${marker.repeat(128_000)}x`);
+      const recorded = recordedTextOf(html, "Use");
+      const rendered = document.querySelector('[data-slot="task-preview-description"]')?.textContent ?? "";
+      expect(conversion).toHaveBeenCalledTimes(1);
+      expect(rendered.length).toBeLessThanOrEqual(180);
+      expect(rendered).toContain("Use");
+      expect(recorded).toBe(stars(rendered));
+    } finally {
+      company.mockRestore();
+      conversion.mockRestore();
+      document.documentElement.removeAttribute(REPLAY_WORK_CONTENT_ATTRIBUTE);
+    }
+  });
+
+  it("redacts an adversarial run of hyphens without stalling the recorder", () => {
+    const prefix = "-".repeat(512 * 1024);
+    const input = `${prefix}\nmysql --password hunter2 --host db`;
+    const started = performance.now();
+    expect(redactReplaySecrets(input)).toBe(`${prefix}\nmysql --password ******* --host db`);
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
+  it("sends the marker selector and the work content mask function to session replay", () => {
     expect(options.session_recording.maskTextSelector).toBe(ANALYTICS_MASK_TEXT_SELECTOR);
-    expect(options.session_recording).not.toHaveProperty("maskTextFn");
+    expect(options.session_recording.maskTextFn).toBe(maskReplayText);
     expect(options.session_recording.maskAllInputs).toBe(true);
     expect(options.session_recording.blockClass).toBe(ANALYTICS_NO_CAPTURE_CLASS);
   });
@@ -383,6 +825,27 @@ describe("session replay text masking", () => {
     const contentTag = source.startsWith("<", index) ? source.slice(index, tagEnd(source, index + 1) + 1) : "";
     const elements = [...openElementsAt(source, index), contentTag];
     expect(elements.some((tag) => tag.includes("ANALYTICS_MASK_CLASS"))).toBe(true);
+  });
+
+  it.each([
+    { file: "components/FileViewerSheet.tsx", content: "<WorkspaceFileMarkdownBody" },
+  ])("renders Markdown work content with the work marker at $content in $file", ({ file, content }) => {
+    // An inner MarkdownBody without replayContent="work" carries the strict
+    // mask, which wins over a work marker on its wrapper.
+    const source = readFileSync(join(UI_SRC, file), "utf8");
+    const index = source.indexOf(content);
+    expect(index, `content not found in ${file}`).toBeGreaterThanOrEqual(0);
+    expect(source.slice(index, tagEnd(source, index + 1) + 1)).toContain("replayContent=\"work\"");
+  });
+
+  it.each(WORK_CONTENT_SURFACES)("keeps the work content mask on $content in $file", ({ file, content }) => {
+    const source = readFileSync(join(UI_SRC, file), "utf8");
+    const index = source.indexOf(content);
+    expect(index, `content not found in ${file}`).toBeGreaterThanOrEqual(0);
+    const contentTag = source.startsWith("<", index) ? source.slice(index, tagEnd(source, index + 1) + 1) : "";
+    const elements = [...openElementsAt(source, index), contentTag];
+    // `workContentClassForCompany` picks the work marker for the selected company's own content.
+    expect(elements.some((tag) => tag.includes("ANALYTICS_WORK_CONTENT_CLASS") || tag.includes("workContentClassForCompany("))).toBe(true);
   });
 
   it("finds the portaled content of connection and account surfaces", () => {

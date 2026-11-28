@@ -49,9 +49,16 @@ describe("browser analytics config exposure", () => {
       environment: "production",
       stackId: "stack-1",
       replayEnabled,
+      replayWorkContentEnabled: false,
       consentRequired: null,
       cloudTrialInferenceEnabled: false,
     });
+  });
+
+  it("exposes the deployment's work content opt-in only while replay is on", () => {
+    const env = { ...CLOUD, ...TOKEN, ...BROWSER, PAPERCLIP_POSTHOG_REPLAY_WORK_CONTENT_ENABLED: "1" };
+    expect(resolveBrowserAnalyticsConfig(env)?.replayWorkContentEnabled).toBe(true);
+    expect(resolveBrowserAnalyticsConfig({ ...env, PAPERCLIP_POSTHOG_REPLAY_ENABLED: "0" })?.replayWorkContentEnabled).toBe(false);
   });
 
   it("decides consent from the configured edge country header, and leaves it to the browser otherwise", () => {

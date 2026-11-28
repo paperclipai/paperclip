@@ -152,6 +152,7 @@ export function TaskChatDescriptionBubble({ brief }: TaskChatDescriptionBubblePr
               softBreaks
               linkIssueReferences
               externalReferences={brief.externalReferences}
+              replayContent="work"
             >
               {brief.description}
             </MarkdownBody>

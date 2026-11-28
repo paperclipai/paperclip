@@ -1967,7 +1967,16 @@ function connectorEnrollmentPrincipal(req: Request): string {
       }, { mutation: false, readContext: connectionRequestContext(req) })));
       visible = visible.filter((_, index) => allowed[index].allowed);
     }
-    res.json({ connections: visible });
+    if (req.actor.type !== "board") {
+      res.json({ connections: visible });
+      return;
+    }
+    // How many of the company's connections this response leaves out: another
+    // person's draft, or a connector whose plugin is unavailable. A board
+    // reader that must know every source (the session replay privacy check)
+    // treats any hidden row as unknown.
+    const total = await svc.countConnections(companyId);
+    res.json({ connections: visible, hiddenCount: Math.max(0, total - visible.length) });
   });
 
   router.post("/companies/:companyId/tools/connections", managementGuard("connections:configure", "POST /companies/:companyId/tools/connections", { personal: true }), validate(createToolConnectionSchema), async (req, res) => {

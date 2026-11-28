@@ -1,11 +1,12 @@
-import { ANALYTICS_MASK_TEXT_SELECTOR, ANALYTICS_NO_CAPTURE_CLASS } from "./privacy";
+import { ANALYTICS_MASK_TEXT_SELECTOR, ANALYTICS_NO_CAPTURE_CLASS, maskReplayText } from "./privacy";
 
 const BLOCK_SELECTOR = `.${ANALYTICS_NO_CAPTURE_CLASS}`;
 
 export function recordedTextNode(node: Text): string {
   const parent = node.parentElement;
   if (parent?.closest(BLOCK_SELECTOR)) return "";
-  if (parent?.closest(ANALYTICS_MASK_TEXT_SELECTOR)) return node.data.replace(/\S/g, "*");
+  // Like rrweb: text inside the selector goes through `maskTextFn`.
+  if (parent?.closest(ANALYTICS_MASK_TEXT_SELECTOR)) return maskReplayText(node.data, parent);
   return node.data;
 }
 

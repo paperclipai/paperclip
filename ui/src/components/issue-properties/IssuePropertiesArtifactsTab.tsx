@@ -227,7 +227,7 @@ function MarkdownWorkProductRow({
           onPanelOpenChange={setAnnotationPanelOpen}
           panelPlacement="popover"
         >
-          <MarkdownBody>{reviewDoc.body}</MarkdownBody>
+          <MarkdownBody replayContent="work">{reviewDoc.body}</MarkdownBody>
         </IssueDocumentAnnotations>
       ) : (
         <p className="text-sm text-muted-foreground">Document is empty.</p>
@@ -409,7 +409,7 @@ function DocumentRow({
               onPanelOpenChange={setAnnotationPanelOpen}
               panelPlacement="popover"
             >
-              <MarkdownBody>{doc.body}</MarkdownBody>
+              <MarkdownBody replayContent="work">{doc.body}</MarkdownBody>
             </IssueDocumentAnnotations>
           ) : (
             <p className="text-sm text-muted-foreground">Document is empty.</p>

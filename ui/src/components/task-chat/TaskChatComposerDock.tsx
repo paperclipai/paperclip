@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 interface TaskChatComposerDockProps {
   children: ReactNode;
@@ -53,6 +54,9 @@ export function TaskChatComposerDock({ children, mobile, streamlined, concealed 
     aria-hidden={concealed || placeholder || undefined}
     className={cn(
       "task-chat-composer-dock flex max-w-(--tc-shell-max-w) shrink-0 flex-col gap-2",
+      // Customer content (queued messages, turn status, drafts): masked in
+      // session replay. The task chat container itself carries no mask.
+      ANALYTICS_MASK_CLASS,
       concealed && "invisible",
       mobile
         ? cn("w-auto px-1 pb-1", streamlined ? "-mx-2" : "mx-2")

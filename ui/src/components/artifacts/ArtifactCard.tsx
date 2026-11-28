@@ -3,7 +3,7 @@ import { Download, ExternalLink, Paperclip, Play } from "lucide-react";
 import type { CompanyArtifact } from "@/api/artifacts";
 import { Link } from "@/lib/router";
 import { cn, formatDate } from "@/lib/utils";
-import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { ANALYTICS_WORK_CONTENT_CLASS } from "@/lib/analytics/privacy";
 
 interface ArtifactCardProps {
   artifact: CompanyArtifact;
@@ -142,7 +142,7 @@ function TextPreview({ artifact }: { artifact: PreviewArtifact }) {
   return (
     <PreviewFrame className="bg-card">
       <div className="absolute inset-0 overflow-hidden p-3">
-        <p className={cn("max-h-full overflow-hidden whitespace-pre-wrap break-words text-base leading-6 text-muted-foreground/75", ANALYTICS_MASK_CLASS)}>
+        <p className={cn("max-h-full overflow-hidden whitespace-pre-wrap break-words text-base leading-6 text-muted-foreground/75", ANALYTICS_WORK_CONTENT_CLASS)}>
           {preview}
         </p>
       </div>

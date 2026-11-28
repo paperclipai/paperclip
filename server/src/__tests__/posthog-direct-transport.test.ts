@@ -10,6 +10,7 @@ const config: CloudPostHogConfig = {
   directEnabled: true,
   browserEnabled: false,
   replayEnabled: false,
+  replayWorkContentEnabled: false,
   cloudTrialInferenceEnabled: false,
 };
 

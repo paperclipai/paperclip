@@ -47,6 +47,7 @@ export type CloudPostHogConfig = {
   directEnabled: boolean; // PAPERCLIP_POSTHOG_DIRECT !== "0"
   browserEnabled: boolean; // PAPERCLIP_POSTHOG_BROWSER_ENABLED === "1"
   replayEnabled: boolean; // browserEnabled && PAPERCLIP_POSTHOG_REPLAY_ENABLED !== "0"
+  replayWorkContentEnabled: boolean;
   cloudTrialInferenceEnabled: boolean; // PAPERCLIP_MANAGED_CONFIG.features.enableCloudTrialInference
 };
 
@@ -66,6 +67,7 @@ export function resolveCloudPostHogConfig(
   if (!token || !stackId) return null;
 
   const browserEnabled = readEnv(env, "PAPERCLIP_POSTHOG_BROWSER_ENABLED") === "1";
+  const replayEnabled = browserEnabled && readEnv(env, "PAPERCLIP_POSTHOG_REPLAY_ENABLED") !== "0";
   return {
     token,
     host: (readEnv(env, "PAPERCLIP_POSTHOG_HOST") ?? DEFAULT_CLOUD_POSTHOG_HOST).replace(/\/+$/, ""),
@@ -73,7 +75,8 @@ export function resolveCloudPostHogConfig(
     stackId,
     directEnabled: readEnv(env, "PAPERCLIP_POSTHOG_DIRECT") !== "0",
     browserEnabled,
-    replayEnabled: browserEnabled && readEnv(env, "PAPERCLIP_POSTHOG_REPLAY_ENABLED") !== "0",
+    replayEnabled,
+    replayWorkContentEnabled: replayEnabled && readEnv(env, "PAPERCLIP_POSTHOG_REPLAY_WORK_CONTENT_ENABLED") === "1",
     cloudTrialInferenceEnabled: resolveCloudTrialInferenceEnabled(env),
   };
 }

@@ -30,6 +30,7 @@ describe("resolveCloudPostHogConfig", () => {
       directEnabled: true,
       browserEnabled: false,
       replayEnabled: false,
+      replayWorkContentEnabled: false,
       cloudTrialInferenceEnabled: false,
     });
   });
@@ -99,5 +100,28 @@ describe("resolveCloudPostHogConfig", () => {
         resolveCloudPostHogConfig({ ...CLOUD, PAPERCLIP_POSTHOG_ENVIRONMENT: "staging", PAPERCLIP_POSTHOG_DIRECT: "0" }),
       ),
     ).toBe(false);
+  });
+
+  it.each([undefined, "", "0", "true", "invalid", "1", " 1 "])(
+    "requires an explicit work content opt-in: %s",
+    (value) => {
+      const config = resolveCloudPostHogConfig({
+        ...CLOUD,
+        PAPERCLIP_POSTHOG_BROWSER_ENABLED: "1",
+        PAPERCLIP_POSTHOG_REPLAY_WORK_CONTENT_ENABLED: value,
+      });
+      expect(config?.replayEnabled).toBe(true);
+      expect(config?.replayWorkContentEnabled).toBe(value?.trim() === "1");
+    },
+  );
+
+  it("cannot enable work content without browser analytics and replay", () => {
+    const env = { ...CLOUD, PAPERCLIP_POSTHOG_REPLAY_WORK_CONTENT_ENABLED: "1" };
+    expect(resolveCloudPostHogConfig(env)?.replayWorkContentEnabled).toBe(false);
+    expect(resolveCloudPostHogConfig({
+      ...env,
+      PAPERCLIP_POSTHOG_BROWSER_ENABLED: "1",
+      PAPERCLIP_POSTHOG_REPLAY_ENABLED: "0",
+    })?.replayWorkContentEnabled).toBe(false);
   });
 });

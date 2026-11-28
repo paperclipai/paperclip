@@ -115,6 +115,7 @@ describe("auth routes", () => {
     vi.stubEnv("PAPERCLIP_CLOUD_STACK_ID", "stack-1");
     vi.stubEnv("PAPERCLIP_POSTHOG_PROJECT_TOKEN", "phc_test");
     vi.stubEnv("PAPERCLIP_POSTHOG_BROWSER_ENABLED", undefined);
+    vi.stubEnv("PAPERCLIP_POSTHOG_REPLAY_WORK_CONTENT_ENABLED", undefined);
 
     const off = await request(createApp(actor, baseUser)).get("/api/auth/get-session");
     expect(off.status).toBe(200);
@@ -131,9 +132,15 @@ describe("auth routes", () => {
       environment: "staging",
       stackId: "stack-1",
       replayEnabled: true,
+      replayWorkContentEnabled: false,
       consentRequired: null,
       cloudTrialInferenceEnabled: false,
     });
+
+    vi.stubEnv("PAPERCLIP_POSTHOG_REPLAY_WORK_CONTENT_ENABLED", "1");
+    const workContentOn = await request(createApp(actor, baseUser)).get("/api/auth/get-session");
+    expect(workContentOn.status).toBe(200);
+    expect(workContentOn.body.browserAnalytics.replayWorkContentEnabled).toBe(true);
 
     vi.stubEnv("PAPERCLIP_POSTHOG_COUNTRY_HEADER", "cf-ipcountry");
     const eu = await request(createApp(actor, baseUser)).get("/api/auth/get-session").set("CF-IPCountry", "FR");

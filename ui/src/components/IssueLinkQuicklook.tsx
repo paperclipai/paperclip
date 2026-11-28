@@ -16,7 +16,9 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { StatusGlyph } from "@/components/StatusGlyph";
 import { ProjectTile } from "@/components/ProjectTile";
 import { useFlyoutAppearance } from "@/components/ui/flyout-appearance";
-import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { ANALYTICS_MASK_CLASS, redactReplaySecrets, workContentClassForCompany } from "@/lib/analytics/privacy";
+import { useOptionalCompany } from "@/context/CompanyContext";
+import { markdownToPlainText } from "@/lib/markdown-plain-text";
 
 /* ------------------------------------------------------------------ */
 /*  Single-flight quicklook store                                      */
@@ -96,6 +98,8 @@ export function quicklookAlignOffset(align: "start" | "center" | "end" = "start"
 }
 
 export type IssueQuicklookIssue = Pick<Issue, "id" | "title" | "updatedAt"> & {
+  /** The task's company. Session replay shows the description only for the selected company's own task. */
+  companyId?: string | null;
   identifier?: string | null;
   status: string;
   priority: string;
@@ -107,17 +111,23 @@ export type IssueQuicklookIssue = Pick<Issue, "id" | "title" | "updatedAt"> & {
   originId?: string | null;
 };
 
+const SUMMARY_SOURCE_LIMIT = 2_048;
+
 function summarizeIssueDescription(description: string | null | undefined) {
   if (!description) return null;
-  const summary = description
-    .replace(/!\[[^\]]*]\([^)]+\)/g, " ")
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-    .replace(/[#>*_`~-]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  const plain = markdownToPlainText(description.slice(0, SUMMARY_SOURCE_LIMIT));
 
-  if (!summary) return null;
-  return summary.length > 180 ? `${summary.slice(0, 177).trimEnd()}...` : summary;
+  if (!plain) return null;
+  const sourceCut = description.length > SUMMARY_SOURCE_LIMIT;
+  const cut = sourceCut || plain.length > 180;
+  return {
+    text: cut ? `${plain.slice(0, 177).trimEnd()}...` : plain,
+    // A cut can leave the start of a credential, too short to match its
+    // format. So a cut preview masks in session replay when its source was
+    // capped, or when the text before the cut holds anything the replay
+    // redaction masks.
+    maskInReplay: sourceCut || (cut && redactReplaySecrets(plain) !== plain),
+  };
 }
 
 /** "·" between facts in the quicklook's meta and status lines. */
@@ -172,7 +182,9 @@ export function IssueQuicklookCard({
   compact?: boolean;
 }) {
   const appearance = useFlyoutAppearance();
-  const description = useMemo(() => summarizeIssueDescription(issue.description), [issue.description]);
+  const selectedCompanyId = useOptionalCompany()?.selectedCompanyId;
+  const summary = useMemo(() => summarizeIssueDescription(issue.description), [issue.description]);
+  const description = summary?.text;
   const projectName = issue.project?.name;
 
   return (
@@ -212,7 +224,14 @@ export function IssueQuicklookCard({
       </RouterDom.Link>
 
       {description ? (
-        <p data-slot="task-preview-description" className={cn("text-xs leading-5 text-muted-foreground [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:4] overflow-hidden", ANALYTICS_MASK_CLASS)}>
+        <p data-slot="task-preview-description" className={cn("text-xs leading-5 text-muted-foreground [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:4] overflow-hidden", 
+          // A preview loads a task by id, so it can show another company's task
+          // than the selected one. Only the selected company's own task is work
+          // content in session replay; any other always masks.
+          summary?.maskInReplay
+            ? ANALYTICS_MASK_CLASS
+            : workContentClassForCompany(issue.companyId, selectedCompanyId),
+        )}>
           {description}
         </p>
       ) : null}

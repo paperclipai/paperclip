@@ -60,6 +60,7 @@ import {
 } from "../lib/optimistic-issue-runs";
 import { useConnectivityStore } from "../lib/connectivity";
 import { queryKeys } from "../lib/queryKeys";
+import { isReplayWorkContentSourceChange, replayWorkContentQueryKeys } from "../lib/analytics/replay-work-content";
 import { extractCompanyPrefixFromPath, toCompanyRelativePath } from "../lib/company-routes";
 import { useLocation } from "../lib/router";
 import { agentRouteRef } from "../lib/utils";
@@ -1637,6 +1638,13 @@ function invalidateActivityQueries(
 
   if (action?.startsWith("ai_connection.") || action?.startsWith("connection_grant.")) {
     queryClient.invalidateQueries({ queryKey: ["ai-connections", companyId] });
+  }
+
+  if (isReplayWorkContentSourceChange(action)) {
+    // A new Google or Slack source must mask session replay at once: the reset
+    // drops the cached lists, so work content stays masked until they reload.
+    void queryClient.resetQueries({ queryKey: replayWorkContentQueryKeys.connections(companyId) });
+    void queryClient.resetQueries({ queryKey: replayWorkContentQueryKeys.chatEndpoints(companyId) });
   }
 
   if (action?.startsWith("primary_agent.") || action?.startsWith("agent.") || action?.startsWith("resource_membership.")) {

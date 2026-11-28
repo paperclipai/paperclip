@@ -7,6 +7,7 @@ import { TaskChatTaskCreatedCard } from "./TaskChatTaskCreatedCard";
 import { useMemo, type ReactNode } from "react";
 import type { IssueAttachment } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
+import { ANALYTICS_MASK_CLASS, ANALYTICS_WORK_CONTENT_CLASS } from "@/lib/analytics/privacy";
 import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import type {
   TaskChatInteractionItem,
@@ -62,6 +63,13 @@ interface TaskChatThreadViewProps {
    * nothing without it.
    */
   renderBrief?: () => ReactNode;
+  /**
+   * Session replay: mask every header, item and tail row, except the brief
+   * (the task description), which is work content and shows only when the
+   * company holds no Google or Slack data. The live thread sets it because
+   * its own container carries no mask.
+   */
+  replayMask?: boolean;
   /**
    * Renders the copy/👍/👎 action cluster prepended to an agent bubble's footer
    * line (PAP-413). The live thread binds it to the feedback-vote API; harness
@@ -323,6 +331,7 @@ export function TaskChatThreadView({
   onRuntimeRequestDecision,
   renderInteraction,
   renderBrief,
+  replayMask = false,
   renderMessageActions,
   renderQueuedAction,
   onTryAgainNoLiveExecutionPath,
@@ -367,6 +376,9 @@ export function TaskChatThreadView({
         retryableMarkerId, onRetryFailedRun, retryFailedRunId, attachments, onOpenSkill, onOpenBrowser,
       );
     };
+    const replayClass = (item: TaskChatItem) => replayMask
+      ? (item.kind === "brief" ? ANALYTICS_WORK_CONTENT_CLASS : ANALYTICS_MASK_CLASS)
+      : undefined;
     const renderedItems = streamlined
       ? visibleItems.map((item) => ({ item, content: renderVisibleItem(item) }))
           .filter((entry) => entry.content !== null)
@@ -384,9 +396,12 @@ export function TaskChatThreadView({
                   item.kind === "message" ? (item.renderKey ?? item.id) : item.id
                 }
                 id={item.kind === "message" ? `comment-${item.id}` : undefined}
-                className={taskChatItemSpacingClass(
-                  item,
-                  renderedItems[index - 1]?.item ?? null,
+                className={cn(
+                  taskChatItemSpacingClass(
+                    item,
+                    renderedItems[index - 1]?.item ?? null,
+                  ),
+                  replayClass(item),
                 )}
                 data-thread-item-kind={
                   item.kind === "message" ? item.author : item.kind
@@ -410,6 +425,7 @@ export function TaskChatThreadView({
                     item.kind === "interaction" &&
                     item.interaction.status !== "pending" &&
                     "-mt-3",
+                  replayClass(item),
                 )}
               >
                 {renderVisibleItem(item)}
@@ -422,6 +438,7 @@ export function TaskChatThreadView({
     renderInteraction, renderBrief, renderMessageActions, renderQueuedAction,
     onTryAgainNoLiveExecutionPath, tryAgainNoLiveExecutionPathPending,
     retryableMarkerId, onRetryFailedRun, retryFailedRunId, attachments, onOpenSkill, onOpenBrowser,
+    replayMask,
   ]);
   const body = (
     <div
@@ -433,14 +450,14 @@ export function TaskChatThreadView({
     >
       {header ? (
         <div
-          className={cn("flex flex-col gap-6", streamlined ? "pb-4" : "pb-2")}
+          className={cn("flex flex-col gap-6", streamlined ? "pb-4" : "pb-2", replayMask && ANALYTICS_MASK_CLASS)}
           data-testid="task-chat-thread-header"
         >
           {header}
         </div>
       ) : null}
       {history}
-      {tail ? <div data-conversation-typography="" className={streamlined ? "mt-4" : undefined}>{tail}</div> : null}
+      {tail ? <div data-conversation-typography="" className={cn(streamlined && "mt-4", replayMask && ANALYTICS_MASK_CLASS)}>{tail}</div> : null}
     </div>
   );
 

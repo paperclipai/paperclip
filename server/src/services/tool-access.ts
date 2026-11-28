@@ -4863,6 +4863,20 @@ export function toolAccessService(
       return connections;
     },
 
+    /**
+     * Every tool connection row of the company, including the rows
+     * `listConnections` leaves out (a connector whose plugin is unavailable).
+     * The list route reports the difference, so a reader can tell a complete
+     * list from a filtered one.
+     */
+    countConnections: async (companyId: string): Promise<number> => {
+      const [row] = await db
+        .select({ total: sql<number>`count(*)::int` })
+        .from(toolConnections)
+        .where(eq(toolConnections.companyId, companyId));
+      return row?.total ?? 0;
+    },
+
     createConnection: async (
       companyId: string,
       input: CreateToolConnection,

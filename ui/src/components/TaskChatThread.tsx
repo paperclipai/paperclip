@@ -3377,15 +3377,15 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           <div
             className={cn(
               "relative flex min-h-0 flex-1 flex-col",
-              // Customer content: masked in session replay, skipped by autocapture.
-              ANALYTICS_MASK_CLASS,
+              // No replay mask here: every child below carries its own, so the
+              // task description (work content) can show when allowed.
               isMobile && !historyRevealed && "task-chat-history-pending",
             )}
             data-testid="task-chat-thread"
             ref={historyShellRef}
           >
             {!historyRevealed ? (
-              <div className="absolute inset-0 z-10 overflow-hidden bg-background" data-testid="task-chat-history-loading">
+              <div className={cn("absolute inset-0 z-10 overflow-hidden bg-background", ANALYTICS_MASK_CLASS)} data-testid="task-chat-history-loading">
                 <TaskChatLoadingShell mobile={isMobile} streamlined={streamlinedUiEnabled} coordinator={coordinatorEnabled} />
               </div>
             ) : null}
@@ -3398,7 +3398,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               {historyError || (historyPending && historyWaitExpired) ? (
                 <div
                   role="status"
-                  className="absolute inset-x-0 top-0 z-20 mx-auto flex w-full max-w-(--tc-shell-max-w) items-center gap-2 border border-border bg-background px-4 py-2 text-sm text-muted-foreground"
+                  className={cn("absolute inset-x-0 top-0 z-20 mx-auto flex w-full max-w-(--tc-shell-max-w) items-center gap-2 border border-border bg-background px-4 py-2 text-sm text-muted-foreground", ANALYTICS_MASK_CLASS)}
                 >
                   {historyError ? "Some task history could not be loaded." : "Some task history is still loading."}
                   {historyError ? (
@@ -3420,7 +3420,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                   <>
                     {items.length === 0 && !tailRunId && !optimisticRunnerStartup && !scrollingHistory?.hasMore ? (
                       <div
-                        className="min-h-0 flex-1 overflow-y-auto"
+                        className={cn("min-h-0 flex-1 overflow-y-auto", ANALYTICS_MASK_CLASS)}
                       >
                         {threadHeaderWithBlockers || pendingQuestions.isError || decisionReceipts.isError || decisionReceipts.hasNextPage || taskHandoffs.isError || taskHandoffs.hasNextPage ? (
                           <div
@@ -3459,6 +3459,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                         header={<>{threadHeaderWithBlockers}{!issueBrief ? historyControl : null}<CoordinatorChatQuestionStatus query={pendingQuestions} /><CoordinatorChatReceiptStatus query={decisionReceipts} scroll={!!scrollingHistory} /><CoordinatorChatHandoffStatus query={taskHandoffs} scroll={!!scrollingHistory} /></>}
                         renderInteraction={renderInteraction}
                         renderBrief={renderBrief}
+                        replayMask
                         renderMessageActions={renderMessageActions}
                         renderQueuedAction={renderQueuedAction}
                         onTryAgainNoLiveExecutionPath={
@@ -3587,7 +3588,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               </div>
             </div>
             {assignedAgentForNotice?.status === "paused" && !isTerminalIssueStatus(issueStatus) ? (
-              <div className="mx-auto w-full max-w-(--tc-shell-max-w) px-4 pt-2">
+              <div className={cn("mx-auto w-full max-w-(--tc-shell-max-w) px-4 pt-2", ANALYTICS_MASK_CLASS)}>
                 <IssueAssigneePausedNotice
                   agent={assignedAgentForNotice}
                   issueStatus={issueStatus}

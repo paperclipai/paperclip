@@ -14,6 +14,7 @@ import { describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import { __liveUpdatesTestUtils } from "./LiveUpdatesProvider";
 import { queryKeys } from "../lib/queryKeys";
+import { replayWorkContentQueryKeys } from "../lib/analytics/replay-work-content";
 
 describe("LiveUpdatesProvider issue invalidation", () => {
   it("discovers first proactive deliveries without invalidating another human's chat list", () => {
@@ -44,6 +45,28 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       expect(cancel).toHaveBeenCalledWith({ queryKey: queryKeys.attention("company-1") });
       expect(cancel).toHaveBeenCalledWith({ queryKey: ["issues", "interactions"] });
     }
+    client.clear();
+  });
+  it.each([
+    ["tool_connection.created", true],
+    ["tool_app.oauth_connected", true],
+    ["tool_connection.machine_sign_in_created", true],
+    ["ai_connection.connected", true],
+    ["chat_endpoint.created", true],
+    ["tool_connection.health_check", false],
+  ] as const)("masks session replay work content until sources reload after %s", (action, resets) => {
+    const client = new QueryClient();
+    const connections = replayWorkContentQueryKeys.connections("company-1");
+    const endpoints = replayWorkContentQueryKeys.chatEndpoints("company-1");
+    client.setQueryData(connections, { connections: [] });
+    client.setQueryData(endpoints, []);
+    __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1", {
+      entityType: "tool_connection", entityId: "connection-1", action,
+    }, { userId: "user-1", agentId: null });
+    // A reset drops the cached "no Google or Slack" answer, so the check
+    // reads as unknown (masked) until the lists load again.
+    expect(client.getQueryData(connections) === undefined).toBe(resets);
+    expect(client.getQueryData(endpoints) === undefined).toBe(resets);
     client.clear();
   });
   it("refreshes cached tasks whose relation summaries embed a changed blocker", () => {
@@ -281,7 +304,8 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     "refreshes company AI account previews after %s", (action) => {
       const invalidateQueries = vi.fn();
       __liveUpdatesTestUtils.invalidateActivityQueries(
-        { invalidateQueries, getQueryData: () => undefined, getQueryCache: () => ({ findAll: () => [] }) } as never,
+        // `ai_connection.*` also resets the session replay source check.
+        { invalidateQueries, resetQueries: vi.fn(), getQueryData: () => undefined, getQueryCache: () => ({ findAll: () => [] }) } as never,
         "company-1", { entityType: "connection_grant", entityId: "grant-1", action },
         { userId: "owner", agentId: null },
       );

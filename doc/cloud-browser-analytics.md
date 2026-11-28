@@ -31,6 +31,7 @@ extensions posthog-js loads at run time (recorder, web vitals).
 | `PAPERCLIP_POSTHOG_ENVIRONMENT` | — | `staging` or `production`. Added to every event as `environment`. |
 | `PAPERCLIP_POSTHOG_BROWSER_ENABLED` | off | `1` turns browser analytics on for this stack. Leave it unset to keep it off. |
 | `PAPERCLIP_POSTHOG_REPLAY_ENABLED` | on (when browser analytics is on) | `0` turns session replay off for this stack and keeps the other browser analytics. |
+| `PAPERCLIP_POSTHOG_REPLAY_WORK_CONTENT_ENABLED` | off | `1` allows task descriptions, document bodies and artifact contents in replays for eligible companies. Browser analytics and replay must also be on. Unset, `0` and all other values keep work content masked. |
 | `PAPERCLIP_POSTHOG_PROXY_MAX_IN_FLIGHT` | `1024` | Proxy requests in flight for the whole server. See [Proxy limits](#proxy-limits). |
 | `PAPERCLIP_POSTHOG_PROXY_MAX_IN_FLIGHT_PER_CLIENT` | `128` | Proxy requests in flight from one public client address. See [Proxy limits](#proxy-limits). |
 | `PAPERCLIP_POSTHOG_COUNTRY_HEADER` | — | Name of a request header that the platform edge sets to the visitor's two-letter country code (for example `CF-IPCountry` behind a proxied Cloudflare zone). Leave it unset unless the edge sets the header and drops a value from the client. See [Consent](#consent). |
@@ -41,6 +42,29 @@ For a customer whose contract forbids recording, set
 `PAPERCLIP_POSTHOG_REPLAY_ENABLED=0` on that stack. To turn off all browser
 analytics for a stack, unset `PAPERCLIP_POSTHOG_BROWSER_ENABLED`. Both take
 effect on the next server restart.
+
+### Work content opt-in
+
+Work content stays masked by default, even when session replay is on. Hosts
+can opt in through the deployment environment:
+
+```sh
+PAPERCLIP_POSTHOG_BROWSER_ENABLED=1
+PAPERCLIP_POSTHOG_REPLAY_ENABLED=1
+PAPERCLIP_POSTHOG_REPLAY_WORK_CONTENT_ENABLED=1
+```
+
+The existing Cloud instance and project-token requirements still apply. The
+server sends the effective setting as
+`browserAnalytics.replayWorkContentEnabled` in the authenticated session.
+An older server that omits this field keeps work content masked. The UI makes
+no work-content source requests unless both replay and this setting are on.
+
+The opt-in allows the company checks below to run; it does not bypass them or
+secret masking. To keep replay on with work content masked, remove
+`PAPERCLIP_POSTHOG_REPLAY_WORK_CONTENT_ENABLED` or set it to `0`. Restart the
+server and reload open board tabs to pick up deployment changes. Previously
+recorded content is not changed by this setting.
 
 ## Consent
 
@@ -256,8 +280,9 @@ organization-naming steps have no `step` value. No event carries free text.
 ## Privacy
 
 Session replay shows text by default, the way PostHog normally works. Text is
-masked only inside marked customer content. Input values and attribute values
-are always masked.
+masked only inside marked customer content, and inside work content unless the
+deployment opts in and the company holds no Google or Slack data. Input values
+and attribute values are always masked.
 
 - Session replay masks every input value (`maskAllInputs`).
 - Replay masks text only inside these markers (`ANALYTICS_MASK_TEXT_SELECTOR`
@@ -266,6 +291,9 @@ are always masked.
   - `ANALYTICS_NO_CAPTURE_CLASS` (`ph-no-capture`): secrets. Replay blocks
     these elements entirely.
   - `contenteditable` editors (not `contenteditable="false"`).
+
+  - `ANALYTICS_WORK_CONTENT_CLASS` (`ph-work-content`): work content, see
+    below.
 
   rrweb masks a text node only when its parent matches the selector or has an
   ancestor that matches it. All other text, for example navigation, headings,
@@ -278,10 +306,104 @@ are always masked.
   element references (`id`, `for`, `aria-labelledby`) are always masked, so
   images record as empty boxes and link targets (for example download links
   with file paths) never leave.
+- Work content shows in replays only when the deployment sets
+  `PAPERCLIP_POSTHOG_REPLAY_WORK_CONTENT_ENABLED=1` and the company holds no
+  Google or Slack data. Work content is the task description (task page and the
+  first bubble of the task chat), the task preview description, document bodies,
+  attachment and artifact previews (text, tables, patches, markdown) and the
+  file viewer. Task titles, artifact titles and file names were already
+  recorded as they are. Comments, chat messages, run output and every
+  connected-account surface stay customer content and always mask.
+  - `ReplayWorkContentVisibility`
+    (`ui/src/lib/analytics/replay-work-content.tsx`) sets
+    `data-replay-work-content="visible"` on `<html>` only when the company's
+    tool connections and chat endpoints both hold a confirmed answer and none
+    of them, in any status, is Google (Gmail, Drive, Calendar, Docs and the
+    other Workspace services), Slack, an aggregator (Composio, Arcade,
+    Executor) or an app that reaches Google or Slack through another service
+    (Zapier, Make, GSC Wizard, Windsor.ai). Aggregators and these apps are
+    found by catalog slug, by server host and by name, because "Connect your
+    own MCP server" saves a URL and a free name with no slug. Slack chat
+    channels are found by `config.provider`, because a removed channel's
+    endpoint is archived (and leaves the endpoint list) while its connection
+    row stays with a custom name.
+  - The connection list must be complete. `GET
+    /api/companies/:companyId/tools/connections` leaves some rows out of a
+    board reader's list: another person's draft connection (a Google or Slack
+    connection returns to draft when its sign-in expires) and a connector
+    whose plugin is unavailable. The response reports how many as
+    `hiddenCount`. A hidden row can be Google or Slack, so the check counts
+    only a list with `hiddenCount: 0`. An older server sends no count, which
+    also keeps work content masked.
+  - The flag is the selected company's answer, so it applies only to that
+    company's content. The selection follows the URL in an effect after the
+    page renders, and a manual switch delays it, so the check also needs the
+    URL's company prefix to be the selected company's (`routeShowsCompany`).
+    A task preview loads a task by id and can show another company's task:
+    `IssueQuicklookCard` uses the work content marker only when the task's
+    `companyId` is the selected company (`workContentClassForCompany`), and
+    masks any other. Task previews convert at most 2,048 source characters to
+    plain text, then limit the summary to 180 characters. When the source cap
+    applies, the preview always masks: a cut source can contain incomplete
+    credential text. When only the 180-character limit applies, the preview
+    masks if the text before the cut holds anything the replay redaction
+    masks, because a credential that crosses the cut is too short to match
+    its format. Opening the full task still uses the normal work-content
+    rule.
+  - A missing or disabled deployment opt-in, loading, a failed latest fetch
+    (even with an older answer cached), a list that waits on a refresh, no
+    company and replay off all keep work content masked. The check keeps its
+    own query keys (`replayWorkContentQueryKeys`)
+    and drops an answer when the company changes.
+  - `LiveUpdatesProvider` resets the check on every activity in a connection
+    family (`tool_connection.*`, `tool_app.*`, `tool_example.*`,
+    `tool_application.*`, `connection_installs.*`, `ai_connection.*`,
+    `chat_endpoint.*`, `chat_github.*`, `email_endpoint.*`) and on
+    `company.imported`, so work content masks at once and stays masked until
+    the lists reload. Several routes add a connection row and some build the
+    action name at run time, so a new action in these families re-checks
+    without a code change. A new family needs an entry in
+    `SOURCE_CHANGE_FAMILIES`. Six frequent actions that cannot add a source
+    are left out (`NOT_A_SOURCE_CHANGE`: health and catalog checks,
+    credential reads and refreshes, incoming webhooks). The live socket
+    closes while the tab is hidden, so the provider invalidates active
+    queries when the tab returns or the socket reopens, and an invalidated
+    list does not count until it reloads. A five-minute refetch covers a
+    missed live update.
+  - `maskReplayText` (the rrweb `maskTextFn`) shows work content text only
+    when the nearest marker around it is the work content marker, so customer
+    content, secrets and editors inside work content stay masked.
+  - Shown work content still passes through `redactReplaySecrets`. It masks
+    known key and token formats (OpenAI, Anthropic, GitHub, Slack, AWS,
+    Google, JWTs, private key blocks), the value of a `label: value` or
+    `name=value` assignment whose label says secret (`API_KEY`, `API key`,
+    `password`, `DB_PASS`, a name that ends in `key`), secret command-line
+    flags (`--password value`), auth header credentials, URL passwords and
+    long mixed-case random tokens. rrweb records one text node at a time, so
+    the function also reads the text before the node on its line: a bold
+    label, a value in inline code, a value with bold or italic text inside it
+    and a value split across syntax-highlight spans are masked. A private key
+    that the file viewer or a highlighter renders line by line is masked on
+    every line up to its closing marker. A value runs to its closing quote or
+    the end of its line inside the element it starts in, so the sentence
+    after an inline `KEY=value` still shows. It is a best
+    effort. Labels are matched in English. It does not catch a secret with no
+    label and no known format (a short password in a sentence, a lowercase
+    hex key), a value on a different line from its label, or a value in a
+    table cell under a header.
+  - rrweb decides masking when it records a node, so the page calls
+    `refreshSessionReplay` (a new full snapshot) the first time work content
+    becomes visible for a company. Text that renders while a later re-check
+    runs stays masked until it renders again.
+- The task chat container carries no mask of its own. Each header, row, live
+  tail, notice and the composer carry `ANALYTICS_MASK_CLASS`, and the
+  description row carries `ANALYTICS_WORK_CONTENT_CLASS`
+  (`TaskChatThreadView` `replayMask`).
 - The masking options in `posthog.init` take precedence over the PostHog
   project's "Privacy and masking" settings (posthog-js 1.450). posthog-js
   ignores the project setting and logs a warning when the two differ. Keep the
-  project masking settings empty, and change masking only in `privacy.ts`. The
+  project masking settings empty. Use deployment configuration for work
+  content visibility and `privacy.ts` for the masking rules. The
   `ph-mask` class is also the posthog-js default `maskTextClass`.
 - `ANALYTICS_NO_CAPTURE_CLASS` replaces secrets with a blank box in replays:
   every password-type `Input`, environment variable values, new secret
@@ -305,7 +427,8 @@ are always masked.
   surfaces below, and other free-form text that agents or customers write,
   carry `ANALYTICS_MASK_CLASS` on their content element (not on the chrome
   around it):
-  - Rendered markdown (task bodies, comments, chat messages, documents), the
+  - Rendered markdown (comments, chat messages; task descriptions and
+    documents are work content, above), the
     rich editor, task and issue chat threads (messages, tool calls, tool
     results, interaction cards), the comment timeline and the file viewer.
   - Link preview cards, task quicklook descriptions, external object pills and

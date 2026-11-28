@@ -40,7 +40,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { ANALYTICS_WORK_CONTENT_CLASS } from "@/lib/analytics/privacy";
 import { fileResourcesApi } from "@/api/file-resources";
 import { ApiError } from "@/api/client";
 import { queryViewKind } from "@/components/QueryView";
@@ -354,9 +354,9 @@ export function FileContentViewer({ content, highlightedLine, onLoaded, previewM
       role="region"
       aria-label={`${resource.title} source`}
       tabIndex={0}
-      className={cn("paperclip-file-viewer-code min-w-0 flex-1 overflow-auto bg-(--code-bg-resolved) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset", ANALYTICS_MASK_CLASS)}
+      className={cn("paperclip-file-viewer-code min-w-0 flex-1 overflow-auto bg-(--code-bg-resolved) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset", ANALYTICS_WORK_CONTENT_CLASS)}
     >
-      <pre className={cn("m-0 font-mono text-xs leading-5", ANALYTICS_MASK_CLASS)}>
+      <pre className={cn("m-0 font-mono text-xs leading-5", ANALYTICS_WORK_CONTENT_CLASS)}>
         {lines.map((lineText, index) => {
           const lineNumber = index + 1;
           const isHighlighted = lineNumber === highlightedLine;
@@ -406,7 +406,7 @@ export function FileContentViewer({ content, highlightedLine, onLoaded, previewM
   }
 
   return (
-    <div className={cn("relative flex min-h-0 flex-1 flex-col", ANALYTICS_MASK_CLASS)}>
+    <div className={cn("relative flex min-h-0 flex-1 flex-col", ANALYTICS_WORK_CONTENT_CLASS)}>
       {previewMode === undefined && <div className="absolute right-3 top-3 z-20">
         <div
           role="group"
@@ -455,7 +455,7 @@ export function FileContentViewer({ content, highlightedLine, onLoaded, previewM
           tabIndex={0}
           className="flex-1 overflow-auto bg-background p-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
         >
-          <WorkspaceFileMarkdownBody softBreaks={false}>
+          <WorkspaceFileMarkdownBody softBreaks={false} replayContent="work">
             {content.content.data}
           </WorkspaceFileMarkdownBody>
         </div>

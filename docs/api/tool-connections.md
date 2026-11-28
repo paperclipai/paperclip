@@ -5,6 +5,27 @@ summary: Remove a connection or one of its grants, cancel a first sign-in, read 
 
 Removing a connection or a grant always completes in Paperclip. The response says what happened at the provider when Paperclip can ask the provider to end access.
 
+## List Connections
+
+```
+GET /api/companies/{companyId}/tools/connections
+```
+
+The caller needs company access and `connections:read`. The `200` response has
+a `connections` array containing the connections visible to the caller.
+
+For board users, the response also has `hiddenCount`, a nonnegative integer
+that counts company connections omitted from the array. This includes another
+user's draft connection and connections whose plugin is unavailable. A zero
+count means the response did not omit any connection at the time of the check.
+Agent responses do not include this field.
+
+Older servers can omit `hiddenCount`. An absent count means completeness is
+unknown; callers must not treat it as zero. In particular, the session replay
+source check keeps work content masked when the count is missing or positive.
+The count and the connection list are separate queries, so concurrent changes
+can temporarily make them differ.
+
 ## Remove a Connection
 
 ```

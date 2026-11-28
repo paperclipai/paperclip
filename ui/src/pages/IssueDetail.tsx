@@ -8289,6 +8289,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           placeholder="Add a description..."
           multiline
           foldable
+          replayContent="work"
           mentions={mentionOptions}
           externalReferences={
             externalObjectsState.isEnabled
