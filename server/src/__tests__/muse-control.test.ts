@@ -294,6 +294,35 @@ describe("personal Muse control plane",()=>{
       await f.detach();
     }
   }, 15000);
+  it("creates a Muse project on a one-connection pool", async () => {
+    const f = await active(await oauthFixture(true));
+    const previousSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = randomBytes(32).toString("hex");
+    const single = createDb(externalDatabaseUrl ?? temporary!.connectionString, { maxConnections: 1 });
+    try {
+      await ensureHumanRoleDefaultGrants(db, { companyId: f.company.id, principalId: f.operatorId, membershipRole: "owner", grantedByUserId: f.operatorId });
+      expect((await f.broker.act(f.subject, { version: 1, command: "accept", assignmentId: f.assignment.id, requestId: randomUUID() })).status).toBe("accepted");
+      const execution = projectWriteExecution(f);
+      await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeExecutionInput: execution } }).where(eq(heartbeatRuns.id, f.runId));
+      const token = createLocalAgentJwt(f.agent.id, f.company.id, "paperclip_runner", f.runId, f.operatorId, undefined, f.operatorId);
+      museRunnerBroker(single, { publicOrigin: oauthOrigin });
+      const app = express();
+      app.use(express.json());
+      app.use(actorMiddleware(single, { deploymentMode: "authenticated", resolveSession: async () => null }));
+      app.use("/api", projectRoutes(single));
+      app.use(errorHandler);
+      const sent = request(app).post(`/api/companies/${f.company.id}/projects`).set("Authorization", "Bearer " + token)
+        .set("X-Paperclip-Run-Id", f.runId).send({ name: "Muse one-connection project", idempotencyKey: randomUUID() }).then(response => response);
+      const response = await Promise.race([sent, new Promise<"deadlocked">(resolve => setTimeout(() => resolve("deadlocked"), 20_000))]);
+      expect(response).not.toBe("deadlocked");
+      expect(response === "deadlocked" ? null : response.status).toBe(201);
+    } finally {
+      if (previousSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+      else process.env.PAPERCLIP_AGENT_JWT_SECRET = previousSecret;
+      await single.$client.end({ timeout: 0 });
+      await f.detach();
+    }
+  }, 60_000);
   it("authenticates current Muse V8 JWT actors and denies changed native bindings and grants",async()=>{
     const f=await active(await oauthFixture(true)),previousSecret=process.env.PAPERCLIP_AGENT_JWT_SECRET;
     process.env.PAPERCLIP_AGENT_JWT_SECRET=randomBytes(32).toString("hex");
@@ -1029,6 +1058,16 @@ describe("personal Muse control plane",()=>{
     await expect(f.identity.authenticate(rotated.accessToken)).rejects.toThrow();
     await expect(museReceiver(db).signal(f.binding.id)).rejects.toMatchObject({status:410});
   });
+  it("answers a receiver poll on a one-connection pool",async()=>{
+    const f=await fixture(false),single=createDb(externalDatabaseUrl??temporary!.connectionString,{maxConnections:1});
+    try {
+      const poll=museReceiver(single).signal(f.binding.id);
+      const result=await Promise.race([poll,new Promise<"deadlocked">(resolve=>setTimeout(()=>resolve("deadlocked"),20_000))]);
+      expect(result).not.toBe("deadlocked");
+      expect(result).toMatchObject({version:1});
+      await museReceiver(single).flush();
+    } finally {await museReceiver(single).stop();await single.$client.end({timeout:0});}
+  },60_000);
   it("polling does not extend refresh inactivity and independent contact creates the first challenge",async()=>{
     const f=await fixture(false);
     const [before]=await db.select().from(museCredentials).where(and(eq(museCredentials.bindingId,f.binding.id),eq(museCredentials.kind,"refresh")));

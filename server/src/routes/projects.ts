@@ -446,7 +446,7 @@ export function projectRoutes(db: Db) {
             if (current.run.runtimeMode !== "native" || execution.schema !== "paperclip.native-execution-input.v8"
               || execution.binding.companyId !== actorCompanyId || execution.binding.agentId !== agentId
               || execution.binding.runId !== runId || execution.binding.issueId !== current.issue.id
-              || await broker.authorizingUserIdForBinding(execution.provider.binding) !== authorizingUserId) {
+              || await broker.authorizingUserIdForBinding(execution.provider.binding, { database: tx as unknown as Db }) !== authorizingUserId) {
               throw new Error("Muse internal tool authority mismatch");
             }
             await broker.assertRunAuthority(execution, tx as unknown as Db);

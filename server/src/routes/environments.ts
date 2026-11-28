@@ -1106,7 +1106,7 @@ export function environmentRoutes(
       const created = await svc.create(input, undefined, { db: tx });
       await secrets.replaceSecretRefsForInstanceTarget(
         { targetType: "environment", targetId: created.id },
-        await collectEnvironmentSecretRefs({ db, environment: created }),
+        await collectEnvironmentSecretRefs({ db: tx as unknown as Db, environment: created }),
         { db: tx },
       );
       await secrets.syncEnvBindingsForTarget(
@@ -1280,7 +1280,7 @@ export function environmentRoutes(
       if (patch.config !== undefined || patch.driver !== undefined) {
         await secrets.replaceSecretRefsForInstanceTarget(
           { targetType: "environment", targetId: updated.id },
-          await collectEnvironmentSecretRefs({ db, environment: updated }),
+          await collectEnvironmentSecretRefs({ db: tx as unknown as Db, environment: updated }),
           { db: tx },
         );
       }
