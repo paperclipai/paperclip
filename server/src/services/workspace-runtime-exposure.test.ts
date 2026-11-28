@@ -244,19 +244,31 @@ function createBroker() {
  * behaviour under test. It also meant the suite exercised allocation against a
  * range it never actually checked (PAP-17419; PAP-17255 started this with
  * "make exposure fixture honor occupied ports").
+ *
+ * It also probes the wildcard, because several guests below bind `0.0.0.0` or
+ * `::` on purpose. The dedicated range sits inside the Linux ephemeral range, so
+ * an outbound connection on another local address (the CI runner's own HTTPS
+ * session, for one) can hold an app or HMR port as its source port. A loopback
+ * probe passes on such a port, but the guest's wildcard bind then fails with
+ * `EADDRINUSE` and no host listener to own it.
  */
 async function isLoopbackPortFree(port: number): Promise<boolean> {
   const facts = await readListenerBindFacts(port);
   if (facts?.present) return false;
 
-  return await new Promise<boolean>((resolve) => {
-    const probe = net.createServer();
-    probe.unref();
-    probe.once("error", () => resolve(false));
-    probe.listen(port, "127.0.0.1", () => {
-      probe.close(() => resolve(true));
+  // No host means the unspecified address, exactly as a wildcard guest binds it.
+  for (const host of ["127.0.0.1", undefined]) {
+    const free = await new Promise<boolean>((resolve) => {
+      const probe = net.createServer();
+      probe.unref();
+      probe.once("error", () => resolve(false));
+      probe.listen(port, host, () => {
+        probe.close(() => resolve(true));
+      });
     });
-  });
+    if (!free) return false;
+  }
+  return true;
 }
 
 /**
@@ -1012,5 +1024,27 @@ describe("classifyExposureHostCollisions gates quarantine on verified host state
       ports: [state({ port: 42_000, named: false, listenerPresent: true, ownerPid: 9999 })],
     });
     expect(result).toEqual({ hostCollisionPorts: [], hostCollision: false });
+  });
+});
+
+const nonLoopbackIpv4 = Object.values(os.networkInterfaces())
+  .flat()
+  .find((address) => address?.family === "IPv4" && !address.internal)?.address;
+
+describe("the fixture's port probe sees what a wildcard guest's bind sees", () => {
+  // The CI flake: an outbound socket the kernel autobound on the runner's own
+  // address held port 52000, the loopback probe called it free, and the
+  // wildcard guests then failed on `EADDRINUSE` with no host listener behind it.
+  it.skipIf(!nonLoopbackIpv4)("reports a port held by an outbound socket on another local address as taken", async () => {
+    const server = net.createServer().listen(0, nonLoopbackIpv4);
+    await new Promise((resolve) => server.once("listening", resolve));
+    const client = net.connect({ host: nonLoopbackIpv4, port: (server.address() as net.AddressInfo).port });
+    try {
+      await new Promise((resolve) => client.once("connect", resolve));
+      expect(await isLoopbackPortFree(client.localPort!)).toBe(false);
+    } finally {
+      client.destroy();
+      await new Promise((resolve) => server.close(resolve));
+    }
   });
 });

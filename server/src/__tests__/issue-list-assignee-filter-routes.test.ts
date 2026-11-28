@@ -717,9 +717,9 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     });
 
     const app = createApp(companyId);
-    // Filling the cache can take longer than its five-second expiry on CI.
-    // Keep entries alive so this test measures capacity eviction alone.
-    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now());
+    // Hold the clock: a slow runner's loop outlasts the cache's stale window, and the first entries are
+    // pruned before the size is read. This test checks the size bound, not expiry.
+    vi.useFakeTimers({ toFake: ["Date"] });
     try {
       for (let index = 0; index < ISSUE_LIST_SERVER_CACHE_MAX_ENTRIES + 5; index += 1) {
         const res = await request(app)
@@ -730,7 +730,33 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
 
       expect(__getIssueListResponseCacheSizeForTests()).toBe(ISSUE_LIST_SERVER_CACHE_MAX_ENTRIES);
     } finally {
-      clock.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("prunes compact issue-list cache entries past their stale window, which is why the bound test holds the clock", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: uniqueIssuePrefix(),
+      requireBoardApprovalForNewAgents: false,
+    });
+    await seedCloudTenantMember(companyId);
+
+    const app = createApp(companyId);
+    const list = (q: string) => request(app).get(`/api/companies/${companyId}/issues`).query({ view: "compact", limit: "20", q });
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      for (let index = 0; index < 10; index += 1) expect((await list(`early-${index}`)).status).toBe(200);
+      expect(__getIssueListResponseCacheSizeForTests()).toBe(10);
+      // What a slow runner's elapsed time does to the first entries of the bound test's loop.
+      vi.setSystemTime(Date.now() + 60_000);
+      expect((await list("late")).status).toBe(200);
+      expect(__getIssueListResponseCacheSizeForTests()).toBe(1);
+    } finally {
+      vi.useRealTimers();
     }
   });
 
