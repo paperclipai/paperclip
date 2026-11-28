@@ -1,7 +1,8 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { agentWakeupRequests } from "@paperclipai/db";
+import { agentWakeupRequests, issueRelations, issues } from "@paperclipai/db";
+import { logger } from "../middleware/logger.js";
 
 export const ISSUE_BLOCKERS_RESOLVED_WAKE_REASON = "issue_blockers_resolved";
 
@@ -282,4 +283,25 @@ export async function findExistingIssueBlockersResolvedWakeForReadyState(
     }),
   );
   return covering ?? null;
+}
+
+type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+export async function hasUnfinishedBlockers(dbOrTx: Db | DbTransaction, task: { companyId: string; id: string }): Promise<boolean> {
+  try {
+    return await dbOrTx.transaction(async (read) => (await read
+      .select({ blockerId: issueRelations.issueId })
+      .from(issueRelations)
+      .innerJoin(issues, eq(issueRelations.issueId, issues.id))
+      .where(and(
+        eq(issueRelations.companyId, task.companyId),
+        eq(issueRelations.relatedIssueId, task.id),
+        eq(issueRelations.type, "blocks"),
+        ne(issues.status, "done"),
+      ))
+      .limit(1)).length > 0);
+  } catch (err) {
+    logger.warn({ err, issueId: task.id }, "failed to read task blockers");
+    return false;
+  }
 }

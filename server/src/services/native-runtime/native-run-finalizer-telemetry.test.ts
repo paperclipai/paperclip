@@ -57,6 +57,12 @@ function agentTaskRunCalls(fromIndex: number) {
     .filter((call) => call[0] === "agent.task_run");
 }
 
+function agentTaskCompletedCalls(fromIndex: number) {
+  return mockTelemetryClient.track.mock.calls
+    .slice(fromIndex)
+    .filter((call) => call[0] === "agent.task_completed");
+}
+
 function captureRunFailureCallsFrom(fromIndex: number) {
   return mockCaptureRunFailure.mock.calls.slice(fromIndex);
 }
@@ -260,6 +266,46 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
     expect(run?.status).toBe("succeeded");
     // "succeeded" is not a failure status, so it never reports to Sentry.
     expect(captureRunFailureCallsFrom(captureCallsBefore)).toHaveLength(0);
+  });
+
+  it("emits exactly one agent.task_completed event when finalizeNativeRun closes a task, and none on replay", async () => {
+    const fixture = await seedNativeRun();
+    await db.update(completionContracts).set({
+      risk: "low",
+      completionAuthority: "agent_claim_policy",
+      contractJson: {
+        revision: CONTROL_PLANE_CONFORMANCE_RESULT.completionClaim.contractRevision,
+        objective: "Emit task completion telemetry",
+        criteria: [{ id: "objective", requirement: "Complete the task" }],
+      },
+    }).where(eq(completionContracts.id, fixture.contractId));
+    await driveToCompleteResult(fixture);
+
+    const callsBefore = mockTelemetryClient.track.mock.calls.length;
+    await finalizeNativeRun({
+      db,
+      runId: fixture.runId,
+      workspaceFinalizeStatus: "succeeded",
+      projectRunStatus: true,
+    });
+
+    const [closedIssue] = await db.select().from(issues).where(eq(issues.id, fixture.issueId));
+    expect(closedIssue?.status).toBe("done");
+    await vi.waitFor(() => expect(agentTaskCompletedCalls(callsBefore)).toHaveLength(1));
+    expect(agentTaskCompletedCalls(callsBefore)[0]?.[1]).toMatchObject({
+      agent_id: agentId,
+      adapter_type: "codex_local",
+      task_id: `hashed:${fixture.issueId}`,
+    });
+
+    await finalizeNativeRun({
+      db,
+      runId: fixture.runId,
+      workspaceFinalizeStatus: "succeeded",
+      projectRunStatus: true,
+    });
+    await reconcileNativeFinalizations(db, [fixture.runId]);
+    expect(agentTaskCompletedCalls(callsBefore)).toHaveLength(1);
   });
 
   it("emits zero events when a repeat finalize call preserves the succeeded terminal state", async () => {
@@ -930,8 +976,9 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
     expect(run?.error).toMatch(/sandbox disk is full/);
     expect(run?.error).not.toMatch(/after 3 attempts/);
     // The export hold owns the next step; no provider turn is requested.
-    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId)))
-      .toEqual([expect.objectContaining({ status: "active", ownerType: "board", cause: "native_workspace_sync_out_retry_exhausted" })]);
+    const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId));
+    expect(actions).toEqual([expect.objectContaining({ status: "active", ownerType: "board", cause: "native_workspace_sync_out_retry_exhausted" })]);
+    expect(actions[0].nextAction).not.toMatch(/Finalization retry budget exhausted/);
     expect(await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)
       .where(eq(agentWakeupRequests.agentId, agentId))).toEqual(wakeupsBefore);
   });
@@ -945,6 +992,61 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
       db, runId: fixture.runId, error: new Error("native_workspace_sync_out_failed"),
       projectRunStatus: true, failureScope: "workspace",
       failureCause: "remote_workspace_capture_failed: stage=archive code=ECONNRESET",
+    });
+    expect(failure).toMatchObject({ phase: "retryable_failure", failureCode: "native_workspace_sync_out_failed" });
+  });
+
+  it("stops copy-back on the first unfinished Git operation failure and keeps the accepted result", async () => {
+    const gitOpCause = "remote_workspace_archive_git_operation_in_progress: finish or abort the Git operation before saving the workspace";
+    const fixture = await seedNativeRun();
+    await driveToCompleteResult(fixture);
+    const [accepted] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, fixture.runId));
+    expect(accepted).toBeDefined();
+    const wakeupsBefore = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    const failure = await recordNativeFinalizationFailure({
+      db, runId: fixture.runId, error: new Error("native_workspace_sync_out_failed"),
+      projectRunStatus: true, failureScope: "workspace", failureCause: gitOpCause,
+    });
+    expect(failure).toMatchObject({
+      phase: "terminal_failure",
+      failureCode: "native_workspace_sync_out_retry_exhausted",
+      nextAttemptAt: null,
+    });
+    const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    expect(coordinator.failureDetail).toMatchObject({
+      recoveryOwner: { kind: "board" },
+      workspaceFinalizeAttempt: 1,
+      failureCause: gitOpCause,
+    });
+    expect(coordinator.resultId).toBe(accepted.id);
+    expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, fixture.runId))).toEqual([accepted]);
+    const run = await readRunError(fixture.runId);
+    expect(run).toMatchObject({ status: "failed", errorCode: "native_workspace_sync_out_retry_exhausted" });
+    expect(run?.error).toMatch(/Git operation is still in progress/);
+    expect(run?.error).not.toMatch(/after 3 attempts/);
+    const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, fixture.issueId));
+    expect(actions).toEqual([expect.objectContaining({
+      status: "active",
+      ownerType: "board",
+      cause: "native_workspace_sync_out_retry_exhausted",
+      wakePolicy: null,
+    })]);
+    expect(actions[0].nextAction).toMatch(/Git operation/);
+    expect(actions[0].nextAction).not.toMatch(/Finalization retry budget exhausted/);
+    expect(await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))).toEqual(wakeupsBefore);
+  });
+
+  it("keeps transient workspace archive change failures on their bounded retry", async () => {
+    const fixture = await seedNativeRun();
+    await db.insert(nativeRunFinalizations).values({
+      runId: fixture.runId, companyId, issueId: fixture.issueId, phase: "observed", attempt: 1,
+    });
+    const failure = await recordNativeFinalizationFailure({
+      db, runId: fixture.runId, error: new Error("native_workspace_sync_out_failed"),
+      projectRunStatus: true, failureScope: "workspace",
+      failureCause: "remote_workspace_archive_changed",
     });
     expect(failure).toMatchObject({ phase: "retryable_failure", failureCode: "native_workspace_sync_out_failed" });
   });

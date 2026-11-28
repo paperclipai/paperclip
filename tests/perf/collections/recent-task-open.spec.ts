@@ -1,9 +1,6 @@
+import fs from "node:fs/promises";
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 import { collectionFixture, type CollectionFixture } from "./fixture";
-
-// Opening a task from the sidebar's Recents. A page load with Recents makes at
-// most one batched chat-bootstrap read once the page is idle, and no per-task
-// first-frame reads. Clicking a preloaded task then shows its chat from cache.
 
 const RECENT_COUNT = 8;
 const COMMENTS_PER_TASK = 12;
@@ -35,7 +32,7 @@ async function ensureRecentTasks(request: APIRequestContext): Promise<RecentTask
   return tasks;
 }
 
-async function seedRecents(page: Page, request: APIRequestContext) {
+async function seedRecents(page: Page, request: APIRequestContext, tasks = recents) {
   const session = await (await request.get("/api/auth/get-session")).json().catch(() => null);
   const userId: string | null = session?.user?.id ?? session?.session?.userId ?? null;
   await page.addInitScript(({ companyId, userId, recents }) => {
@@ -45,7 +42,20 @@ async function seedRecents(page: Page, request: APIRequestContext) {
     for (const owner of new Set([userId ?? "__local_board__", "__local_board__"])) {
       localStorage.setItem(`paperclip.recentTasks.v2:${companyId}:${owner}`, JSON.stringify(entries));
     }
-  }, { companyId: fixture.company.id, userId, recents });
+  }, { companyId: fixture.company.id, userId, recents: tasks });
+}
+
+async function addRecent(page: Page, task: RecentTask) {
+  await page.evaluate(({ companyId, task }) => {
+    for (const key of Object.keys(localStorage).filter(key => key.startsWith(`paperclip.recentTasks.v2:${companyId}:`))) {
+      const oldValue = localStorage.getItem(key);
+      const entries = JSON.parse(oldValue ?? "[]").filter((entry: { id: string }) => entry.id !== task.id);
+      const newValue = JSON.stringify([{ ...task, companyId, status: "backlog", recordedAt: Date.now() }, ...entries]);
+      localStorage.setItem(key, newValue);
+      window.dispatchEvent(new StorageEvent("storage", { key, oldValue, newValue, storageArea: localStorage }));
+    }
+  }, { companyId: fixture.company.id, task });
+  await expect(page.getByRole("link", { name: task.title }).first()).toBeVisible();
 }
 
 /** Per-task reads that gate the chat's first frame, plus the full detail read. */
@@ -91,9 +101,13 @@ async function openRecent(page: Page, task: RecentTask) {
     state.__recentOpen = {};
     document.addEventListener("pointerdown", () => { state.__recentOpen!.clickedAt ??= performance.now(); }, { capture: true, once: true });
     const check = () => {
-      const visible = [...document.querySelectorAll("main *")].some(element =>
-        element.childElementCount === 0 && element.textContent?.trim() === marker && (element as HTMLElement).offsetParent !== null);
-      if (visible) {
+      const thread = document.querySelector('[data-testid="task-chat-thread"] > [aria-busy="false"]');
+      const composer = document.querySelector('[data-testid="task-chat-composer-stack"] [contenteditable="true"]');
+      const visible = thread && [...thread.querySelectorAll("p")].some(element => {
+        const box = element.getBoundingClientRect();
+        return element.textContent?.trim() === marker && box.bottom > 0 && box.top < innerHeight && box.height > 0;
+      });
+      if (visible && composer) {
         state.__recentOpen!.shownAt = performance.now();
         return;
       }
@@ -145,11 +159,43 @@ test("clicking a preloaded recent task shows its chat without first-frame reads"
   expect(reads.filter(kind => FIRST_FRAME_READS.has(kind))).toEqual([]);
 });
 
+test("a task added after the initial Recents preload opens without first-frame reads", async ({ page, request }) => {
+  const added = recents.at(-1)!;
+  await seedRecents(page, request, recents.slice(0, -1));
+  await loadIdle(page);
+  const requests = recordRequests(page);
+  await addRecent(page, added);
+  await expect.poll(() => requests.some(url => url.pathname.endsWith("/issues/chat-bootstrap")
+    && url.searchParams.get("ids")?.split(",").includes(added.id))).toBe(true);
+  await page.waitForLoadState("networkidle");
+  requests.length = 0;
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  await page.route(/\/api\/issues\//, async route => { await held; await route.continue(); });
+  try {
+    await openRecent(page, added);
+    expect(requests.map(classifyTaskRead).filter(kind => kind && FIRST_FRAME_READS.has(kind))).toEqual([]);
+    const editor = page.getByTestId("task-chat-composer-stack").locator('[contenteditable="true"]').first();
+    await editor.fill("Keep this draft during background refresh");
+    const savedEditor = await editor.elementHandle();
+    const message = page.getByText(added.marker, { exact: true }).first();
+    const before = await message.boundingBox();
+    release();
+    await page.waitForLoadState("networkidle");
+    await expect(editor).toContainText("Keep this draft during background refresh");
+    expect(await savedEditor!.evaluate(element => element.isConnected)).toBe(true);
+    const after = await message.boundingBox();
+    expect(Math.abs(after!.y - before!.y)).toBeLessThanOrEqual(2);
+    await page.screenshot({ path: test.info().outputPath("added-recent-loaded.png") });
+  } finally { release(); }
+});
+
 // Native loopback, then a diagnostic scenario that adds latency to every API
 // response, as a slow hosted database would. Timings are evidence, not budgets.
-for (const apiDelayMs of [0, 150]) {
-  test(`timing: click on a recent task to first chat frame (+${apiDelayMs} ms API latency)`, async ({ browser, request, baseURL }) => {
-    const runs = Math.max(5, Number(process.env.PAPERCLIP_COLLECTION_PERF_TIMING_RUNS ?? 5));
+for (const scenario of ["initial", "added"] as const) for (const apiDelayMs of [0, 150]) {
+  test(`timing: ${scenario} recent task to first chat frame (+${apiDelayMs} ms API latency)`, async ({ browser, request, baseURL }) => {
+    const profile = process.env.PAPERCLIP_COLLECTION_PERF_PROFILE === "1";
+    const runs = profile ? 1 : Math.max(5, Number(process.env.PAPERCLIP_COLLECTION_PERF_TIMING_RUNS ?? 5));
     const timings: number[] = [];
     const idleCounts: number[] = [];
     const afterClick: string[][] = [];
@@ -165,19 +211,43 @@ for (const apiDelayMs of [0, 150]) {
           await route.fallback();
         });
       }
-      await seedRecents(page, request);
+      await seedRecents(page, request, scenario === "added" ? recents.slice(0, -1) : recents);
       const requests = recordRequests(page);
       await loadIdle(page);
+      if (scenario === "added") {
+        await addRecent(page, recents.at(-1)!);
+        await page.waitForLoadState("networkidle");
+        await page.waitForTimeout(IDLE_SETTLE_MS);
+      }
       idleCounts.push(requests.length);
-      timings.push(await openRecent(page, recents[(run % (RECENT_COUNT - 1)) + 1]!));
+      const task = scenario === "added" ? recents.at(-1)! : recents[(run % (RECENT_COUNT - 1)) + 1]!;
+      const cdp = await context.newCDPSession(page);
+      if (profile) {
+        await cdp.send("Profiler.enable");
+        await cdp.send("Profiler.start");
+      }
+      timings.push(await openRecent(page, task));
+      if (profile) {
+        const result = await cdp.send("Profiler.stop");
+        const file = test.info().outputPath(`cpu-${run}.cpuprofile`);
+        await fs.writeFile(file, JSON.stringify(result.profile));
+        await test.info().attach(`cpu-${run}`, { path: file, contentType: "application/json" });
+      }
+      const waterfall = await page.evaluate(() => performance.getEntriesByType("resource").filter(entry => entry.name.includes("/api/"))
+        .map(entry => ({ ...entry.toJSON(), serverTiming: (entry as PerformanceResourceTiming).serverTiming.map(timing => timing.toJSON()) })));
+      const file = test.info().outputPath(`waterfall-${run}.json`);
+      await fs.writeFile(file, JSON.stringify(waterfall, null, 2));
+      await test.info().attach(`waterfall-${run}`, { path: file, contentType: "application/json" });
       afterClick.push(requests.slice(idleCounts.at(-1)).map(classifyTaskRead).filter((kind): kind is string => !!kind));
       await context.close();
     }
     const summary = {
-      apiDelayMs, runs, clickToFirstFrameMs: timings.map(Math.round), medianMs: Math.round(median(timings)),
+      scenario, apiDelayMs, runs, profile, clickToFirstFrameMs: timings.map(Math.round), medianMs: Math.round(median(timings)),
       idleApiRequests: idleCounts, medianIdleApiRequests: median(idleCounts), taskReadsAfterClick: afterClick,
     };
     console.log(`recent-task-open timing ${JSON.stringify(summary)}`);
-    await test.info().attach("recent-task-open-timing", { body: JSON.stringify(summary, null, 2), contentType: "application/json" });
+    const file = test.info().outputPath("timings.json");
+    await fs.writeFile(file, JSON.stringify(summary, null, 2));
+    await test.info().attach("recent-task-open-timing", { path: file, contentType: "application/json" });
   });
 }

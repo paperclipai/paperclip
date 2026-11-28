@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { ChaosApiError, type ChaosApi } from "./api.js";
-import { ACTIVE_RUN_STATUSES, isStalledSample, STALL_LIMIT_MS } from "./grader.js";
+import { ACTIVE_RUN_STATUSES, creditedQueueWaits, creditedRunQueuedMs, isStalledSample, STALL_LIMIT_MS } from "./grader.js";
 import type { ChaosLab } from "./seed.js";
 import type { Timeline } from "./timeline.js";
 import type {
@@ -218,6 +218,7 @@ export class TaskObserver {
   private stallSince: number | null = null;
   /** First sample of the current stretch with the server ready (H1 holds the pause across it). */
   private readySince: number | null = null;
+  private readonly queueWaitsExtended = new Set<string>();
   private readonly faultSchedule: ScheduledFault[];
   private readonly pendingFaults: ScheduledFault[];
   done = false;
@@ -491,10 +492,19 @@ export class TaskObserver {
   /** Outages extend the deadline: R1 allows budget plus outage time. */
   extendDeadline(ms: number) { if (this.record.deadlineAt !== null) this.record.deadlineAt += ms; }
 
+  private extendForQueueWaits() {
+    for (const wait of creditedQueueWaits(this.record)) {
+      if (this.queueWaitsExtended.has(wait.runId)) continue;
+      this.queueWaitsExtended.add(wait.runId);
+      this.extendDeadline(wait.startedAt - wait.createdAt);
+    }
+  }
+
   async poll(now = Date.now()): Promise<void> {
     if (this.done || !this.record.issueId) return;
     const sample = await this.sample(now);
     this.record.samples.push(sample);
+    this.extendForQueueWaits();
     await this.captureRemoteFilesAtDone(sample);
     this.readySince = sample.reachable && sample.serverReady ? (this.readySince ?? now) : null;
     await this.observeBenchProgress();
@@ -542,7 +552,10 @@ export class TaskObserver {
         if (this.done) return;
       }
     }
-    if (this.record.deadlineAt !== null && now > this.record.deadlineAt && !this.supervisor.faultInProgress) {
+    const queuedMs = Math.min(creditedRunQueuedMs(this.record, now), this.definition.budgetMs);
+    if (this.record.deadlineAt !== null && now > this.record.deadlineAt + queuedMs && !this.supervisor.faultInProgress) {
+      if (this.restCandidateSince !== null && this.restCandidateSince <= this.record.deadlineAt
+        && now - this.restCandidateSince < REST_CONFIRM_MS) return;
       this.record.timedOut = true;
       this.record.finalStatus = sample.issueStatus ?? this.record.finalStatus;
       this.done = true;
@@ -555,8 +568,10 @@ export class TaskObserver {
   private async runEvidence(run: RunSample): Promise<RunSample> {
     if (run.status !== "running") return run;
     const cursor = this.runEventCursors.get(run.id) ?? { seq: 0, lastAt: null, openTools: 0, process: null };
+    let eventsRead = false;
     for (let page = 0; page < 3; page += 1) {
       const events = await this.api.get<Json[]>(`/api/heartbeat-runs/${run.id}/events?afterSeq=${cursor.seq}&limit=${RUN_EVENT_PAGE}`, 5_000).catch(() => null);
+      if (Array.isArray(events)) eventsRead = true;
       if (!events?.length) break;
       for (const event of events) {
         if (typeof event.seq === "number" && event.seq > cursor.seq) cursor.seq = event.seq;
@@ -571,6 +586,7 @@ export class TaskObserver {
     }
     this.runEventCursors.set(run.id, cursor);
     return { ...run, lastEvidenceAt: latestIso([run.lastEvidenceAt, cursor.lastAt]),
+      ...(eventsRead && cursor.seq === 0 ? { preparing: true } : {}),
       ...(cursor.openTools > 0 ? { toolInFlight: true } : {}),
       ...(cursor.turnActive ? { providerTurnActive: true } : {}),
       ...(cursor.process && this.processAlive(cursor.process.pid, cursor.process.startedAt) ? { processAlive: true } : {}) };
@@ -881,6 +897,7 @@ export class TaskObserver {
     if (isRewakeWorkload(this.plan.workload)) return awaitingRewake(this.record);
     const afterEnd = followUpAfterEndRange();
     if (afterEnd && this.plan.stagingMix?.followUpAfterMs != null) return (this.record.stagingMix?.afterEndFollowUps?.length ?? 0) < afterEnd.count;
+    if (this.plan.stagingMix?.followUpAfterMs != null && !this.record.stagingMix?.followUp) return true;
     return false;
   }
 

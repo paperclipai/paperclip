@@ -15,7 +15,8 @@ describe("catalog oracle contract", () => {
   });
   it("discovers each concrete implementation explicitly with its exact query and bounds", () => {
     for (const implementation of chatCatalogCases) {
-      const cells = runnerMatrix.filter(cell => cell.suite.id === "chat-features" && cell.task.id === implementation.scenarioId);
+      // Opt-in harness profiles (for example Antigravity) add separately selected cells.
+      const cells = runnerMatrix.filter(cell => cell.suite.id === "chat-features" && !cell.profile.explicitOnly && cell.task.id === implementation.scenarioId);
       expect(cells).toHaveLength(1);
       const cell = cells[0]!;
       expect(cell.task.buildPrompt("nonce")).toBe(chatCatalogScenarios.find(row => row.id === implementation.scenarioId)!.query);

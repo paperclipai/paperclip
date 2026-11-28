@@ -328,17 +328,17 @@ export function SmokeLabTab({ companyId }: { companyId: string }) {
       </section>
 
       {/* Results matrix */}
-      <section className="flex flex-col gap-3">
+      <section className="flex min-w-0 flex-col gap-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-sm font-semibold text-foreground">Integration matrix</h2>
-          <div className="flex items-center gap-3 text-xs text-muted-foreground">
+          <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
             <span className="inline-flex items-center gap-1"><Check className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" /> pass</span>
             <span className="inline-flex items-center gap-1"><X className="h-3.5 w-3.5 text-destructive" /> fail</span>
             <span className="inline-flex items-center gap-1"><Minus className="h-3.5 w-3.5 text-amber-500" /> skipped</span>
             <span className="inline-flex items-center gap-1"><span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/30" /> not run</span>
           </div>
         </div>
-        <div className="overflow-x-auto rounded-lg border border-border">
+        <div className="max-w-full overflow-x-auto rounded-lg border border-border">
           <table className="w-full border-collapse text-xs">
             <thead>
               <tr className="border-b border-border bg-muted/40">

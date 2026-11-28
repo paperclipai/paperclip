@@ -86,7 +86,7 @@ describe("Application image Runner", () => {
   it("takes the Runner build and its stamp from runner-artifacts, and checks them before any application build", () => {
     const build = stageBody(dockerfile, "build");
     expect(build).toContain("FROM base AS build");
-    const source = build.search(/^COPY \. \.$/m);
+    const source = build.search(/^COPY --exclude=docker\/remote-runtimes \. \.$/m);
     const output = build.search(/^COPY --from=runner-artifacts \/runner-package\/dist \/app\/packages\/paperclip-runner\/dist$/m);
     const stamp = build.search(
       /^COPY --from=runner-artifacts \/runner-package\/node_modules\/\.cache\/paperclip-runner-build-inputs\.json \/app\/packages\/paperclip-runner\/node_modules\/\.cache\/paperclip-runner-build-inputs\.json$/m,
@@ -175,9 +175,10 @@ describe("Application image Runner", () => {
     for (const [name, source] of [["standard", workflow], ["preview", previewWorkflow], ["merge group", mergeGroupWorkflow], ["pull request", appCheckWorkflow]]) {
       expect(source, name).toContain("PAPERCLIP_BUILD_COMMIT=");
       expect(source, name).not.toMatch(/PAPERCLIP_RUNNER_(?:SOURCE_REVISION|IMAGE_PUBLICATION)/);
-      if (name !== "standard") expect(source, name).not.toMatch(/runner-artifacts|build-contexts?\b/);
+      if (name !== "standard" && name !== "merge group") expect(source, name).not.toMatch(/runner-artifacts|build-contexts?\b/);
     }
     expect(workflow.match(/runner-artifacts|build-contexts?\b/g)).toEqual(["runner-artifacts", "build-contexts"]);
+    expect(mergeGroupWorkflow.match(/runner-artifacts|build-contexts?\b/g)).toEqual(["runner-artifacts", "build-contexts"]);
   });
 });
 

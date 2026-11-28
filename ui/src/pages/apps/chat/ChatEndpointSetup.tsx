@@ -25,7 +25,7 @@ import {
 } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useQueryView } from "@/components/QueryView";
-import { AlertTriangle, CheckCircle2, Copy, CircleHelp, ExternalLink, Eye, EyeOff, Hammer, Loader2 } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Copy, CircleHelp, ExternalLink, Eye, EyeOff, Hammer, Loader2, X } from "lucide-react";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { AgentCharacter } from "@/components/AgentCharacter";
 import { AgentSelect } from "@/components/AgentMultiSelect";
@@ -56,6 +56,8 @@ import {
   readGitHubPrivateKeyFile,
 } from "./github-private-key-file";
 import { describeError } from "@/api/errors";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 const providerNames: Record<ChatProvider, string> = {
   speko: "Speko",
@@ -112,25 +114,33 @@ export function isChatEndpointRepairing(
   );
 }
 
-export function ChatConnectionPurpose({ provider, onChat, onTools, slackLabels }: {
+export function ChatConnectionPurpose({ provider, onChat, onTools, onClose, slackLabels }: {
   provider: ChatProvider;
   onChat: () => void;
   onTools: () => void;
+  onClose?: () => void;
   slackLabels?: string[];
 }) {
   const { setBreadcrumbs } = useBreadcrumbs();
   useEffect(() => {
-    setBreadcrumbs([{ label: "Connectors", href: "/apps" }, { label: "Choose connection" }]);
+    setBreadcrumbs([{ label: "Plugins", href: "/apps" }, { label: "Choose connection" }]);
     return () => setBreadcrumbs([]);
   }, [setBreadcrumbs]);
   return (
       <div className="max-w-2xl space-y-6">
         <ChatSetupNavigation labels={provider === "slack" ? slackLabels ?? ["Choose agent", "Connect"] : undefined} step={0} availableStep={0} onSelect={onChat} />
-        <div>
-          <h1 className="text-xl font-bold">Choose how to connect</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            What should this {providerNames[provider]} connection do?
-          </p>
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <h1 className="text-xl font-bold">Choose how to connect</h1>
+            <p className="mt-1 text-sm text-muted-foreground">
+              What should this {providerNames[provider]} connection do?
+            </p>
+          </div>
+          {onClose ? (
+            <Button type="button" variant="ghost" size="icon" className="-mt-1 -mr-2 shrink-0 text-muted-foreground" aria-label="Close" title="Close" onClick={onClose}>
+              <X aria-hidden />
+            </Button>
+          ) : null}
         </div>
         <div className="grid gap-3">
           <button
@@ -210,7 +220,7 @@ function ChatSdkEndpointSetup() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Connectors", href: "/apps" },
+      { label: "Plugins", href: "/apps" },
       { label: "Connect chat" },
     ]);
     return () => setBreadcrumbs([]);
@@ -462,6 +472,19 @@ function ChatSdkEndpointSetup() {
         tone: "error",
       }),
   });
+  const finishSpekoWithoutTest = useMutation({
+    mutationFn: () => chatEndpointsApi.finishSlackSetup(endpoint!.id),
+    onSuccess: (next) => {
+      syncEndpointSnapshot(next);
+      if (next.status === "active") navigate(`/apps/chat/${next.id}/settings`);
+    },
+    onError: (error) =>
+      pushToast({
+        title: "Couldn't finish setup",
+        body: describeError(error).body,
+        tone: "error",
+      }),
+  });
   const testConnection = useMutation({
     mutationFn: () => provider === "slack" ? chatEndpointsApi.finishSlackSetup(endpoint!.id) : chatEndpointsApi.test(endpoint!.id),
     onSuccess: (next) => {
@@ -536,7 +559,7 @@ function ChatSdkEndpointSetup() {
     );
 
   if (purpose === "choice" && provider !== "speko") {
-    return <ChatConnectionPurpose provider={provider} slackLabels={slackNavigation.labels} onChat={() => setPurpose("chat")} onTools={() => navigate(toolHref)} />;
+    return <ChatConnectionPurpose provider={provider} slackLabels={slackNavigation.labels} onChat={() => setPurpose("chat")} onTools={() => navigate(toolHref)} onClose={() => navigate("/apps")} />;
   }
 
   return (
@@ -658,7 +681,10 @@ function ChatSdkEndpointSetup() {
             <h1 className="text-xl font-bold">Test your Speko voice connection</h1>
             <p className="text-sm text-muted-foreground">Ask the agent to do some work, add a spoken follow-up, and listen for its result. Accepted work stays in Paperclip when you end the call.</p>
             <NativeVoiceConversation companyId={endpoint.companyId} endpointId={endpoint.id} agentName={selectedAgent?.name ?? endpoint.assignedAgentName} />
-            <SetupWizardFooter onSaveExit={() => navigate("/apps")}><Button disabled={testConnection.isPending} onClick={() => testConnection.mutate()}>Verify test conversation</Button></SetupWizardFooter>
+            <SetupWizardFooter onSaveExit={() => navigate("/apps")}>
+              <Button variant="outline" disabled={testConnection.isPending || finishSpekoWithoutTest.isPending} onClick={() => finishSpekoWithoutTest.mutate()}>{finishSpekoWithoutTest.isPending ? "Finishing…" : "Skip test & finish"}</Button>
+              <Button disabled={testConnection.isPending || finishSpekoWithoutTest.isPending} onClick={() => testConnection.mutate()}>Verify test conversation</Button>
+            </SetupWizardFooter>
           </div>
         )}
         {endpoint && step === tryStep && provider !== "speko" && (!automaticSlack || automaticSlackComplete) && (
@@ -1618,7 +1644,7 @@ function ProviderConnectStep({
                   View Slack App Manifest
                 </Button>
               </DialogTrigger>
-              <DialogContent className="sm:max-w-2xl">
+              <DialogContent className={cn("sm:max-w-2xl", ANALYTICS_MASK_CLASS)}>
                 <DialogHeader>
                   <DialogTitle>Slack app manifest</DialogTitle>
                   <DialogDescription>

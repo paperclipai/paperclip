@@ -6,6 +6,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { toolCatalogEntries, toolConnections, toolPolicies, toolProfileBindings, toolProfileEntries, toolProfiles } from "@paperclipai/db";
 import type { ToolPolicy } from "@paperclipai/shared";
+import { defaultConnectionProfileBindingTargets } from "../connection-access-boundary.js";
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value))
@@ -72,6 +73,8 @@ export function createCatalogDefaultAccess(db: Db) {
     const createdProfile = !profile;
     const resetToRecommendedDefaults = !profile || profile.status !== "active";
     if (resetToRecommendedDefaults) await lockToolAssignmentAgents(dbClient, input.connection.companyId, [{ targetType: "company", targetId: input.connection.companyId }]);
+    const defaultBindingTargets = () => defaultConnectionProfileBindingTargets(dbClient, input.connection);
+
     if (!profile) {
       const [sameName] = await dbClient
         .select({ id: toolProfiles.id })
@@ -101,25 +104,30 @@ export function createCatalogDefaultAccess(db: Db) {
           },
         })
         .returning();
-      await dbClient.insert(toolProfileBindings).values({
-        companyId: input.connection.companyId,
-        profileId: profile.id,
-        targetType: "company",
-        targetId: input.connection.companyId,
-        priority: 100,
-        metadata: { source: "app_gallery_finish" },
-        createdByAgentId:
-          input.actor?.actorType === "agent"
-            ? (input.actor.actorId ?? null)
-            : null,
-        createdByUserId:
-          connectionActorUserId(input.actor),
-      });
+      const targets = await defaultBindingTargets();
+      if (targets.length > 0) {
+        await dbClient.insert(toolProfileBindings).values(
+          targets.map((target) => ({
+            companyId: input.connection.companyId,
+            profileId: profile.id,
+            targetType: target.targetType,
+            targetId: target.targetId,
+            priority: 100,
+            metadata: { source: "app_gallery_finish" },
+            createdByAgentId:
+              input.actor?.actorType === "agent"
+                ? (input.actor.actorId ?? null)
+                : null,
+            createdByUserId:
+              connectionActorUserId(input.actor),
+          })),
+        );
+      }
     } else if (resetToRecommendedDefaults) {
       // Removing an app may retain its profile row when another record still
       // references it (for example, an MCP gateway). Reconnecting revives the
-      // same connection id, so restore that retained profile as a fresh
-      // all-agents assignment instead of leaving every read action Off.
+      // same connection id, so restore that retained profile without widening
+      // any saved install boundaries.
       [profile] = await dbClient
         .update(toolProfiles)
         .set({
@@ -151,20 +159,25 @@ export function createCatalogDefaultAccess(db: Db) {
             eq(toolProfileEntries.profileId, profile.id),
           ),
         );
-      await dbClient.insert(toolProfileBindings).values({
-        companyId: input.connection.companyId,
-        profileId: profile.id,
-        targetType: "company",
-        targetId: input.connection.companyId,
-        priority: 100,
-        metadata: { source: "app_gallery_finish" },
-        createdByAgentId:
-          input.actor?.actorType === "agent"
-            ? (input.actor.actorId ?? null)
-            : null,
-        createdByUserId:
-          connectionActorUserId(input.actor),
-      });
+      const targets = await defaultBindingTargets();
+      if (targets.length > 0) {
+        await dbClient.insert(toolProfileBindings).values(
+          targets.map((target) => ({
+            companyId: input.connection.companyId,
+            profileId: profile.id,
+            targetType: target.targetType,
+            targetId: target.targetId,
+            priority: 100,
+            metadata: { source: "app_gallery_finish" },
+            createdByAgentId:
+              input.actor?.actorType === "agent"
+                ? (input.actor.actorId ?? null)
+                : null,
+            createdByUserId:
+              connectionActorUserId(input.actor),
+          })),
+        );
+      }
     }
 
     if (resetToRecommendedDefaults) {

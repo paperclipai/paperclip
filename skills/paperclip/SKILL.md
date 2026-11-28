@@ -249,6 +249,60 @@ Done
 MD
 ```
 
+### Offer a routine after recurring work
+
+A routine is a task that repeats on a schedule. When the work you just finished is the kind the person will want again on a schedule (a weekly report, a daily check, a monthly reconciliation, a recurring digest or follow-up), offer once to repeat it. Make the offer at the end of the work: right after your completion message and the `done` update, or just before `finish_task` when that is how you finish. An offer made before the task is done stays out of sight until the task is done.
+
+```json
+POST /api/issues/{issueId}/routine-suggestions
+Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+{
+  "title": "Weekly competitor pricing summary",
+  "instructions": "Check the pricing pages of Acme, Globex and Initech and summarize what changed since the last summary.",
+  "cadence": { "frequency": "weekly", "dayOfWeek": "monday", "time": "09:00" },
+  "message": "Want me to put this summary together every Monday morning?"
+}
+```
+
+- **Offer only for work that plausibly recurs.** Good signals: the person asked for something periodic ("every week", "keep me posted"), the output goes stale (status, metrics, prices, inbox, news), or the task is a check or report with no natural end. Do not offer for one-off work: a fix, a build, a migration, a single document or decision, research that answered a one-time question, setup, or anything you would have to invent a reason to repeat. When unsure, do not offer.
+- **Never** offer for a task that a routine created, for the onboarding task or its subtasks, or for work that was cancelled or not completed. The server refuses these; do not retry or work around it.
+- **Once per task.** `409` means the task already has an offer (or was cancelled); `404` means the feature is off. Either way, carry on without it.
+- **Cadence:** `frequency` is `daily`, `weekdays`, `weekly` (with `dayOfWeek`, `monday`..`sunday`) or `monthly` (with `dayOfMonth`, 1-28). `time` is the person's local wall-clock time as `HH:MM`; their time zone is applied when they accept. Choose what fits the work and anything the person said; mornings suit reports they read at the start of the day.
+- **`instructions`** must stand on their own: what each run should do and deliver, written out in full (no `{{placeholders}}`). Each run starts fresh from them.
+- **`message`** is one plain sentence in your own voice. Say "task" and "routine"; never "issue", cron, trigger or other internals.
+- The person sees a card with your offer and can accept or decline. Accepting creates the routine with you as its agent, in the task's project and under the task's responsibilities. You are not woken by their answer, so do not wait for it or mention the offer in other comments.
+
+### Areas and responsibilities
+
+A person's responsibilities are saved Paperclip records (experimental): each has an owner, an optional area, a bar (how success is measured) and the projects, tasks and routines filed under it. When a person talks about what they are responsible for, or asks you to map, sort or check work against their responsibilities, read them before asking:
+
+- `list_responsibilities`: the person's areas, each with its responsibilities (status, bar, health, the agent that runs it, and counts), plus **uncovered work**: company routines, projects and open tasks filed under no responsibility. It defaults to the person your run works for; pass `ownerUserId` only for someone else.
+- `get_responsibility`: one responsibility in full, with link IDs for items filed directly, the skills of the agents doing its work and its latest status report.
+- `find_responsibilities_for`: where a project, task (ID or identifier such as `PAP-12`) or routine is filed.
+
+Ask the person what they are responsible for only when the list is empty, and never invent responsibilities. A "turned off" error (code `responsibilities_disabled`) means the feature is off on this instance: say so instead of reporting that they have none. See "Areas and responsibilities" in `references/api-reference.md` for the routes behind these tools.
+
+To change them, you act for the person your run works for when they directed it: it is their own chat or a task they made, or their message woke you (a subtask you made does not count). You may then do what they could (their own responsibilities, or anyone's when they are a company owner or admin):
+
+- `create_area`, `update_area` (rename, describe, reorder, archive or restore) and `delete_area`.
+- `create_responsibility` (a title is enough; `areaTitle` reuses or creates the area; `fileItems` files work under it), `update_responsibility` (title, sentence, metric as `bar`, area, the agent that runs it, health override, or status such as `let_go`) and `delete_responsibility`.
+- `file_under_responsibility` files projects, tasks, routines and company skills in one step; `moveFrom` (a responsibility ID, or `all`) makes it a move. `remove_from_responsibility` unfiles items; no link IDs are needed. A responsibility's skills are those filed by hand plus those held by the agents doing its work; only filed ones can be removed. `update_skill_details` changes a skill's tagline and categories.
+- To map routines to responsibilities, read them with `list_routines` (`unfiled: true` lists those under no responsibility; add `status: "active"` for the running ones), then file them; `update_routine` also changes a routine's schedule, agent or instructions (see `references/routines.md`).
+
+Each change is saved as a version in the person's Dashboard history, where they can undo it; say so when you report what you changed. Prefer what can be undone: archive an area or let a responsibility go instead of deleting it. A delete is permanent, so the first call posts a confirmation card and returns `awaiting_confirmation`: tell the person, then stop; when they accept you are woken, and the same call deletes. Otherwise (a task someone else made for them, a routine, or no person), your changes are saved as proposals for a person to confirm.
+
+### Propose a bar in a bar conversation
+
+A bar conversation is a task a person opens from one of their responsibilities to agree how its success is measured. When you are assigned one, its prompt carries a **Bar conversation** block with the responsibility's facts, the bar templates (`volume`, `percentage`, `yes_no`, `range`) and the exact call, `POST /api/issues/{issueId}/bar-proposals`. Follow that block: open with what you understand, ask at most three short questions, then propose. You choose the template. You never apply a bar yourself; the person accepts your proposal with one tap, or says it is not right and the conversation continues.
+
+### Propose an automation in an automation conversation
+
+An automation conversation is a task a person opens from one of their manual tasks to turn it into an automation. When you are assigned one, its prompt carries an **Automation conversation** block with the task's facts, the quick suggestion the person saw, the ways it can start (a schedule, a webhook, or a standing check on each of your wake-ups) and the exact call, `POST /api/issues/{issueId}/automation-proposals`. Follow that block: say what you understand, ask at most two short questions, then propose one automation. You never set it up yourself; the person accepts with one tap, or says it is not right and the conversation continues. When your heartbeat wakes you with **Standing checks** listed, carry each out and report it with `POST /api/routines/{routineId}/standing-check-results`.
+
+### Write a responsibility's status
+
+When a person asks you for an update on one of their responsibilities, the task's prompt carries a **Status update** block with the responsibility's bar, its number and the work under it, and the exact call, `POST /api/responsibilities/{responsibilityId}/status-report`. Check the work, write the status (behind, at risk or on track, or unknown when you cannot tell) with one plain line saying why, then mark the task done. On other work under a responsibility you report on, a short **Responsibility status** reminder asks you to refresh it when the picture changed.
+
 Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`, `blockedByIssueIds`.
 
 ### Status Quick Guide
@@ -556,6 +610,7 @@ Routines are recurring tasks. Each time a routine fires it creates an execution 
 - Create and manage routines with the routines API — agents can only manage routines assigned to themselves.
 - Add triggers per routine: `schedule` (cron), `webhook`, or `api` (manual).
 - Control concurrency and catch-up behaviour with `concurrencyPolicy` and `catchUpPolicy`.
+- After finishing work that recurs, offer the person a routine instead of creating one yourself; see **Offer a routine after recurring work**.
 
 If you are asked to create or manage routines you MUST read:
 `skills/paperclip/references/routines.md`
@@ -658,7 +713,7 @@ Never leave bare ticket ids in issue descriptions or comments when a clickable i
 - Approvals: `/<prefix>/approvals/<approval-id>`
 - Runs: `/<prefix>/agents/<agent-url-key-or-id>/runs/<run-id>`
 
-Do NOT use unprefixed paths like `/issues/PAP-123` or `/agents/cto` — always include the company prefix.
+Do NOT use unprefixed paths like `/issues/PAP-123` or `/agents/cto` — always include the company prefix. Write these links, and attachment links such as `/api/attachments/<id>/content`, as relative paths: never add a hostname you were not given, such as `https://paperclip`, `https://paperclip.local` or `http://localhost`, because that host does not open for the reader.
 
 **Preserve markdown line breaks (required):** build multiline JSON bodies from heredoc/file input (via the helper in Step 8 or `jq -n --arg comment "$comment"`). Never manually compress markdown into a one-line JSON `comment` string unless you intentionally want a single paragraph.
 

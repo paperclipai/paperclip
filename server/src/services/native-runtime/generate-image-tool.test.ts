@@ -11,6 +11,7 @@ import { accountRunCost } from "../run-cost-accounting.js";
 import { budgetServiceInTransaction } from "../budgets.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 import { imageGenerationBindingForRun, priceGeneratedImage, requestOpenAiImage } from "./generate-image-tool.js";
+import { uniqueIssuePrefix } from "../../__tests__/helpers/issue-prefix.js";
 
 // One transparent 1x1 PNG. The handler only needs real PNG bytes to save.
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64");
@@ -42,7 +43,7 @@ describe("generate_image for OpenAI API-key Codex agents (N-12)", () => {
   /** An onboarding-style company: one Codex agent running on an OpenAI API key. */
   async function fixture() {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
-    await db.insert(companies).values({ id: companyId, name: "Pixel Bakery", issuePrefix: `PX${companyId.slice(0, 4).toUpperCase()}` });
+    await db.insert(companies).values({ id: companyId, name: "Pixel Bakery", issuePrefix: uniqueIssuePrefix("PX") });
     await db.insert(companyMemberships).values({ companyId, principalId: "alice", principalType: "user", status: "active", membershipRole: "owner" });
     await db.insert(agents).values({ id: agentId, companyId, name: "Head baker", adapterType: "paperclip_runner",
       adapterConfig: { provider: "codex" }, status: "active" });

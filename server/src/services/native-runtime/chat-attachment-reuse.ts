@@ -1,4 +1,4 @@
-import { notifyIssueRecovery } from "../issue-recovery-notifications.js";
+import { notifyIssueGraphRecovery } from "../issue-recovery-notifications.js";
 import { createHash } from "node:crypto";
 
 import { and, desc, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
@@ -40,6 +40,7 @@ import { boundExternalChatProvider } from "./external-chat-provider.js";
 import { resolveExternalChatQuestionResponse } from "./external-chat-question-response.js";
 import { githubRunReplyState } from "../chat-run-publications.js";
 import { readPreservedNativeResultFinalization } from "./preserved-native-result-finalization.js";
+import { settledRunOwnsResponseWait } from "./external-chat-wait-authorization.js";
 
 // This boundary reads identity and wake authority, never launch renderings,
 // saved provider profiles, or run output. Keep the nested wake proof narrow too.
@@ -829,6 +830,7 @@ export async function resolveExternalChatResponseWaitAuthorizationInTransaction(
     .select({
       assigneeAgentId: issues.assigneeAgentId,
       executionRunId: issues.executionRunId,
+      checkoutRunId: issues.checkoutRunId,
     })
     .from(issues)
     .where(
@@ -900,12 +902,14 @@ export async function resolveExternalChatResponseWaitAuthorizationInTransaction(
       : actorQuery.for("update").limit(1));
   const preserved = run && run.status !== "running"
     ? await readPreservedNativeResultFinalization(tx, binding) : null;
+  const liveOwner = run.status === "running" && issue?.executionRunId === binding.runId;
+  const settledOwner = !preserved && !liveOwner && issue
+    ? await settledRunOwnsResponseWait(tx, binding, run.status, issue) : false;
   if (
     !issue ||
     !actor ||
-    (!preserved && run.status !== "running") ||
+    !(preserved || liveOwner || settledOwner) ||
     issue.assigneeAgentId !== binding.agentId ||
-    (!preserved && issue.executionRunId !== binding.runId) ||
     ["paused", "terminated", "pending_approval", "error"].includes(
       actor.status,
     )
@@ -1025,7 +1029,9 @@ export async function readPublishedGitHubReviewCompletionContinuationInTransacti
     eq(heartbeatRuns.agentId, binding.agentId), eq(heartbeatRuns.nativeIssueId, binding.issueId),
     eq(heartbeatRuns.runtimeMode, "native"),
   )).limit(1);
-  if (!run || run.status !== "running" && !await readPreservedNativeResultFinalization(tx, binding)) return null;
+  // Ownership itself is proven by the authorization below.
+  if (!run || !["running", "succeeded"].includes(run.status) &&
+    !await readPreservedNativeResultFinalization(tx, binding)) return null;
   const wait = await readInheritedGitHubReviewWait(tx, run);
   if (wait?.kind !== "published") return null;
   if (wait.reviewRunId !== run.id) {
@@ -1751,7 +1757,7 @@ export async function prepareReusedChatAttachment(input: {
       throw new Error("paperclip_runner_chat_attachment_origin_not_persisted");
     }
     await input.db.transaction(async tx => {
-      await notifyIssueRecovery(tx, { companyId: input.binding.companyId });
+      await notifyIssueGraphRecovery(tx, { companyId: input.binding.companyId, issueId: input.binding.issueId, runId: input.binding.runId });
       await tx
       .update(issueWorkProducts)
       .set({

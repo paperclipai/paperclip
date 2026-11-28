@@ -143,9 +143,10 @@ export function gradeReleaseSwapTask(task: GradeTaskInput): TaskGrade {
   const lastActivityAgeMs = task.now !== undefined && liveActivity.length ? task.now - Math.max(...liveActivity) : null;
   const verdict = (value: TaskVerdict, detail: string): TaskGrade => ({ ...base, verdict: value, detail, label: label(value), lastActivityAgeMs });
   const stale = staleRuns(task);
+  const heldByRun = task.runs.some(run => LIVE_RUN.has(run.status));
   const idle = task.now === undefined ? [] : [
     ...stale.map(run => `run ${run.runId} ${run.status} with no activity for ${Math.round((task.now! - (run.lastActivityAt ?? run.createdAt ?? 0)) / 60_000)} min`),
-    ...(task.queuedWakes ? [`${task.queuedWakes} queued wake(s) never dispatched`] : []), ...(task.scheduledRetry ? ["a scheduled retry that never ran"] : []),
+    ...(task.queuedWakes && !heldByRun ? [`${task.queuedWakes} queued wake(s) never dispatched`] : []), ...(task.scheduledRetry ? ["a scheduled retry that never ran"] : []),
     ...(task.interruption && (task.interruption.state === "working" || task.interruption.state === "retry_scheduled" || task.interruption.retryWait)
       ? [`the board shows ${task.interruption.retryWait ? "a Retry waiting on the system" : task.interruption.state}`] : []),
     ...(task.activeRecoveryOwner && task.activeRecoveryOwner !== "board" ? [`a ${task.activeRecoveryOwner} recovery action that made no progress`] : [])];
@@ -238,6 +239,14 @@ export function drainState(runs: readonly DrainRun[], now: number, windowMs: num
 
 export const AUTO_NOTICE = /^Prepared .+ for this response\.$/;
 export const isAutoNotice = (body: string) => AUTO_NOTICE.test(body.trim());
+export const LOOP_GUARD_NOTICE = "Paperclip stopped a tool call that kept failing the same way. The task continues in a fresh session.";
+
+export function isNoticeRepeat(body: string, runIds: ReadonlyArray<string | null>): boolean {
+  if (isAutoNotice(body)) return true;
+  if (body.trim() !== LOOP_GUARD_NOTICE) return false;
+  const known = runIds.filter((id): id is string => typeof id === "string" && id.length > 0);
+  return runIds.length > 1 && known.length === runIds.length && new Set(known).size === known.length;
+}
 
 export function swapMetrics(swaps: readonly SwapWindow[], runs: readonly SwapRunFact[], firstEventAfterStop: ReadonlyMap<string, number>, waveEnd: number,
   failureWindowMs = RELEASE_FAILURE_WINDOW_MS): SwapMetrics[] {
@@ -346,7 +355,7 @@ export function releaseSwapMarkdown(result: ReleaseSwapResult, metrics: readonly
     `Retry: ${result.retry.tasks} task(s) needed it; worked ${result.retry.worked}, did not work ${result.retry.didNotWork}, still running ${result.retry.pending}.`,
     `Duplicates: ${duplicates.overlappingRuns.length} overlapping run pair(s), ${duplicates.doubleExecutors.length} double executor(s), `
       + `${duplicates.duplicateComments.length} duplicated agent comment(s), ${duplicates.duplicateChildren.length} duplicated subtask title(s)`
-      + `${duplicates.autoNoticeRepeats ? `; informational: ${duplicates.autoNoticeRepeats.length} task(s) repeat the "Prepared ... for this response." notice` : ""}.`,
+      + `${duplicates.autoNoticeRepeats ? `; informational: ${duplicates.autoNoticeRepeats.length} task(s) repeat the "Prepared ... for this response." notice or a once-per-run "stopped a tool call" notice` : ""}.`,
     `Failed outside a release window (more than ${RELEASE_FAILURE_WINDOW_MS / 60_000} min after a stop and not live at it): ${failedOutside.length ? failedOutside.join(", ") : "none"}.`,
     "",
     "| Swap | Failed runs | Lost while old alive | Survivors | Next event p50 | Next event max | No event | Late start on old | Prep during recovery |",

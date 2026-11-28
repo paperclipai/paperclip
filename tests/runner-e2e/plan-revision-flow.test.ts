@@ -1,6 +1,6 @@
 import { expect, it, vi } from "vitest";
 import type { Page } from "@playwright/test";
-import { runPlanRevisionAcceptance } from "./plan-revision-flow.js";
+import { planPreviewLabel, planStageRootSelector, runPlanRevisionAcceptance } from "./plan-revision-flow.js";
 
 const state = {
   currentIssue: { status: "in_progress" },
@@ -35,4 +35,17 @@ it("lets deployment callers reject a binding failure without another observation
   })).rejects.toBe(bindingFailure);
   expect(load).toHaveBeenCalledOnce();
   expect(get).not.toHaveBeenCalled();
+});
+
+it("accepts the classic and Coordinator Plan preview names for the exact revision only", () => {
+  expect(planPreviewLabel(1).test("Open Plan revision 1")).toBe(true);
+  expect(planPreviewLabel(1).test("Open Plan revision 1 in task sidebar")).toBe(true);
+  expect(planPreviewLabel(1).test("Open Plan revision 12 in task sidebar")).toBe(false);
+  expect(planPreviewLabel(2).test("Open Plan revision 1 in task sidebar")).toBe(false);
+  expect(planPreviewLabel(1).test("Open Plan in task sidebar")).toBe(false);
+});
+
+it("finds the native Plan chip in a settled turn or directly in the Coordinator chat thread", () => {
+  expect(planStageRootSelector(true).split(", ")).toEqual(['[data-testid="task-chat-turn"][data-settled="true"]', '[data-testid="task-chat-thread"]']);
+  expect(planStageRootSelector(false)).toBe("body");
 });

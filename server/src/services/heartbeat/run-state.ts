@@ -58,6 +58,7 @@ import {
 import { isUuidLike } from "@paperclipai/shared";
 import { HEARTBEAT_RUN_LIST_DEFAULT_LIMIT, HEARTBEAT_RUN_LIST_MAX_LIMIT } from "@paperclipai/shared";
 import { isUnsafeSessionWorkspaceCwd } from "../session-workspace-cwd.js";
+import { RUN_CONTENT_DELETED_MARKER } from "../tool-access/connections/run-session-reset.js";
 import { presentStorageFailureMessage } from "../../storage/storage-unavailable.js";
 
 export const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON =
@@ -1235,8 +1236,8 @@ export function createHeartbeatRunState(db: Db) {
     }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then(rows => rows[0] ?? null);
   }
 
-  async function getRuntimeState(agentId: string) {
-    return db
+  async function getRuntimeState(agentId: string, reader: Pick<Db, "select"> = db) {
+    return reader
       .select()
       .from(agentRuntimeState)
       .where(eq(agentRuntimeState.agentId, agentId))
@@ -1273,8 +1274,9 @@ export function createHeartbeatRunState(db: Db) {
     agentId: string,
     adapterType: string,
     taskKey: string,
+    reader: Pick<Db, "select"> = db,
   ) {
-    return db
+    return reader
       .select()
       .from(agentTaskSessions)
       .where(
@@ -1507,6 +1509,7 @@ export function createHeartbeatRunState(db: Db) {
   async function resolveSessionBeforeForWakeup(
     agent: typeof agents.$inferSelect,
     taskKey: string | null,
+    reader: Pick<Db, "select"> = db,
   ) {
     if (taskKey) {
       const codec = getAdapterSessionCodec(agent.adapterType);
@@ -1515,6 +1518,7 @@ export function createHeartbeatRunState(db: Db) {
         agent.id,
         agent.adapterType,
         taskKey,
+        reader,
       );
       const parsedParams = normalizeSessionParams(
         codec.deserialize(existingTaskSession?.sessionParamsJson ?? null),
@@ -1526,7 +1530,7 @@ export function createHeartbeatRunState(db: Db) {
       );
     }
 
-    const runtimeForRun = await getRuntimeState(agent.id);
+    const runtimeForRun = await getRuntimeState(agent.id, reader);
     return runtimeForRun?.sessionId ?? null;
   }
 
@@ -1598,6 +1602,7 @@ export function createHeartbeatRunState(db: Db) {
       )
       .then((rows) => rows[0] ?? null);
     if (!resumeRun) return null;
+    if (parseObject(resumeRun.resultJson)[RUN_CONTENT_DELETED_MARKER]) return null;
 
     const resumeContext = parseObject(resumeRun.contextSnapshot);
     const resumeTaskKey = deriveTaskKey(resumeContext, null) ?? taskKey;

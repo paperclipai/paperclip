@@ -125,7 +125,7 @@ import {
   stringifyFrontmatter,
 } from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
-import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import { agentService } from "./agents.js";
 import { issueDocumentSelect, mapIssueDocumentRow } from "./documents.js";
@@ -374,9 +374,15 @@ type SkillSourceMeta = {
   auditScanVersion?: string;
 };
 
-type SkillMissingSourceMarker = {
-  reason: "local_source_missing";
-  sourceType: "local_path";
+export class RemoteSkillSourceUnavailableError extends HttpError {
+  constructor(message: string) { super(422, message); }
+}
+
+export const REMOTE_SKILL_SOURCE_UNAVAILABLE = "remote_source_unavailable";
+
+export type SkillMissingSourceMarker = {
+  reason: "local_source_missing" | typeof REMOTE_SKILL_SOURCE_UNAVAILABLE;
+  sourceType: CompanySkillSourceType;
   sourceLocator: string | null;
   sourcePath: string | null;
   detectedAt: string;
@@ -2420,8 +2426,15 @@ async function resolveExistingSkillDirectory(skillDir: string | null) {
   return dirStat?.isDirectory() && skillFileStat?.isFile() ? skillDir : null;
 }
 
+export function remoteSourceUnavailable(skill: { metadata: Record<string, unknown> | null }) {
+  return getMissingSourceMarker(skill.metadata)?.reason === REMOTE_SKILL_SOURCE_UNAVAILABLE;
+}
+
 function buildMissingRuntimeSourceDetail(skill: Pick<CompanySkill, "name" | "sourceLocator" | "metadata">) {
   const marker = getMissingSourceMarker(skill.metadata);
+  if (remoteSourceUnavailable(skill)) {
+    return `Company skill "${skill.name}" is in the library, but its files could not be recovered when Paperclip moved this company to new storage. Reinstall it to use it again.`;
+  }
   const sourcePath = asString(marker?.sourcePath) ?? normalizeSourceLocatorDirectory(skill.sourceLocator);
   if (sourcePath) {
     return `Company skill "${skill.name}" is in the library, but Paperclip cannot find its local source at ${sourcePath}.`;
@@ -3440,6 +3453,41 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       .where(and(eq(companySkills.companyId, companyId), keys ? inArray(companySkills.key, [...keys]) : undefined, unrestrictedOnly ? isNull(companySkills.accessSourceId) : await visibility().condition(companyId)))
       .orderBy(asc(companySkills.name), asc(companySkills.key));
     return rows.map((row) => toCompanySkill(row));
+  }
+
+  /**
+   * The company skills in the given agents' desired (assigned) skill sets, each
+   * with the ids of the agents that hold it. Resolves references the same way
+   * `list` counts attached agents; terminated agents are ignored. Reads only:
+   * it does not refresh the skill inventory.
+   */
+  async function listAssignedToAgents(
+    companyId: string,
+    agentIds: readonly string[],
+  ): Promise<Array<{ skill: CompanySkill; agentIds: string[] }>> {
+    if (agentIds.length === 0 || !visibility().canReadCompany(companyId)) return [];
+    const [agentRows, targets] = await Promise.all([
+      db.select({
+        id: agentsTable.id,
+        desiredSkills: sql<unknown>`${agentsTable.adapterConfig}->'paperclipSkillSync'->'desiredSkills'`,
+      }).from(agentsTable).where(and(
+        eq(agentsTable.companyId, companyId),
+        inArray(agentsTable.id, [...new Set(agentIds)]),
+        ne(agentsTable.status, "terminated"),
+      )),
+      listReferenceTargets(companyId),
+    ]);
+    const holders = new Map<string, string[]>();
+    for (const agent of agentRows) {
+      for (const key of resolveDesiredSkillKeys(targets, { paperclipSkillSync: { desiredSkills: agent.desiredSkills } })) {
+        const list = holders.get(key) ?? [];
+        if (!list.includes(agent.id)) list.push(agent.id);
+        holders.set(key, list);
+      }
+    }
+    if (holders.size === 0) return [];
+    const skills = await readFullSkillRows(companyId, new Set(holders.keys()));
+    return skills.map((skill) => ({ skill, agentIds: [...(holders.get(skill.key) ?? [])].sort() }));
   }
 
   async function categoryCounts(companyId: string): Promise<CompanySkillCategoryCount[]> {
@@ -6001,6 +6049,9 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     skill: CompanySkill,
     options: RuntimeSkillEntryOptions,
   ): Promise<RuntimeSkillSourceResolution | null> {
+    if (remoteSourceUnavailable(skill) && !options.versionSelections?.get(skill.key)) {
+      return { status: "missing", source: resolveRuntimeSkillMaterializedPath(companyId, skill), detail: buildMissingRuntimeSourceDetail(skill) };
+    }
     const selectedVersionId = options.versionSelections?.get(skill.key)
       ?? (options.snapshotLatest || skill.sourceType !== "local_path" || skill.metadata?.sourceKind === "paperclip_bundled" || (skill.metadata?.skillSourceId && skill.metadata?.snapshotHash) || skill.accessSourceId ? skill.currentVersionId : null);
     if (selectedVersionId) {
@@ -6521,6 +6572,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
         const dir = typeof metadata.repoSkillDir === "string" ? normalizeGitHubSkillDirectory(metadata.repoSkillDir, "") : skill.slug;
         const url = resolveRawGitHubUrl(asString(metadata.hostname) ?? "github.com", owner, repo, skill.sourceRef!, path.posix.join(dir, entry.path));
         const response = await ghFetch(url);
+        if (response.status === 404 || response.status === 410) throw new RemoteSkillSourceUnavailableError(`Installed file ${entry.path} no longer exists at its source: ${response.status}`);
         if (!response.ok) throw unprocessable(`Could not acquire installed file ${entry.path}: ${response.status}`);
         if (!response.body) throw unprocessable("Installed file response has no body.");
         const reader = response.body.getReader();
@@ -7504,6 +7556,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
   return {
     list,
     listFull,
+    listAssignedToAgents,
     getById,
     getByKey,
     getByRouteRef,

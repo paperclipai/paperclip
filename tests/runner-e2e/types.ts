@@ -30,6 +30,7 @@ export type RunnerTaskFlow =
   | "provider_connection"
   | "github_review_journey"
   | "antigravity_agent_journey"
+  | "antigravity_swarm_journey"
   | "plan_task_guidance"
   | "blocker_guidance"
   | "public_mcp"
@@ -97,7 +98,13 @@ export interface RunnerProfileFixture {
       | "openrouter_rankings_snapshot";
     qualificationId: string;
   };
-  qualificationCandidate?: "cursor" | "copilot" | "pi" | "kimi";
+  qualificationCandidate?: "cursor" | "copilot" | "pi" | "kimi" | "antigravity";
+  /**
+   * Opt-in profile. Its cells are selected only when `--profile` names it or an
+   * exact execution ID is given; suite, group, case and environment selectors
+   * alone never select it.
+   */
+  explicitOnly?: true;
   ranking?: {
     rank: number;
     canonicalModelId: string;

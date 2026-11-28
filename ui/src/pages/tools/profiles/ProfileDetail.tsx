@@ -33,6 +33,7 @@ import { LoadingState, RelativeTime, ToolsPageHeader } from "../shared";
 import { ProfileActionDialog, type ProfileActionDialogKind } from "./ProfileActionDialog";
 import { allowsLabel, STATUS_LABEL } from "./profile-summary";
 import { useProfilesData } from "./useProfilesData";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 type DialogKind = "edit" | "duplicate" | "archive" | "delete" | "restore" | null;
 
@@ -422,7 +423,7 @@ function NewToolsReviewDialog({
                   {tool.description ? (
                     <p className="mt-1 text-sm text-muted-foreground">{tool.description}</p>
                   ) : null}
-                  <p className="mt-1 text-xs text-muted-foreground">
+                  <p className={cn("mt-1 text-xs text-muted-foreground", ANALYTICS_MASK_CLASS)}>
                     {tool.applicationName ?? tool.connectionName ?? "App tool"} · added {formatShortDate(tool.addedAt)}
                   </p>
                 </div>
@@ -471,7 +472,8 @@ function AllowList({ rows, total }: { rows: AllowRow[]; total: number }) {
   }
   return (
     <div className="overflow-hidden rounded-lg border border-border">
-      <table className="w-full text-sm">
+      <div className="max-w-full overflow-x-auto">
+        <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-border bg-muted/40 text-left text-xs font-medium text-muted-foreground">
             <th className="px-3 py-2 font-medium">Tool</th>
@@ -515,6 +517,7 @@ function AllowList({ rows, total }: { rows: AllowRow[]; total: number }) {
           ))}
         </tbody>
       </table>
+      </div>
       {rows.length > 80 ? (
         <p className="border-t border-border px-3 py-2 text-xs text-muted-foreground">
           Showing 80 of {rows.length} allowed tools.

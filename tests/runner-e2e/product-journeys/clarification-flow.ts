@@ -4,6 +4,7 @@ import { expect, type Locator } from "@playwright/test";
 import { continuationScenario } from "../continuation-cases.js";
 import { continuationAnswerCommitted, continuationCheckpointReady } from "../continuation-readiness.js";
 import type { ContinuationCheckpoint } from "../continuation-scoring.js";
+import { submittedReferencePattern } from "../submitted-reference.js";
 import { answerResumeQuestionThroughUi } from "../question-resume-ui.js";
 import { createTaskThroughUi } from "../user-actions.js";
 import { validateAgentTaskState } from "./agent-flows.js";
@@ -15,7 +16,7 @@ type Row = Record<string, any>;
 export const DOCUMENT_READBACK_MS = 120_000;
 interface Options { deadlineAt: number; directory: string; capture(id: string, label: string, file: string): Promise<void> }
 
-export async function waitForClarificationDocument(visible: Locator, answer: string, deadlineAt: number) {
+export async function waitForClarificationDocument(visible: Locator, marker: string, deadlineAt: number) {
   const remaining = () => {
     const timeout = deadlineAt - Date.now();
     if (!Number.isFinite(timeout) || timeout <= 0) throw new JourneyError("failed", "clarification_document_not_ready");
@@ -23,7 +24,7 @@ export async function waitForClarificationDocument(visible: Locator, answer: str
   };
   await expect(visible).toHaveCount(1, { timeout: remaining() });
   await expect(visible).toBeVisible({ timeout: remaining() });
-  await expect(visible).toContainText(answer, { timeout: remaining() });
+  await expect(visible).toContainText(submittedReferencePattern(marker), { timeout: remaining() });
   await expect(visible).toContainText(/afternoon/i, { timeout: remaining() });
   remaining();
 }
@@ -116,7 +117,7 @@ export async function runClarificationJourney(context: JourneyContext, session: 
     const visible = context.page.locator(`[id=${JSON.stringify(`document-${document.key}`)}]:visible, [id=${JSON.stringify(`side-panel-content-document:${document.key}`)}]:visible`);
     // The API already returned the saved document, so this is a bounded UI readback,
     // not agent work time: a missing view must not hold the worker until the case deadline.
-    await waitForClarificationDocument(visible, scenario.answer, Math.min(options.deadlineAt, Date.now() + DOCUMENT_READBACK_MS));
+    await waitForClarificationDocument(visible, scenario.marker, Math.min(options.deadlineAt, Date.now() + DOCUMENT_READBACK_MS));
     const persisted = await context.api.get<Row>(`/api/issues/${issue.id}/documents/${encodeURIComponent(document.key)}`);
     readback = { issueId: persisted.issueId, key: persisted.key, revisionId: persisted.latestRevisionId, body: persisted.body, visibleBody: await visible.innerText() };
     await options.capture("reloaded", "Saved answers after reload", "clarification-reloaded.png");

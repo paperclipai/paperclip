@@ -8,7 +8,8 @@ import { isSupportedAcpxProfileVersion } from "./profile-compatibility.js";
 // release changes the commandDigest and keeps the version; a new provider starts
 // at 1. Update this table, with the reason, only for a deliberate reset.
 const PROFILE_VERSIONS: Readonly<Record<string, number>> = {
-  antigravity: 1, claude: 1, codex: 1, copilot: 92, cursor: 17, grok: 20, pi: 37,
+  // Released Antigravity uses revision 2 to refuse saved pending-candidate sessions.
+  antigravity: 2, claude: 1, codex: 1, copilot: 92, cursor: 17, grok: 20, pi: 37,
   // Released Kimi uses revision 17 to refuse saved pending-candidate sessions.
   // The upstream-only attestation migration retains that existing revision.
   kimi: 17,

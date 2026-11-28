@@ -166,3 +166,67 @@ it("retains provider failures for declared tools even before any dispatch", asyn
   expect(spans[1].status.code).toBe(2);
   expect(spanAttributes(spans[1])).toMatchObject({ "paperclip.tool.source": "provider", "braintrust.output": "request exceeded limit" });
 });
+
+it("keeps the current request readable after a long generated handoff and links the full submitted event", async () => {
+  const { observer, bodies } = setup();
+  const handoff = ["## Fresh session handoff", "Generated history guidance.", JSON.stringify({
+    schema: "paperclip.native-session-handoff.v1", entries: [{ body: "old context ".repeat(1800) }],
+  })].join("\n");
+  observer.observe(event("turn.submitted", { text: JSON.stringify({
+    schema: "paperclip.native-model-envelope.v3", requestedSkills: ["skill"],
+    task: { identifier: "TEST-1", title: "Review current request", prompt: `${handoff}\n\nCheck the current request: provider-secret secret-canary 😀` },
+    completionContract: { private: "excluded-contract" },
+  }) }));
+  observer.observe(event("turn.completed"));
+  await observer.close();
+  const attrs = spanAttributes(bodies[0].resourceSpans[0].scopeSpans[0].spans[0]);
+  expect(attrs["braintrust.input"]).toContain("Check the current request: [REDACTED] [REDACTED] 😀");
+  expect(attrs["braintrust.input"]).toContain("TEST-1");
+  expect(attrs["braintrust.input"]).not.toContain("old context");
+  expect(attrs["braintrust.input"]).not.toContain("excluded-contract");
+  expect(attrs["paperclip.observability.input.events"]).toBe("/api/heartbeat-runs/run-one/events");
+  expect(attrs["paperclip.observability.truncated"]).toBe(true);
+  expect(Buffer.byteLength(String(attrs["braintrust.input"]))).toBeLessThanOrEqual(8192);
+});
+
+it.each(["paperclip.native-model-envelope.v1", "paperclip.native-model-envelope.v2", "paperclip.native-model-envelope.v3"])("selects the prompt before other context for %s", async schema => {
+  const { observer, bodies } = setup();
+  observer.observe(event("turn.submitted", { text: JSON.stringify({ schema, instructions: "earlier context".repeat(2000), task: { prompt: "current task 😀" } }) }));
+  observer.observe(event("turn.completed"));
+  await observer.close();
+  expect(spanAttributes(bodies[0].resourceSpans[0].scopeSpans[0].spans[0])["braintrust.input"]).toBe("current task 😀");
+});
+it.each(["plain request", '{"schema":"future","task":{"prompt":"new"}}', '{"schema":', '{"schema":"paperclip.native-model-envelope.v3","task":{}}'])("preserves an unrecognized request: %s", async text => {
+  const { observer, bodies } = setup();
+  observer.observe(event("turn.submitted", { text }));
+  observer.observe(event("turn.completed"));
+  await observer.close();
+  expect(spanAttributes(bodies[0].resourceSpans[0].scopeSpans[0].spans[0])["braintrust.input"]).toBe(text);
+});
+it("retains malformed handoff framing and bounds a long current prompt without corrupting UTF-8", async () => {
+  for (const prompt of ["## Fresh session handoff\ninvalid packet\n\nKeep this request", "😀".repeat(5000)]) {
+    const { observer, bodies } = setup();
+    observer.observe(event("turn.submitted", { text: JSON.stringify({ schema: "paperclip.native-model-envelope.v3", task: { prompt } }) }));
+    observer.observe(event("turn.completed"));
+    await observer.close();
+    const attrs = spanAttributes(bodies[0].resourceSpans[0].scopeSpans[0].spans[0]);
+    expect(prompt.startsWith(String(attrs["braintrust.input"]))).toBe(true);
+    expect(Buffer.byteLength(String(attrs["braintrust.input"]))).toBeLessThanOrEqual(8192);
+    expect(attrs["braintrust.input"]).not.toContain("\uFFFD");
+  }
+});
+it("shows steering before recovery guidance and omits request references when prompt capture is disabled", async () => {
+  for (const enabled of [true, false]) {
+    const { observer, bodies } = setup({ ...environment, OTEL_LOG_USER_PROMPTS: enabled ? "1" : "0" });
+    observer.observe(event("turn.submitted", { text: JSON.stringify({ schema: "paperclip.native-continuation.v1", events: "guidance ".repeat(2000), steeredMessages: ["latest user request"] }) }));
+    observer.observe(event("turn.completed"));
+    await observer.close();
+    const attrs = spanAttributes(bodies[0].resourceSpans[0].scopeSpans[0].spans[0]);
+    if (enabled) expect(String(attrs["braintrust.input"])).toMatch(/^latest user request/);
+    else {
+      expect(attrs).not.toHaveProperty("braintrust.input");
+      expect(attrs).not.toHaveProperty("paperclip.observability.input.events");
+      expect(JSON.stringify(bodies)).not.toContain("latest user request");
+    }
+  }
+});

@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import { MAX_ISSUE_REQUEST_DEPTH } from "../index.js";
 import {
   addIssueCommentSchema,
+  addIssueSwarmCommentSchema,
   paperclipQuestionSetPayloadSchema,
   issueCommentMetadataSchema,
+  issueDocumentBatchQuerySchema,
   createIssueSchema,
   issueBlockedInboxAttentionSchema,
   resolveIssueRecoveryActionSchema,
@@ -16,6 +18,16 @@ import {
 import { createAgentSchema } from "./agent.js";
 
 describe("issue validators", () => {
+  it("bounds document batches before deduplication and normalizes keys and IDs", () => {
+    const id = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA";
+    expect(issueDocumentBatchQuerySchema.parse({ key: " SENTRY-CASE ", issueIds: ` ${id},${id} ` })).toEqual({
+      key: "sentry-case", issueIds: [id.toLowerCase()], includeBody: true,
+    });
+    expect(issueDocumentBatchQuerySchema.parse({ key: "notes", issueIds: Array(200).fill(id).join(","), includeBody: "false" }).includeBody).toBe(false);
+    expect(issueDocumentBatchQuerySchema.safeParse({ key: "notes", issueIds: Array(201).fill(id).join(",") }).success).toBe(false);
+    expect(issueDocumentBatchQuerySchema.safeParse({ key: "notes", issueIds: [id] }).success).toBe(false);
+  });
+
   it.each(["BASH_ENV", "ZDOTDIR", "GH_CONFIG_DIR", "PAPERCLIP_GITHUB_LAUNCHER_DIR"])("rejects task-owned managed shell selector %s", key => {
     for (const name of [key, key.toLowerCase()]) {
       const overrides = {adapterConfig:{env:{[name]:"/workspace/startup"}}};
@@ -439,6 +451,15 @@ describe("issue validators", () => {
     ).toBe(false);
   });
 
+  it("lets only a /swarm request through with an empty body, so the route refuses it in its own words", () => {
+    expect(addIssueSwarmCommentSchema.parse({ body: "", nativeCommand: "swarm" })).toMatchObject({ body: "", nativeCommand: "swarm" });
+    expect(addIssueSwarmCommentSchema.safeParse({ body: "", nativeCommand: undefined }).success).toBe(false);
+    // An empty ordinary comment is refused exactly as before.
+    expect(addIssueCommentSchema.safeParse({ body: "" }).error?.issues).toEqual([{ origin: "string", code: "too_small", minimum: 1,
+      inclusive: true, path: ["body"], message: "Too small: expected string to have >=1 characters" }]);
+    expect(addIssueCommentSchema.safeParse({ body: "", nativeCommand: "swarm" }).success).toBe(false);
+  });
+
   it("normalizes escaped line breaks in issue comment bodies", () => {
     const parsed = addIssueCommentSchema.parse({
       body: "Progress update\\r\\n\\r\\nNext action.",
@@ -545,6 +566,19 @@ describe("issue validators", () => {
 
     expect(response.summaryMarkdown).toBe("Summary\n\nNext action");
     expect(document.body).toBe("# Plan\n\nShip it");
+  });
+
+  it("accepts one answer per question up to the 64-question payload limit", () => {
+    const answers = Array.from({ length: 64 }, (_, i) => ({
+      questionId: `q${i}`,
+      optionIds: [],
+      otherText: null,
+    }));
+
+    expect(respondIssueThreadInteractionSchema.safeParse({ answers }).success).toBe(true);
+    expect(
+      respondIssueThreadInteractionSchema.safeParse({ answers: [...answers, answers[0]] }).success,
+    ).toBe(false);
   });
 
   it("clamps oversized requestDepth values on create", () => {

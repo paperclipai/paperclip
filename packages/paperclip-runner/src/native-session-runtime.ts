@@ -275,6 +275,47 @@ export function completeTerminatedRemoteNativeSessionCleanup(binding: {
   return true;
 }
 
+function quarantinedRemoteCleanupScope(
+  entry: QuarantinedSessionCleanup,
+  input: { companyId: string; issueId: string },
+): string | null {
+  const [companyId, , , remoteCleanupScope] = JSON.parse(entry.domain.key) as string[];
+  return companyId === input.companyId && remoteCleanupScope &&
+    entry.domain.resources.includes(JSON.stringify(["issue", input.issueId]))
+    ? remoteCleanupScope : null;
+}
+
+export function nativeSessionCleanupRemoteScopes(input: {
+  companyId: string;
+  issueId: string;
+}): string[] {
+  const scopes = new Set<string>();
+  for (const entry of quarantinedSessionCleanups) {
+    const scope = quarantinedRemoteCleanupScope(entry, input);
+    if (scope) scopes.add(scope);
+  }
+  return [...scopes];
+}
+
+export function completeTerminatedRemoteNativeSessionCleanupForTask(input: {
+  companyId: string;
+  issueId: string;
+  remoteCleanupScope: string;
+}): number {
+  if (!input.remoteCleanupScope) return 0;
+  let retired = 0;
+  for (const entry of [...quarantinedSessionCleanups]) {
+    if (quarantinedRemoteCleanupScope(entry, input) !== input.remoteCleanupScope) continue;
+    if (entry.attempt || entry.recovery) continue;
+    if (entry.timer) clearTimeout(entry.timer);
+    entry.timer = null;
+    quarantinedSessionCleanups.delete(entry);
+    announceCleanupSettled(entry.domain);
+    retired += 1;
+  }
+  return retired;
+}
+
 /** Host-only counterpart of remote resource termination. The caller has verified
  * both exact local process identities and durably fenced their run. This removes
  * only cleanup ownership; the retained checkpoint is never made resumable.
@@ -354,6 +395,7 @@ export interface ExecuteNativeSessionOptions {
   onSessionQuarantined?: (reason: string) => Promise<void> | void;
   existingSession?: NativeSession;
   persistedSession?: PersistedNativeSession | null;
+  replaceAfterConfirmedProviderStateLoss?: boolean;
   keepSessionOpen?: boolean;
   /** Apply a structured session-goal control instead of starting an ordinary turn. */
   sessionGoalControl?: NativeSessionGoalControl | null;
@@ -1193,6 +1235,7 @@ async function consumeTurn(
   supersededTerminal?: (event: PrpEvent, signal: AbortSignal) => Promise<boolean>,
   providerTurnWaitOptions?: ProviderTurnWaitOptions,
   resumedProviderTurnWait?: PrpEvent,
+  checkpointProviderTurn?: (signal: AbortSignal, sourceSeq: number) => Promise<unknown>,
 ) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const providerTurnWait = createProviderTurnWait({
@@ -1264,6 +1307,7 @@ async function consumeTurn(
     // delta's receipt settles. Every other event, and every result, waits for
     // the receipts of the deltas before it.
     const pipelinesDeltas = controlPlane.pipelinesStreamingEvents === true;
+    const pipelinedEventTypes: ReadonlySet<string> = controlPlane.pipelinedEventTypes ?? new Set(["item.delta"]);
     let pendingDeltas: Promise<AppendedEventReceipt>[] = [];
     let deltaFailure = null as { error: unknown } | null;
     const settlePendingDeltas = async () => {
@@ -1449,7 +1493,7 @@ async function consumeTurn(
       // A failed delta stops the turn before any later event is appended.
       if (deltaFailure) throw deltaFailure.error;
       let receipt: AppendedEventReceipt | null = null;
-      if (pipelinesDeltas && event.eventType === "item.delta") {
+      if (pipelinesDeltas && pipelinedEventTypes.has(event.eventType)) {
         const pending = controlPlane.appendEvent(event, { signal: appendAbort.signal, streaming: true });
         const settled = pending.then(() => undefined, (error: unknown) => { deltaFailure ??= { error }; });
         outstandingDeltas.add(settled);
@@ -1475,6 +1519,10 @@ async function consumeTurn(
         if (ended !== null) return ended;
       }
       providerTurnWait.observe(event);
+      if (event.eventType === "turn.started" && payload.origin === "provider") {
+        await checkpointProviderTurn?.(appendAbort.signal, event.sourceSeq);
+        appendAbort.signal.throwIfAborted();
+      }
       const eventGoal = goalFromEvent(event);
       const goalChanged = eventGoal !== undefined &&
         goalLifecycleFingerprint(eventGoal) !== goalLifecycleFingerprint(previousGoal);
@@ -1696,7 +1744,11 @@ async function consumeTurn(
           };
         }
         if (semanticResultProposal === null && governedResult === null && inputTimers.size === 0 &&
-            awaitsProviderTurn(event) && providerTurnWait.begin(event)) continue;
+            awaitsProviderTurn(event) && providerTurnWait.begin(event)) {
+          await checkpointProviderTurn?.(appendAbort.signal, event.sourceSeq);
+          appendAbort.signal.throwIfAborted();
+          continue;
+        }
         if (semanticResultProposal === null && governedResult === null &&
             inputTimers.size === 0 && await resumeInterruptedTurn?.(event, appendAbort.signal)) continue;
         await settlePendingDeltas();
@@ -2068,6 +2120,18 @@ function checkpointCursor(cursor: string | null | undefined): number {
  */
 const GOVERNED_WAIT_PROVIDER_WORK_PROOF_TIMEOUT_MS = 30_000;
 
+function runnerProvedSavedStateGone(
+  checkpoint: PersistedNativeSession,
+  recovery: NativeSessionRecoveryResult,
+  restartInterruption: boolean,
+): boolean {
+  return recovery.failureClass === PROVIDER_STATE_INCOMPATIBLE &&
+    recovery.resumeStateUnavailable === true &&
+    !restartInterruption &&
+    checkpoint.activeTurnId === null &&
+    Array.isArray(checkpoint.pendingRuntimeRequests) && checkpoint.pendingRuntimeRequests.length === 0;
+}
+
 async function governedWaitFollowUpMayStartFresh(input: {
   input: NativeExecutionInput;
   checkpoint: PersistedNativeSession;
@@ -2080,14 +2144,10 @@ async function governedWaitFollowUpMayStartFresh(input: {
   if (
     checkpoint.providerRecoveryPolicy !== "allow_replacement_after_governed_wait" ||
     ("homeMode" in input.input && input.input.homeMode === "preconfigured") ||
-    recovery.failureClass !== PROVIDER_STATE_INCOMPATIBLE ||
-    recovery.resumeStateUnavailable !== true ||
-    input.restartInterruption ||
+    !runnerProvedSavedStateGone(checkpoint, recovery, input.restartInterruption) ||
     checkpoint.identity.runId !== input.input.binding.runId ||
     !(checkpoint.cursor === null || checkpoint.cursor === "0") ||
-    checkpoint.activeTurnId !== null ||
     !Array.isArray(checkpoint.terminalTurns) || checkpoint.terminalTurns.length > 0 ||
-    !Array.isArray(checkpoint.pendingRuntimeRequests) || checkpoint.pendingRuntimeRequests.length > 0 ||
     checkpoint.semanticResult !== null ||
     checkpoint.terminal !== null ||
     checkpoint.governedWait !== undefined ||
@@ -2727,7 +2787,11 @@ export async function executeNativeSession(
         controlPlane: options.controlPlane,
         timeoutMs: recoveryTimeoutMs,
       });
-      if (!replacementAllowed && !governedWaitFollowUpLostState) {
+      const confirmedStateLoss = !replacementAllowed && !governedWaitFollowUpLostState &&
+        options.replaceAfterConfirmedProviderStateLoss === true &&
+        !("homeMode" in input && input.homeMode === "preconfigured") &&
+        runnerProvedSavedStateGone(providerRecoveryCheckpoint, recovery, Boolean(checkpointedInterruption));
+      if (!replacementAllowed && !governedWaitFollowUpLostState && !confirmedStateLoss) {
         if (recovery.failureClass === PROVIDER_STATE_INCOMPATIBLE) {
           throw new NativeProviderStateIncompatibleError(recovery.reason ?? "unknown");
         }
@@ -2740,7 +2804,7 @@ export async function executeNativeSession(
         throw failure;
       }
       continuityBreak = {
-        reason: governedWaitFollowUpLostState
+        reason: governedWaitFollowUpLostState || confirmedStateLoss
           ? `saved provider state is unavailable, so the follow-up continues in a fresh provider session without the earlier conversation context (${recovery.reason ?? "unknown"})`
           : recovery.reason ?? "provider session is no longer recoverable",
         previousDriverSessionId: providerRecoveryCheckpoint.sessionId,
@@ -2933,8 +2997,8 @@ export async function executeNativeSession(
     if (reconciledRecoveryCheckpoint !== null) {
       await persistCheckpoint(reconciledRecoveryCheckpoint);
     }
-    const checkpoint = async (signal?: AbortSignal) => {
-      const snapshot = await session.snapshot(signal ? { signal } : undefined);
+    const checkpoint = async (signal?: AbortSignal, sourceSeq?: number) => {
+      const snapshot = await session.snapshot(signal ? { signal, ...(sourceSeq === undefined ? {} : { sourceSeq }) } : undefined);
       signal?.throwIfAborted();
       await persistCheckpoint(snapshot, signal);
       return snapshot;
@@ -2989,6 +3053,7 @@ export async function executeNativeSession(
       };
     };
     let restartContinuationStarted = false;
+    let ownTurnId: string | null = null;
     let borrowedContinuationTurnId: string | null = null;
     let restartContinuationTurnId: string | null = null;
     let settleStartupDecision: () => void = () => undefined;
@@ -3049,14 +3114,18 @@ export async function executeNativeSession(
     };
     const resumeInterruptedTurn = async (event: PrpEvent, signal: AbortSignal) => {
       if (await requestContinuationDisposition(event, signal)) return true;
-      if (restartContinuationStarted || !recovered || !options.resumeInterruptedTurn ||
+      const restoredAtStartup = recovered && options.resumeInterruptedTurn === true &&
+        event.turnId === persistedSession?.activeTurnId;
+      // The task turn this execution started is its own, whether the session
+      // was opened fresh or resumed from a warm or recovered checkpoint.
+      const restoredInThisExecution = ownTurnId !== null && event.turnId === ownTurnId;
+      if (restartContinuationStarted || !(restoredAtStartup || restoredInThisExecution) ||
           // A compaction-only run never continues task work after a restart.
           // Runnerd records a restart-lost turn only for these providers, after
           // proving the old process ended and restoring the same conversation.
           !["codex", "acpx", "opencode"].includes(input.provider.kind) || options.sessionCompaction || options.sessionGoalControl || options.resumeSessionGoalHeartbeat ||
           recoveredSnapshot.goal || persistedSession?.semanticResult || persistedSession?.pendingRuntimeRequests?.length ||
-          event.eventType !== "turn.failed" || !isNativeRestartInterruption(event.payload.error) ||
-          event.turnId !== persistedSession?.activeTurnId) return false;
+          event.eventType !== "turn.failed" || !isNativeRestartInterruption(event.payload.error)) return false;
       const snapshot = await session.snapshot();
       signal.throwIfAborted();
       if (nativeRestartInterruptedTurnId(snapshot) !== event.turnId || snapshot.pendingRuntimeRequests?.length) return false;
@@ -3151,7 +3220,8 @@ export async function executeNativeSession(
         recovered &&
         persistedSession?.dispositionOnlyRecoveryConsumed &&
         !recoveredSnapshot.semanticResult &&
-        !recoveredActiveTurnId,
+        !recoveredActiveTurnId &&
+        recoveredSnapshot.awaitingProviderTurn !== true,
       );
       const dispositionRecoveryTurnId =
         persistedSession?.dispositionOnlyRecoveryTurnId ??
@@ -3251,6 +3321,7 @@ export async function executeNativeSession(
               supersededByRestartContinuation,
               options.providerTurnWait,
               resumedProviderTurnWait,
+              checkpoint,
             )
           : Promise.resolve({
               event: recoveryTerminal,
@@ -3372,7 +3443,7 @@ export async function executeNativeSession(
           // the fenced checkpoint right before the submit. A new session's
           // normal path adds nothing before turn.start.
           if (recovered) await checkpoint();
-          await session.startTurn({
+          const startedTaskTurn = await session.startTurn({
             message: { role: "user", text: JSON.stringify(modelEnvelope) },
             ...(recovered && modelEnvelope.schema === "paperclip.native-continuation.v1"
               ? { continuation: true as const } : {}),
@@ -3383,6 +3454,9 @@ export async function executeNativeSession(
                 ? "default"
                 : "executionMode" in input ? input.executionMode : "default",
           });
+          // Only a turn carrying this run's task work can be continued after a
+          // mid-run runnerd restore. A disposition-only recovery turn cannot.
+          if (!dispositionOnlyRecovery || effectFreeInitialAcpxTurn) ownTurnId = startedTaskTurn.turnId;
           await checkpoint();
         }
         settleStartupDecision();

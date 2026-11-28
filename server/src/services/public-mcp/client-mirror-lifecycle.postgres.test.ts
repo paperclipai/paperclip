@@ -123,14 +123,12 @@ describe.skipIf(!configured)("MCP mirror actual transaction lifecycle",()=>{
     const ready=await acknowledged();expect(ready.revision).toBeGreaterThan(superseded!);expect(ready.receipt?.revision).toBe(ready.revision);expect(ready.deviceCutoverAt).toBeTruthy();
     expect((await inspect()).blocked).toBe(false);expect(errors).toEqual([]);expect(await db.select().from(changes)).toEqual([]);
   });
-  it("factory loss, disable and re-enable preserve cutover and demand a new source ACK without resetting legacy expiry",async()=>{
+  it("factory loss and recovery preserve cutover and demand a new source ACK without resetting legacy expiry",async()=>{
     await device();remoteAvailable=true;await start();const ready=await acknowledged(),expiry=(await db.select().from(devices))[0].expiresAt;
     remoteAvailable=false;await start();const unavailable=await acknowledged();expect(unavailable.revision).toBe(ready.revision+1);expect(unavailable.receipt?.frontDoor).toBeUndefined();expect((await inspect()).blocked).toBe(true);
     expect(unavailable.deviceCutoverAt).toEqual(ready.deviceCutoverAt);expect((await db.select().from(devices))[0].expiresAt).toEqual(expiry);
-    await instanceSettingsService(db).updateExperimental({enablePublicMcp:false});await vi.waitFor(async()=>expect((await current())?.remoteResponsibility).toBe(false));
-    const disabled=await current();expect(disabled?.receipt?.enabled).toBe(false);
-    remoteAvailable=true;await instanceSettingsService(db).updateExperimental({enablePublicMcp:true});const enabled=await acknowledged();
-    expect(enabled.revision).toBeGreaterThan(disabled!.revision);expect(enabled.receipt?.enabled).toBe(true);expect(enabled.receipt?.frontDoor).toBe("tenant-personal-v1");expect(enabled.deviceCutoverAt).toEqual(ready.deviceCutoverAt);
+    remoteAvailable=true;await start();const enabled=await acknowledged();
+    expect(enabled.revision).toBeGreaterThan(unavailable.revision);expect(enabled.receipt?.enabled).toBe(true);expect(enabled.receipt?.frontDoor).toBe("tenant-personal-v1");expect(enabled.deviceCutoverAt).toEqual(ready.deviceCutoverAt);
     failures=100;const replacement=await start("replacement-instance");
     expect((await readIdleMcpClientMirror(db,{budget,enabled:true,origin,instanceId:"replacement-instance",managedStackId:stackId})).blocked).toBe(true);
     expect((await current())!.receipt?.instanceId).toBe(instanceId);failures=0;replacement.wake();const replaced=await acknowledged();expect(replaced.receipt?.instanceId).toBe("replacement-instance");expect(replaced.deviceCutoverAt).toEqual(ready.deviceCutoverAt);

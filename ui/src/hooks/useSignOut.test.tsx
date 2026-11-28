@@ -12,9 +12,11 @@ import { QUERY_CACHE_PREFIX, startPersistedQueryCache } from "@/lib/persisted-qu
 
 const mockAuthApi = vi.hoisted(() => ({ signOut: vi.fn() }));
 const mockNavigateTopLevel = vi.hoisted(() => vi.fn());
+const mockResetAnalytics = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/auth", () => ({ authApi: mockAuthApi }));
 vi.mock("@/lib/browserNavigation", () => ({ navigateTopLevel: mockNavigateTopLevel }));
+vi.mock("@/lib/analytics/product-analytics", () => ({ resetProductAnalyticsIdentity: mockResetAnalytics }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -78,6 +80,10 @@ describe("useSignOut", () => {
     try {
       await act(async () => { await captured!.mutateAsync(); });
       expect(onSignedOut).toHaveBeenCalledOnce();
+      expect(mockResetAnalytics).toHaveBeenCalledOnce();
+      if (deploymentMode === "cloud") {
+        expect(mockResetAnalytics.mock.invocationCallOrder[0]).toBeLessThan(mockNavigateTopLevel.mock.invocationCallOrder[0]!);
+      }
       expect(account.isCurrentScope()).toBe(false);
       expect(Object.keys(localStorage).filter(key => key.startsWith(QUERY_CACHE_PREFIX))).toEqual([]);
       expect(localStorage.getItem("paperclip:private-draft")).toBe("Keep my draft");
@@ -106,12 +112,14 @@ describe("useSignOut", () => {
         cloudBaseUrl: "https://cloud.example.test",
       },
     });
+    window.sessionStorage.setItem("paperclip:agent-setup-progress:company-a:aws_connection:conn-1", "{}");
     const root = renderHarness(onSignedOut);
 
     flushSync(() => captured?.mutate());
 
     await vi.waitFor(() => expect(mockNavigateTopLevel).toHaveBeenCalledOnce());
     expect(mockNavigateTopLevel).toHaveBeenCalledWith("/cloud/logout");
+    expect(window.sessionStorage.getItem("paperclip:agent-setup-progress:company-a:aws_connection:conn-1")).toBeNull();
     expect(onSignedOut).toHaveBeenCalledOnce();
     expect(mockAuthApi.signOut).not.toHaveBeenCalled();
 
@@ -134,6 +142,9 @@ describe("useSignOut", () => {
       companyIds: ["company-a"],
     });
     queryClient.setQueryData(queryKeys.issues.list("company-a"), [{ id: "issue-a" }]);
+    // An agent setup token from this account, plus something unrelated in the tab.
+    window.sessionStorage.setItem("paperclip:agent-setup-progress:company-a:aws_connection:conn-1", "{\"token\":\"pcsp_account_a\"}");
+    window.sessionStorage.setItem("unrelated:key", "kept");
     const onSignedOut = vi.fn();
     const root = renderHarness(onSignedOut);
 
@@ -157,6 +168,9 @@ describe("useSignOut", () => {
     expect(queryClient.getQueryData(queryKeys.companies.all)).toBeUndefined();
     expect(queryClient.getQueryData(queryKeys.access.currentBoardAccess)).toBeUndefined();
     expect(queryClient.getQueryData(queryKeys.issues.list("company-a"))).toBeUndefined();
+    // The next account in this tab never inherits the previous account's agent setup token.
+    expect(window.sessionStorage.getItem("paperclip:agent-setup-progress:company-a:aws_connection:conn-1")).toBeNull();
+    expect(window.sessionStorage.getItem("unrelated:key")).toBe("kept");
 
     // Health describes the instance, not the account, and several observers
     // read it with `enabled: false`. It is refreshed in place.

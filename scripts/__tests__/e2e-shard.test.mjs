@@ -7,7 +7,18 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { defaultSuiteWeight, loadShardDurations } from "../general-server-shard.mjs";
-import { IGNORED_SPECS, listE2eSpecs, selectE2eShard } from "../e2e-shard.mjs";
+import {
+  DEFAULT_PARALLEL_WORKERS,
+  EFFECTIVE_PARALLEL_SPEEDUP,
+  EFFECTIVE_PARALLEL_SPEEDUP_4W,
+  IGNORED_SPECS,
+  SERIAL_SPECS,
+  isSerialE2eSpec,
+  listE2eSpecs,
+  partitionE2eShards,
+  resolveEffectiveParallelSpeedup,
+  selectE2eShard,
+} from "../e2e-shard.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const script = path.join(repoRoot, "scripts", "e2e-shard.mjs");
@@ -18,7 +29,10 @@ const trustedPrWorkflowPath = ".github/workflows/pr-trusted.yml";
 const trustedPrWorkflow = path.join(repoRoot, trustedPrWorkflowPath);
 const routingWorkflow = path.join(repoRoot, ".github", "workflows", "ci-routing.yml");
 
-const SHARD_COUNT = 8;
+const ciTaskMatrixPath = path.join(repoRoot, ".github", "ci-task-matrix.json");
+const SHARD_COUNT = JSON.parse(readFileSync(ciTaskMatrixPath, "utf8")).e2e_shards.length;
+const TARGET_AWS_SHARD_COUNT = 16;
+const TARGET_HOSTED_SHARD_COUNT = 4;
 
 function runShard(args) {
   const result = spawnSync(process.execPath, [script, ...args], { cwd: repoRoot, encoding: "utf8" });
@@ -124,6 +138,112 @@ test("the ignored spec list matches playwright.config.ts testIgnore", () => {
   assert.deepEqual([...configured].sort(), [...IGNORED_SPECS].sort());
 });
 
+test("the serial spec list matches playwright.config.ts SERIAL_SPECS and never mixes with parallel specs", () => {
+  const config = readFileSync(playwrightConfig, "utf8");
+  const match = config.match(/export const SERIAL_SPECS = \[([\s\S]*?)\];/);
+  assert.ok(match, "expected a SERIAL_SPECS array in playwright.config.ts");
+  const configured = [...match[1].matchAll(/"([^"]+)"/g)].map((entry) => entry[1]);
+  assert.deepEqual([...configured].sort(), [...SERIAL_SPECS].sort());
+
+  const specs = listE2eSpecs();
+  const durations = loadShardDurations(durationsManifest);
+  const shards = partitionE2eShards(specs, SHARD_COUNT, durations);
+  assert.equal(shards.length, SHARD_COUNT);
+  for (const shard of shards) {
+    const serialCount = shard.files.filter(isSerialE2eSpec).length;
+    assert.ok(
+      serialCount === 0 || serialCount === shard.files.length,
+      `shard must not mix serial and parallel specs: ${shard.files.join(", ")}`,
+    );
+  }
+});
+
+test("playwright.config.ts supports skipping the UI build when PAPERCLIP_E2E_SKIP_UI_BUILD=1 and uses unminified inline builds", () => {
+  const config = readFileSync(playwrightConfig, "utf8");
+  assert.match(config, /PAPERCLIP_E2E_SKIP_UI_BUILD/);
+  assert.match(config, /ui-dist.*index\.html/);
+  assert.match(config, /PAPERCLIP_E2E_BUILD_UI/);
+  assert.match(config, /availableParallelism/);
+});
+
+test("start-e2e-server.ts boots disposable embedded Postgres without durable fsync and overlaps UI build", () => {
+  const bootstrap = readFileSync(path.join(repoRoot, "tests", "e2e", "start-e2e-server.ts"), "utf8");
+  assert.match(bootstrap, /--no-sync/);
+  assert.match(bootstrap, /fsync = off/);
+  assert.match(bootstrap, /synchronous_commit = off/);
+  assert.match(bootstrap, /full_page_writes = off/);
+  assert.match(bootstrap, /PAPERCLIP_E2E_BUILD_UI/);
+  assert.match(bootstrap, /startParallelUiBuild/);
+  assert.match(bootstrap, /"--minify",\s*"false"/);
+  assert.match(bootstrap, /Promise\.all\(/);
+});
+
+test("resolveEffectiveParallelSpeedup matches Playwright worker scaling for 4-vCPU and 8-vCPU runners", () => {
+  assert.equal(resolveEffectiveParallelSpeedup(2), 1);
+  assert.equal(resolveEffectiveParallelSpeedup(4), EFFECTIVE_PARALLEL_SPEEDUP);
+  assert.equal(resolveEffectiveParallelSpeedup(6), 2.55);
+  assert.equal(resolveEffectiveParallelSpeedup(8), EFFECTIVE_PARALLEL_SPEEDUP_4W);
+  assert.equal(resolveEffectiveParallelSpeedup(16), EFFECTIVE_PARALLEL_SPEEDUP_4W);
+});
+
+test("16-shard AWS partitioning stays complete, segregated, and balanced under 85s estimated wall-clock", () => {
+  const durations = loadShardDurations(durationsManifest);
+  const specs = listE2eSpecs();
+  const fallbackWeight = defaultSuiteWeight(durations);
+  const shards = partitionE2eShards(specs, TARGET_AWS_SHARD_COUNT, durations, {
+    parallelWorkers: EFFECTIVE_PARALLEL_SPEEDUP_4W,
+  });
+  assert.equal(shards.length, TARGET_AWS_SHARD_COUNT);
+  const combined = shards.flatMap((shard) => shard.files);
+  assert.deepEqual([...combined].sort(), [...specs].sort());
+  for (const shard of shards) {
+    assert.ok(shard.files.length > 0, "no 16-shard bucket may be empty");
+    const serialCount = shard.files.filter(isSerialE2eSpec).length;
+    assert.ok(
+      serialCount === 0 || serialCount === shard.files.length,
+      `16-shard bucket must not mix serial and parallel specs: ${shard.files.join(", ")}`,
+    );
+  }
+  const wallWeights = shards.map((shard) => {
+    const serialSum = shard.files.reduce((sum, file) => sum + (durations[file] ?? fallbackWeight), 0);
+    return shard.mode === "parallel" ? serialSum / EFFECTIVE_PARALLEL_SPEEDUP_4W : serialSum;
+  });
+  const heaviest = Math.max(...wallWeights);
+  const totalWall = wallWeights.reduce((sum, weight) => sum + weight, 0);
+  const largestSerialSpec = Math.max(
+    0,
+    ...specs.filter(isSerialE2eSpec).map((file) => durations[file] ?? fallbackWeight),
+  );
+  const bound = Math.max((totalWall / TARGET_AWS_SHARD_COUNT) * 1.15, largestSerialSpec);
+  assert.ok(
+    heaviest <= bound,
+    `heaviest 16-shard bucket ${Math.round(heaviest)}ms exceeds the balance bound (${Math.round(bound)}ms)`,
+  );
+  assert.ok(
+    heaviest <= 85_000,
+    `heaviest 16-shard bucket ${Math.round(heaviest)}ms exceeds 85s Phase 5 ceiling`,
+  );
+});
+
+test("4-shard hosted partitioning stays complete and segregated on 4-vCPU runners", () => {
+  const durations = loadShardDurations(durationsManifest);
+  const specs = listE2eSpecs();
+  const shards = partitionE2eShards(specs, TARGET_HOSTED_SHARD_COUNT, durations, {
+    parallelWorkers: EFFECTIVE_PARALLEL_SPEEDUP,
+  });
+  assert.equal(shards.length, TARGET_HOSTED_SHARD_COUNT);
+  const combined = shards.flatMap((shard) => shard.files);
+  assert.deepEqual([...combined].sort(), [...specs].sort());
+  for (const shard of shards) {
+    assert.ok(shard.files.length > 0, "no 4-shard hosted bucket may be empty");
+    const serialCount = shard.files.filter(isSerialE2eSpec).length;
+    assert.ok(
+      serialCount === 0 || serialCount === shard.files.length,
+      `4-shard hosted bucket must not mix serial and parallel specs: ${shard.files.join(", ")}`,
+    );
+  }
+});
+
 test("the duration manifest only names specs that still exist", () => {
   const durations = loadShardDurations(durationsManifest);
   assert.ok(Object.keys(durations).length > 0, "expected a populated duration manifest");
@@ -136,25 +256,25 @@ test("the duration manifest only names specs that still exist", () => {
 test("the weighted partition keeps the shards close to balanced", () => {
   const durations = loadShardDurations(durationsManifest);
   const specs = listE2eSpecs();
-  // New specs use the scheduler's median estimate until measured durations exist.
   const fallbackWeight = defaultSuiteWeight(durations);
-  const weights = Array.from({ length: SHARD_COUNT }, (_, index) =>
-    selectE2eShard(specs, index, SHARD_COUNT, durations).reduce((sum, file) => sum + (durations[file] ?? fallbackWeight), 0),
-  );
+  const shards = partitionE2eShards(specs, SHARD_COUNT, durations, {
+    parallelWorkers: EFFECTIVE_PARALLEL_SPEEDUP_4W,
+  });
+  const wallWeights = shards.map((shard) => {
+    const serialSum = shard.files.reduce((sum, file) => sum + (durations[file] ?? fallbackWeight), 0);
+    return shard.mode === "parallel" ? serialSum / EFFECTIVE_PARALLEL_SPEEDUP_4W : serialSum;
+  });
 
-  const heaviest = Math.max(...weights);
-  const total = weights.reduce((sum, weight) => sum + weight, 0);
-  // Round-robin/count-based sharding would strand the ~168s smoke-lab spec on
-  // one runner alongside other specs. Assert the weighted split stays within
-  // 15% of an even cut so a future spec-time regression surfaces here instead
-  // of on the PR critical path. A single indivisible spec (smoke-lab) can
-  // legitimately exceed the even cut on its own, so the bound is floored at
-  // the largest per-spec weight — the best any file-level partition can do.
-  const largestSpec = Math.max(...specs.map((file) => durations[file] ?? fallbackWeight));
-  const bound = Math.max((total / SHARD_COUNT) * 1.15, largestSpec);
+  const heaviest = Math.max(...wallWeights);
+  const totalWall = wallWeights.reduce((sum, weight) => sum + weight, 0);
+  const largestSerialSpec = Math.max(
+    0,
+    ...specs.filter(isSerialE2eSpec).map((file) => durations[file] ?? fallbackWeight),
+  );
+  const bound = Math.max((totalWall / SHARD_COUNT) * 1.15, largestSerialSpec);
   assert.ok(
     heaviest <= bound,
-    `heaviest shard ${heaviest}ms exceeds the balance bound (${bound}ms)`,
+    `heaviest shard ${Math.round(heaviest)}ms exceeds the balance bound (${Math.round(bound)}ms)`,
   );
 });
 

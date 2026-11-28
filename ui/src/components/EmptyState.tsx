@@ -2,11 +2,14 @@ import { Plus } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 interface EmptyStateProps {
-  icon: LucideIcon;
+  /** Retained for callers that supplied a section icon before the shared brand artwork. */
+  icon?: LucideIcon;
   /** Large decorative artwork; shares hover/focus with the action below. */
   graphic?: ReactNode;
+  placement?: "center" | "upper";
   /** Optional bold heading rendered above the message. */
   title?: string;
   message: string;
@@ -19,8 +22,8 @@ interface EmptyStateProps {
 }
 
 export function EmptyState({
-  icon: Icon,
   graphic,
+  placement = "center",
   title,
   message,
   description,
@@ -29,27 +32,23 @@ export function EmptyState({
   hideActionIcon = false,
 }: EmptyStateProps) {
   return (
-    <div className={graphic ? "empty-state-artwork flex flex-col items-center justify-center gap-5 py-16 text-center" : "flex flex-col items-center justify-center py-16 text-center"}>
-      {graphic ? <div className="empty-state-graphic" aria-hidden="true">{graphic}</div> : <div className="bg-muted/50 p-4 mb-4">
-        <Icon className="h-10 w-10 text-muted-foreground/50" />
-      </div>}
-      {title ? (
-        <>
-          <p className="text-base font-semibold text-foreground mb-1.5">{title}</p>
-          <p className="text-sm text-muted-foreground mb-4 max-w-md">{message}</p>
-        </>
-      ) : (
-        <>
-          <p className="text-sm font-medium text-foreground mb-1">{message}</p>
-          {description && <p className="max-w-md text-sm text-muted-foreground mb-4">{description}</p>}
-        </>
-      )}
-      {action && onAction && (
-        <Button onClick={onAction}>
-          {!hideActionIcon && <Plus className="h-4 w-4 mr-1.5" />}
-          {action}
-        </Button>
-      )}
+    <div className="empty-state empty-state-artwork grid w-full flex-1 justify-items-center text-center" data-placement={placement}>
+      <div className={cn("flex flex-col items-center justify-center gap-5", placement === "center" && "py-6")}>
+        <div className="empty-state-graphic" aria-hidden="true">
+          {graphic ?? <span className="empty-state-logo" />}
+        </div>
+        <div className="max-w-md space-y-1.5">
+          {title && <p className="text-base font-semibold text-foreground">{title}</p>}
+          <p className="whitespace-pre-line text-sm text-muted-foreground">{message}</p>
+          {description && <p className="text-sm text-muted-foreground">{description}</p>}
+        </div>
+        {action && onAction && (
+          <Button onClick={onAction}>
+            {!hideActionIcon && <Plus className="h-4 w-4 mr-1.5" />}
+            {action}
+          </Button>
+        )}
+      </div>
     </div>
   );
 }

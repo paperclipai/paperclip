@@ -69,7 +69,7 @@ export type {
 
 export type ToolActorType = "agent" | "user" | "system" | "plugin";
 export type ToolConnectionTransport =
-  "mcp_remote" | "rest_api" | "local_stdio" | "chat_sdk" | "runtime_auth" | "voice";
+  "mcp_remote" | "rest_api" | "local_stdio" | "chat_sdk" | "runtime_auth" | "voice" | "plugin";
 export type ToolConnectionPurpose = "tool" | "channel" | "ai";
 export type ToolConnectionAuthKind = "oauth" | "api_key" | "none";
 export type ToolConnectionOwnership =
@@ -113,6 +113,7 @@ export interface ToolRedactedValueSummary {
   sha256?: string | null;
   redactedFields?: string[];
   artifactId?: string | null;
+  contentDeletedAt?: string;
 }
 
 export type VercelConnectPrincipalMode = "app" | "user";
@@ -190,6 +191,7 @@ export interface ToolConnection {
   healthStatus: ToolConnectionHealthStatus;
   /** Managed GitHub grant state; transient health failures do not require sign-in. */
   requiresReauthorization?: boolean;
+  firstSignInPending?: boolean;
   healthMessage?: string | null;
   healthCheckedAt: Date | null;
   lastHealthAt?: Date | string | null;
@@ -254,6 +256,7 @@ export interface ConnectionGrant {
       repositorySelection: "all" | "selected" | "mixed" | "none";
       installationIds: string[];
       installationOwnerLogins: string[];
+      suspendedInstallationOwnerLogins?: string[];
       /** Repository metadata visible to this credential; refreshed from GitHub. */
       repositories?: Array<{
         id: string;
@@ -426,11 +429,86 @@ export interface ToolConnectionRemovalSummary {
     appSubjectCleanup: "not_applicable" | "manage_in_vercel";
     manageUrl: string;
   } | null;
+  providerAccess?: ManagedGoogleAccessRemoval | null;
+  signInRemoval?: AiSignInRemoval | null;
 }
+
+export interface AiSignInRemoval {
+  provider: "google";
+  savedSignIn: "deleted" | "kept_shared" | "not_deleted";
+  providerSignIn: "still_valid";
+}
+
+export type ManagedGoogleRevocationOutcome =
+  | "revoked"
+  | "other_connections_remain"
+  | "provider_revocation_failed"
+  | "binding_not_known"
+  | "provider_revocation_disabled"
+  | "revocation_in_progress"
+  | "revocation_not_available"
+  | "broker_unavailable"
+  | "broker_error"
+  | "credential_unavailable"
+  | "unexpected_error";
+
+export interface ManagedGoogleAccessRemoval {
+  provider: "google";
+  result: "ended" | "ended_unconfirmed" | "other_connections_remain" | "retrying" | "not_ended";
+  outcomes: ManagedGoogleRevocationOutcome[];
+}
+
+export type ConnectionGrantRevocationResult = ConnectionGrant & {
+  providerAccess?: ManagedGoogleAccessRemoval | null;
+  signInRemoval?: AiSignInRemoval | null;
+};
 
 export interface ToolConnectionRemovalResult {
   connection: ToolConnection;
   removal: ToolConnectionRemovalSummary;
+}
+
+export interface ToolConnectionStoredContentCounts {
+  toolCalls: number;
+  approvals: number;
+  appViews: number;
+  runs: number;
+  runsInProgress: number;
+}
+
+export interface ToolConnectionContentDeletionCounts {
+  toolCalls: number;
+  approvals: number;
+  auditEvents: number;
+  appViews: number;
+  runs: number;
+  runsInProgress: number;
+  itemsInProgress: number;
+}
+
+export type ToolConnectionContentDeletionStatus = "pending" | "completed";
+
+export type ToolConnectionContentDeletionReason =
+  | "requested"
+  | "connection_removed"
+  | "access_revoked"
+  | "provider_access_ended"
+  | "member_removed"
+  | "instance_removed";
+
+export interface ToolConnectionContentDeletion {
+  id: string;
+  status: ToolConnectionContentDeletionStatus;
+  reason: ToolConnectionContentDeletionReason;
+  requestedAt: string;
+  completedAt: string | null;
+  retrying: boolean;
+  counts: ToolConnectionContentDeletionCounts;
+}
+
+export interface ToolConnectionStoredContent {
+  stored: ToolConnectionStoredContentCounts;
+  deletion: ToolConnectionContentDeletion | null;
 }
 
 export type ConnectionTokenScope = string | string[];
@@ -803,6 +881,10 @@ export interface ToolProfileWithDetails extends ToolProfile {
   bindings: ToolProfileBinding[];
   summary: ToolProfileSummary;
 }
+
+export type ToolProfileListItem = Pick<ToolProfileWithDetails, "id" | "name" | "status" | "updatedAt" | "summary"> & {
+  newToolsPendingCount: number;
+};
 
 export type ToolProfileNewToolReviewDecision = "allow" | "keep_blocked";
 
@@ -1219,6 +1301,8 @@ export interface ConnectToolAppAuthChallenge {
   resource?: string | null;
   registrationSource?: ToolOAuthClientRegistrationSource | null;
   manualClientRequired?: boolean;
+  /** Plain-language reason shown with the client fields, when Paperclip has one. */
+  manualClientReason?: string | null;
 }
 
 /** Public half of a key Paperclip holds for machine sign-in. Safe to show and share. */
@@ -1233,6 +1317,29 @@ export interface MachineSignInPublicKey {
 }
 
 /** Machine sign-in settings for one organization connection. Never includes secret or private key values. */
+/** What to configure in AWS for an AWS role connection (`GET /tool-connections/:id/aws-setup`). */
+export type AwsConnectionSetup =
+  /** address_changed: the instance's address differs from the one this connection was saved with. */
+  | { available: false; reason: "no_public_url" | "not_https" | "has_port" | "loopback" | "address_changed" }
+  | {
+      available: true;
+      issuer: string;
+      audience: string;
+      subject: string;
+      providerHost: string;
+      /** The role the template and agent prompt create; named after the connection. */
+      roleName: string;
+      /** The role ARN saved on the connection, once the customer pasted it back. */
+      savedRoleArn: string | null;
+      /** The connection's access level; the template defaults to ReadOnlyAccess only when it is read_only. */
+      accessLevel: "read_only" | "full";
+      trustPolicy: Record<string, unknown>;
+      cloudFormationTemplate: string;
+      cloudFormationConsoleUrl: string;
+      /** True when the company's issuer has a published key, so AWS can validate it. */
+      issuerPublished: boolean;
+    };
+
 export interface MachineSignInStatus {
   connectionId: string;
   method: "paperclip_key" | "client_secret";
@@ -1479,12 +1586,14 @@ export type ToolAccessReasonCode =
   | "deny_default"
   | "deny_company_boundary"
   | "deny_disabled_connection"
+  | "deny_connection_not_installed"
   | "deny_disabled_application"
   | "deny_archived_application"
   | "deny_missing_tool"
   | "deny_policy_block"
   | "deny_run_context_mismatch"
   | "deny_missing_agent"
+  | "github_repo_outside_app_installations"
   | "rate_limited";
 
 export interface ToolAccessSelector {
@@ -1646,6 +1755,7 @@ export interface ToolAccessDecisionInput {
     clientSubjectId?: string | null;
     clientName?: string | null;
     externalClient?: boolean | null;
+    sessionOpenedByUserId?: string | null;
   } | null;
   request: {
     applicationId?: string | null;

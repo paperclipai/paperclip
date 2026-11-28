@@ -83,6 +83,7 @@ export const NATIVE_STALL_MS = 5 * 60_000;
 /** Interruption presentation `userAction`s that are a person's move. */
 const PERSON_ACTIONS: Readonly<Record<string, WaitingReason>> = {
   approval: "approval",
+  question: "question",
   reconnect: "credential",
   choose_model: "credential",
   project_access: "credential",
@@ -91,6 +92,7 @@ const PERSON_ACTIONS: Readonly<Record<string, WaitingReason>> = {
   resume: "agent_paused",
   confirm_owner_stop: "board_confirmation",
   confirm_run_stopped: "board_confirmation",
+  unblock: "assignee_declared_block",
 };
 
 /** Active recovery-action causes that name a person's move. Every other cause
@@ -177,7 +179,7 @@ export type AssignedWorkFacts = {
   /** A saved-work recovery the recovery queue still owes this task: the
    * task's saved files must be recovered before any run can start. */
   savedWorkRecovery?: SavedWorkRecoveryFact | null;
-  agent: { status: string; invokable: boolean } | null;
+  agent: { status: string; invokable: boolean; updatedAt?: Date } | null;
   companyPaused: boolean;
   pauseHold: boolean;
   budgetStop: boolean;
@@ -385,6 +387,8 @@ export const CONTINUATION_REVIEW_MESSAGE =
   "Returned to review automatically after an interruption. Nothing needed you, so the review picks up where it stopped.";
 export const CONTINUATION_REFUSED_MESSAGE =
   "Paperclip tried to continue this task automatically, but it could not start yet. It will try again shortly.";
+export const CONTINUATION_REFUSED_AGAIN_MESSAGE =
+  "Paperclip still could not start this task. It will keep trying, less often each time, and right away when something on the task changes.";
 
 /** Plain-language activity text for an admitted continuation. No codes, no ids. */
 export function continuationActivityMessage(reason: ViolationReason): string {

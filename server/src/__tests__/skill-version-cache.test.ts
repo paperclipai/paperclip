@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, heartbeatRuns, heartbeatRunEvents, issues, nativeRunFinalizations, environmentLeases, companies, companySkills, companySkillVersions, companySkillRepositorySnapshots, createDb } from "@paperclipai/db";
+import { agents, heartbeatRuns, heartbeatRunEvents, issues, issueRecoveryActions, nativeRunFinalizations, environmentLeases, companies, companySkills, companySkillVersions, companySkillRepositorySnapshots, createDb } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { companySkillService } from "../services/company-skills.js";
 import { skillVersionCachePaths, touchSkillVersionCache, withSkillVersionCacheLock } from "../services/skill-version-cache.js";
@@ -286,8 +286,44 @@ describePostgres("immutable skill version cache", () => {
       runnerProfileJson: { nativeExecutionInput: execution } }).where(eq(heartbeatRuns.id, run.id));
     await db.insert(nativeRunFinalizations).values({ companyId, issueId: issue!.id, runId: run.id,
       phase: "terminal_failure", recoveryState: "blocked" });
+    // Unresolved recovery: the same run is scheduled to resume from its saved input.
+    await resumeAction(companyId, issue!.id, run.id);
     return { run, execution };
   }
+
+  async function resumeAction(companyId: string, issueId: string, runId: string) {
+    const [action] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId, kind: "active_run_watchdog",
+      cause: "native_session_interrupted", fingerprint: `resume:${runId}`, nextAction: "Resume the saved run.",
+      evidence: { runId }, wakePolicy: { kind: "resume_native_run", runId } }).returning();
+    return action!;
+  }
+
+  it("evicts and deletes a skill whose only pin is a blocked failed run that nothing will resume", async () => {
+    const f = await fixture();
+    await f.resolve(f.versions[0]!.id);
+    await touchSkillVersionCache(f.companyId, f.skillId, f.versions[0]!.id, Date.now() - 7_200_000);
+    const run = await activeRun(f.companyId, { skillVersions: { [f.key]: f.versions[0]!.id } });
+    const [issue] = await db.insert(issues).values({ companyId: f.companyId, title: "Failed journey" }).returning();
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: issue!.id, nativePhase: "terminal_failure",
+      status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, run.id));
+    await db.insert(nativeRunFinalizations).values({ companyId: f.companyId, issueId: issue!.id, runId: run.id,
+      phase: "terminal_failure", recoveryState: "blocked", failureCode: "native_continuation_requires_reconciliation" });
+    const action = await resumeAction(f.companyId, issue!.id, run.id);
+    await expect(companySkillService(db).deleteSkill(f.companyId, f.skillId)).rejects.toThrow("active or recovering run");
+    await db.update(issueRecoveryActions).set({ status: "resolved", wakePolicy: null }).where(eq(issueRecoveryActions.id, action.id));
+    await db.update(nativeRunFinalizations).set({ nextAttemptAt: new Date(Date.now() + 60_000) })
+      .where(eq(nativeRunFinalizations.runId, run.id));
+    await expect(companySkillService(db).deleteSkill(f.companyId, f.skillId)).rejects.toThrow("active or recovering run");
+    await db.update(nativeRunFinalizations).set({ nextAttemptAt: null, leaseOwner: "native-finalizer:other" })
+      .where(eq(nativeRunFinalizations.runId, run.id));
+    await expect(companySkillService(db).deleteSkill(f.companyId, f.skillId)).rejects.toThrow("active or recovering run");
+    expect((await sweepSkillVersionCache(db, { companyId: f.companyId })).skipped.protected_version).toBe(1);
+    await db.update(nativeRunFinalizations).set({ leaseOwner: null }).where(eq(nativeRunFinalizations.runId, run.id));
+    expect((await sweepSkillVersionCache(db, { companyId: f.companyId })).evicted).toBe(1);
+    await expect(companySkillService(db).deleteSkill(f.companyId, f.skillId)).resolves.toMatchObject({ id: f.skillId });
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id)))[0])
+      .toMatchObject({ phase: "terminal_failure", recoveryState: "blocked" });
+  });
 
   it.each([false, true])("protects unknown legacy versions without changing unresolved recovery (bundled skill: %s)", async bundled => {
     const f = await fixture();

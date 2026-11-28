@@ -1,8 +1,9 @@
-import { catalogTeamInstallSchema, catalogTeamPreviewSchema, updateWorkspacePreferenceSchema } from "@paperclipai/shared";
+import { createAgentSetupProgressSchema, setAgentSetupChecklistSchema, updateAgentSetupItemSchema, finishAgentSetupSchema } from "@paperclipai/shared";
+import { catalogTeamInstallSchema, catalogTeamPreviewSchema, updateWorkspacePreferenceSchema, issueDocumentBatchQuerySchema } from "@paperclipai/shared";
 import { MUSE_ASSET_VERSION, museStopBoundarySchema, museDetectorCleanupAttestationSchema, createGrokInvitationSchema, configureGrokRoutineSchema, verifyGrokRoutineSchema, recoverGrokRoutineSchema, pairGrokBindingSchema, stopGrokWorkSchema, retryGrokDeliverySchema, updateFastResponseSchema } from "@paperclipai/shared";
 import { slackTestMessageSchema, slackTestMessageResultSchema, slackManagerAuthorizationSchema, slackSetupOptionsSchema, slackManagedProvisionSchema, slackManagedResultSchema, slackRegistrationSchema, slackSetupActionSchema, slackInstallAuthorizationSchema, slackRegistrationStateSchema, slackAppConfigurationSchema, slackAvatarStateSchema, slackAccountStateSchema } from "@paperclipai/shared";
 import { experimentalApiMetadata } from "./experimental-api-metadata.js";
-import { ATTENTION_SOURCE_KINDS } from "@paperclipai/shared";
+import { LINK_PREVIEW_BATCH_LIMIT, ATTENTION_SOURCE_KINDS } from "@paperclipai/shared";
 import { agentCaseHandoffSchema, caseWorkflowDocumentTextSchema, doneCaseHandoffSchema, createWorkflowSchema, updateWorkflowSchema, listWorkflowsSchema, readWorkflowQuerySchema } from "@paperclipai/shared";
 import {
   experimentalApiDocs,
@@ -10,7 +11,7 @@ import {
   experimentalApiQueries,
 } from "./experimental-api-paths.js";
 import { Router } from "express";
-import { subscriptionPriceSchema, mergeSubscriptionsSchema } from "@paperclipai/shared";
+import { subscriptionPriceSchema, mergeSubscriptionsSchema, CLOUD_TRIAL_INFERENCE_STATUSES, cloudTrialTelemetryEventSchema, migrateCloudTrialAgentsSchema } from "@paperclipai/shared";
 import { z } from "zod";
 import { getHiddenSettings } from "../services/settings-visibility.js";
 import {
@@ -1363,6 +1364,7 @@ type OpenApiAuthLevel =
   | "agent_run"
   | "agent_heartbeat"
   | "runtime_tools"
+  | "agent_setup_token"
   | "authenticated"
   | "board"
   | "instance_admin";
@@ -1372,6 +1374,7 @@ const BOARD_API_KEY_AUTH_SCHEME = "BoardApiKeyAuth";
 const AGENT_BEARER_AUTH_SCHEME = "AgentBearerAuth";
 const AGENT_RUN_AUTH_SCHEME = "AgentRunAuth";
 const RUNTIME_TOOLS_BEARER_AUTH_SCHEME = "RuntimeToolsBearerAuth";
+const AGENT_SETUP_TOKEN_AUTH_SCHEME = "AgentSetupTokenAuth";
 
 function securityRequirement(name: string): Record<string, string[]> {
   return { [name]: [] };
@@ -1399,6 +1402,13 @@ const RUNTIME_TOOLS_OPERATIONS = new Set([
   "POST /runtime-tools/connections/request",
 ]);
 
+/** A person's own agent reports setup progress with the checklist's bearer token, not a Paperclip sign-in (routes/agent-setup-progress.ts). */
+const AGENT_SETUP_TOKEN_OPERATIONS = new Set([
+  "PUT /api/agent-setup-progress/{id}/checklist",
+  "POST /api/agent-setup-progress/{id}/items/{key}",
+  "POST /api/agent-setup-progress/{id}/finish",
+]);
+
 const PUBLIC_OPERATIONS = new Set([
   "GET /api/agent-avatars/{version}/{palette}/{file}",
   "GET /api/health",
@@ -1424,6 +1434,9 @@ const PUBLIC_OPERATIONS = new Set([
   "POST /mcp/gateways/{gatewayPublicId}",
   "GET /api/tool-gateway/gateways/{gatewayId}/mcp",
   "POST /api/tool-gateway/gateways/{gatewayId}/mcp",
+  // Outside clouds fetch a company's workload identity issuer anonymously (routes/workload-identity.ts).
+  "GET /oidc/companies/{companyId}/.well-known/openid-configuration",
+  "GET /oidc/companies/{companyId}/jwks.json",
 ]);
 
 const BOARD_ONLY_PREFIXES = [
@@ -1467,7 +1480,18 @@ const mcpSkillsBoardOperations = [
 ] as const;
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  // Workload identity status and key rotation are board-only (assertBoard in routes/workload-identity.ts).
+  "GET /api/companies/{companyId}/workload-identity",
+  "POST /api/companies/{companyId}/workload-identity/rotation",
+  // Setup progress checklists are created and read by board members (assertBoard in routes/agent-setup-progress.ts).
+  "POST /api/companies/{companyId}/agent-setup-progress",
+  "GET /api/agent-setup-progress/{id}",
+  "POST /api/companies/{companyId}/chats/{agentRef}/onboarding",
+  "POST /api/companies/{companyId}/chats/{agentRef}/onboarding/greeting",
   "PATCH /api/agents/{id}/permission-grants",
+  "GET /api/agents/{id}/runtime-state",
+  "POST /api/agents/{id}/runtime-state/reset-session",
+  "GET /api/agents/{id}/task-sessions",
   // Budget changes are board-only (assertBoard in routes/costs.ts).
   "POST /api/companies/{companyId}/budgets/policies",
   "POST /api/companies/{companyId}/budget-incidents/{incidentId}/resolve",
@@ -1482,6 +1506,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/issues/{id}/decision-receipts",
   "GET /api/issues/{id}/chat-handoffs",
   "GET /api/companies/{companyId}/attention/history",
+  "GET /api/companies/{companyId}/attention/run-history",
   "GET /api/companies/{companyId}/attention/summary",
   "GET /api/companies/{companyId}/attention/tasks",
   "POST /api/companies/{companyId}/attention/{sourceKind}/{sourceId}/claim",
@@ -1492,7 +1517,6 @@ const BOARD_ONLY_OPERATIONS = new Set([
   // Cancelling a question is board-only (routes/issues.ts rejects agent actors). Withdraw is not listed here: its
   // route admits the card's creator agent and the task's assignee, so agents withdraw their own pending card there.
   "POST /api/issues/{id}/interactions/{interactionId}/cancel",
-  "POST /api/issues/{id}/retry",
   "GET /api/companies/{companyId}/prompt-injection-prevention",
   "PUT /api/companies/{companyId}/prompt-injection-prevention",
   "GET /api/companies/{companyId}/prompt-injection-prevention/models",
@@ -1524,6 +1548,9 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "DELETE /api/issues/{id}/documents/{key}",
   "GET /api/companies/{companyId}/decisions",
   "GET /api/cloud/stacks",
+  "GET /api/companies/{companyId}/cloud-inference/status",
+  "POST /api/companies/{companyId}/cloud-inference/migrate",
+  "POST /api/companies/{companyId}/cloud-inference/telemetry",
   "GET /api/companies",
   "POST /api/companies",
   "GET /api/companies/stats",
@@ -1642,12 +1669,14 @@ const INSTANCE_ADMIN_OPERATIONS = new Set([
   "POST /api/companies",
   "POST /api/plugins/install",
   "POST /api/instance/database-backups",
+  "GET /api/instance/server-metrics",
   "POST /api/admin/users/{userId}/promote-instance-admin",
   "POST /api/admin/users/{userId}/demote-instance-admin",
   "PUT /api/admin/users/{userId}/company-access",
 ]);
 
 const CREATED_OPERATIONS = new Set([
+  "POST /api/companies/{companyId}/agent-setup-progress",
   "POST /api/adapters/install",
   "POST /api/companies/{companyId}/agent-hires",
   "POST /api/companies/{companyId}/agents",
@@ -1749,6 +1778,7 @@ function resolveOperationAuthLevel(
   if (path === "/api/companies/{companyId}/grok-invitations"
       || /^\/api\/companies\/\{companyId\}\/agents\/\{agentId\}\/grok-binding(?:\/(?:routine|verify|retry|stop|recover))?$/.test(path)) return "board";
   if (PUBLIC_OPERATIONS.has(key)) return "public";
+  if (AGENT_SETUP_TOKEN_OPERATIONS.has(key)) return "agent_setup_token";
   if (key === "POST /api/companies/{companyId}/agent-commentary") return "agent_heartbeat";
   if (key === "POST /api/agents/me/chat/messages") return "agent_heartbeat";
   // An approved connected-app skill's file: an agent in an active run only.
@@ -1808,6 +1838,12 @@ function applyDocumentFixups(document: any): any {
       description:
         "Scoped token bound to an active heartbeat run and presented in the Authorization bearer header. The GitHub credential endpoint requires the distinct github_credentials scope.",
     },
+    [AGENT_SETUP_TOKEN_AUTH_SCHEME]: {
+      type: "http",
+      scheme: "bearer",
+      bearerFormat: "Setup checklist token (pcsp_…)",
+      description: "The token from a setup prompt, presented in the Authorization bearer header. It updates only its own setup checklist, until the checklist finishes or expires.",
+    },
     [AGENT_RUN_AUTH_SCHEME]: {
       type: "http",
       scheme: "bearer",
@@ -1830,6 +1866,8 @@ function applyDocumentFixups(document: any): any {
         operation.security = [securityRequirement(AGENT_BEARER_AUTH_SCHEME)];
       } else if (authLevel === "runtime_tools") {
         operation.security = RUNTIME_TOOLS_SECURITY;
+      } else if (authLevel === "agent_setup_token") {
+        operation.security = [securityRequirement(AGENT_SETUP_TOKEN_AUTH_SCHEME)];
       } else if (authLevel === "authenticated") {
         operation.security = AUTHENTICATED_SECURITY;
       } else {
@@ -1847,6 +1885,8 @@ function applyDocumentFixups(document: any): any {
               ? { actor: "agent", heartbeatBound: true }
             : authLevel === "runtime_tools"
               ? { actor: "runtime_tools", heartbeatBound: true }
+            : authLevel === "agent_setup_token"
+              ? { actor: "setup_token" }
               : authLevel === "authenticated"
                 ? { actor: "board_or_agent" }
                 : { actor: "public" };
@@ -1857,7 +1897,8 @@ function applyDocumentFixups(document: any): any {
       }
 
       const key = operationKey(method, path);
-      if (authLevel !== "public") {
+      // The setup token is only ever valid or not (401); it has no permissions to be refused.
+      if (authLevel !== "public" && authLevel !== "agent_setup_token") {
         const responses = (operation.responses ??= {}) as Record<
           string,
           unknown
@@ -2103,9 +2144,111 @@ registry.registerPath({
     200: r.ok(),
     403: r.forbidden,
     404: r.notFound,
+    429: { description: "Paperclip Cloud is rate limiting portfolio reads (code cloud_portfolio_rate_limited). Retry-After, when present, gives whole seconds from 1 to 300. Not cached." },
     502: r.serverError,
     503: r.serverError,
     500: r.serverError,
+  },
+});
+
+const cloudTrialInferenceStatusSchema = z.object({
+  enabled: z.boolean(),
+  provider: z.literal("openrouter"),
+  status: z.enum(CLOUD_TRIAL_INFERENCE_STATUSES),
+  reason: z.string().optional(),
+  limitUsdCents: z.number().int(),
+  spentUsdCents: z.number().int(),
+  remainingUsdCents: z.number().int(),
+  defaultModel: z.string(),
+  canMigrate: z.boolean(),
+  trialAgentIds: z.array(z.string().uuid()),
+  trialAgents: z.array(
+    z.object({
+      id: z.string().uuid(),
+      name: z.string(),
+      role: z.string(),
+      title: z.string().nullable(),
+    }),
+  ),
+  blockedRun: z
+    .object({
+      runId: z.string().uuid(),
+      agentId: z.string().uuid(),
+      issueId: z.string().uuid().nullable(),
+      failedAt: z.string(),
+    })
+    .nullable(),
+});
+
+const migrateCloudTrialAgentsResultSchema = z.object({
+  migratedCount: z.number().int(),
+  agents: z.array(
+    z.object({
+      agentId: z.string().uuid(),
+      name: z.string(),
+      adapterType: z.string(),
+      runnerProvider: z.string().optional(),
+      acpxAgent: z.string().optional(),
+      model: z.string(),
+    }),
+  ),
+  resumedRunIds: z.array(z.string().uuid()),
+  resumedIssueId: z.string().uuid().nullable(),
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/cloud-inference/status",
+  tags: ["cloud"],
+  summary: "Get Cloud starter inference status for a company",
+  description:
+    "Requires an authenticated board session with access to companyId. Returns starter-inference state, trial-bound agents, and whether the caller can migrate them (canMigrate).",
+  request: {
+    params: z.object({ companyId: z.string().uuid() }),
+    query: z.object({
+      refresh: z.enum(["1", "true"]).optional(),
+    }),
+  },
+  responses: {
+    200: r.ok(cloudTrialInferenceStatusSchema),
+    403: r.forbidden,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/cloud-inference/migrate",
+  tags: ["cloud"],
+  summary: "Migrate Cloud starter trial agents onto a connected model provider",
+  description:
+    "Requires a non-viewer board user with agent_config:update (or setup-draft creator authority) for every target trial agent, plus ownership or connections:configure authority for the selected AI connection.",
+  request: {
+    params: z.object({ companyId: z.string().uuid() }),
+    body: jsonBody(migrateCloudTrialAgentsSchema),
+  },
+  responses: {
+    200: r.ok(migrateCloudTrialAgentsResultSchema),
+    400: r.badRequest,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/cloud-inference/telemetry",
+  tags: ["cloud"],
+  summary: "Record Cloud starter inference onboarding exposure or prompt telemetry",
+  description:
+    "Requires an authenticated board session with access to companyId. Emits Cloud-only PostHog funnel events (no-op on self-hosted instances).",
+  request: {
+    params: z.object({ companyId: z.string().uuid() }),
+    body: jsonBody(cloudTrialTelemetryEventSchema),
+  },
+  responses: {
+    204: { description: "Recorded" },
+    400: r.badRequest,
+    403: r.forbidden,
   },
 });
 
@@ -2446,7 +2589,7 @@ registry.registerPath({
   summary: "Create a chat endpoint",
   description:
     "Creates one provider bot endpoint bound permanently to one Paperclip agent. Provider setup and verification happen in later calls. "
-    + "Chat providers need Chat connectors, and GitHub needs GitHub review bots, turned on by an instance admin in Experimental settings at /<prefix>/company/settings/instance/experimental. "
+    + "Experimental chat providers need Chat connectors turned on by an instance admin in Experimental settings at /<prefix>/company/settings/instance/experimental; AgentMail and GitHub are always available. "
     + "While that setting is off, connections_search shows the provider as unavailable and this call is refused; agents cannot change it. Link that page as [Experimental settings](/<prefix>/company/settings/instance/experimental) and reply.",
   request: {
     params: z.object({ companyId: z.string().uuid() }),
@@ -4428,6 +4571,26 @@ registry.registerPath({
 // ─── Issues ──────────────────────────────────────────────────────────────────
 
 registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/chats/{agentRef}/onboarding",
+  tags: ["issues"],
+  summary: "Open the current board user's onboarding chat",
+  description: "Requires Agent Chat and company access. Reuses the caller's existing conversation or creates an unnumbered standing chat with onboarding context. Creates no execution task or project and starts no agent turn.",
+  request: { params: z.object({ companyId: z.string(), agentRef: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/chats/{agentRef}/onboarding/greeting",
+  tags: ["issues"],
+  summary: "Start the visible onboarding chat's live welcome",
+  description: "Call after the chat is visible. Requires an existing conversation owned by the caller. Returns started=true when a welcome is queued or already pending, or false when the conversation no longer needs a welcome. Retries failed or timed-out attempts and preserves normal agent admission gates.",
+  request: { params: z.object({ companyId: z.string(), agentRef: z.string() }) },
+  responses: { 200: r.ok(z.object({ started: z.boolean() })), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
   method: "get",
   path: "/api/companies/{companyId}/chats",
   tags: ["issues"],
@@ -4480,10 +4643,13 @@ registry.registerPath({
   path: "/api/companies/{companyId}/issues/summaries",
   tags: ["issues"],
   summary: "Get authorized recent-task summaries",
-  description: "Accepts only the ids query parameter: one to fifty comma-separated UUIDs, bounded before deduplication. IDs are trimmed and normalized to lowercase. Repeated, array and nested query syntax is rejected, including mixed forms. Returns accessible, visible tasks in request order; unavailable IDs are omitted. This private, no-store read excludes full task and workspace enrichment.",
+  description: "Accepts one to fifty comma-separated UUIDs, bounded before deduplication. IDs are trimmed and normalized to lowercase. Repeated, array and nested query syntax is rejected, including mixed forms. Returns accessible, visible tasks in request order; unavailable IDs are omitted. With navigation=true, board viewers receive personal navigation state, including whether each task is archived for them. This private, no-store read excludes full task and workspace enrichment.",
   request: {
     params: z.object({ companyId: z.string() }),
-    query: z.object({ ids: z.string().min(1).describe("One to fifty comma-separated task UUIDs; repeated query parameters are rejected") }),
+    query: z.object({
+      ids: z.string().min(1).describe("One to fifty comma-separated task UUIDs. Repeated query parameters are rejected."),
+      navigation: z.literal("true").optional(),
+    }),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
@@ -4775,6 +4941,16 @@ registry.registerPath({
   summary: "Delete a work product",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/issue-documents",
+  tags: ["issues"],
+  summary: "Bulk read one document key across issue IDs",
+  description: "Read current documents for 1–200 comma-separated task UUIDs in one request. Company and task read permissions apply. Unreadable, hidden, foreign and nonexistent tasks are omitted; a readable task without this key returns document:null. Items follow first-requested ID order with duplicates removed. includeBody defaults to true; includeBody=false returns revision metadata and updatedAt without loading bodies, for cache validation. No break-glass access. Responses over 8 MiB fail with 413; split the IDs into smaller requests. Native helpers can use save_api_response then download_artifact to relay the complete batch without per-task calls. Verify every requested ID is present before treating the inventory as complete.",
+  request: { params: z.object({ companyId: z.string().uuid() }), query: issueDocumentBatchQuerySchema },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 413: { description: "Split the document batch into smaller requests" }, 429: { description: "At most two active reads per actor and eight per server instance; retry after an active read finishes", headers: { "Retry-After": { schema: { type: "string", enum: ["1"] } } } } },
 });
 
 registry.registerPath({
@@ -6487,6 +6663,7 @@ registry.registerPath({
   path: "/api/issues/{id}/runs",
   tags: ["activity"],
   summary: "List runs for an issue",
+  description: "A retry run's retriedBy says in plain words who started it: a person who pressed Retry (named), or Paperclip's automatic recovery. It is null for a run that is not a retry. Use it rather than inferring the starter from invocationSource or triggerDetail.",
   request: { params: z.object({ id: z.string() }), query: z.object({ view: z.literal("recent").optional().describe("At most two recent run summaries."), runIds: z.string().optional().describe("Comma-separated list of 1 to 100 run UUIDs. Returns only those runs linked to this accessible issue.") }) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
@@ -6567,8 +6744,8 @@ registry.registerPath({
       includeDismissed: z.enum(["true", "false"]).optional(),
       archived: z.enum(["true", "false"]).optional(),
       all: z.enum(["true", "false"]).optional(),
-      view: z.enum(["mine", "unassigned", "company", "archived", "all"]).optional()
-        .describe("Audience slice (PAP-749). `all` (default) keeps the full feed; `viewCounts` and the For you badge `deskBadgeCount` ignore it. `mine` also returns `receipts`: what a different person did with your cards in the last 7 days. `archived` returns only the open cards you archived or snoozed for yourself, whatever their audience; `viewCounts.archived` counts them and is never in the badge. `viewCounts.all` counts the Everyone tab (every person's open cards, board members only) and is never in the badge."),
+      view: z.enum(["mine", "unassigned", "company", "archived", "all", "waiting"]).optional()
+        .describe("Audience slice (PAP-749). `waiting` lists snoozed requests and automatic retries visible to the caller. `all` (default) keeps the full feed; `viewCounts` and the For you badge `deskBadgeCount` ignore it. `mine` also returns `receipts`: what a different person did with your cards in the last 7 days. `archived` returns only the open cards you archived or snoozed for yourself, whatever their audience; `viewCounts.archived` counts them and is never in the badge. `viewCounts.all` counts the Everyone tab (every person's open cards, board members only) and is never in the badge."),
       activitySince: z.string().datetime().optional(),
       activityUntil: z.string().datetime().optional(),
       queue: z.string().min(1).optional(),
@@ -6581,6 +6758,8 @@ registry.registerPath({
 });
 
 const attentionSummaryResponseSchema = z.object({
+  waitingCount: z.number().int().nonnegative().optional(),
+  nextSnoozeAt: z.string().datetime().optional(),
   companyId: z.string().uuid(),
   generatedAt: z.string().datetime(),
   totalCount: z.number().int().nonnegative(),
@@ -6673,6 +6852,29 @@ registry.registerPath({
 });
 
 // ─── Decisions ──────────────────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/attention/run-history",
+  tags: ["inbox"],
+  summary: "List recent failures in inbox run history",
+  description: "Requires a board user. Returns up to 100 recent failed runs on tasks visible to the caller, newest first. For the next page, pass the last row’s recordedAt and runId as at and id together. Limited to 60 requests per minute per board user and company.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({ at: z.string().datetime().optional(), id: z.string().uuid().optional() }).strict(),
+  },
+  responses: {
+    200: r.ok(z.array(z.object({
+      runId: z.string().uuid(), agentId: z.string().uuid(), agentName: z.string(),
+      taskId: z.string().uuid(), taskTitle: z.string(), identifier: z.string().nullable(),
+      recordedAt: z.string().datetime(), reason: z.string(), outcome: z.string(),
+    }))),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    429: r.tooManyRequests,
+  },
+});
 
 registry.registerPath({
   method: "get",
@@ -9693,6 +9895,115 @@ registry.registerPath({
   } }, ...tailscaleErrors },
 });
 
+const workloadIdentityParams = z.object({ companyId: z.string().uuid() });
+const workloadIdentityPublicNotFound = { 404: { description: "The company has no published signing key, or this instance has no public HTTPS address" } };
+const workloadIdentityKeyState = z.object({
+  issuer: z.string().url().nullable(),
+  unavailableReason: z.enum(["no_public_url", "not_https", "has_port", "loopback"]).nullable(),
+  keys: z.array(z.object({
+    keyId: z.string(), status: z.enum(["next", "active", "retiring"]),
+    createdAt: z.string().datetime(), statusChangedAt: z.string().datetime(),
+  }).strict()),
+}).strict();
+
+registry.registerPath({
+  method: "get", path: "/oidc/companies/{companyId}/.well-known/openid-configuration", tags: ["workload-identity"],
+  summary: "Company workload identity OIDC discovery document",
+  description: "Unauthenticated. Outside clouds read this to verify tokens that name one of the company's connections. Cacheable for five minutes.",
+  request: { params: workloadIdentityParams },
+  responses: { 200: r.ok(z.object({
+    issuer: z.string().url(), jwks_uri: z.string().url(),
+    response_types_supported: z.array(z.string()), subject_types_supported: z.array(z.string()),
+    id_token_signing_alg_values_supported: z.array(z.string()), claims_supported: z.array(z.string()),
+  }).strict()), ...workloadIdentityPublicNotFound },
+});
+
+registry.registerPath({
+  method: "get", path: "/oidc/companies/{companyId}/jwks.json", tags: ["workload-identity"],
+  summary: "Company workload identity public key set",
+  description: "Unauthenticated. Lists only public ES256 keys. Never contains private key members.",
+  request: { params: workloadIdentityParams },
+  responses: { 200: r.ok(z.object({ keys: z.array(z.object({
+    kty: z.literal("EC"), crv: z.string(), x: z.string(), y: z.string(), kid: z.string(), alg: z.literal("ES256"), use: z.literal("sig"),
+  }).strict()) }).strict()), ...workloadIdentityPublicNotFound },
+});
+
+const agentSetupItem = z.object({
+  key: z.string(), title: z.string(), status: z.enum(["pending", "in_progress", "done", "failed"]), detail: z.string().nullable(),
+}).strict();
+const agentSetupProgressDoc = z.object({
+  id: z.string().uuid(), companyId: z.string().uuid(), purpose: z.string(), subjectId: z.string().nullable(),
+  status: z.enum(["waiting", "in_progress", "done", "failed"]), items: z.array(agentSetupItem), summary: z.string().nullable(),
+  expiresAt: z.string().datetime(), createdAt: z.string().datetime(), updatedAt: z.string().datetime(),
+}).strict();
+const agentSetupProgressId = z.object({ id: z.string().uuid() });
+const agentSetupAgentErrors = {
+  400: r.badRequest, 401: { description: "The bearer token is missing or does not open this checklist" },
+  404: r.notFound, 409: { description: "Another update changed the checklist at the same time; send it again" },
+  410: { description: "The checklist's token expired" }, 429: { description: "The checklist reached its update limit" },
+};
+
+registry.registerPath({
+  method: "post", path: "/api/companies/{companyId}/agent-setup-progress", tags: ["agent-setup-progress"],
+  summary: "Create a setup checklist for a person's own agent",
+  description: "Board only. For aws_connection, subjectId must be a connection of this company that the caller may configure. Creates an empty checklist and returns it with a bearer token (shown once; only its hash is kept) and the URLs the agent uses to set the checklist, update items and finish. The token works for six hours and can only write to this checklist.",
+  request: { params: z.object({ companyId: z.string().uuid() }), body: { content: { "application/json": { schema: createAgentSetupProgressSchema } } } },
+  responses: {
+    201: r.ok(z.object({ progress: agentSetupProgressDoc, token: z.string(), urls: z.object({ checklist: z.string().url(), item: z.string(), finish: z.string().url() }).strict() }).strict()),
+    400: r.badRequest, 401: r.unauthorized, 403: r.forbidden,
+  },
+});
+
+registry.registerPath({
+  method: "get", path: "/api/agent-setup-progress/{id}", tags: ["agent-setup-progress"],
+  summary: "Read a setup checklist",
+  description: "Board only, for the person who started the setup; anyone else gets 404. Updates also arrive as agent_setup_progress.updated live events.",
+  request: { params: agentSetupProgressId },
+  responses: { 200: r.ok(agentSetupProgressDoc), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "put", path: "/api/agent-setup-progress/{id}/checklist", tags: ["agent-setup-progress"],
+  summary: "Set the agent's setup checklist",
+  description: "Called by the person's own agent with Authorization: Bearer <token>; no Paperclip sign-in. Replaces the checklist (1 to 20 items, keys of lowercase letters, numbers, - and _).",
+  request: { params: agentSetupProgressId, body: { content: { "application/json": { schema: setAgentSetupChecklistSchema } } } },
+  responses: { 200: r.ok(agentSetupProgressDoc), ...agentSetupAgentErrors },
+});
+
+registry.registerPath({
+  method: "post", path: "/api/agent-setup-progress/{id}/items/{key}", tags: ["agent-setup-progress"],
+  summary: "Update one step of the agent's setup checklist",
+  description: "Called by the person's own agent with Authorization: Bearer <token>. Sets the item's status (pending, in_progress, done or failed) and an optional one-line detail.",
+  request: { params: agentSetupProgressId.extend({ key: z.string() }), body: { content: { "application/json": { schema: updateAgentSetupItemSchema } } } },
+  responses: { 200: r.ok(agentSetupProgressDoc), ...agentSetupAgentErrors },
+});
+
+registry.registerPath({
+  method: "post", path: "/api/agent-setup-progress/{id}/finish", tags: ["agent-setup-progress"],
+  summary: "Finish the agent's setup",
+  description: "Called by the person's own agent with Authorization: Bearer <token>. done ticks off any open items; failed keeps them. An optional summary is shown on the setup page.",
+  request: { params: agentSetupProgressId, body: { content: { "application/json": { schema: finishAgentSetupSchema } } } },
+  responses: { 200: r.ok(agentSetupProgressDoc), ...agentSetupAgentErrors },
+});
+
+registry.registerPath({
+  method: "get", path: "/api/companies/{companyId}/workload-identity", tags: ["workload-identity"],
+  summary: "Company workload identity issuer and key states",
+  description: "Board only. Returns the issuer (or why it is unavailable) and the published keys. No private key material.",
+  request: { params: workloadIdentityParams },
+  responses: { 200: r.ok(workloadIdentityKeyState), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post", path: "/api/companies/{companyId}/workload-identity/rotation", tags: ["workload-identity"],
+  summary: "Rotate the company workload identity signing key",
+  description: "Board only. begin publishes a next key; complete makes it sign after 24 hours of publication; emergency replaces every key at once. Each step writes its activity entry in the same transaction as the key change.",
+  request: { params: workloadIdentityParams, body: jsonBody(z.object({ step: z.enum(["begin", "complete", "emergency"]) }).strict()) },
+  responses: { 200: r.ok(z.object({
+    step: z.enum(["begin", "complete", "emergency"]), keyId: z.string(), created: z.boolean().optional(), state: workloadIdentityKeyState,
+  }).strict()), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
 // ─── Environments ─────────────────────────────────────────────────────────────
 
 registry.registerPath({
@@ -10390,6 +10701,17 @@ registry.registerPath({
   responses: { 201: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
+// ─── Instance server metrics ──────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "get",
+  path: "/api/instance/server-metrics",
+  tags: ["instance"],
+  summary: "Get this server process's load metrics",
+  description: "Instance admins only: agent credentials and company members receive 403. Returns numbers for the one server process that answers: CPU, event-loop utilization and delay, statements per second, run event lateness and agent API pre-handler p99, missed lease renewals and dedicated database connection use, over about the last minute (windowMs). It returns 404 unless the operator set PAPERCLIP_SERVER_METRICS=true.",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
 // ─── LLM text endpoints ───────────────────────────────────────────────────────
 
 registry.registerPath({
@@ -10446,24 +10768,39 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
 });
 
+const linkPreviewResultSchema = z.object({
+  preview: z.object({
+    target: z.object({ provider: z.string(), kind: z.string(), canonicalUrl: z.string(), label: z.string() }),
+    title: z.string(), state: z.enum(["unknown", "open", "draft", "merged", "closed", "conflicts"]),
+    author: z.string().nullable(), updatedAt: z.string().nullable(),
+  }).nullable(),
+  maxAgeMs: z.number(),
+});
+
 registry.registerPath({
   method: "get",
   path: "/api/companies/{companyId}/link-preview",
   tags: ["companies"],
   summary: "Read optional link metadata for the current board user",
-  description: "Company access and board authentication are required. This read uses a viewer-scoped cache and returns a quiet null preview when provider access is unavailable. It does not change tasks or schedule background work.",
+  description: "Company access and board authentication are required. This read uses a viewer-scoped cache and returns a quiet null preview when provider access is unavailable. Each company/viewer can make 600 lookup requests per minute per server process. Excess requests return 429 with Retry-After; cached batch reads remain available. It does not change tasks or schedule background work.",
   request: { params: z.object({ companyId: z.string() }), query: z.object({ url: z.string().max(2048) }) },
   responses: {
-    200: r.ok(z.object({
-      preview: z.object({
-        target: z.object({ provider: z.string(), kind: z.string(), canonicalUrl: z.string(), label: z.string() }),
-        title: z.string(), state: z.enum(["unknown", "open", "draft", "merged", "closed", "conflicts"]),
-        author: z.string().nullable(), updatedAt: z.string().nullable(),
-      }).nullable(),
-      maxAgeMs: z.number(),
-    })),
-    400: r.badRequest, 401: r.unauthorized, 403: r.forbidden,
+    200: r.ok(linkPreviewResultSchema),
+    400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 429: r.tooManyRequests,
   },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/link-previews/cached",
+  tags: ["companies"],
+  summary: "Read a batch of stored link statuses without contacting providers",
+  description: `Board-only and company/viewer scoped. Reads at most ${LINK_PREVIEW_BATCH_LIMIT} URLs. Canonical links are reused across tasks. Stale records have maxAgeMs zero; absent records are omitted. This is a read-only cache projection.`,
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({ url: z.union([z.string().max(2048), z.array(z.string().max(2048)).min(1).max(LINK_PREVIEW_BATCH_LIMIT)]) }),
+  },
+  responses: { 200: r.ok(z.object({ results: z.record(z.string(), linkPreviewResultSchema) })), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 
 registry.registerPath({
@@ -11477,6 +11814,32 @@ registerCurrentRoute({
   body: updateDocumentAnnotationThreadSchema,
 });
 
+registerCurrentRoute({
+  method: "put",
+  path: "/api/issues/{id}/documents/{key}/annotations/{threadId}/comments/{commentId}/reactions/{reaction}",
+  tags: ["issues"],
+  summary: "Add a reaction on a document annotation comment",
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    404: r.notFound,
+  },
+});
+
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/issues/{id}/documents/{key}/annotations/{threadId}/comments/{commentId}/reactions/{reaction}",
+  tags: ["issues"],
+  summary: "Remove a reaction on a document annotation comment",
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    404: r.notFound,
+  },
+});
+
 for (const route of [
   [
     "get",
@@ -11534,6 +11897,32 @@ registerCurrentRoute({
 });
 
 registerCurrentRoute({
+  method: "put",
+  path: "/api/routines/{id}/description/annotations/{threadId}/comments/{commentId}/reactions/{reaction}",
+  tags: ["routines"],
+  summary: "Add a reaction on a routine description annotation comment",
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    404: r.notFound,
+  },
+});
+
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/routines/{id}/description/annotations/{threadId}/comments/{commentId}/reactions/{reaction}",
+  tags: ["routines"],
+  summary: "Remove a reaction on a routine description annotation comment",
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    404: r.notFound,
+  },
+});
+
+registerCurrentRoute({
   method: "get",
   path: "/api/issues/{id}/diagnostics/blockers",
   tags: ["issues"],
@@ -11567,7 +11956,7 @@ registerCurrentRoute({
   tags: ["issues"],
   summary: "Request one durable task retry from current input and preserved results",
   body: taskRetrySchema,
-  responses: { 200: r.ok(), 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+  responses: { 200: r.ok(), 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 429: r.tooManyRequests },
 });
 
 registerCurrentRoute({
@@ -12454,6 +12843,12 @@ registerCurrentRoute({
   summary: "Revoke a personal tool connection grant delegation",
 });
 
+const managedGoogleAccessRemovalSchema = z.object({
+  provider: z.literal("google"),
+  result: z.enum(["ended", "ended_unconfirmed", "other_connections_remain", "retrying", "not_ended"]),
+  outcomes: z.array(z.string()).describe("One diagnostic code per refresh token sent to Paperclip Cloud, in order."),
+}).describe("Present only for a Google connection managed by Paperclip Cloud. A failure to end access at Google does not undo the local removal.");
+
 registerCurrentRoute({
   "x-paperclip-transport": "rest",
   "x-paperclip-connection-management": "connections:configure",
@@ -12461,6 +12856,13 @@ registerCurrentRoute({
   path: "/api/tool-connections/{connectionId}/grants/{grantId}",
   tags: ["tool-access"],
   summary: "Revoke a tool connection grant",
+  description: "Revokes the grant locally, then, for a Google connection managed by Paperclip Cloud, asks Paperclip Cloud to end the grant's access at Google and reports the result in providerAccess.",
+  responses: {
+    200: r.ok(z.object({ providerAccess: managedGoogleAccessRemovalSchema.optional() }).passthrough()),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
 });
 
 registerCurrentRoute({
@@ -12546,6 +12948,42 @@ registerCurrentRoute({
   path: "/api/tool-connections/{connectionId}",
   tags: ["tool-access"],
   summary: "Archive a tool connection",
+  description: "Removes the connection and its credentials. For a Google connection managed by Paperclip Cloud, removal.providerAccess reports whether access was ended at Google.",
+  query: z.object({ deleteStoredContent: z.enum(["true", "false"]).optional() }),
+  responses: {
+    200: r.ok(z.object({ removal: z.object({ providerAccess: managedGoogleAccessRemovalSchema.optional() }).passthrough() }).passthrough()),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/stored-content",
+  tags: ["tool-access"],
+  summary: "Count the content Paperclip stored from a connection's tool calls",
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "post",
+  path: "/api/tool-connections/{connectionId}/stored-content/deletion",
+  tags: ["tool-access"],
+  summary: "Delete the content Paperclip stored from a connection's tool calls",
+  responses: { 202: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/stored-content/deletion",
+  tags: ["tool-access"],
+  summary: "Read the status of the latest stored-content deletion for a connection",
 });
 
 const MACHINE_SIGN_IN_ERRORS = {
@@ -12581,6 +13019,17 @@ registerCurrentRoute({
 registerCurrentRoute({
   "x-paperclip-transport": "rest",
   "x-paperclip-connection-management": "connections:configure",
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/aws-setup",
+  tags: ["tool-access"],
+  summary: "Read what to configure in AWS for an AWS role connection",
+  description: "Returns the issuer, audience, connection subject, trust policy and a CloudFormation template for this connection. No secret values. Optional query `accessLevel` (`read_only` or `full`) sets up for an access level not saved yet. 422 when the connection does not use an AWS role.",
+  responses: { 200: r.ok(), ...MACHINE_SIGN_IN_ERRORS },
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
   method: "post",
   path: "/api/tool-connections/{connectionId}/machine-sign-in/test",
   tags: ["tool-access"],
@@ -12608,6 +13057,15 @@ registerCurrentRoute({
   tags: ["tool-access"],
   summary: "Switch to the new machine sign-in key once the provider accepts it",
   responses: { 200: r.ok(), ...MACHINE_SIGN_IN_ERRORS },
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "post",
+  path: "/api/tool-connections/{connectionId}/sign-in/cancel",
+  tags: ["tool-access"],
+  summary: "Remove a connection whose first sign-in was cancelled; a connection that ever signed in is left unchanged",
 });
 
 registerCurrentRoute({
@@ -12859,6 +13317,15 @@ registerCurrentRoute({
   path: "/api/companies/{companyId}/tools/profiles",
   tags: ["tool-access"],
   summary: "List tool access profiles with entries and bindings",
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:profiles",
+  method: "get",
+  path: "/api/companies/{companyId}/tools/profiles/summary",
+  tags: ["tool-access"],
+  summary: "List tool access profile summaries",
 });
 
 registerCurrentRoute({
@@ -13445,7 +13912,7 @@ const dotInvitationResponseSchema = z.object({
   approvalId: z.string().uuid().nullable(),
   binding: z.object({
     id: z.string().uuid(), status: z.string(), connected: z.boolean(),
-    subscriptionVerified: z.boolean(), hasPendingChallenge: z.boolean(),
+    subscriptionVerified: z.boolean(), subscriptionExpired: z.boolean().optional(), hasPendingChallenge: z.boolean(),
     pairingExpiresAt: z.string().datetime().nullable(), challengeExpiresAt: z.string().datetime().nullable(),
   }).nullable(),
 });

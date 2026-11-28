@@ -37,12 +37,35 @@ export async function liveWarmSessionOwnerRetryAt(input: {
   return new Date(Math.min(now.getTime() + WARM_OWNER_RECHECK_MS, closesBy));
 }
 
+export async function waitForLiveWarmSessionOwner(input: {
+  db: Db;
+  execution: NativeExecutionInput;
+  priorRunId: string;
+  checkpointedAt: () => Promise<Date | null>;
+}): Promise<void> {
+  const { binding } = input.execution;
+  const [owner] = await input.db.select().from(nativeRunFinalizations).where(and(
+    eq(nativeRunFinalizations.runId, input.priorRunId), eq(nativeRunFinalizations.companyId, binding.companyId))).limit(1);
+  if (!owner) return;
+  const [prior] = await input.db.select({ finishedAt: heartbeatRuns.finishedAt }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.id, input.priorRunId), eq(heartbeatRuns.companyId, binding.companyId),
+    eq(heartbeatRuns.agentId, binding.agentId))).limit(1);
+  const finishedAt = prior?.finishedAt ?? null;
+  const retryAt = await liveWarmSessionOwnerRetryAt({ owner, finishedAt,
+    idleTimeoutMs: input.execution.session.lifecyclePolicy.idleTimeoutMs ?? null });
+  if (!retryAt || !owner.controllerBootId) return;
+  const checkpointedAt = await input.checkpointedAt();
+  if (checkpointedAt && finishedAt && checkpointedAt >= finishedAt) return;
+  throw new NativeControllerRecoveryWaitingError(retryAt, { runId: input.priorRunId, controllerBootId: owner.controllerBootId });
+}
+
 export type RemoteWarmSessionRecovery = {
   identity: Record<string, string>;
   checkpoint: PersistedNativeSession;
   previousExecution: NativeExecutionInput;
   reuseProcess: boolean;
   releasedSource?: DurableRecoveryIdentity;
+  releasedSourceRunner?: { version: string; digest: string };
   portableSourceTaskId?: string;
   remote: { providerLeaseId: string; remoteCwd: string };
   revalidate: (leaseOwner: string) => Promise<void>;
@@ -135,16 +158,14 @@ export function describeOwnFailedAttachment(recoveryHistory: unknown): string {
   return `runner_state_identity_mismatch: prior_attach_failed: ${typeof cause === "string" && cause ? cause : "unknown"}`;
 }
 
-const SETTLEMENT_DOC = "https://github.com/paperclipai/paperclip/blob/master/doc/execution-semantics.md#session-settlement-after-a-run";
-
-/** Points whoever diagnoses a failed attachment at reviewed docs. The stored
- * failure is already redacted and bounded; other failures produce no pointer. */
+/** Explains a failed attachment to whoever diagnoses it. The stored failure is
+ * already redacted and bounded; other failures produce no explanation. */
 export function describeFailedAttachment(failureMessage: unknown): string | null {
   if (typeof failureMessage !== "string" || !/\brun\.attach (failed|requires)\b/.test(failureMessage)) return null;
   const encoded = /"message":("(?:[^"\\]|\\.)*")/.exec(failureMessage)?.[1];
   let cause = failureMessage;
   try { if (encoded) cause = JSON.parse(encoded) as string; } catch { /* Keep the whole failure. */ }
-  return `This run could not attach to its provider session: ${cause}. A later run may start a new provider thread. See ${SETTLEMENT_DOC}`;
+  return `This run could not attach to its provider session: ${cause}. A later run may start a new provider thread.`;
 }
 
 type WarmRecoveryRefusal = "identity_incomplete" | "target_not_resumed_sandbox" | "owner_unsettled" | "execution_mismatch"
@@ -208,7 +229,9 @@ export async function inspectRemoteWarmSessionRecovery(input: {
   if (prior.owner.phase !== "committed" || prior.owner.leaseOwner) return deny("owner_unsettled");
   const liveOwnerRetryAt = await liveWarmSessionOwnerRetryAt({ owner: prior.owner, finishedAt: prior.run.finishedAt,
     idleTimeoutMs: previous.session?.lifecyclePolicy?.idleTimeoutMs ?? null });
-  if (liveOwnerRetryAt) throw new NativeControllerRecoveryWaitingError(liveOwnerRetryAt);
+  if (liveOwnerRetryAt) {
+    throw new NativeControllerRecoveryWaitingError(liveOwnerRetryAt, { runId: identity.runId, controllerBootId: prior.owner.controllerBootId });
+  }
   if (sourceProviderLeaseId === providerLeaseId) settledPredecessor = { runId: identity.runId, providerLeaseId };
   const checkpoint = input.loadCheckpoint(previous);
   if (!checkpoint || checkpoint.identity.runId !== identity.runId ||

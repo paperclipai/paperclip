@@ -19,7 +19,6 @@ import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Link } from "@/lib/router";
 import { ClassicWorkspaceSetting } from "@/components/ClassicWorkspaceSetting";
 import { describeError } from "@/api/errors";
 
@@ -240,6 +239,7 @@ export function InstanceExperimentalSettings() {
   const statusCardsBlockedByManagedSummaries = summariesManaged && !enableSummaries;
   const summariesRequiredByManagedStatusCards = statusCardsManaged && enableStatusCards;
   const enableDecisions = experimentalQuery.data?.enableDecisions === true;
+  const enableResponsibilities = experimentalQuery.data?.enableResponsibilities === true;
   const enableGoalsSidebarLink = experimentalQuery.data?.enableGoalsSidebarLink === true;
   const enableCases = experimentalQuery.data?.enableCases === true;
   const enableServerInfoDebugView = experimentalQuery.data?.enableServerInfoDebugView === true;
@@ -249,6 +249,8 @@ export function InstanceExperimentalSettings() {
     experimentalQuery.data?.enableSimplifiedEnglishInteractions === true;
   const enableFirstTaskPlanProposal =
     experimentalQuery.data?.enableFirstTaskPlanProposal === true;
+  const enableCloudTrialInference =
+    experimentalQuery.data?.enableCloudTrialInference === true;
   const enableSmokeLab = experimentalQuery.data?.enableSmokeLab === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
   const isVisible = (key: InstanceFeatureKey) => !hiddenSettings.has(experimentalSettingKey(key));
@@ -309,15 +311,15 @@ export function InstanceExperimentalSettings() {
         </div>
 
         <ExperimentalToggleCard
-          title="Assistant connections (MCP)"
-          description="Connect Codex, Claude, and other assistants to your Paperclip organization. People sign in, select an organization once, and approve access to review work, delegate tasks, and add feedback."
-          footnote={<>Requires an authenticated instance with a configured public URL. Takes effect immediately. Turning this off blocks assistant calls and event delivery; work already delegated continues.{experimentalQuery.data?.enablePublicMcp && <> <Link className="underline" to="/apps/assistant-connection">Set up an assistant connection</Link></>}</>}
-          checked={experimentalQuery.data?.enablePublicMcp === true}
-          onCheckedChange={(checked) => toggleMutation.mutate({ enablePublicMcp: checked })}
+          title="Areas & Responsibilities dashboard"
+          description="Replace the classic dashboard with one built around the areas you care about and the responsibilities you own in each. An agent can interview you to create it, and you can undo any change."
+          footnote="Turning this off brings back the classic dashboard. Your areas and responsibilities are kept."
+          checked={enableResponsibilities}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableResponsibilities: checked })}
           disabled={toggleMutation.isPending}
-          settingKey="enablePublicMcp"
-          managed={managedKeys.enablePublicMcp}
-          ariaLabel="Toggle assistant connections experimental setting"
+          settingKey="enableResponsibilities"
+          managed={managedKeys.enableResponsibilities}
+          ariaLabel="Toggle Areas & Responsibilities dashboard experimental setting"
         />
 
         <ExperimentalToggleCard
@@ -357,13 +359,26 @@ export function InstanceExperimentalSettings() {
         <ExperimentalToggleCard
           title="Chat connectors"
           description="Connect agents to Slack, Discord, Microsoft Teams, and Telegram conversations."
-          footnote="Turning this off hides experimental chat setup and connected-task controls. Existing chat connections keep running. AgentMail, GitHub review bots, and tool connectors are controlled separately."
+          footnote="Turning this off hides experimental chat setup and connected-task controls. Existing chat connections keep running. AgentMail, GitHub review bots, and tool connectors are unaffected."
           checked={enableChatConnectors}
           onCheckedChange={(checked) => toggleMutation.mutate({ enableChatConnectors: checked })}
           disabled={toggleMutation.isPending}
           settingKey="enableChatConnectors"
           managed={managedKeys.enableChatConnectors}
           ariaLabel="Toggle chat connectors experimental setting"
+        />
+
+        <ExperimentalToggleCard
+          title="Cloud starter inference"
+          description="Lets new Cloud workspaces start their first agent right away (OpenCode / GPT-6 Luna via server proxy) before asking the user to connect a model provider."
+          checked={enableCloudTrialInference}
+          onCheckedChange={(checked) =>
+            toggleMutation.mutate({ enableCloudTrialInference: checked })
+          }
+          disabled={toggleMutation.isPending}
+          settingKey="enableCloudTrialInference"
+          managed={managedKeys.enableCloudTrialInference}
+          ariaLabel="Toggle Cloud starter inference experimental setting"
         />
 
         <ExperimentalToggleCard
@@ -424,6 +439,18 @@ export function InstanceExperimentalSettings() {
           settingKey="enableMcpTasks"
           managed={managedKeys.enableMcpTasks}
           ariaLabel="Toggle durable app actions experimental setting"
+        />
+
+        <ExperimentalToggleCard
+          title="Google Antigravity swarm"
+          description="Start a comment on a Google Antigravity agent's task with /swarm to run its native swarm: a coordinator, helpers and a checker that work together in the task folder."
+          footnote="Local computers with a Google sign-in only. Helper actions are approved automatically. Paperclip does not sandbox the helpers: their shell commands can write outside the task folder, for example in temp directories."
+          checked={experimentalQuery.data?.enableAntigravitySwarm === true}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableAntigravitySwarm: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableAntigravitySwarm"
+          managed={managedKeys.enableAntigravitySwarm}
+          ariaLabel="Toggle Google Antigravity swarm experimental setting"
         />
 
         <ExperimentalToggleCard
@@ -495,18 +522,6 @@ export function InstanceExperimentalSettings() {
         />
 
         <ExperimentalToggleCard
-          title="GitHub review bots"
-          description="Connect agents to GitHub with their own App identity to review pull requests and respond to issues."
-          footnote="Independent of Chat connectors. Turning this off hides setup and management; existing bots keep running. GitHub tool connections stay available."
-          checked={experimentalQuery.data?.enableGitHubReviewBots === true}
-          onCheckedChange={(checked) => toggleMutation.mutate({ enableGitHubReviewBots: checked })}
-          disabled={toggleMutation.isPending}
-          settingKey="enableGitHubReviewBots"
-          managed={managedKeys.enableGitHubReviewBots}
-          ariaLabel="Toggle GitHub review bots experimental setting"
-        />
-
-        <ExperimentalToggleCard
           title="Google Workspace connector (Paperclip)"
           description="Show the built-in Google Workspace connector for Gmail, Drive, and Calendar while Google verification is pending."
           footnote="Off by default. While off, Google apps are offered through Composio and Arcade instead, and the built-in connector cannot be set up or run."
@@ -518,10 +533,11 @@ export function InstanceExperimentalSettings() {
           ariaLabel="Toggle Paperclip Google Workspace connector experimental setting"
         />
 
+
         <ExperimentalToggleCard
           title="Grok Bot"
           description="Connect an existing Grok Bot as an agent. Verify routine delivery and an authenticated reply before assigning work."
-          footnote="Requires Assistant connections (MCP), Paperclip Runner, and authenticated public HTTPS. Usage is not reported. Turning this off blocks Grok calls and new dispatch."
+          footnote="Requires Paperclip Runner and authenticated public HTTPS. Usage is not reported. Turning this off blocks Grok calls and new dispatch."
           checked={experimentalQuery.data?.enableGrokBot === true}
           onCheckedChange={checked => toggleMutation.mutate({ enableGrokBot: checked })}
           disabled={toggleMutation.isPending}
@@ -557,7 +573,7 @@ export function InstanceExperimentalSettings() {
         <ExperimentalToggleCard
           title="OpenAI Dot"
           description="Add OpenAI Dot as a standalone agent choice. Pair your Dot and verify event delivery before assigning work."
-          footnote="Requires Assistant connections (MCP) and an authenticated instance with a public HTTPS URL. Turning this off blocks Dot calls and new work; saved connections are kept."
+          footnote="Requires an authenticated instance with a public HTTPS URL. Turning this off blocks Dot calls and new work; saved connections are kept."
           checked={experimentalQuery.data?.enableOpenAiDot === true}
           onCheckedChange={(checked) => toggleMutation.mutate({ enableOpenAiDot: checked })}
           disabled={toggleMutation.isPending}

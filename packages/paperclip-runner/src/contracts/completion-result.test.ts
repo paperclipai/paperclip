@@ -2,6 +2,10 @@ import { normalizeLegacyPrpStructuredRunResult } from "../protocol/result-normal
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { describe, expect, it } from "vitest";
 import {
+  PRP_BLOCKER_ALREADY_REPORTED_MESSAGE,
+  PRP_ENVIRONMENT_BLOCKER_ALREADY_REPORTED_MESSAGE,
+  PRP_RESULT_ALREADY_ACCEPTED_MESSAGE,
+  prpSemanticResultConflictMessage,
   PRP_BLOCK_RESULT_OUTPUT_SCHEMA,
   PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA,
   PRP_BLOCK_TOOL_DESCRIPTION,
@@ -200,6 +204,27 @@ describe("provider-neutral completion result schema", () => {
     expect(validate(response)).toBe(false);
   });
 
+  it("keeps nested continuation fields visible to code-mode discovery without changing validation", () => {
+    const continuation = PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA.properties.continuation;
+    expect(continuation).not.toHaveProperty("allOf");
+    expect(continuation.type).toEqual(["object", "null"]);
+    expect(continuation.required).toEqual(["kind", "summary", "idempotencyKey"]);
+    const provider = new Ajv2020({ strict: false }).compile(PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA);
+    const canonical = new Ajv2020({ strict: false }).compile(PRP_COMPLETION_RESULT_OUTPUT_SCHEMA);
+    for (const kind of ["monitor", "response_wake", "case_handoff", "same_agent", "invented"]) {
+      for (const key of [undefined, "", 42, "stable-wait-key"]) {
+        for (const handoffId of [undefined, "", "accepted-handoff-id"]) {
+          const report = { ...baseResult, reportedWorkDisposition: "yielded", continuation: {
+            kind, summary: "Wait for the next action.",
+            ...(key === undefined ? {} : { idempotencyKey: key }),
+            ...(handoffId === undefined ? {} : { handoffId }),
+          } };
+          expect(provider(report), JSON.stringify(report.continuation)).toBe(canonical(report));
+        }
+      }
+    }
+  });
+
   it("exposes concrete completion fields while retaining response-wake validation", () => {
     // The live Codex code-mode renderer reduced a conditional-only root allOf
     // to `args: unknown`. Keep this tool object-shaped for provider discovery.
@@ -289,5 +314,36 @@ describe("provider-neutral completion result schema", () => {
       ownerClass: "agent",
     } as never];
     expect(validate(result)).toBe(false);
+  });
+});
+
+describe("semantic result conflict feedback", () => {
+  it("promises an automatic continuation only for a system environment or tool blocker", () => {
+    const blocked = (kind: string, reasonCode: string) => ({ reportedWorkDisposition: "blocked", blocker: { owner: { kind }, reasonCode } });
+    expect(prpSemanticResultConflictMessage(blocked("system", "environment_unavailable"))).toBe(PRP_ENVIRONMENT_BLOCKER_ALREADY_REPORTED_MESSAGE);
+    expect(prpSemanticResultConflictMessage(blocked("system", "tool_unavailable"))).toBe(PRP_ENVIRONMENT_BLOCKER_ALREADY_REPORTED_MESSAGE);
+    expect(prpSemanticResultConflictMessage(blocked("user", "credential_missing"))).toBe(PRP_BLOCKER_ALREADY_REPORTED_MESSAGE);
+    expect(prpSemanticResultConflictMessage(blocked("system", "credential_missing"))).toBe(PRP_BLOCKER_ALREADY_REPORTED_MESSAGE);
+    expect(prpSemanticResultConflictMessage(blocked("system", "tool_output_failure"))).toBe(PRP_ENVIRONMENT_BLOCKER_ALREADY_REPORTED_MESSAGE);
+    expect(prpSemanticResultConflictMessage(blocked("agent", "tool_unavailable"))).toBe(PRP_ENVIRONMENT_BLOCKER_ALREADY_REPORTED_MESSAGE);
+    expect(prpSemanticResultConflictMessage(blocked("agent", "work_incomplete"))).toBe(PRP_BLOCKER_ALREADY_REPORTED_MESSAGE);
+    expect(PRP_BLOCKER_ALREADY_REPORTED_MESSAGE).not.toContain("automatically");
+  });
+
+  it.each(["done", "needs_review", "yielded"])("tells a provider that a %s result is final and to end the turn", disposition => {
+    const message = prpSemanticResultConflictMessage({ reportedWorkDisposition: disposition });
+    expect(message).toBe(PRP_RESULT_ALREADY_ACCEPTED_MESSAGE);
+    expect(message).toContain("already accepted");
+    expect(message).toContain("Do not call paperclip_finish or paperclip_block again in this turn");
+    expect(message).toContain("final response");
+    expect(message).toContain("end the turn");
+    expect(prpSemanticResultConflictMessage(null)).toBe(PRP_RESULT_ALREADY_ACCEPTED_MESSAGE);
+  });
+
+  it("tells a provider to stop both report tools after a committed blocker", () => {
+    for (const message of [PRP_BLOCKER_ALREADY_REPORTED_MESSAGE, PRP_ENVIRONMENT_BLOCKER_ALREADY_REPORTED_MESSAGE]) {
+      expect(message).toContain("Do not call paperclip_finish or paperclip_block again in this turn");
+      expect(message).toContain("end the turn");
+    }
   });
 });

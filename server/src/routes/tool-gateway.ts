@@ -15,8 +15,10 @@ import {
 } from "@paperclipai/shared/validators/tool-access";
 import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
+import { isGitHubAccessErrorCode } from "../services/tool-access/github-access-errors.js";
 import { forbidden, HttpError } from "../errors.js";
 import { accessService } from "../services/index.js";
+import { authorizationDeniedDetails } from "../services/authorization.js";
 import { listConnectionLifecycleEvents } from "../services/tool-connection-activity.js";
 
 const TOOL_ACTIVITY_EVENT_TYPES = [
@@ -186,7 +188,7 @@ async function handleMcpGatewayProtocol(
       } as const;
       const contextMethod = contextMethods[name as keyof typeof contextMethods];
       if (contextMethod) {
-        const result = await toolGateway.executeContextForNamedGateway({
+        const result = await cancellableRequest(req, res, (signal) => toolGateway.executeContextForNamedGateway({
           ...locator,
           bearerToken: token,
           method: contextMethod,
@@ -194,7 +196,8 @@ async function handleMcpGatewayProtocol(
             ? params.arguments as Record<string, unknown>
             : {},
           callerHeaders: headers,
-        });
+          signal,
+        }));
         res.json({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result, isError: false } });
         return;
       }
@@ -225,13 +228,14 @@ async function handleMcpGatewayProtocol(
       return;
     }
     if (["resources/list", "resources/read", "prompts/list", "prompts/get"].includes(body.method ?? "")) {
-      const result = await toolGateway.executeContextForNamedGateway({
+      const result = await cancellableRequest(req, res, (signal) => toolGateway.executeContextForNamedGateway({
         ...locator,
         bearerToken: token,
         method: body.method as "resources/list" | "resources/read" | "prompts/list" | "prompts/get",
         params: body.params ?? {},
         callerHeaders: headers,
-      });
+        signal,
+      }));
       res.json({ jsonrpc: "2.0", id, result });
       return;
     }
@@ -243,7 +247,7 @@ async function handleMcpGatewayProtocol(
       // Provider tool failures are MCP tool results, not successful calls or
       // protocol errors. The service has already recorded the failed invocation.
       if (req.body?.method === "tools/call" &&
-          (err.reasonCode === "tool_error" || err.reasonCode === "github_access_denied")) {
+          (err.reasonCode === "tool_error" || isGitHubAccessErrorCode(err.reasonCode))) {
         res.json({
           jsonrpc: "2.0",
           id,
@@ -573,6 +577,17 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
         return;
       }
       assertCompanyAccess(req, companyId);
+      if (req.actor.type === "board") {
+        const decision = await access.decide({
+          actor: req.actor,
+          action: "agent:wake",
+          resource: { type: "agent", companyId, agentId },
+        });
+        if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+      }
+      const createdByUserId = req.actor.type === "board" && req.actor.source !== "local_implicit"
+        ? req.actor.userId ?? null
+        : null;
 
       const session = await toolGateway.createSession({
         companyId,
@@ -583,6 +598,7 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
         ttlMs: body.ttlMs,
         actorType: actor.actorType,
         actorId: actor.actorId,
+        createdByUserId,
       });
 
       res.status(201).json({

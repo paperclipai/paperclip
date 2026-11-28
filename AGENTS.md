@@ -99,6 +99,13 @@ preflight", "Start Dev", "Quick Health Checks", and "Database in Dev" in
 4. **Keep behavior with its owning module.**
    Provider protocols, payload parsing, and feature-specific sequencing belong to the module that owns them. Shared code uses narrow, normalized contracts. Explain any substantive change outside the owning module. See [`rules/module-boundaries.mdc`](rules/module-boundaries.mdc).
 
+5. **Keep deployment policy out of Core.**
+   Do not hardcode Cloud allowlists, provider choices, or deployment-specific
+   defaults here. Core provides generic, documented configuration mechanisms;
+   the deployment repository supplies and owns its policy. Changing a Cloud
+   policy must not require a Core code change. See
+   [harness availability](doc/harness-availability.md) for an example contract.
+
 ## 6. Database Changes
 
 Follow "Schema change workflow" in `doc/DATABASE.md`: edit the schema, run
@@ -158,7 +165,7 @@ pnpm build
 
 `pnpm test` and `pnpm test:run` run the full suite. If memory is limited, use
 `node scripts/typecheck-low-memory.mjs` instead of `pnpm -r typecheck`. See
-`doc/DEVELOPING.md`.
+"Typecheck memory" in `doc/test-infrastructure.md`.
 
 ### Maps and Storybook
 
@@ -210,5 +217,5 @@ A change is done when all are true:
 1. Behavior matches what the task asked for and preserves the invariants in section 5
 2. Relevant local verification and required CI typecheck, test, and build checks pass for the final revision, with any acceptance or platform-specific gaps resolved (section 7)
 3. Contracts are synced across db/shared/server/ui
-4. Docs updated when behavior or commands change
+4. Docs updated when behavior or commands change. `doc/DEVELOPING.md` holds setup, commands, and everyday workflow only, and `doc/DATABASE.md` holds database setup and the rules for every schema change. Put a note about how a subsystem behaves in that subsystem's doc (see "More documentation" in `doc/DEVELOPING.md`), or leave it in the PR description when the code and tests already say it.
 5. PR description follows the [PR template](.github/PULL_REQUEST_TEMPLATE.md) with all sections filled in (including Model Used)

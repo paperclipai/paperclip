@@ -58,7 +58,7 @@ export function GrokBotConnection({ companyId, agentId }: { companyId?: string; 
     <p className="text-muted-foreground">Runs in Grok Bot. The Bot retains its apps and persistent context. Paperclip supplies task coordination and first-party tools. Usage and spending are not reported.</p>
     {state.isPending && <p role="status">Loading connection…</p>}
     {error && <p role="alert" className="text-destructive">{describeError(error).body}</p>}
-    {state.data && !state.data.enabled && <p className="text-muted-foreground">Enable Grok Bot, Assistant connections (MCP), and Paperclip Runner on an authenticated public HTTPS instance.</p>}
+    {state.data && !state.data.enabled && <p className="text-muted-foreground">Enable Grok Bot and Paperclip Runner on an authenticated public HTTPS instance.</p>}
     {binding?.connected ? <>
       <p>Agent access connected. {routine?.verified && !recovering ? "Routine round trip verified." : "Assignments require a verified routine round trip."}</p>
       <dl className="space-y-2 text-muted-foreground"><div><dt>Bot</dt><dd>{routine?.botName ?? "Not configured"}</dd></div><div><dt>Last verified exchange</dt><dd>{routine?.verifiedAt ? new Date(routine.verifiedAt).toLocaleString() : "Not yet verified"}</dd></div><div><dt>Last authenticated contact</dt><dd>{routine?.lastContactAt ? new Date(routine.lastContactAt).toLocaleString() : "Not yet observed"}</dd></div></dl>

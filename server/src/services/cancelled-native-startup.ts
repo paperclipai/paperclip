@@ -11,6 +11,7 @@ import { CONTROLLER_LEASE_LOST_FAILURE_CODE, legacyControllerBootId, legacyContr
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
 import { hasVerifiedWorkspaceRepair } from "./workspace-recovery-receipt.js";
 import { readFailedPreparationSettlement } from "./failed-preparation-settlement.js";
+import { failedPreparationOwnsBoundedRetry } from "./failed-preparation-retry.js";
 import { hasVerifiedPreparationLog } from "./verified-preparation-log.js";
 import { executionStartedEventPredicate, isPreDispatchResourceWait, noRetainedExecutionPredicate } from "./pre-dispatch-execution-evidence.js";
 
@@ -19,7 +20,7 @@ type Run = Pick<typeof heartbeatRuns.$inferSelect,
   "runtimeModeResolvedAt" | "errorCode" | "error" | "resultJson" | "runnerProfileJson" |
   "contextSnapshot" | "processPid" | "processGroupId" | "processStartedAt" |
   "sessionIdAfter" | "issueId" | "nativeIssueId" | "nativeSessionId" | "executionStage" |
-  "controllerBootId" | "controllerLeaseExpiresAt">;
+  "controllerBootId" | "controllerLeaseExpiresAt"> & { runnerInstanceId?: string | null };
 type Coordinator = typeof nativeRunFinalizations.$inferSelect;
 const EMPTY_LOG_SHA256 = createHash("sha256").digest("hex");
 
@@ -135,7 +136,9 @@ export function isInterruptedNativePreparationCandidate(run: Run): boolean {
   // Restart recovery records this certificate only after revoking a preparing
   // controller. A generic process-lost error cannot establish safe replay.
   const lostPreparation = run.status === "failed"
-    && (run.errorCode === "process_lost" || run.errorCode === CONTROLLER_LEASE_LOST_FAILURE_CODE)
+    && (run.errorCode === "process_lost" || run.errorCode === CONTROLLER_LEASE_LOST_FAILURE_CODE
+      || hasRequiredWorkspaceRecovery(run.resultJson)
+        && failedPreparationOwnsBoundedRetry({ ...run, runnerInstanceId: run.runnerInstanceId ?? null }))
     && recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
   // Older shutdown records predate structured cancellation. Current records
   // identify unexpected system interruption without relying on an error label.

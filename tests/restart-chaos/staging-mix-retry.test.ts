@@ -10,6 +10,7 @@ import {
 } from "./staging-mix-retry.js";
 import type { OracleArtifacts, TaskPlan, TaskRecord, TaskSample } from "./types.js";
 import { completionEvidence } from "./wake-evidence.js";
+import { COMPLETION_INCOMPLETE_KEY } from "./follow-up-delivery.js";
 
 const wave = (argv: string[]) => {
   const command = parseCommand(argv);
@@ -481,5 +482,220 @@ describe("staging-mix completion from accepted results", () => {
     expect(text).toContain(`end your turn now: do not save the \`ledger\` document, do not post the \`${doneMarker(nonce)}\` comment and do not mark this task done`);
     expect(text).toContain("Only after both subtasks are done and both CHILD lines are in the `ledger` document, post exactly one comment");
     expect(stagingMixDescription(nonce, { turnMinutes: 5, rounds: 4, subtasks: 0, followUpAfterMs: null, arriveAtMs: 0, holdMs: 0 })).toContain("Post exactly one comment");
+  });
+});
+
+describe("a follow-up whose run failed before any provider turn (w-20261114T231451-s7110 t005)", () => {
+  const nonce = "0c544491";
+  const comment = "3f6a9eb9-29d9-47d6-a434-a222769dbc54";
+  const first = "60bdd4dc-0dde-4052-9a4d-b81924aa70c1", undelivered = "76f30f70-f42f-4e8f-bef8-71e0ae1b33a3", served = "fdf1f793-95a3-4b90-a196-389ef4416c3d";
+  const t005 = (undeliveredTurn: boolean): WakeEvidenceFile => ({
+    completedAt: 1_794_699_341_813,
+    runs: [{ runId: first, createdAt: 1_794_698_171_163, startedAt: 1_794_698_171_226, invocationSource: "assignment", triggerDetail: "system",
+      wakeupRequestId: "035375c8", acceptedDisposition: "done", acceptedAt: 1_794_699_137_418, finishedAt: 1_794_699_138_705, status: "succeeded", providerTurnStarted: true },
+    { runId: undelivered, createdAt: 1_794_699_138_879, startedAt: 1_794_699_139_744, invocationSource: "automation", triggerDetail: "system",
+      wakeupRequestId: "7aa52728", acceptedDisposition: null, acceptedAt: null, finishedAt: 1_794_699_184_470, status: "failed",
+      contextSnapshot: { wakeCommentIds: [comment], wakeCommentId: comment }, providerTurnStarted: undeliveredTurn },
+    { runId: served, createdAt: 1_794_699_254_459, startedAt: 1_794_699_303_349, invocationSource: "automation", triggerDetail: "system",
+      wakeupRequestId: "fb81665c", acceptedDisposition: "done", acceptedAt: 1_794_699_340_097, finishedAt: 1_794_699_341_889, status: "succeeded", providerTurnStarted: true }],
+    wakes: [{ id: "035375c8", reason: "issue_assigned", source: "assignment", triggerDetail: "system", requestedByActorType: "user", requestedByActorId: "local-board",
+      createdAt: 1_794_698_171_163 },
+    { id: "7aa52728", reason: "issue_execution_promoted", source: "automation", triggerDetail: "system", requestedByActorType: "user", requestedByActorId: "local-board",
+      createdAt: 1_794_698_885_238, payload: { commentId: comment, _paperclipWakeContext: { wakeCommentIds: [comment] } } },
+    { id: "fb81665c", reason: "issue_recovery_action_restored", source: "automation", triggerDetail: "system", requestedByActorType: "system",
+      requestedByActorId: "execution-recovery", createdAt: 1_794_699_254_459 }],
+  });
+  const posted = commentEvidence([
+    { body: "Ledger document now includes the FOLLOWUP line.", authorAgentId: "a", createdByRunId: served, createdAt: "2026-11-14T23:35:42.025Z" },
+    { body: "Done. All 10 rounds completed.", authorAgentId: "a", createdByRunId: first, createdAt: "2026-11-14T23:32:18.864Z" },
+    { body: doneMarker(nonce), authorAgentId: "a", createdByRunId: first, createdAt: "2026-11-14T23:32:05.368Z" }]);
+  const completionOnce = (comments: typeof posted, completion: CompletionEvidence) => gradeStagingMix(nonce,
+    { turnMinutes: 14, rounds: 4, subtasks: 0, followUpAfterMs: 497_251, arriveAtMs: 20_000, holdMs: 600_000 },
+    { issueStatus: "done", documents: { ledger: `${ledger(nonce, 4)}\nFOLLOWUP-${nonce}` }, agentComments: [], files: {}, commands: {}, workspacePath: null,
+      stagingMix: { followUp: { at: 1_794_698_884_902, commentId: comment, duringRun: true, inOverlap: true, error: null }, followUpErrors: [], retries: [], comments,
+        completion } }).checks.find(check => check.name === "completion_once")!;
+  const both = (evidence: WakeEvidenceFile) => [evidenceCompletion(evidence)!, completionEvidence({ completedAt: evidence.completedAt!, wakes: evidence.wakes,
+    runs: evidence.runs!.map(run => ({ ...run, acceptedDisposition: run.acceptedDisposition ?? null, acceptedAt: run.acceptedAt ?? null })) })];
+
+  it("credits the follow-up to the run that served it, with one completer and no extra turn", () => {
+    const evidence = t005(false);
+    expect(followUpsAnsweredLater("t005", evidence)).toEqual([{ taskId: "t005", runId: served, commentIds: [comment], postedAt: 1_794_698_885_238,
+      queuedAt: 1_794_699_254_459, startedAt: 1_794_699_303_349 }]);
+    for (const completion of both(evidence)) {
+      const anchor = completedAtAnchor(completion, posted, nonce);
+      expect(anchor).toEqual({ at: 1_794_699_137_418, source: "accepted_result" });
+      expect(completionRunIds(posted, nonce, completion)).toEqual([first]);
+      const after = runsAfterDone("t005", evidence, anchor);
+      expect(after.started).toEqual([]);
+      expect(after.answeredFollowUp.map(turn => turn.runId)).toEqual([served]);
+      expect(completionOnce(posted, completion)).toMatchObject({ ok: true, detail: "runs=1" });
+    }
+  });
+
+  it("still fails a recovery re-completion when the run that received the follow-up started its provider turn", () => {
+    const evidence = t005(true);
+    for (const completion of both(evidence)) {
+      const anchor = completedAtAnchor(completion, posted, nonce);
+      expect(runsAfterDone("t005", evidence, anchor).started.map(turn => [turn.runId, turn.wakeReason])).toEqual([[served, "issue_recovery_action_restored"]]);
+      expect(completionOnce(posted, completion)).toMatchObject({ ok: false, detail: "duplicate completion: runs 60bdd4dc, fdf1f793 each reported completion" });
+    }
+  });
+
+  it("lets only the serving run re-complete, and still fails a later recovery run that answers nothing", () => {
+    const extra = "8e8e8e8e-extra";
+    const evidence = t005(false);
+    evidence.runs!.push({ runId: extra, createdAt: 1_794_699_400_000, startedAt: 1_794_699_400_100, invocationSource: "automation", triggerDetail: "system",
+      wakeupRequestId: "w-extra", acceptedDisposition: "done", acceptedAt: 1_794_699_410_000, status: "succeeded", providerTurnStarted: true });
+    evidence.wakes!.push({ id: "w-extra", reason: "issue_recovery_action_restored", source: "automation", triggerDetail: "system", requestedByActorType: "system",
+      requestedByActorId: "execution-recovery", createdAt: 1_794_699_400_000 });
+    for (const completion of both(evidence)) {
+      const anchor = completedAtAnchor(completion, posted, nonce);
+      expect(runsAfterDone("t005", evidence, anchor).started.map(turn => turn.runId)).toEqual([extra]);
+      expect(completionOnce(posted, completion)).toMatchObject({ ok: false, detail: "duplicate completion: runs 60bdd4dc, 8e8e8e8e each reported completion" });
+    }
+  });
+});
+
+describe("a recovery continuation of a follow-up run that never committed (w-20261117T170216-s7100 t128)", () => {
+  const nonce = "ed987e41";
+  const comment = "956f5926-1621-4868-9d03-ca9a307b36e9";
+  const first = "38a8772f-33f6-4291-bdd6-1f16494aa6ed", promoted = "5707e93a-05dc-4b7f-a7d3-ec5c25a17367", leaseRetry = "2c1d364e-6c46-423e-84f3-8a80e89a7cb5";
+  const answering = "c5f9a5a4-bf76-42d3-a26d-771fe3a3d176", continuation = "833314ed-bd6c-4e41-9992-78629d065816";
+  const t128 = (answeringDisposition: string | null = null): WakeEvidenceFile => ({
+    completedAt: 1_794_946_774_445,
+    runs: [{ runId: first, createdAt: 1_794_941_952_144, startedAt: 1_794_942_615_951, invocationSource: "assignment", triggerDetail: "system",
+      wakeupRequestId: "55a6afa9", acceptedDisposition: "done", acceptedAt: 1_794_943_908_538, finishedAt: 1_794_943_909_767, status: "succeeded", providerTurnStarted: true,
+      contextSnapshot: { wakeReason: "issue_assigned" } },
+    { runId: promoted, createdAt: 1_794_943_909_966, startedAt: 1_794_944_484_183, invocationSource: "automation", triggerDetail: "system",
+      wakeupRequestId: "be67ffb7", acceptedDisposition: null, acceptedAt: null, finishedAt: 1_794_944_484_330, status: "failed", providerTurnStarted: false,
+      contextSnapshot: { wakeReason: "issue_commented", wakeCommentIds: [comment], wakeCommentId: comment } },
+    { runId: leaseRetry, createdAt: 1_794_944_484_384, startedAt: 1_794_944_511_264, invocationSource: "automation", triggerDetail: "system",
+      wakeupRequestId: "549cf01c", acceptedDisposition: null, acceptedAt: null, finishedAt: 1_794_944_511_437, status: "failed", providerTurnStarted: false,
+      contextSnapshot: { wakeReason: "transient_failure_retry", wakeCommentIds: [comment], wakeCommentId: comment, retryOfRunId: promoted } },
+    { runId: answering, createdAt: 1_794_944_511_476, startedAt: 1_794_944_580_608, invocationSource: "automation", triggerDetail: "system",
+      wakeupRequestId: "08e16978", acceptedDisposition: answeringDisposition, acceptedAt: answeringDisposition ? 1_794_945_390_000 : null, finishedAt: 1_794_945_394_924,
+      status: answeringDisposition ? "succeeded" : "failed", providerTurnStarted: true,
+      contextSnapshot: { wakeReason: "transient_failure_retry", wakeCommentIds: [comment], wakeCommentId: comment, retryOfRunId: leaseRetry } },
+    { runId: continuation, createdAt: 1_794_945_559_524, startedAt: 1_794_946_114_761, invocationSource: "automation", triggerDetail: "system",
+      wakeupRequestId: "88d1a3e0", acceptedDisposition: "done", acceptedAt: 1_794_946_772_351, finishedAt: 1_794_946_774_505, status: "succeeded", providerTurnStarted: true,
+      contextSnapshot: { wakeReason: "issue_recovery_action_restored", retryOfRunId: answering } }],
+    wakes: [{ id: "55a6afa9", reason: "issue_assigned", source: "assignment", triggerDetail: "system", requestedByActorType: "user", requestedByActorId: "local-board",
+      createdAt: 1_794_941_952_144 },
+    { id: "be67ffb7", reason: "issue_execution_promoted", source: "automation", triggerDetail: "system", requestedByActorType: "user", requestedByActorId: "local-board",
+      createdAt: 1_794_943_909_966, payload: { commentId: comment, _paperclipWakeContext: { wakeCommentIds: [comment] } } },
+    { id: "549cf01c", reason: "transient_failure_retry", source: "automation", triggerDetail: "system", requestedByActorType: "system", requestedByActorId: null,
+      createdAt: 1_794_944_484_384, payload: { retryReason: "transient_failure", retryOfRunId: promoted } },
+    { id: "08e16978", reason: "transient_failure_retry", source: "automation", triggerDetail: "system", requestedByActorType: "system", requestedByActorId: null,
+      createdAt: 1_794_944_511_476, payload: { retryReason: "transient_failure", retryOfRunId: leaseRetry } },
+    { id: "88d1a3e0", reason: "issue_recovery_action_restored", source: "automation", triggerDetail: "system", requestedByActorType: "system",
+      requestedByActorId: "execution-recovery", createdAt: 1_794_945_559_524,
+      payload: { recoveryActionId: "8d383ed2", _paperclipWakeContext: { wakeReason: "issue_recovery_action_restored", retryOfRunId: answering } } }],
+  });
+  const posted = commentEvidence([
+    { body: `The ledger document already contains all 26 rounds plus the \`FOLLOWUP-${nonce}\` line on its own line (revision 2). The \`${doneMarker(nonce)}\` comment was previously posted.`,
+      authorAgentId: "a", createdByRunId: continuation, createdAt: "2026-11-17T20:19:34.669Z" },
+    { body: `Task complete. All 26 rounds ran and were recorded, the ledger document was saved, and the \`${doneMarker(nonce)}\` comment was posted.`,
+      authorAgentId: "a", createdByRunId: first, createdAt: "2026-11-17T19:31:49.960Z" },
+    { body: doneMarker(nonce), authorAgentId: "a", createdByRunId: first, createdAt: "2026-11-17T19:31:41.204Z" }]);
+  const completionOnce = (completion: CompletionEvidence) => gradeStagingMix(nonce,
+    { turnMinutes: 39, rounds: 4, subtasks: 0, followUpAfterMs: 1_102_604, arriveAtMs: 0, holdMs: 600_000 },
+    { issueStatus: "done", documents: { ledger: `${ledger(nonce, 4)}\nFOLLOWUP-${nonce}` }, agentComments: [], files: {}, commands: {}, workspacePath: null,
+      stagingMix: { followUp: { at: 1_794_943_656_111, commentId: comment, duringRun: true, inOverlap: false, error: null }, followUpErrors: [], retries: [], comments: posted,
+        completion } }).checks.find(check => check.name === "completion_once")!;
+  const both = (evidence: WakeEvidenceFile) => [evidenceCompletion(evidence)!, completionEvidence({ completedAt: evidence.completedAt!, wakes: evidence.wakes,
+    runs: evidence.runs!.map(run => ({ ...run, acceptedDisposition: run.acceptedDisposition ?? null, acceptedAt: run.acceptedAt ?? null })) })];
+
+  it("passes when the continuation of an answering run that never committed completes the follow-up", () => {
+    const evidence = t128();
+    for (const completion of both(evidence)) {
+      const anchor = completedAtAnchor(completion, posted, nonce);
+      expect(anchor).toEqual({ at: 1_794_943_908_538, source: "accepted_result" });
+      expect(completionRunIds(posted, nonce, completion)).toEqual([first]);
+      const after = runsAfterDone("t128", evidence, anchor);
+      expect(after.started).toEqual([]);
+      expect(after.answeredFollowUp.map(turn => turn.runId)).toEqual([answering, continuation]);
+      expect(completionOnce(completion)).toMatchObject({ ok: true, detail: "runs=1" });
+    }
+  });
+
+  const withLineage = (lineage: { context?: Record<string, unknown>; retryOfRunId?: string }): WakeEvidenceFile => {
+    const evidence = t128();
+    evidence.runs = evidence.runs!.map(run => run.runId === continuation
+      ? { ...run, retryOfRunId: lineage.retryOfRunId ?? null, contextSnapshot: { wakeReason: "issue_recovery_action_restored", ...lineage.context } } : run);
+    evidence.wakes = evidence.wakes!.map(wake => wake.id === "88d1a3e0" ? { ...wake, payload: { recoveryActionId: "8d383ed2" } } : wake);
+    return evidence;
+  };
+
+  it.each([
+    { name: "only previousRunId", lineage: { context: { previousRunId: answering } } },
+    { name: "only executionContinuation.interruptedRunId", lineage: { context: { executionContinuation: { interruptedRunId: answering } } } },
+    { name: "only the retry_of_run_id column", lineage: { retryOfRunId: answering } },
+    { name: "a retry_of_run_id column that names a sibling and a previousRunId that names the answering run",
+      lineage: { retryOfRunId: leaseRetry, context: { previousRunId: answering } } },
+  ])("passes when the continuation carries $name", ({ lineage }) => {
+    const evidence = withLineage(lineage);
+    for (const completion of both(evidence)) {
+      const anchor = completedAtAnchor(completion, posted, nonce);
+      expect(runsAfterDone("t128", evidence, anchor).started).toEqual([]);
+      expect(completionOnce(completion)).toMatchObject({ ok: true, detail: "runs=1" });
+    }
+  });
+
+  it("still fails a retry of a committed continuation that keeps a stale previousRunId to the answering run", () => {
+    const retry = "9c9c9c9c-retry";
+    const evidence = t128();
+    evidence.runs!.push({ runId: retry, createdAt: 1_794_946_800_000, startedAt: 1_794_946_810_000, invocationSource: "automation", triggerDetail: "system",
+      wakeupRequestId: "w-retry", retryOfRunId: continuation, acceptedDisposition: "done", acceptedAt: 1_794_946_900_000, status: "succeeded", providerTurnStarted: true,
+      contextSnapshot: { wakeReason: "transient_failure_retry", previousRunId: answering, retryOfRunId: continuation } });
+    evidence.wakes!.push({ id: "w-retry", reason: "transient_failure_retry", source: "automation", triggerDetail: "system", requestedByActorType: "system",
+      requestedByActorId: null, createdAt: 1_794_946_800_000, payload: { retryOfRunId: continuation } });
+    for (const completion of both(evidence)) {
+      const anchor = completedAtAnchor(completion, posted, nonce);
+      expect(runsAfterDone("t128", evidence, anchor).started.map(turn => turn.runId)).toEqual([retry]);
+      expect(completionOnce(completion)).toMatchObject({ ok: false, detail: "duplicate completion: runs 38a8772f, 9c9c9c9c each reported completion" });
+    }
+  });
+
+  it("still fails a later continuation whose committed ancestor is reachable only through its lineage chain", () => {
+    const failedRetry = "7c7c7c7c-failed", finalRetry = "9d9d9d9d-final";
+    const evidence = withLineage({ context: { previousRunId: answering } });
+    evidence.runs!.push({ runId: failedRetry, createdAt: 1_794_946_800_000, startedAt: 1_794_946_810_000, invocationSource: "automation", triggerDetail: "system",
+      wakeupRequestId: null, retryOfRunId: continuation, acceptedDisposition: null, acceptedAt: null, status: "failed", providerTurnStarted: true,
+      contextSnapshot: { wakeReason: "transient_failure_retry", retryOfRunId: continuation } },
+    { runId: finalRetry, createdAt: 1_794_946_900_000, startedAt: 1_794_946_910_000, invocationSource: "automation", triggerDetail: "system",
+      wakeupRequestId: null, retryOfRunId: failedRetry, acceptedDisposition: "done", acceptedAt: 1_794_947_000_000, status: "succeeded", providerTurnStarted: true,
+      contextSnapshot: { wakeReason: "transient_failure_retry", retryOfRunId: failedRetry, previousRunId: answering } });
+    for (const completion of both(evidence)) {
+      const anchor = completedAtAnchor(completion, posted, nonce);
+      expect(runsAfterDone("t128", evidence, anchor).started.map(turn => turn.runId)).toEqual([failedRetry, finalRetry]);
+      expect(completionOnce(completion)).toMatchObject({ ok: false, detail: "duplicate completion: runs 38a8772f, 9d9d9d9d each reported completion" });
+    }
+  });
+
+  it("still fails a continuation with no lineage to the answering run", () => {
+    const evidence = withLineage({});
+    for (const completion of both(evidence)) {
+      expect(completionOnce(completion)).toMatchObject({ ok: false, detail: "duplicate completion: runs 38a8772f, 833314ed each reported completion" });
+    }
+  });
+
+  it("passes when the answering run's done result was rejected as incomplete", () => {
+    const evidence = t128("done");
+    evidence.wakes!.push({ id: "incomplete-wake", reason: "issue_continuation_needed", source: "automation", triggerDetail: "system", requestedByActorType: "system",
+      requestedByActorId: null, createdAt: 1_794_945_400_000, payload: { continuationIdempotencyKey: COMPLETION_INCOMPLETE_KEY } });
+    for (const completion of both(evidence)) {
+      const anchor = completedAtAnchor(completion, posted, nonce);
+      expect(runsAfterDone("t128", evidence, anchor).started).toEqual([]);
+      expect(completionOnce(completion)).toMatchObject({ ok: true, detail: "runs=1" });
+    }
+  });
+
+  it("still fails a continuation that completes again after the answering run committed its completion", () => {
+    const evidence = t128("done");
+    for (const completion of both(evidence)) {
+      const anchor = completedAtAnchor(completion, posted, nonce);
+      expect(runsAfterDone("t128", evidence, anchor).started.map(turn => turn.runId)).toEqual([continuation]);
+      expect(completionOnce(completion)).toMatchObject({ ok: false, detail: "duplicate completion: runs 38a8772f, 833314ed each reported completion" });
+    }
   });
 });

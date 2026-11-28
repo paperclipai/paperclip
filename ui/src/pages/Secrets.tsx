@@ -155,6 +155,7 @@ import {
 } from "./secrets/user-secret-presentation";
 import type { MyUserSecretEntry } from "../api/secrets";
 import { describeError } from "@/api/errors";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 type CreateMode = "managed" | "external";
 // "value" writes a new secret value (for external references: through to the
@@ -2196,7 +2197,7 @@ export function Secrets() {
 
   return (
     <TooltipProvider>
-    <div className="flex max-w-6xl flex-col gap-4">
+    <div className="empty-state-page flex max-w-6xl flex-col gap-4 has-[.empty-state]:max-w-none">
       <div className="flex flex-col gap-1.5">
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2">
@@ -2240,7 +2241,7 @@ export function Secrets() {
       <Tabs
         value={activeTab}
         onValueChange={(value) => setActiveTab(value as SecretsTab)}
-        className="flex flex-col gap-4"
+        className="flex flex-1 flex-col gap-4"
       >
         <PageTabBar
           items={[
@@ -2275,7 +2276,7 @@ export function Secrets() {
 
         <TabsContent value="secrets" className="flex flex-col gap-3">
           <div data-canonical-toolbar="secrets" role="toolbar" aria-label="Secrets controls" className="flex flex-wrap items-center gap-2">
-            <div className="relative w-48 sm:w-64 md:w-80">
+            <div className="relative w-full sm:w-64 md:w-80">
               <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input
                 value={search}
@@ -2341,7 +2342,7 @@ export function Secrets() {
               </Button>
             </div>
           ) : null}
-          <div>
+          <div className="flex flex-1 flex-col">
             {secretsView.kind === "error" || userDefinitionsView.kind === "error" ? (
               <div className="py-4">
                 <QueryErrorState
@@ -2357,15 +2358,15 @@ export function Secrets() {
             ) : unifiedRows.length === 0 &&
               !secretsListLoading &&
               !(showFolderView && folderPath) ? (
-              <EmptyState
+              <EmptyState placement="upper"
                 icon={KeyRound}
                 title="No secrets yet"
-                message="Add an API key or token once, then choose which agents can use it."
+                message={"Add an API key or token once,\nthen choose which agents can use it."}
                 action="New secret"
                 onAction={openCreateSecret}
               />
             ) : (
-              <div className="@container min-w-0 overflow-x-hidden text-sm" data-testid="secrets-list-container">
+              <div className="@container min-w-0 overflow-x-hidden text-sm has-[.empty-state]:flex has-[.empty-state]:flex-1 has-[.empty-state]:flex-col" data-testid="secrets-list-container">
                 {showFolderView && folderPath ? (
                   <div className="mb-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
                     {renderSecretsBreadcrumb()}
@@ -2386,7 +2387,7 @@ export function Secrets() {
                       ))}
                     </div>
                   ) : showFolderView && folderPath && activeSecretFilterCount === 0 ? (
-                    <EmptyState
+                    <EmptyState placement="upper"
                       icon={FolderOpen}
                       message="No secrets in this folder yet."
                       action="New secret here"
@@ -2399,7 +2400,7 @@ export function Secrets() {
                         : "Your team hasn't added a secret yet."}
                     </p>
                   ) : (
-                    <EmptyState
+                    <EmptyState placement="upper"
                       icon={Search}
                       message={searching ? "No secrets match your search." : "No secrets match your filters."}
                     />
@@ -2527,7 +2528,7 @@ export function Secrets() {
         </TabsContent>
         )}
         {!hideProposalsTab && (
-        <TabsContent value="proposals">
+        <TabsContent value="proposals" className="flex flex-col">
           {selectedCompanyId ? (
             <ProposalsTab companyId={selectedCompanyId} providerConfigs={providerConfigs} />
           ) : null}
@@ -4274,7 +4275,7 @@ function AwsProviderVaultDiscoveryError({
               <span className="font-medium text-muted-foreground">Safe request/error details</span>
               <CopyDetailsButton text={detailsText} />
             </div>
-            <pre className="max-h-36 overflow-auto whitespace-pre-wrap break-words font-mono text-(length:--text-micro) leading-relaxed">
+            <pre className={cn("max-h-36 overflow-auto whitespace-pre-wrap break-words font-mono text-(length:--text-micro) leading-relaxed", ANALYTICS_MASK_CLASS)}>
               {detailsText}
             </pre>
           </div>
@@ -4367,7 +4368,7 @@ function SecretCreateError({
               <span className="font-medium text-muted-foreground">Safe request/error details</span>
               <CopyDetailsButton text={detailsText} />
             </div>
-            <pre className="max-h-36 overflow-auto whitespace-pre-wrap break-words font-mono text-(length:--text-micro) leading-relaxed">
+            <pre className={cn("max-h-36 overflow-auto whitespace-pre-wrap break-words font-mono text-(length:--text-micro) leading-relaxed", ANALYTICS_MASK_CLASS)}>
               {detailsText}
             </pre>
           </div>

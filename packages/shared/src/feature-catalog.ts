@@ -121,29 +121,31 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     selfHostedDefault: true,
   },
   enablePublicMcp: {
-    title: "Assistant connections (MCP)",
-    description: "Let external assistants connect as a person to review work, delegate tasks, add feedback, and follow results.",
+    title: "Assistant connections (compatibility)",
+    description:
+      "Deprecated compatibility key. Assistant connections (MCP) are always enabled; stored and managed values are ignored.",
     tier: "managed",
-    cloudDefault: false,
-    selfHostedDefault: false,
+    cloudDefault: true,
+    selfHostedDefault: true,
   },
   enableGitHubReviewBots: {
-    title: "GitHub review bots",
-    description: "Show GitHub review bot setup and management independently of chat connectors. Existing bots keep running when hidden; GitHub tool connections are unaffected.",
+    title: "GitHub review bots (compatibility)",
+    description:
+      "Deprecated compatibility key. GitHub review bots are always enabled; stored and managed values are ignored.",
     tier: "managed",
-    cloudDefault: false,
-    selfHostedDefault: false,
+    cloudDefault: true,
+    selfHostedDefault: true,
   },
   enableOpenAiDot: {
     title: "OpenAI Dot",
-    description: "Add OpenAI Dot as a standalone agent choice with its own experimental opt-in. Requires Assistant connections (MCP) and an authenticated instance with a public HTTPS URL.",
+    description: "Add OpenAI Dot as a standalone agent choice with its own experimental opt-in. Requires an authenticated instance with a public HTTPS URL.",
     tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,
   },
   enableGrokBot: {
     title: "Grok Bot",
-    description: "Connect an existing Grok Bot as an experimental Paperclip agent. Requires Assistant connections (MCP), Paperclip Runner, and an authenticated public HTTPS instance. Provider spending is not reported.",
+    description: "Connect an existing Grok Bot as an experimental Paperclip agent. Requires Paperclip Runner and an authenticated public HTTPS instance. Provider spending is not reported.",
     tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,
@@ -181,6 +183,13 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,
+  },
+  enableAwsConnector: {
+    title: "AWS connector (compatibility)",
+    description: "Deprecated compatibility key. The AWS connector is always available; stored and managed values are ignored.",
+    tier: "managed",
+    cloudDefault: true,
+    selfHostedDefault: true,
   },
   enableMcpAggregators: {
     title: "MCP aggregators (compatibility)",
@@ -263,6 +272,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     title: "Status Cards",
     description:
       "Enable the experimental shared status-card board, update engine, and gated API.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
+  enableResponsibilities: {
+    title: "Areas & Responsibilities dashboard",
+    description:
+      "Replace the classic dashboard with the experimental one built on areas and responsibilities, and enable its API: per-person areas with the projects, tasks and routines under them, rolled-up health, agent proposals and delegation.",
     tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,
@@ -393,6 +410,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableAntigravitySwarm: {
+    title: "Google Antigravity swarm",
+    description:
+      "Let you start Google Antigravity's native swarm by starting a comment on a task with /swarm. Helper actions are approved automatically by Antigravity's auto mode. Paperclip does not sandbox the helpers: their shell commands can write outside the task folder, for example in temp directories. Local computers with a Google sign-in only.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableSandboxDuplexBridge: {
     title: "Sandbox Duplex Bridge",
     description:
@@ -422,6 +447,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     description:
       "When the user's first request is a single task, the chief of staff writes a short plan document and a checkbox card instead of a one-card confirmation. Applies to organizations created after the toggle is flipped.",
     tier: "preference",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
+  enableCloudTrialInference: {
+    title: "Cloud starter inference",
+    description:
+      "Lets new Cloud workspaces start their first agent right away (OpenCode / GPT-6 Luna via server proxy) before asking the user to connect a model provider.",
+    tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,
   },

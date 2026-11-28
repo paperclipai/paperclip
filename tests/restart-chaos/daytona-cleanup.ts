@@ -21,9 +21,9 @@ export function daytonaCleanupLine(sweep: DaytonaSweepResult, cleanup: WaveClean
 }
 
 export async function finishDaytonaCleanup(input: { sweeper: Pick<DaytonaWaveSweeper, "sweep" | "cleanUp">; sweep: DaytonaSweepResult | null; waveDir: string;
-  timeline: { add(kind: string, data: Record<string, unknown>): void }; log?: (line: string) => void }): Promise<DaytonaCleanupOutcome> {
+  timeline: { add(kind: string, data: Record<string, unknown>): void }; log?: (line: string) => void; beforeSandboxDelete?: () => Promise<void> }): Promise<DaytonaCleanupOutcome> {
   const sweep = input.sweep ?? await input.sweeper.sweep(0);
-  const cleanup = await input.sweeper.cleanUp();
+  const cleanup = await input.sweeper.cleanUp(undefined, undefined, input.beforeSandboxDelete);
   input.timeline.add("daytona_cleanup", cleanup);
   (input.log ?? console.info)(daytonaCleanupLine(sweep, cleanup));
   if (cleanup.environmentDeleteBlocked) input.timeline.add("daytona_environment_delete_blocked", { detail: cleanup.environmentDeleteBlocked });

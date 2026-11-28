@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   agents, agentWakeupRequests, assets, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issueAttachments,
@@ -10,8 +10,10 @@ import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { undeliveredLegacyUserCommentIds } from "../explicit-native-continuation.js";
 import { deliveredQueuedCommentIds } from "../queued-comment-delivery.js";
 import {
-  claimFirstTurnQueuedInput, firstTurnClaimedCommentIds, firstTurnTakesAllQueuedComments, runAcceptsFirstTurnQueuedInput,
+  claimFirstTurnQueuedInput, deferredWakeJoinsFirstTurn, firstTurnClaimedCommentIds, firstTurnQueuedCommentIds, firstTurnTakesAllQueuedComments,
+  firstTurnWakeColumns, firstTurnWakeContextFields, firstTurnWakePayloadFields, runAcceptsFirstTurnQueuedInput,
 } from "./first-turn-queued-input.js";
+import { uniqueIssuePrefix } from "../../__tests__/helpers/issue-prefix.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const USER = "first-turn-user";
@@ -26,7 +28,7 @@ describe.skipIf(!support.supported)("first-turn queued input", () => {
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
 
   async function seed() {
-    const [company] = await db.insert(companies).values({ name: "First turn", issuePrefix: `F${randomUUID().slice(0, 4)}` }).returning();
+    const [company] = await db.insert(companies).values({ name: "First turn", issuePrefix: uniqueIssuePrefix("F") }).returning();
     const [agent] = await db.insert(agents).values({ companyId: company!.id, name: "Codie", adapterType: "paperclip_runner" }).returning();
     const issueId = randomUUID();
     const runId = await startRun(company!.id, agent!.id, issueId);
@@ -63,6 +65,34 @@ describe.skipIf(!support.supported)("first-turn queued input", () => {
   const accept = (f: { companyId: string; agentId: string }, runId: string) => appendHeartbeatRunEvent(db, {
     companyId: f.companyId, runId, agentId: f.agentId, eventType: "turn.accepted", stream: "system", level: "info", message: "turn accepted" });
   const readRun = async (id: string) => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0]!;
+
+  it("takes no queued message into a swarm run, whose only instruction is the recorded request", async () => {
+    const f = await seed();
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, antigravitySwarmCommentId: randomUUID() } }).where(eq(heartbeatRuns.id, f.runId));
+    await queueMessage(f, "an ordinary message written while the swarm prepares");
+    expect(await claimFirstTurnQueuedInput(db, binding(f, f.runId))).toBeNull();
+    // Nor does Interrupt treat it as a first turn that will take the message.
+    expect(await runAcceptsFirstTurnQueuedInput(db, await readRun(f.runId))).toBe(false);
+  });
+
+  // The board's queue view reads a lean projection of the wake. It must decide as
+  // the first-turn claim does, or a waiting /swarm looks sent and loses its controls.
+  it("keeps a queued /swarm waiting in the board's lean view, as the first-turn claim does", async () => {
+    const f = await seed();
+    const ordinary = await queueMessage(f, "an ordinary message");
+    const lean = async () => (await db.select({ ...firstTurnWakeColumns, status: agentWakeupRequests.status,
+      payload: sql<Record<string, unknown>>`jsonb_build_object(${firstTurnWakePayloadFields(agentWakeupRequests.payload)},
+        '_paperclipWakeContext', jsonb_build_object(${firstTurnWakeContextFields(agentWakeupRequests.payload)},
+          'wakeCommentIds', ${agentWakeupRequests.payload}->'_paperclipWakeContext'->'wakeCommentIds'))` })
+      .from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId)))[0]!;
+    const view = async () => firstTurnQueuedCommentIds(db, { companyId: f.companyId, issueId: f.issueId, runId: f.runId, wake: await lean() });
+    expect(await view()).toEqual([ordinary]);
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId));
+    await db.update(agentWakeupRequests).set({ payload: { ...wake!.payload,
+      _paperclipWakeContext: { ...(wake!.payload!._paperclipWakeContext as object), antigravitySwarmCommentId: ordinary } } }).where(eq(agentWakeupRequests.id, wake!.id));
+    expect(await view()).toEqual([]);
+    expect(await claimFirstTurnQueuedInput(db, binding(f, f.runId))).toBeNull();
+  });
 
   it("gives a message that arrived during preparation to the first turn, without a stop", async () => {
     const f = await seed();
@@ -185,5 +215,19 @@ describe.skipIf(!support.supported)("first-turn queued input", () => {
     // Still owed after the turn: release promotion delivers it with its file.
     expect([...await deliveredQueuedCommentIds(db, { companyId: f.companyId, issueId: f.issueId, agentId: f.agentId,
       commentIds: [withFile] })]).toEqual([]);
+  });
+});
+
+describe("a /swarm request never joins another run's first turn", () => {
+  const user = "user-1";
+  const commentId = "6f1c1b0e-5a52-4b0a-9a51-0d6c9c3b2f11";
+  const wake = (context: Record<string, unknown>) => ({
+    agentId: "agent-1", status: "deferred_issue_execution", requestedByActorType: "user", requestedByActorId: user, reason: "issue_commented",
+    payload: { issueId: "issue-1", commentId, mutation: "comment", _paperclipWakeContext: { wakeReason: "issue_commented", commentId, wakeCommentId: commentId, wakeCommentIds: [commentId], ...context } },
+  });
+  it("keeps the swarm request for its own run selection", () => {
+    const run = { agentId: "agent-1", responsibleUserId: user };
+    expect(deferredWakeJoinsFirstTurn(wake({}), run)).toBe(true);
+    expect(deferredWakeJoinsFirstTurn(wake({ antigravitySwarmCommentId: commentId }), run)).toBe(false);
   });
 });
