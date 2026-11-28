@@ -1040,30 +1040,41 @@ const ArrayField = React.memo(({
 ArrayField.displayName = "ArrayField";
 
 /** MCP execution tools often accept an arbitrary object rather than fixed fields. */
-function JsonObjectField({ value, onChange, disabled, label, error }: {
-  value: unknown; onChange: (value: unknown) => void; disabled: boolean; label: string; error?: string;
+function JsonObjectField({ value, onChange, disabled, label, error, objectOnly = false }: {
+  value: unknown; onChange: (value: unknown) => void; disabled: boolean; label: string; error?: string; objectOnly?: boolean;
 }) {
   const format = (next: unknown) => typeof next === "string" ? next : JSON.stringify(next ?? {}, null, 2);
   const [text, setText] = useState(() => format(value));
+  const [invalidDraft, setInvalidDraft] = useState(false);
   const emitted = useRef(value);
   useEffect(() => {
-    if (value !== emitted.current) setText(format(value));
+    if (value !== emitted.current) {
+      setText(format(value));
+      setInvalidDraft(false);
+    }
     emitted.current = value;
   }, [value]);
   const change = (text: string) => {
     setText(text);
     let next: unknown = text.trim() ? text : undefined;
+    let isObject = false;
     try {
       const parsed: unknown = JSON.parse(text);
-      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) next = parsed;
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        next = parsed;
+        isObject = true;
+      }
     } catch { /* Preserve invalid input so validation prevents submitting stale arguments. */ }
+    setInvalidDraft(objectOnly && !isObject);
+    if (objectOnly && !isObject) return;
     emitted.current = next;
     onChange(next);
   };
+  const displayError = invalidDraft ? "Enter a valid JSON object" : error;
   return <div className="space-y-2">
-    <Textarea aria-label={`${label} JSON`} aria-invalid={!!error} value={text} onChange={(event) => change(event.target.value)} disabled={disabled} rows={5} className="font-mono text-sm" />
+    <Textarea aria-label={`${label} JSON`} aria-invalid={!!displayError} value={text} onChange={(event) => change(event.target.value)} disabled={disabled} rows={5} className="font-mono text-sm" />
     <p className="text-xs text-muted-foreground">Enter a JSON object using the action's argument names.</p>
-    {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
+    {displayError && <p role="alert" className="text-xs text-destructive">{displayError}</p>}
   </div>;
 }
 
@@ -1155,6 +1166,21 @@ const FormField = React.memo(({
 }: FormFieldProps) => {
   const type = resolveType(propSchema);
   const isReadOnly = disabled || propSchema.readOnly === true;
+
+  if (
+    type === "string" &&
+    Array.isArray(propSchema.type) &&
+    propSchema.type.includes("object") &&
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value)
+  ) {
+    return (
+      <FieldWrapper label={label} description={propSchema.description} required={isRequired} disabled={isReadOnly}>
+        <JsonObjectField value={value} onChange={onChange} disabled={isReadOnly} label={label} error={error} objectOnly />
+      </FieldWrapper>
+    );
+  }
 
   switch (type) {
     case "boolean":
