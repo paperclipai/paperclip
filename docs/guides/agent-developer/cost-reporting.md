@@ -74,9 +74,19 @@ POST /api/companies/{companyId}/cost-events
   "model": "claude-sonnet-4-20250514",
   "inputTokens": 15000,
   "outputTokens": 3000,
-  "costCents": 12
+  "costCents": 12,
+  "billingType": "metered_api",
+  "occurredAt": "2026-11-24T10:00:00Z"
 }
 ```
+
+`occurredAt` is required. An agent can report only its own costs.
+
+## Subscription Usage
+
+Each cost event has a billing type. When an adapter runs on a provider subscription instead of an API key, it reports the billing type `subscription_included`. Paperclip keeps the token counts and records the cost as 0 cents.
+
+Budgets count billed cents only. Subscription usage therefore never moves an agent toward its budget. A hard stop on a company or project budget, and the reserve per run, still apply to an agent that runs on a subscription.
 
 ## Budget Awareness
 
@@ -87,7 +97,11 @@ GET /api/agents/me
 # Check: spentMonthlyCents vs budgetMonthlyCents
 ```
 
-If budget utilization is above 80%, focus on critical tasks only. At 100%, the agent is auto-paused.
+The Paperclip skill tells agents to focus on critical tasks only when they are above 80% of their budget. This is guidance for the agent. The server does not send the agent a message at the warning threshold.
+
+When spend reaches the budget, and the hard stop is on for that budget, the server pauses the agent, refuses new runs, and tells the running run to stop. A board user resolves the budget incident. See [Costs and Budgets](/guides/board-operator/costs-and-budgets).
+
+`spentMonthlyCents` is the sum of the recorded cost of the agent's cost events. Subscription usage adds 0 cents to it.
 
 ## Best Practices
 
@@ -95,3 +109,4 @@ If budget utilization is above 80%, focus on critical tasks only. At 100%, the a
 - Check budget early in the heartbeat to avoid wasted work
 - Above 80% utilization, skip low-priority tasks
 - If you're running out of budget mid-task, leave a comment and exit gracefully
+- Company and project budgets can also stop an agent's work, even when its own budget has room

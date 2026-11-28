@@ -15,6 +15,13 @@ export async function prepareHeartbeatGitHubLaunchers(
   prepareLaunchers = prepareGitHubOperationLaunchers,
   cleanupLaunchers = cleanupGitHubOperationLaunchers,
 ) {
+  if (input.target?.kind === "remote" && input.target.transport === "sandbox" && input.target.runnerTask) {
+    // Provider-owned tasks decide their own runtime layout and command environment.
+    return { env: githubBrokerEnvironment(input.env, {
+      url: input.githubConfigured ? input.brokerUrl : "",
+      token: input.githubConfigured ? input.createBrokerToken() : "",
+    }), cleanupLocation: null };
+  }
   // Native configured access is owned by the provider session supervisor.
   // Defer staging until it has acquired that session; never mutate a live
   // process's authorization from heartbeat preparation.
@@ -39,7 +46,7 @@ export async function prepareHeartbeatGitHubLaunchers(
   });
   try {
     return {
-      env: await prepareLaunchers({ ...location, cwd: input.cwd, env }),
+      env: await prepareLaunchers({ ...location, cwd: input.cwd, env, ...(anonymous ? { anonymous: true } : {}) }),
       cleanupLocation: anonymous ? null : location,
     };
   } catch (error) {

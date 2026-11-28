@@ -1,3 +1,4 @@
+import type { ConnectionManagementContext } from "../../../connection-management.js";
 import { notifyChatVerificationWork } from "../../../chat-work-notifications.js";
 import { createAgentAvatarPool } from "../../../agent-avatar-pool.js";
 import type { AgentAvatarRequest } from "../../../agent-avatars.js";
@@ -12,7 +13,7 @@ import { secretService } from "../../../secrets.js";
 import { writeConnectionCredential } from "../../../connection-credentials.js";
 import type { CredentialMutationLeaseGuard } from "../../../chat-credential-mutation-lease.js";
 
-export interface SlackSetupActor { userId: string; sessionId: string | null; bypassPermissionCheck: boolean }
+export interface SlackSetupActor { userId: string; sessionId: string | null; bypassPermissionCheck: boolean; managementContext?: ConnectionManagementContext }
 export type Registration = typeof chatSlackRegistrations.$inferSelect;
 
 
@@ -59,6 +60,7 @@ export function createSlackRegistrationStore(db: Db, options: SlackSetupOptions)
     return (await db.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, endpointId)))[0];
   }
   async function endpoint(endpointId: string, actor: SlackSetupActor) {
+    await actor.managementContext?.reauthorize();
     if (!(await instanceSettingsService(db).getExperimental()).enableChatConnectors) throw forbidden("Chat connectors are disabled");
     const [row] = await db.select({ endpoint: chatEndpoints, connection: toolConnections, agentName: agents.name, agentAppearance: agents.appearance })
       .from(chatEndpoints).innerJoin(toolConnections, and(eq(toolConnections.id, chatEndpoints.connectionId), eq(toolConnections.companyId, chatEndpoints.companyId)))
@@ -76,13 +78,14 @@ export function createSlackRegistrationStore(db: Db, options: SlackSetupOptions)
       throw conflict("The Slack webhook address changed. Restore its configured address or update the Slack app and use manual setup.");
   }
   async function audit(row: Registration, actor: SlackSetupActor, action: string, code?: string) {
-    await logActivity(db, { companyId: row.companyId, actorType: "user", actorId: actor.userId,
+    await logActivity(db, { companyId: row.companyId, ...(actor.managementContext?.audit ?? { actorType: "user" as const, actorId: actor.userId }),
       action: `chat_slack.${action}`, entityType: "chat_endpoint", entityId: row.endpointId,
       details: { endpointId: row.endpointId, appId: row.appId, ...(code ? { code } : {}) } });
   }
   const api = createSlackSetupClient(fetchImpl);
   async function saveSecrets(row: Registration, values: Record<string, string>, actor: SlackSetupActor, lease: CredentialMutationLeaseGuard,
     patch: Partial<Registration> = {}, account?: SlackAccountState) {
+    await actor.managementContext?.reauthorize();
     await db.transaction(async tx => {
       await lease.assertOwned(tx);
       const current = (await tx.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, row.endpointId)).for("update"))[0];

@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "activity_log_company_user_issue_actor_idx" ON "activity_log" USING btree ("company_id","actor_id","entity_id") WHERE "activity_log"."actor_type" = 'user' AND "activity_log"."entity_type" = 'issue';

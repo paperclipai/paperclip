@@ -1,0 +1,58 @@
+import path from "node:path";
+import { createDb } from "./client.js";
+import { computeEmbeddedPostgresTemplateKey, startEmbeddedPostgresTestDatabase } from "./test-embedded-postgres.js";
+import { checkTestPostgresAdmin, testPostgresAdminUrl } from "./test-postgres-admin.js";
+import { beforeTestPostgresShutdown } from "./test-postgres-owner.js";
+import { startTestProcessTree } from "./test-process-tree.js";
+
+const args = process.argv.slice(2);
+if (args[0] === "--") args.shift();
+const command = args.shift() ?? process.execPath;
+if (command === process.execPath && args.length === 0) args.push(path.resolve("scripts/run-vitest-stable.mjs"));
+
+let server: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
+try {
+  const env = { ...process.env };
+  let adminUrl = testPostgresAdminUrl();
+  if (adminUrl) await checkTestPostgresAdmin(adminUrl);
+  else {
+    // Shared multi-worker test server: raise max_connections above Postgres's
+    // default 100 so 7-8 parallel Vitest fork workers (each with main + private
+    // pools) never exhaust backend slots on 8-core runners or dev workstations.
+    server = await startEmbeddedPostgresTestDatabase("paperclip-test-command-", { maxConnections: 300 });
+    const url = new URL(server.connectionString);
+    url.pathname = "/postgres";
+    adminUrl = url.toString();
+    const admin = createDb(adminUrl, { maxConnections: 1 });
+    try {
+      // Disposable test server destroyed on exit: disable durability flushes so
+      // template copies, migrations, and per-test transactions run at memory speed.
+      await admin.$client.unsafe("ALTER SYSTEM SET fsync = off");
+      await admin.$client.unsafe("ALTER SYSTEM SET synchronous_commit = off");
+      await admin.$client.unsafe("ALTER SYSTEM SET full_page_writes = off");
+      await admin.$client.unsafe("SELECT pg_reload_conf()");
+      if (env.PAPERCLIP_TEST_POSTGRES_TEMPLATE !== "0") {
+        const template = `paperclip_test_template_${computeEmbeddedPostgresTemplateKey()}`;
+        await admin.$client.unsafe(`CREATE DATABASE "${template}" TEMPLATE "paperclip"`);
+        env.PAPERCLIP_TEST_POSTGRES_TEMPLATE = template;
+      }
+    } finally {
+      await admin.$client.end({ timeout: 1 });
+    }
+  }
+  env.PAPERCLIP_TEST_POSTGRES_ADMIN_URL = adminUrl;
+  console.log("[test:postgres] Each suite gets a disposable database on one test PostgreSQL server");
+  const child = startTestProcessTree(command, args, env);
+  const removeShutdownTask = beforeTestPostgresShutdown({
+    ...child,
+    afterStop: async () => { await server?.cleanup(); },
+  });
+  try {
+    process.exitCode = await child.wait();
+  } finally {
+    try { await child.stop(); }
+    finally { removeShutdownTask(); }
+  }
+} finally {
+  await server?.cleanup();
+}
