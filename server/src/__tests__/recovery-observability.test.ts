@@ -12,8 +12,10 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
 import {
   classifyRecoveryHandoff,
+  displayCauseFor,
   evaluateRecoveryRateAlert,
   MAX_WINDOW_WEEKS,
   recoveryObservabilityService,
@@ -66,6 +68,17 @@ describe("evaluateRecoveryRateAlert", () => {
     const weekly = [week(1000, 10, "2026-07-06"), week(1000, 30, "2026-07-13")]; // 1% then 3%
     const alert = evaluateRecoveryRateAlert(weekly, 2);
     expect(alert.latestWeekBreached).toBe(true);
+  });
+});
+
+describe("displayCauseFor", () => {
+  it("aliases provider_quota to the board-facing usage_limit_deferred label", () => {
+    expect(displayCauseFor("provider_quota")).toBe("usage_limit_deferred");
+  });
+
+  it("passes every other cause through unchanged", () => {
+    expect(displayCauseFor("process_lost")).toBe("process_lost");
+    expect(displayCauseFor("stale_heartbeat")).toBe("stale_heartbeat");
   });
 });
 
@@ -229,6 +242,38 @@ describeEmbeddedPostgres("recovery observability report", () => {
       outcome: input.outcome,
       createdAt: input.createdAt,
       updatedAt: input.createdAt,
+    });
+  }
+
+  async function seedIssueWithMonitor(input: {
+    companyId: string;
+    n: number;
+    status: string;
+    nextCheckAt: Date;
+    serviceName?: string;
+  }) {
+    const nextCheckAt = input.nextCheckAt.toISOString();
+    await db.insert(issues).values({
+      id: randomUUID(),
+      companyId: input.companyId,
+      title: `Deferred ${input.n}`,
+      status: input.status,
+      priority: "medium",
+      issueNumber: input.n,
+      identifier: `DEF-${input.n}`,
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [],
+        monitor: {
+          nextCheckAt,
+          kind: "external_service",
+          serviceName: input.serviceName ?? PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
+          scheduledBy: "assignee",
+          recoveryPolicy: "wake_owner",
+        },
+      },
+      monitorNextCheckAt: input.nextCheckAt,
     });
   }
 
@@ -417,6 +462,81 @@ describeEmbeddedPostgres("recovery observability report", () => {
     expect(report.handoff).toMatchObject({ boardOwned: 1, activeTakeovers: 0 });
     expect(report.perCauseRouting.find((entry) => entry.cause === "process_lost")).toMatchObject({
       active: 1,
+    });
+  });
+
+  it("surfaces pending monitor-path provider-quota defers and the fleet banner", async () => {
+    const { companyId } = await seedBaseline();
+    const resetA = new Date(now.getTime() + 45 * 60_000);
+    const resetB = new Date(now.getTime() + 2 * 60 * 60_000);
+    await seedIssueWithMonitor({ companyId, n: 201, status: "in_progress", nextCheckAt: resetA });
+    await seedIssueWithMonitor({ companyId, n: 202, status: "in_review", nextCheckAt: resetB });
+    // Already elapsed: the wake has fired (or is about to), so it is not queued.
+    await seedIssueWithMonitor({
+      companyId,
+      n: 203,
+      status: "in_progress",
+      nextCheckAt: new Date(now.getTime() - 60_000),
+    });
+    // A different external-service monitor is not a quota defer.
+    await seedIssueWithMonitor({
+      companyId,
+      n: 204,
+      status: "in_progress",
+      nextCheckAt: resetB,
+      serviceName: "CI pipeline",
+    });
+    // A quota monitor on an issue that left the active statuses is not queued.
+    await seedIssueWithMonitor({ companyId, n: 205, status: "blocked", nextCheckAt: resetB });
+
+    const report = await recoveryObservabilityService(db).report(companyId, { now, weeks: 8 });
+
+    expect(report.providerQuotaDeferrals).toEqual({
+      pending: 2,
+      earliestNextCheckAt: resetA.toISOString().replace(/\.\d{3}Z$/, "Z"),
+      latestNextCheckAt: resetB.toISOString().replace(/\.\d{3}Z$/, "Z"),
+    });
+    expect(report.fleetQuotaBanner).toEqual({
+      pausedUntil: report.providerQuotaDeferrals.latestNextCheckAt,
+      queuedWakes: 2,
+    });
+  });
+
+  it("reports an empty quota section when nothing is deferred", async () => {
+    const { companyId } = await seedBaseline();
+
+    const report = await recoveryObservabilityService(db).report(companyId, { now, weeks: 8 });
+
+    expect(report.providerQuotaDeferrals).toEqual({
+      pending: 0,
+      earliestNextCheckAt: null,
+      latestNextCheckAt: null,
+    });
+    expect(report.fleetQuotaBanner).toEqual({ pausedUntil: null, queuedWakes: 0 });
+  });
+
+  it("labels provider_quota recovery actions as usage_limit_deferred in byCause", async () => {
+    const { companyId, coderId } = await seedBaseline();
+    await seedRecoveryAction({
+      companyId,
+      n: 301,
+      createdAt: latestWeek,
+      cause: "provider_quota",
+      errorCode: "provider_quota",
+      status: "active",
+      outcome: null,
+      ownerAgentId: coderId,
+      returnOwnerAgentId: coderId,
+      finalAssigneeAgentId: coderId,
+      finalIssueStatus: "in_progress",
+    });
+
+    const report = await recoveryObservabilityService(db).report(companyId, { now, weeks: 8 });
+
+    expect(report.byCause.find((entry) => entry.cause === "provider_quota")).toMatchObject({
+      cause: "provider_quota",
+      displayCause: "usage_limit_deferred",
+      count: 1,
     });
   });
 });
