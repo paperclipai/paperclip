@@ -2568,8 +2568,11 @@ function blockerWorkspaceFacts(companyId: string, workspaceScope: SQL) {
       select distinct workspace_id from (${workspaceScope}) scoped_workspaces(workspace_id)
     ), workspace_facts as materialized (
       select candidate.workspace_id, finalized.started_at as finalized_at,
-        legacy.phase, legacy.status, legacy.started_at
+        legacy.phase, legacy.status, legacy.started_at, source_workspace.source_issue_id
       from candidate_workspaces candidate
+      left join execution_workspaces source_workspace
+        on source_workspace.company_id = ${companyId}::uuid
+        and source_workspace.id = candidate.workspace_id
       left join lateral (
         select started_at from (
           select phase, status, started_at from workspace_operations
@@ -2603,11 +2606,20 @@ function pendingFinalizeBlockerCondition(companyId: string, issueId: SQL, worksp
         and blocker_operation.issue_id = ${issueId}
       order by blocker_operation.started_at desc limit 1
     ) latest_blocker_operation on true
-    where coalesce(latest_blocker_operation.started_at, blocker_workspace_facts.started_at) is not null
-      and not (coalesce(latest_blocker_operation.phase, blocker_workspace_facts.phase) = 'workspace_finalize'
-        and coalesce(latest_blocker_operation.status, blocker_workspace_facts.status) = 'succeeded')
+    -- Legacy operations had no issue attribution. They are safe to inherit only
+    -- when this blocker owns the workspace (or the legacy workspace has no owner).
+    -- A child that merely reuses its parent's workspace must not inherit the
+    -- parent's unattributed operation and become a false pending-finalize blocker.
+    left join lateral (
+      select blocker_workspace_facts.phase, blocker_workspace_facts.status, blocker_workspace_facts.started_at
+      where blocker_workspace_facts.source_issue_id is null
+        or blocker_workspace_facts.source_issue_id = ${issueId}
+    ) legacy_fallback on true
+    where coalesce(latest_blocker_operation.started_at, legacy_fallback.started_at) is not null
+      and not (coalesce(latest_blocker_operation.phase, legacy_fallback.phase) = 'workspace_finalize'
+        and coalesce(latest_blocker_operation.status, legacy_fallback.status) = 'succeeded')
       and (blocker_workspace_facts.finalized_at is null
-        or blocker_workspace_facts.finalized_at <= coalesce(latest_blocker_operation.started_at, blocker_workspace_facts.started_at))
+        or blocker_workspace_facts.finalized_at <= coalesce(latest_blocker_operation.started_at, legacy_fallback.started_at))
       and not (
         latest_blocker_operation.status = 'succeeded'
         and latest_blocker_operation.finished_at is not null
