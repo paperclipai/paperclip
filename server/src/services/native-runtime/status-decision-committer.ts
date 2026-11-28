@@ -44,6 +44,7 @@ import {
   completionContracts,
   heartbeatRuns,
   issueApprovals,
+  issueExecutionDecisions,
   issueRecoveryActions,
   issueThreadInteractions,
   issues,
@@ -55,6 +56,7 @@ import {
   workspaceOperations,
 } from "@paperclipai/db";
 import {
+  EXECUTION_STAGE_DECISION_REASON,
   heldByAnotherRun,
   NATIVE_STATUS_ARBITER_POLICY_VERSION,
   type NativeGovernanceGate,
@@ -79,7 +81,7 @@ import {
   resolveExternalChatResponseWaitAuthorizationInTransaction,
 } from "./chat-attachment-reuse.js";
 import { issueService } from "../issues.js";
-import { COMPLETION_REVIEW_STAGE_REASON, COMPLETION_REVIEW_STAGE_REJECTED_REASON, completionReviewStageEntry } from "../issue-execution-policy.js";
+import { COMPLETION_REVIEW_STAGE_REASON, COMPLETION_REVIEW_STAGE_REJECTED_REASON, completionReviewStageEntry, parseIssueExecutionState } from "../issue-execution-policy.js";
 import { companySkillService } from "../company-skills.js";
 import { syncRoutineRunStatusForIssue } from "../routine-run-status.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
@@ -467,6 +469,43 @@ function failAt(
 ) {
   if (actual === requested)
     throw new Error(`native_status_failpoint:${actual}`);
+}
+
+/**
+ * Where a stage decision this run recorded hands the task: the next stage's
+ * participant ("in_review") or the return assignee ("in_progress"). The issue
+ * route saves the decision and the next execution state but keeps the task
+ * with the run, so the run's lock survives until its finish report. Read from
+ * the saved decision row, never from the model's report.
+ */
+export async function executionStageHandoffByRun(
+  db: Db,
+  run: { id: string; companyId: string; agentId: string },
+  issue: { id: string; executionState: unknown; assigneeAgentId: string | null; assigneeUserId: string | null },
+) {
+  const state = parseIssueExecutionState(issue.executionState);
+  // Still held by this run: a decision applied at once has already moved it.
+  if (!state?.lastDecisionId || issue.assigneeAgentId !== run.agentId || issue.assigneeUserId) return null;
+  const principal = state.status === "changes_requested" ? state.returnAssignee
+    : state.status === "pending" ? state.currentParticipant : null;
+  if (!principal) return null;
+  const [decision] = await db.select({ id: issueExecutionDecisions.id }).from(issueExecutionDecisions).where(and(
+    eq(issueExecutionDecisions.id, state.lastDecisionId),
+    eq(issueExecutionDecisions.companyId, run.companyId),
+    eq(issueExecutionDecisions.issueId, issue.id),
+    inArray(issueExecutionDecisions.outcome, ["approved", "changes_requested"]),
+    eq(issueExecutionDecisions.actorAgentId, run.agentId),
+    eq(issueExecutionDecisions.createdByRunId, run.id),
+  )).limit(1);
+  if (!decision) return null;
+  return {
+    status: state.status === "changes_requested" ? "in_progress" as const : "in_review" as const,
+    state,
+    principal,
+    assigneePatch: principal.type === "agent"
+      ? { assigneeAgentId: principal.agentId ?? null, assigneeUserId: null }
+      : { assigneeAgentId: null, assigneeUserId: principal.userId ?? null },
+  };
 }
 
 export async function enqueueWake(input: {
@@ -1950,7 +1989,8 @@ export async function commitNativeStatusDecision(input: {
       companyId: input.companyId, issueId: input.issueId, runId: input.runId,
     })) throw new NativeStatusRaceError();
     if ((input.decision.statusAction === "done" || input.decision.reasonCode === COMPLETION_REVIEW_STAGE_REASON ||
-        input.decision.reasonCode === COMPLETION_REVIEW_STAGE_REJECTED_REASON) &&
+        input.decision.reasonCode === COMPLETION_REVIEW_STAGE_REJECTED_REASON ||
+        input.decision.reasonCode === EXECUTION_STAGE_DECISION_REASON) &&
         !isConversation(issue) && heldByAnotherRun(issue, input.runId)) {
       throw new NativeStatusRaceError();
     }
@@ -2464,10 +2504,19 @@ export async function commitNativeStatusDecision(input: {
       const reviewStage = input.decision.reasonCode === COMPLETION_REVIEW_STAGE_REASON
         ? completionReviewStageEntry(issue, originRun?.agentId ?? "") : null;
       if (reviewStage && reviewStage.kind !== "starts") throw new NativeStatusRaceError();
+      // Hand the task on from the stage decision this run recorded, re-read
+      // under the issue lock; a changed task makes the saved decision stale.
+      const stageHandoff = input.decision.reasonCode === EXECUTION_STAGE_DECISION_REASON
+        ? await executionStageHandoffByRun(tx as unknown as Db,
+          { id: input.runId, companyId: input.companyId, agentId: originRun?.agentId ?? "" }, issue) : null;
+      if (input.decision.reasonCode === EXECUTION_STAGE_DECISION_REASON && stageHandoff?.status !== input.decision.toStatus) {
+        throw new NativeStatusRaceError();
+      }
       const projected = await issueService(tx as unknown as Db).update(
         input.issueId,
         {
           ...(reviewStage?.kind === "starts" ? reviewStage.patch : {}),
+          ...(stageHandoff ? stageHandoff.assigneePatch : {}),
           status: input.decision.toStatus,
           statusVersion: input.priorStatusVersion + 1,
           lastStatusDecisionId: decisionRow.id,
@@ -2485,16 +2534,19 @@ export async function commitNativeStatusDecision(input: {
       );
       if (!projected) throw new NativeStatusRaceError();
       updated = projected;
-      // The route wakes an agent participant when its stage starts; a person
-      // acts from the task. This is a workflow wake, not the worker's message.
-      const participant = reviewStage?.kind === "starts" ? reviewStage.state.currentParticipant : null;
-      if (reviewStage?.kind === "starts" && participant?.type === "agent" && participant.agentId) {
-        const state = reviewStage.state;
-        const reason = state.currentStageType === "approval" ? "execution_approval_requested" : "execution_review_requested";
-        const executionStage = { wakeRole: state.currentStageType === "approval" ? "approver" : "reviewer",
-          stageId: state.currentStageId, stageType: state.currentStageType, currentParticipant: participant,
+      // The route wakes the agent a stage hands the task to; a person acts
+      // from the task. This is a workflow wake, not the worker's message.
+      const state = reviewStage?.kind === "starts" ? reviewStage.state : stageHandoff?.state ?? null;
+      const participant = reviewStage?.kind === "starts" ? reviewStage.state.currentParticipant : stageHandoff?.principal ?? null;
+      if (state && participant?.type === "agent" && participant.agentId) {
+        const executor = state.status === "changes_requested";
+        const reason = executor ? "execution_changes_requested"
+          : state.currentStageType === "approval" ? "execution_approval_requested" : "execution_review_requested";
+        const executionStage = { wakeRole: executor ? "executor" : state.currentStageType === "approval" ? "approver" : "reviewer",
+          stageId: state.currentStageId, stageType: state.currentStageType, currentParticipant: state.currentParticipant ?? null,
           returnAssignee: state.returnAssignee, reviewRequest: state.reviewRequest ?? null,
-          lastDecisionOutcome: state.lastDecisionOutcome, allowedActions: ["approve", "request_changes"] };
+          lastDecisionOutcome: state.lastDecisionOutcome,
+          allowedActions: executor ? ["address_changes", "resubmit"] : ["approve", "request_changes"] };
         await enqueueWake({ tx: tx as unknown as Db, companyId: input.companyId, issueId: input.issueId,
           agentId: participant.agentId, reason, idempotencyKey: `native-status:${decisionRow.id}:execution-stage`,
           payload: { mutation: "update", executionStage },

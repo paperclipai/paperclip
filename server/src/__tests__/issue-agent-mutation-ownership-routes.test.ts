@@ -3260,14 +3260,94 @@ describe("agent issue mutation checkout ownership", () => {
         expect(mockIssueService.update).not.toHaveBeenCalled();
       });
 
-      it("keeps refusing an intermediate approval that would hand the task to the next participant", async () => {
-        mockIssueService.getById.mockResolvedValue(reviewIssue([finalStage, laterStage]));
+      it("records an intermediate approval and leaves the hand-off to its finish report", async () => {
+        const issue = reviewIssue([finalStage, laterStage]);
+        mockIssueService.getById.mockResolvedValue(issue);
+        mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({ ...issue, ...patch }));
+        const db = createRunContextDb();
+        const inserted: Array<{ table: string; values: Record<string, unknown> }> = [];
+        db.insert = vi.fn((table: Parameters<typeof getTableName>[0]) => ({ values: vi.fn(async (values: Record<string, unknown>) => {
+          inserted.push({ table: getTableName(table), values });
+        }) })) as typeof db.insert;
 
-        const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`)
-          .send({ status: "done", comment: "Approved." });
+        const res = await request(createApp(runActor(), db)).patch(`/api/issues/${issueId}`)
+          .send({ status: "done", comment: "Approved: heading verified." });
 
-        expect(res.status, JSON.stringify(res.body)).toBe(409);
-        expect(res.body.details).toMatchObject({ code: "native_run_status_reported_by_finish", requestedStatus: "done" });
+        expect(res.status, JSON.stringify(res.body)).toBe(200);
+        const patch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, any>;
+        // No status or hand-off in the write: the service would otherwise move
+        // the task to the next participant before paperclip_finish reports.
+        expect(patch).not.toHaveProperty("status");
+        expect(patch).not.toHaveProperty("assigneeAgentId");
+        expect(patch).not.toHaveProperty("assigneeUserId");
+        expect(patch.executionState).toMatchObject({ status: "pending", currentStageId: laterStage,
+          currentStageIndex: 1, lastDecisionId: expect.any(String) });
+        // The finalizer's hand-off (executionStageHandoffByRun) reads exactly this row.
+        const decision = inserted.find(row => row.table === "issue_execution_decisions")?.values;
+        expect(decision).toMatchObject({ id: patch.executionState.lastDecisionId, stageId: finalStage, outcome: "approved",
+          actorAgentId: ownerAgentId, createdByRunId: ownerRunId, body: "Approved: heading verified." });
+        // The next participant is woken from the run's finish report, not here.
+        expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+          expect.anything(), expect.objectContaining({ reason: "execution_review_requested" }));
+        expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+          expect.anything(), expect.objectContaining({ reason: "execution_approval_requested" }));
+      });
+
+      it("records a changes request and leaves the hand-back to its finish report", async () => {
+        const issue = reviewIssue([finalStage]);
+        mockIssueService.getById.mockResolvedValue(issue);
+        mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({ ...issue, ...patch }));
+        const db = createRunContextDb();
+        const inserted: Array<{ table: string; values: Record<string, unknown> }> = [];
+        db.insert = vi.fn((table: Parameters<typeof getTableName>[0]) => ({ values: vi.fn(async (values: Record<string, unknown>) => {
+          inserted.push({ table: getTableName(table), values });
+        }) })) as typeof db.insert;
+
+        const res = await request(createApp(runActor(), db)).patch(`/api/issues/${issueId}`)
+          .send({ status: "in_progress", comment: "The heading must use sentence case." });
+
+        expect(res.status, JSON.stringify(res.body)).toBe(200);
+        const patch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, any>;
+        expect(patch).not.toHaveProperty("status");
+        expect(patch).not.toHaveProperty("assigneeAgentId");
+        expect(patch).not.toHaveProperty("assigneeUserId");
+        expect(patch.executionState).toMatchObject({ status: "changes_requested",
+          returnAssignee: { type: "agent", agentId: peerAgentId }, lastDecisionId: expect.any(String) });
+        const decision = inserted.find(row => row.table === "issue_execution_decisions")?.values;
+        expect(decision).toMatchObject({ id: patch.executionState.lastDecisionId, outcome: "changes_requested",
+          actorAgentId: ownerAgentId, createdByRunId: ownerRunId });
+        // The return assignee is woken from the run's finish report, not here.
+        expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+          expect.anything(), expect.objectContaining({ reason: "execution_changes_requested" }));
+      });
+
+      it("records the decision when recovery left the task in todo with its stage still pending", async () => {
+        const issue = { ...reviewIssue([finalStage]), status: "todo" };
+        mockIssueService.getById.mockResolvedValue(issue);
+        mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({ ...issue, ...patch }));
+        const db = createRunContextDb();
+        const inserted: Array<{ table: string; values: Record<string, unknown> }> = [];
+        db.insert = vi.fn((table: Parameters<typeof getTableName>[0]) => ({ values: vi.fn(async (values: Record<string, unknown>) => {
+          inserted.push({ table: getTableName(table), values });
+        }) })) as typeof db.insert;
+
+        const res = await request(createApp(runActor(), db)).patch(`/api/issues/${issueId}`)
+          .send({ status: "done", comment: "Approved: verified after the task was recovered." });
+
+        expect(res.status, JSON.stringify(res.body)).toBe(200);
+        const patch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, any>;
+        expect(patch).not.toHaveProperty("status");
+        expect(patch.executionState).toMatchObject({ status: "completed", lastDecisionOutcome: "approved" });
+        expect(inserted.find(row => row.table === "issue_execution_decisions")?.values)
+          .toMatchObject({ outcome: "approved", createdByRunId: ownerRunId });
+      });
+
+      it("still requires the comment for a changes request", async () => {
+        mockIssueService.getById.mockResolvedValue(reviewIssue([finalStage]));
+
+        const res = await request(createApp(runActor())).patch(`/api/issues/${issueId}`).send({ status: "in_progress" });
+
+        expect(res.status, JSON.stringify(res.body)).toBe(422);
         expect(mockIssueService.update).not.toHaveBeenCalled();
       });
 

@@ -13,6 +13,8 @@ export const NATIVE_STATUS_ARBITER_POLICY_VERSION = "phase6-v14";
 
 /** The automatic continuation after a failed turn is used once per chain. */
 export const NATIVE_RUN_FAILED_RETRY_CAUSE = "native_run_failed";
+/** A native stage participant's recorded decision hands the task on at its finish. */
+export const EXECUTION_STAGE_DECISION_REASON = "execution_stage_decision_recorded";
 export const NATIVE_RESPONSE_WAKE_WAITING_REASON = "response_wake_waiting_for_input";
 export const EXTERNAL_CHAT_RESPONSE_WAIT_AUTHORIZATION_LOST = "external_chat_response_wait_authorization_lost";
 export const NATIVE_BLOCKER_SUPERSEDED_BY_QUEUED_REQUEST_CODE = "native_blocker_superseded_by_queued_request";
@@ -278,6 +280,14 @@ export function arbitrateNativeStatus(input: {
    */
   executionStageApprovedByRun?: boolean;
   /**
+   * This run, as the configured participant, recorded a stage decision that
+   * hands the task on: an approval that starts the next stage ("in_review") or
+   * a changes request back to the executor ("in_progress"). The issue route
+   * kept the task with this run so its lock survives until it reports; the
+   * recorded decision, not the finish report, sets where the task goes.
+   */
+  executionStageHandoffByRun?: "in_review" | "in_progress";
+  /**
    * Done would start the task's configured review stage. That reviewer, not
    * the worker's evidence references, accepts the work, as on the issue route.
    */
@@ -434,6 +444,18 @@ export function arbitrateNativeStatus(input: {
           agentId: input.agentId,
         }] : []),
       ],
+    };
+  }
+  if (input.executionStageHandoffByRun) {
+    // The decision is durable and already visible on the task. A later
+    // provider failure or a different finish report cannot take it back.
+    return {
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      statusAction: input.executionStageHandoffByRun,
+      toStatus: input.executionStageHandoffByRun,
+      reasonCode: EXECUTION_STAGE_DECISION_REASON,
+      unblockDescriptor: null,
+      effects: [{ kind: "release_checkout" }],
     };
   }
   if (input.terminalState !== "succeeded") {

@@ -80,6 +80,7 @@ import { evaluateBlockerAgentHandoff } from "./blocker-owner-handoff.js";
 import { recordNativeWorkAssessment } from "./work-assessments.js";
 import {
   commitNativeStatusDecision,
+  executionStageHandoffByRun,
   NativeStatusRaceError,
   type NativeStatusCommitFailpoint,
 } from "./status-decision-committer.js";
@@ -1839,6 +1840,7 @@ export async function finalizeNativeRun(input: {
     const statusInput: Parameters<typeof resolveNativeFinalizerStatus>[0] = {
       requiredQualityReviewSatisfied: qualityReview.satisfied,
       executionStageApprovedByRun: await executionStageApprovedByRun(input.db, run, authoritativeIssue),
+      executionStageHandoffByRun: (await executionStageHandoffByRun(input.db, run, authoritativeIssue))?.status,
       executionReviewStageStarts: reviewStage.kind === "starts",
       caseHandoffAuthorized: Boolean(await assertNativeCaseHandoffResult(input.db, run.id, authoritativeIssue.id, result)),
       monitorWaitDispatched: monitorDelivery !== null,

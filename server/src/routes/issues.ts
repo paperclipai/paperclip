@@ -14700,19 +14700,21 @@ export function issueRoutes(
    * that moves the conversation to review still settles without the lock.
    *
    * The one status-shaped request a run must be able to send is the active
-   * review/approval participant's approval (`status: "done"` with its decision
-   * comment): no runner tool records a stage decision, so refusing it leaves
-   * the stage pending forever. With `allowStageApproval` the guard returns
-   * "defer_final_status" for that request instead of refusing it. The caller
-   * records the decision and keeps the task (and the run's lock) in review;
-   * the run's own paperclip_finish report then sets the final status.
+   * review/approval participant's stage decision (`status: "done"` to approve,
+   * `"in_progress"` to request changes, with its decision comment): no runner
+   * tool records a stage decision, so refusing it leaves the stage pending
+   * forever. With `allowStageApproval` the guard returns "defer_stage_decision"
+   * for that request instead of refusing it. The caller records the decision
+   * and the next execution state but keeps the task (and the run's lock) with
+   * this run; its own paperclip_finish report then completes the task or hands
+   * it to the next participant or the return assignee.
    */
   async function assertNativeRunKeepsOwnExecutionLock(
     req: Request,
     issue: { companyId: string; status: string; parentId: string | null; assigneeAgentId: string | null; assigneeUserId: string | null; checkoutRunId: string | null; executionRunId: string | null; conversationAgentId?: string | null; conversationUserId?: string | null; executionState?: unknown },
     requestedStatus: unknown = req.body.status,
     options: { allowStageApproval?: boolean } = {},
-  ): Promise<"defer_final_status" | undefined> {
+  ): Promise<"defer_stage_decision" | undefined> {
     const runId = req.actor.type === "agent" ? req.actor.runId : null;
     if (!runId || !req.actor.agentId || req.actor.agentId !== issue.assigneeAgentId) return;
     if (runId !== issue.executionRunId && runId !== issue.checkoutRunId) return;
@@ -14725,9 +14727,10 @@ export function issueRoutes(
     const run = await heartbeat.getRun(runId);
     if (!run || run.runtimeMode !== "native" || run.status !== "running"
       || run.agentId !== req.actor.agentId || run.companyId !== issue.companyId) return;
-    if (options.allowStageApproval && requestedStatus === "done" && issue.status === "in_review" &&
+    // Any task status: recovery can hand a task back as todo while its stage is still pending.
+    if (options.allowStageApproval && (requestedStatus === "done" || requestedStatus === "in_progress") &&
         activeExecutionParticipantAgentId(issue) === req.actor.agentId) {
-      return "defer_final_status";
+      return "defer_stage_decision";
     }
     // A blocker that the dependency rules reject anyway keeps its specific
     // error; otherwise the run reports the block with paperclip_block.
@@ -15422,15 +15425,15 @@ export function issueRoutes(
       }
       Object.assign(updateFields, transition.patch);
       let deferredNativeStageApproval = false;
-      if (nativeStageApproval === "defer_final_status") {
-        // Only the final stage's approval is deferred. Anything else this
-        // request would do (an intermediate approval that hands the task to the
-        // next participant, or no decision at all) keeps the ordinary refusal.
-        const finalApproval = transition.decision?.outcome === "approved" && updateFields.status === "done" &&
-          (transition.patch.assigneeAgentId === undefined || transition.patch.assigneeAgentId === existing.assigneeAgentId) &&
-          transition.patch.assigneeUserId === undefined;
-        if (!finalApproval) throw nativeRunStatusReportedByFinish(req.body.status);
+      if (nativeStageApproval === "defer_stage_decision") {
+        // Record the decision and the next execution state now. The status and
+        // the hand-off wait for the run's finish report, which reads this
+        // decision row (executionStageApprovedByRun, executionStageHandoffByRun).
+        // A request that records no decision keeps the ordinary refusal.
+        if (!transition.decision) throw nativeRunStatusReportedByFinish(req.body.status);
         delete updateFields.status;
+        delete updateFields.assigneeAgentId;
+        delete updateFields.assigneeUserId;
         deferredNativeStageApproval = true;
       }
 
@@ -15882,11 +15885,11 @@ export function issueRoutes(
           req.body.reviewPolicy !== lockedExisting.reviewPolicy;
         // A deferred native approval is still a review verdict even though
         // its status write is left to the run's finish report.
-        const lockedReviewVerdictRequested =
-          lockedExisting.status === "in_review" &&
-          (updateFields.status === "done" ||
-            updateFields.status === "cancelled" ||
-            deferredNativeStageApproval);
+        // A deferred native decision is a verdict on whatever status recovery
+        // left the task in; the review policy still applies to it.
+        const lockedReviewVerdictRequested = deferredNativeStageApproval ||
+          (lockedExisting.status === "in_review" &&
+            (updateFields.status === "done" || updateFields.status === "cancelled"));
         if (
           (lockedReviewVerdictRequested || lockedPolicyChangeRequested) &&
           lockedExisting.reviewPolicy != null &&
@@ -16896,7 +16899,8 @@ export function issueRoutes(
           });
         };
 
-        if (executionStageWakeup && deferWakeForGoal !== true) {
+        // A deferred native decision wakes the next agent from its finish report.
+        if (executionStageWakeup && deferWakeForGoal !== true && !deferredNativeStageApproval) {
           addWakeup(executionStageWakeup.agentId, executionStageWakeup.wakeup);
         } else if (
           assigneeChanged &&
