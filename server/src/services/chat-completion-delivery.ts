@@ -293,24 +293,57 @@ export async function existingChatCompletionReply(tx: Connection, runId: string,
   const [run] = await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
   if (!run || ids(run).length === 0) return null;
   const rows = await tx.select().from(deliveries).where(and(eq(deliveries.companyId, run.companyId), inArray(deliveries.id, ids(run))));
+  if (rows.length !== ids(run).length) throw new Error("chat_completion_superseded");
+  let existing: typeof issueComments.$inferSelect | null = null;
   for (const delivery of rows) {
     // Match the status writer's task-first lock order, then reload the outbox
     // row so a concurrent reopen cannot leave us with its pre-commit snapshot.
     await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.id, delivery.taskId), eq(issues.companyId, run.companyId))).for("update");
     const row = await loadAudience(tx, delivery.id);
-    if (!row || row.source?.id !== issueId || row.handoff.agentId !== run.agentId || !current(row)) throw new Error("chat_completion_superseded");
-    if (row.delivery.responseCommentId) {
-      const [comment] = await tx.select().from(issueComments).where(and(eq(issueComments.id, row.delivery.responseCommentId), eq(issueComments.issueId, issueId)));
-      if (comment) return comment;
+    if (!row || row.source?.id !== issueId || row.handoff.agentId !== run.agentId ||
+      row.source.conversationSessionGeneration !== run.contextSnapshot?.conversationSessionGeneration || !current(row)) {
+      throw new Error("chat_completion_superseded");
+    }
+    if (row.delivery.status === "delivered" && row.delivery.responseCommentId) {
+      const [comment] = await tx.select().from(issueComments).where(and(eq(issueComments.id, row.delivery.responseCommentId),
+        eq(issueComments.companyId, run.companyId), eq(issueComments.issueId, issueId), isNull(issueComments.deletedAt))).for("share");
+      if (!comment || (existing && existing.id !== comment.id)) throw new Error("chat_completion_superseded");
+      existing = comment;
+      continue;
     }
     if (row.delivery.status !== "queued" || row.delivery.targetRunId !== runId) throw new Error("chat_completion_superseded");
   }
-  if (rows.length !== ids(run).length) throw new Error("chat_completion_superseded");
-  return null;
+  return existing;
 }
 export async function acknowledgeChatCompletionReply(tx: Connection, runId: string, commentId: string) {
+  const [run] = await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+  if (!run || ids(run).length === 0) return;
   await tx.update(deliveries).set({ status: "delivered", responseCommentId: commentId, error: null })
-    .where(and(eq(deliveries.targetRunId, runId), eq(deliveries.status, "queued")));
+    .where(and(eq(deliveries.companyId, run.companyId), inArray(deliveries.id, ids(run)),
+      eq(deliveries.targetRunId, runId), eq(deliveries.status, "queued")));
+}
+
+export async function acknowledgeReusedChatCompletionReply(db: Db, input: {
+  companyId: string; issueId: string; runId: string; commentId: string;
+}) {
+  return db.transaction(async tx => {
+    const [source] = await tx.select().from(issues).where(and(
+      eq(issues.id, input.issueId), eq(issues.companyId, input.companyId),
+    )).for("update");
+    const [run] = await tx.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId),
+    ));
+    if (!source || !run || ids(run).length === 0) return;
+    const [comment] = await tx.select().from(issueComments).where(and(
+      eq(issueComments.id, input.commentId), eq(issueComments.companyId, input.companyId),
+      eq(issueComments.issueId, input.issueId), eq(issueComments.createdByRunId, run.id),
+      eq(issueComments.authorAgentId, run.agentId), isNull(issueComments.deletedAt),
+    )).for("share");
+    if (!comment) return;
+    const existing = await existingChatCompletionReply(tx, run.id, source.id);
+    if (existing && existing.id !== comment.id) return;
+    await acknowledgeChatCompletionReply(tx, run.id, comment.id);
+  });
 }
 
 export function chatCompletionDeliveryService(db: Db, heartbeat: { wakeup(agentId: string, options: {
@@ -360,6 +393,11 @@ export function chatCompletionDeliveryService(db: Db, heartbeat: { wakeup(agentI
           if (deferred) return;
         }
         const advanced = await db.transaction(async tx => {
+          if (run?.status === "succeeded" && run.finishedAt && Date.now() < run.finishedAt.getTime() + LEASE_MS) {
+            const [source] = await tx.select({ executionRunId: issues.executionRunId }).from(issues)
+              .where(and(eq(issues.id, row.handoff.conversationId), eq(issues.companyId, claimed.companyId))).for("update");
+            if (source?.executionRunId === run.id) return false;
+          }
 
 
           const [task] = await tx.select({ status: issues.status }).from(issues)
