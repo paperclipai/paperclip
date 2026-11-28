@@ -1,6 +1,6 @@
 import { type CopilotToolEvidence } from "./copilot-tool-evidence.js";
 import { RUNNER_TOOL_BRIDGE_DIAGNOSTIC_CODE } from "../tool-input-coercion.js";
-import { classifyClaudeStatusBanner } from "./claude-status-banners.js";
+import { classifyClaudeStatusBanner, type ClaudeStatusBanner } from "./claude-status-banners.js";
 import { resolveCompletionContinuation } from "../completion-continuation.js";
 import { isProviderMode } from "../../contracts/provider-mode.js";
 import { acpxProfileActivity, type AcpxActivityAdapter, type AcpxToolEvidence } from "./profile-activity.js";
@@ -794,6 +794,7 @@ class CodexAcpxSession implements HarnessSession {
   #assistantText = "";
   /** Claude compaction banners in this session; pairs start and end notices. */
   #compactionCount = 0;
+  #activeCompaction: { turnId: string; noticeId: string } | null = null;
   #assistantMessageId: string | null = null;
   #workspaceRoots: string[] | null = null;
   #closed = false;
@@ -1702,6 +1703,17 @@ class CodexAcpxSession implements HarnessSession {
       payload: structuredClone(payload),
     };
     this.#pendingTerminal = terminal;
+    if (this.#activeCompaction?.turnId === turnId) {
+      const completed = eventType === "turn.completed";
+      const reservedAfter = this.#eventStreamOmitted ? 2 : 1;
+      if (this.#emitClaudeStatus(turnId, this.#activeCompaction.noticeId, {
+        category: "context_compaction",
+        severity: completed ? "info" : "warning",
+        summary: completed ? "Context compaction ended" : "Context compaction stopped",
+        phase: completed ? "completed" : "failed",
+        details: [],
+      }, reservedAfter)) this.#activeCompaction = null;
+    }
     if (!this.#emit(terminal.eventType, terminal.payload, { turnId })) {
       // The persisted terminal index is the driver's settlement authority.
       // Never advance it unless the matching canonical event is already in
@@ -1711,6 +1723,7 @@ class CodexAcpxSession implements HarnessSession {
     }
     this.#terminalTurns.set(turnId, fingerprint);
     this.#pendingTerminal = null;
+    if (this.#activeCompaction?.turnId === turnId) this.#activeCompaction = null;
     if (this.#pendingSemanticTransfer?.turnId === turnId) {
       if (eventType === "turn.completed") {
         this.#semanticResult = structuredClone(
@@ -1730,6 +1743,32 @@ class CodexAcpxSession implements HarnessSession {
     return messageId ? `${turnId}:assistant-message:${messageId}` : `${turnId}:assistant-activity`;
   }
 
+  #emitClaudeStatus(
+    turnId: string,
+    noticeId: string,
+    banner: ClaudeStatusBanner,
+    reservedAfter?: number,
+  ): boolean {
+    return this.#emit(
+      "provider.notice.recorded",
+      {
+        schema: "paperclip.provider.notice.v1",
+        noticeId,
+        severity: banner.severity,
+        category: banner.category,
+        scope: banner.category === "model_fallback" ? "session" : "turn",
+        recoverable: true,
+        userActionable: false,
+        summary: banner.summary,
+        ...(banner.phase || banner.details.length > 0
+          ? { details: [...(banner.phase ? [{ name: "Phase", value: banner.phase }] : []), ...banner.details] }
+          : {}),
+      },
+      { turnId, itemId: noticeId },
+      reservedAfter,
+    );
+  }
+
   #mapRuntimeEvent(
     event: PiProjectedMessageEvent<KimiProjectedMessageEvent<AcpRuntimeEvent>>,
     turnId: string,
@@ -1746,27 +1785,16 @@ class CodexAcpxSession implements HarnessSession {
         : null;
       if (banner) {
         // Harness lifecycle text is a status notice, never part of the answer.
-        if (banner.phase === "running") this.#compactionCount += 1;
-        const noticeId = banner.category === "context_compaction"
-          ? `${turnId}:compaction:${this.#compactionCount}`
-          : `${turnId}:status:${index}`;
-        this.#emit(
-          "provider.notice.recorded",
-          {
-            schema: "paperclip.provider.notice.v1",
-            noticeId,
-            severity: banner.severity,
-            category: banner.category,
-            scope: banner.category === "model_fallback" ? "session" : "turn",
-            recoverable: true,
-            userActionable: false,
-            summary: banner.summary,
-            ...(banner.phase || banner.details.length > 0
-              ? { details: [...(banner.phase ? [{ name: "Phase", value: banner.phase }] : []), ...banner.details] }
-              : {}),
-          },
-          { turnId, itemId: noticeId },
-        );
+        if (banner.category === "context_compaction") {
+          const active = this.#activeCompaction?.turnId === turnId ? this.#activeCompaction : null;
+          if (active && banner.phase === "running") return;
+          const noticeId = active?.noticeId ?? `${turnId}:compaction:${++this.#compactionCount}`;
+          if (this.#emitClaudeStatus(turnId, noticeId, banner)) {
+            this.#activeCompaction = banner.phase === "running" ? { turnId, noticeId } : null;
+          }
+        } else {
+          this.#emitClaudeStatus(turnId, `${turnId}:status:${index}`, banner);
+        }
         return;
       }
       let kimiCommentary: { text: string; itemId: string } | undefined;
