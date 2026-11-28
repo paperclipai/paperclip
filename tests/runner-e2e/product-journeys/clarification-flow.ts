@@ -7,7 +7,7 @@ import type { ContinuationCheckpoint } from "../continuation-scoring.js";
 import { submittedReferencePattern } from "../submitted-reference.js";
 import { answerResumeQuestionThroughUi } from "../question-resume-ui.js";
 import { createTaskThroughUi } from "../user-actions.js";
-import { validateAgentTaskState } from "./agent-flows.js";
+import { validateAgentTaskBindings, validateAgentTaskState } from "./agent-flows.js";
 import { clarificationQuestionFailure, gradeClarificationEvidence, type ClarificationReadback } from "./clarification-evidence.js";
 import { openDocumentAuthoring } from "./task-document-flow.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
@@ -29,7 +29,10 @@ export async function waitForClarificationDocument(visible: Locator, marker: str
   remaining();
 }
 
-export async function readClarificationState(context: JourneyContext, issueId: string) {
+interface RunFailureObservation { issueId: string; runs: Array<{ id: string; status: string; errorCode?: string }> }
+
+export async function readClarificationState(context: JourneyContext, issueId: string,
+  retainFailure?: (observation: RunFailureObservation) => Promise<void>) {
   const route = `/api/issues/${issueId}`;
   const [currentIssue, summaries, interactions, documents, attachments, children] = await Promise.all([
     context.api.get<Row>(route), context.api.get<Row[]>(`${route}/runs`), context.api.get<Row[]>(`${route}/interactions`),
@@ -38,10 +41,26 @@ export async function readClarificationState(context: JourneyContext, issueId: s
   ]);
   if (!Array.isArray(summaries) || summaries.length > 3) throw new JourneyError("failed", "clarification_run_limit_exceeded");
   const runs = await Promise.all(summaries.map(summary => context.api.get<Row>(`/api/heartbeat-runs/${summary.runId}`)));
-  validateAgentTaskState(context, issueId, { currentIssue: currentIssue as Row & { id: string; status: string },
-    taskRuns: runs as Array<Row & { status: string }>, interactions: interactions as Array<Row & { id: string; status: string }>, comments: [], attachments: [] }, 3);
+  const state = { currentIssue: currentIssue as Row & { id: string; status: string },
+    taskRuns: runs as Array<Row & { status: string }>, interactions: interactions as Array<Row & { id: string; status: string }>, comments: [], attachments: [] };
+  validateAgentTaskBindings(context, issueId, state, 3);
   if (!Array.isArray(children) || children.some(child => child.parentId !== issueId || child.companyId !== context.company.id)) {
     throw new JourneyError("failed", "clarification_child_query_mismatch");
+  }
+  try {
+    validateAgentTaskState(context, issueId, state, 3);
+  } catch (error) {
+    if (error instanceof JourneyError && error.code === "agent_run_failed" && retainFailure) {
+      try {
+        // Keep only bound IDs, terminal status and a machine code. Raw errors,
+        // instructions, provider state and credentials do not belong in this receipt.
+        await retainFailure({ issueId, runs: runs.map(run => ({ id: run.id, status: run.status,
+          ...(typeof run.errorCode === "string" && /^[a-z][a-z0-9_]{0,95}$/.test(run.errorCode) ? { errorCode: run.errorCode } : {}) })) });
+      } catch {
+        error.cause = new Error("clarification_failure_evidence_write_failed");
+      }
+    }
+    throw error;
   }
   return { currentIssue, runs, interactions, documents, attachments, children };
 }
@@ -56,7 +75,8 @@ export async function runClarificationJourney(context: JourneyContext, session: 
   let issue: Row | undefined, readback: ClarificationReadback | undefined;
   await mkdir(options.directory, { recursive: true, mode: 0o700 });
   const retain = (name: string, value: unknown) => writeFile(path.join(options.directory, name), JSON.stringify(value, null, 2), { mode: 0o600 });
-  const read = () => readClarificationState(context, issue!.id);
+  const read = () => readClarificationState(context, issue!.id,
+    observation => retain("clarification-run-failure.json", observation));
   const settle = async (answeredId?: string, final = false) => {
     let stable = "";
     while (Date.now() < options.deadlineAt) {
