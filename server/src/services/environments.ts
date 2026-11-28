@@ -154,6 +154,14 @@ export interface KubernetesEnvironmentConfigInput {
    * environment config and validated by the sandbox config schema.
    */
   timeoutMs?: number;
+  /**
+   * Extra pod volumes, container volumeMounts and container env for each
+   * Sandbox pod. Passed through as Kubernetes objects; the plugin's config
+   * schema validates them (allowed volume sources, reserved names and paths).
+   */
+  extraVolumes?: Array<{ name: string } & Record<string, unknown>>;
+  extraVolumeMounts?: Array<{ name: string; mountPath: string; subPath?: string; readOnly?: boolean }>;
+  extraEnv?: Array<{ name: string; value: string }>;
   adapters?: import("@paperclipai/shared").AdapterRegistryEntry[];
   [key: string]: unknown;
 }

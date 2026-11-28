@@ -71,6 +71,9 @@ Common optional fields:
 | `egressAllowCidrs` | `[]` | Additional CIDRs to allow egress to. |
 | `egressMode` | `"standard"` | `standard` (NetworkPolicy + CIDRs) or `cilium` (CiliumNetworkPolicy + FQDN allow-list). |
 | `runtimeClassName` | (none) | e.g. `kata-fc` for Firecracker-backed microVMs. Cluster must have the RuntimeClass installed. |
+| `extraVolumes` | `[]` | Extra pod volumes (Kubernetes `Volume` objects) for every agent pod, e.g. a shared cache or read-only git mirror on a PVC in the tenant namespace. Sources: `configMap`, `csi`, `downwardAPI`, `emptyDir`, `ephemeral`, `persistentVolumeClaim`, `projected`, `secret` (what the namespace's restricted Pod Security profile admits). Built-in names (`workspace`, `home`, `cache`, `tmp`) are reserved. |
+| `extraVolumeMounts` | `[]` | Mounts into the agent container (`name`, `mountPath`, optional `subPath`, `readOnly`); each names an `extraVolumes` entry. Built-in mount paths are reserved. |
+| `extraEnv` | `[]` | Extra container env (`name`, `value`). Overrides the run's secret env of the same name; `HOME` is reserved. |
 | `serviceAccountAnnotations` | `{}` | Annotations applied to per-tenant ServiceAccount (e.g. IRSA `eks.amazonaws.com/role-arn`). |
 | `jobTtlSecondsAfterFinished` | `900` | Seconds after a Job completes before garbage-collection. |
 | `podActivityDeadlineSec` | `3600` | Hard ceiling on a single run's wall-clock time. |

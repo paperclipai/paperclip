@@ -16,7 +16,9 @@
  * release path is explicit delete via sandboxCrOrchestrator.release().
  */
 
-export interface BuildSandboxCrManifestInput {
+import type { ExtraPodConfig } from "./pod-spec-builder.js";
+
+export interface BuildSandboxCrManifestInput extends ExtraPodConfig {
   namespace: string;
   sandboxName: string;
   adapterType: string;
@@ -100,7 +102,7 @@ export function buildSandboxCrManifest(
                // HOME=/home/node is inside the readOnly root filesystem.
                // Claude (and most agent runtimes) silently exit with code 0
                // and no output when HOME is unwritable, so set this explicitly.
-              env: [{ name: "HOME", value: "/home/paperclip" }],
+              env: [{ name: "HOME", value: "/home/paperclip" }, ...(input.extraEnv ?? [])],
               envFrom: [{ secretRef: { name: input.envSecretName } }],
               securityContext: {
                 runAsNonRoot: true,
@@ -125,6 +127,7 @@ export function buildSandboxCrManifest(
                 { name: "home", mountPath: "/home/paperclip" },
                 { name: "cache", mountPath: "/home/paperclip/.cache" },
                 { name: "tmp", mountPath: "/tmp" },
+                ...(input.extraVolumeMounts ?? []),
               ],
             },
           ],
@@ -133,6 +136,7 @@ export function buildSandboxCrManifest(
             { name: "home", emptyDir: { sizeLimit: "1Gi" } },
             { name: "cache", emptyDir: { sizeLimit: "1Gi" } },
             { name: "tmp", emptyDir: { sizeLimit: "2Gi" } },
+            ...(input.extraVolumes ?? []),
           ],
         },
       },

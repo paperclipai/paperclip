@@ -96,4 +96,29 @@ describe("buildJobManifest", () => {
     expect(job.spec.template.metadata.labels["paperclip.io/run-id"]).toBe("r1");
     expect(job.spec.template.metadata.labels["paperclip.io/role"]).toBe("agent");
   });
+
+  it("appends extra volumes, mounts and env after the built-ins, and adds none by default", () => {
+    const plain = buildJobManifest(baseInput).spec;
+    const job = buildJobManifest({
+      ...baseInput,
+      extraVolumes: [{ name: "git-mirror", persistentVolumeClaim: { claimName: "git-mirror", readOnly: true } }],
+      extraVolumeMounts: [{ name: "git-mirror", mountPath: "/mnt/git-mirror", readOnly: true }],
+      extraEnv: [{ name: "GIT_MIRROR", value: "/mnt/git-mirror" }],
+    });
+    const pod = job.spec.template.spec;
+    const plainPod = plain.template.spec;
+    const container = pod.containers[0] as unknown as { env: unknown[]; volumeMounts: unknown[] };
+    const plainContainer = plainPod.containers[0] as unknown as { env: unknown[]; volumeMounts: unknown[] };
+    expect(pod.volumes).toEqual([
+      ...plainPod.volumes,
+      { name: "git-mirror", persistentVolumeClaim: { claimName: "git-mirror", readOnly: true } },
+    ]);
+    expect(container.volumeMounts).toEqual([
+      ...plainContainer.volumeMounts,
+      { name: "git-mirror", mountPath: "/mnt/git-mirror", readOnly: true },
+    ]);
+    expect(container.env).toEqual([{ name: "HOME", value: "/home/paperclip" }, { name: "GIT_MIRROR", value: "/mnt/git-mirror" }]);
+    expect(plainContainer.env).toEqual([{ name: "HOME", value: "/home/paperclip" }]);
+    expect(plainPod.volumes).toHaveLength(4);
+  });
 });
