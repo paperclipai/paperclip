@@ -170,10 +170,11 @@ const OSC_ANY_RE = /\x1b\][^\x1b\x07]*(?:\x1b\\|\x07)/g;
 // rejects any trailing punctuation on its own.
 const TRAILING_PUNCTUATION_RE = /[)\].,;:!]+$/;
 
-// The line that introduces the URL. The Claude login UI prints this phrase right
-// before the URL. The parser anchors the URL search on this phrase, so a URL far
-// from the login context cannot bind.
-const URL_PREAMBLE_RE = /the url below to sign in/i;
+// The line that introduces the URL. The Claude login UI prints one of these
+// phrases right before the URL: `setup-token` prints the first and `auth login`
+// prints the second. The parser anchors the URL search on this phrase, so a URL
+// far from the login context cannot bind.
+const URL_PREAMBLE_RE = /the url below to sign in|if the browser didn't open, visit:/i;
 
 // The browser-code prompt on a dedicated line. The line starts with the exact
 // prompt phrase. The line can end with the input caret `>` and masked echo `*`

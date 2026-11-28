@@ -348,7 +348,7 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     }
   });
 
-  async function configuration(f: Awaited<ReturnType<typeof seed>>, config: Record<string, unknown>, snapshot: Record<string, unknown> = {}, type = "paperclip_runner", explicitTaskDirectory = false, requestedExecutionWorkspaceMode: HeartbeatExecutionConfigurationInput["policy"]["requestedExecutionWorkspaceMode"] = "shared_workspace", selectedEnvironmentForConfig: HeartbeatExecutionConfigurationInput["environment"]["selectedEnvironmentForConfig"] = null, pinnedSkillTest?: HeartbeatExecutionConfigurationInput["task"]["pinnedSkillTest"], adoptingLiveRunner = false, aiBinding?: HeartbeatExecutionConfigurationInput["config"]["aiBinding"]) {
+  async function configuration(f: Awaited<ReturnType<typeof seed>>, config: Record<string, unknown>, snapshot: Record<string, unknown> = {}, type = "paperclip_runner", explicitTaskDirectory = false, requestedExecutionWorkspaceMode: HeartbeatExecutionConfigurationInput["policy"]["requestedExecutionWorkspaceMode"] = "shared_workspace", selectedEnvironmentForConfig: HeartbeatExecutionConfigurationInput["environment"]["selectedEnvironmentForConfig"] = null, pinnedSkillTest?: HeartbeatExecutionConfigurationInput["task"]["pinnedSkillTest"], adoptingLiveRunner = false, aiBinding?: HeartbeatExecutionConfigurationInput["config"]["aiBinding"], reattachingLiveRunner = false) {
     const [agent] = await db.update(agents).set({ adapterType: type, adapterConfig: config }).where(eq(agents.id, f.agentId)).returning();
     const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: f.issueId, scopeKind: "issue", status: "running", contextSnapshot: snapshot }).returning();
     const resolvedInstanceSettings = await instanceSettingsService(db).get();
@@ -356,7 +356,7 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     const environment = selectedEnvironmentForConfig ?? await environmentService(db).ensureLocalEnvironment();
     return { run, appendRunEvent, prepare: () => prepareHeartbeatExecutionConfiguration(db, {
       run, agent,
-      task: { issueId: f.issueId, context: { ...snapshot, issueId: f.issueId }, responsibleUserId: null, pinnedSkillTest, adoptingLiveRunner,
+      task: { issueId: f.issueId, context: { ...snapshot, issueId: f.issueId }, responsibleUserId: null, pinnedSkillTest, adoptingLiveRunner, reattachingLiveRunner,
         acceptedPlanContinuationWake: false, acceptedPlanWakeRoutingDecision: null,
         taskProjectContext: null, routineEnvContext: { routineId: null, env: null, responsibleUserId: null } },
       config: { sourceWorkspaceConfig: config, aiBinding },
@@ -370,6 +370,34 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
       onFailureSecretsResolved: () => {}, onManagedAiRuntimeAcquired: () => {}, onIdentityRedactorPrepared: () => {},
     }) };
   }
+
+  it.each(["none", "remote", "local"] as const)("names the run to the managed AI runtime only when no live runner holds its token (live runner=%s)", async live => {
+    const f = await seed(true);
+    const binding = aiConnectionBindingSchema.parse((await db.select().from(agents).where(eq(agents.id, f.agentId)))[0]!.runtimeConfig!.aiConnection);
+    const prepare = vi.spyOn(aiRuntime, "prepareManagedAiRuntime").mockRejectedValue(new Error("fixture managed account reached"));
+    const opening = await configuration(f, { provider: "codex" }, {}, "paperclip_runner", false, "shared_workspace", null, undefined, live === "remote", binding, live !== "none");
+    await opening.prepare().catch(() => undefined);
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(prepare.mock.calls[0]![1].currentRunId).toBe(live === "none" ? opening.run.id : undefined);
+  });
+
+  it.each(["none", "remote", "local"] as const)("records the token identity that the process holds, not one renewed under a live runner (live runner=%s)", async live => {
+    const f = await seed(true);
+    const binding = aiConnectionBindingSchema.parse((await db.select().from(agents).where(eq(agents.id, f.agentId)))[0]!.runtimeConfig!.aiConnection);
+    if (!("grantId" in binding)) throw new Error("The fixture agent has no saved AI account");
+    const attribution = { connectionId: binding.connectionId, grantId: binding.grantId, provider: binding.provider, method: binding.method, mode: binding.mode, responsibleUserId: null };
+    // This preparation renewed the credential: the runtime reports a new token identity.
+    vi.spyOn(aiRuntime, "prepareManagedAiRuntime").mockResolvedValue({ config: { provider: "codex", env: {} }, attribution, accountName: "Fixture",
+      identity: `${binding.grantId}:shared:renewed`, sessionIdentity: `${binding.grantId}:shared:session`, cleanup: async () => {} } as never);
+    const saved = { aiConnection: { ...attribution, identity: `${binding.grantId}:shared:delivered`, sessionIdentity: `${binding.grantId}:shared:session` } };
+    const opening = await configuration(f, { provider: "codex" }, saved, "paperclip_runner", false, "shared_workspace", null, undefined, live === "remote", binding, live !== "none");
+    await opening.prepare().catch(() => undefined);
+    const [row] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, opening.run.id));
+    const recorded = (row!.contextSnapshot as { aiConnection: { identity: string; preparedIdentity?: string } }).aiConnection;
+    expect(recorded.identity).toBe(`${binding.grantId}:shared:${live === "none" ? "renewed" : "delivered"}`);
+    // The prepared identity is kept for the case that recovery replaces the runner.
+    expect(recorded.preparedIdentity).toBe(live === "none" ? undefined : `${binding.grantId}:shared:renewed`);
+  });
 
   it.each([undefined, true, false])("defaults existing SSH environments to remote authentication and honors the saved choice (saved=%s)", async useHostAuth => {
     const f = await seed(true);

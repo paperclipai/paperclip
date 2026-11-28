@@ -1,4 +1,5 @@
 import { supportsPaperclipRunnerPreconfiguredHome } from "../native-runtime/provider-profile.js";
+import { AI_PREPARED_IDENTITY_KEY } from "../run-ai-credential-holder.js";
 import { agentHarnessType } from "@paperclipai/shared";
 import { observabilitySecretValues } from "@paperclipai/adapter-utils/agent-observability";
 import { agentObservabilityService, unavailableAgentObservability, type ResolvedAgentObservability } from "../agent-observability.js";
@@ -77,6 +78,8 @@ export interface HeartbeatExecutionConfigurationInput {
     pinnedSkillTest?: { key: string; versionId: string } | null;
     /** Restart recovery is reconnecting to this run's live remote Runner. */
     adoptingLiveRunner?: boolean;
+    /** Restart recovery reconnects this run to a runner process that is still alive, local or remote. */
+    reattachingLiveRunner?: boolean;
   };
   config: {
     sourceWorkspaceConfig: Record<string, unknown>;
@@ -232,7 +235,11 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
   identityRedactor.addSecretValues(secretEnvironmentValues(resolvedConfig.env, secretKeys));
   if (aiBinding) {
     try {
-      managedAiRuntime = await time("configuration_ai_runtime", () => prepareManagedAiRuntime(db, { companyId: agent.companyId, agentId: agent.id, responsibleUserId, adapterType: agent.adapterType, binding: aiBinding, config: resolvedConfig }));
+      managedAiRuntime = await time("configuration_ai_runtime", () => prepareManagedAiRuntime(db, { companyId: agent.companyId, agentId: agent.id, responsibleUserId, adapterType: agent.adapterType, binding: aiBinding, config: resolvedConfig,
+        // A live runner that this run reconnects to still uses the token the run
+        // started with, so the run stays counted as a holder and does not renew
+        // under itself.
+        currentRunId: input.task.adoptingLiveRunner || input.task.reattachingLiveRunner ? undefined : run.id }));
       onManagedAiRuntimeAcquired(managedAiRuntime);
     } catch (error) {
       // Only fresh executions can receive a pre-provider wait receipt. A
@@ -272,7 +279,19 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
     }
     Object.assign(resolvedConfig, managedAiRuntime.config);
     for (const key of AI_AUTH_ENV_KEYS) secretKeys.add(key);
-    context.aiConnection = { ...managedAiRuntime.attribution, accountName: managedAiRuntime.accountName, identity: managedAiRuntime.identity, sessionIdentity: managedAiRuntime.sessionIdentity };
+    // A live runner that this run reconnects to keeps the token it started
+    // with. If this preparation renewed the credential, the new identity
+    // names a token the runner never received. A rejection that the runner
+    // reports later must be attributed to the token it holds, so the saved
+    // identity of the same grant is kept.
+    const liveRunnerIdentity = (input.task.adoptingLiveRunner || input.task.reattachingLiveRunner)
+      && savedAiAccount.grantId === managedAiRuntime.attribution.grantId && typeof savedAiAccount.identity === "string"
+      ? savedAiAccount.identity : null;
+    // The recovery can still retire that runner and launch a replacement,
+    // which receives the newly prepared token. `preparedIdentity` keeps that
+    // identity so the replacement can record it as the one it holds.
+    context.aiConnection = { ...managedAiRuntime.attribution, accountName: managedAiRuntime.accountName, identity: liveRunnerIdentity ?? managedAiRuntime.identity, sessionIdentity: managedAiRuntime.sessionIdentity,
+      ...(liveRunnerIdentity && liveRunnerIdentity !== managedAiRuntime.identity ? { [AI_PREPARED_IDENTITY_KEY]: managedAiRuntime.identity } : {}) };
     await db.update(heartbeatRuns).set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ aiConnection: context.aiConnection, ...(context.aiRouterTaskKey ? { aiRouterTaskKey: context.aiRouterTaskKey } : {}), ...(context.aiRouterSelection ? { aiRouterSelection: context.aiRouterSelection } : {}) })}::jsonb` }).where(eq(heartbeatRuns.id, run.id));
   } else if (isAgentUsingCloudTrialInference(agent.runtimeConfig)) {
     const cloudTrialRuntime = await time("configuration_ai_runtime", () =>

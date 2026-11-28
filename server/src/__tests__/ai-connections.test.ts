@@ -3,6 +3,7 @@ import { connectionIntentService } from "../services/connection-intents.js";
 import { connectionIntentDeliveryService } from "../services/connection-intent-delivery.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { localAiLoginService } from "../services/local-ai-login.js";
+import * as claudeServer from "@paperclipai/adapter-claude-local/server";
 // Background plan observations have their own provider-fixture coverage. Runtime
 // auth tests must not send the selected fixture credentials to a real provider.
 vi.mock("../services/subscription-refresh.js", () => ({ refreshSubscriptionConnection: vi.fn().mockResolvedValue(undefined) }));
@@ -13,10 +14,10 @@ import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import { promises as fs } from "node:fs";
-import { mkdtemp, realpath, rm, access, readFile, writeFile, stat } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, rm, access, readFile, writeFile, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, sql, inArray } from "drizzle-orm";
 import { createDb, type Db, activityLog, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, plugins, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, secretAccessEvents, userSecretDefinitions, principalPermissionGrants } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { fetchCompanyQuotaWindows } from "../services/quota-windows.js";
@@ -2604,6 +2605,242 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       reader.mockResolvedValue({ credential: "completed-before-restart", accountLabel: undefined });
       await expect(login.check(companyId, owner, { ...intent, agentIds: [] }, id)).resolves.toEqual({ status: "ready" });
     } finally { reader.mockRestore(); await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.id, id)); }
+  });
+  it.each([["anthropic", 1], ["openai", 0]] as const)("deletes the Keychain item of a cancelled %s sign-in with its home", async (provider, deletions) => {
+    const [environment] = await db.select().from(environments).where(eq(environments.driver, "local")).limit(1);
+    const id = randomUUID();
+    const owner = `keychain-${provider}`;
+    const intent = { provider, method: "subscription", ownership: "personal", name: "Cancelled sign-in", allAgents: false, agentIds: [] } as const;
+    await db.insert(adapterAuthSessions).values({ id, publicSessionId: id, companyId, environmentId: environment.id, startedByUserId: owner, adapterType: provider === "anthropic" ? "claude_local" : "codex_local", aiConnection: { ...intent, agentIds: [] }, connectionMethod: "local_subscription", status: "waiting_for_user", expiresAt: new Date(Date.now() + 60_000) });
+    const remove = vi.spyOn(claudeServer, "deleteIsolatedClaudeKeychainCredential").mockResolvedValue(true);
+    try {
+      await localAiLoginService(db).cancel(companyId, owner, id);
+      expect(remove).toHaveBeenCalledTimes(deletions);
+      if (deletions) expect(remove.mock.calls[0]![0].endsWith(path.join("ai-local-logins", id))).toBe(true);
+      expect((await db.select().from(adapterAuthSessions).where(eq(adapterAuthSessions.id, id)))[0]?.status).toBe("cancelled");
+    } finally { remove.mockRestore(); await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.id, id)); }
+  });
+  it("stops a sign-in process that a reopen launched while the attempt was being cancelled", async () => {
+    const owner = "reopen-during-cancel";
+    const intent = { provider: "anthropic", method: "subscription", ownership: "personal", name: "Two tabs", allAgents: false, agentIds: [] as string[] } as const;
+    const remove = vi.spyOn(claudeServer, "deleteIsolatedClaudeKeychainCredential").mockResolvedValue(true);
+    const running = new Set<number>();
+    let launched = 0;
+    browserLoginMock.startLocalBrowserLogin.mockImplementation(() => { const process = ++launched; running.add(process); return { abort: () => { running.delete(process); } } as never; });
+    const login = localAiLoginService(db);
+    let id: string | undefined;
+    try {
+      id = (await login.start(companyId, owner, intent)).sessionId;
+      expect([...running]).toEqual([1]);
+      // The other tab reopens the attempt after cancel stopped the first
+      // process and before cancel's transaction takes the row lock.
+      const transaction = db.transaction.bind(db);
+      let reopened = false;
+      const spy = vi.spyOn(db, "transaction").mockImplementation((async (...args: Parameters<typeof transaction>) => {
+        if (!reopened && running.size === 0) {
+          reopened = true;
+          expect((await login.start(companyId, owner, intent)).sessionId).toBe(id);
+          expect([...running]).toEqual([2]);
+        }
+        return transaction(...args);
+      }) as typeof db.transaction);
+      try { await login.cancel(companyId, owner, id); } finally { spy.mockRestore(); }
+      expect(reopened).toBe(true);
+      expect(launched).toBe(2);
+      expect([...running]).toEqual([]);
+      expect((await db.select().from(adapterAuthSessions).where(eq(adapterAuthSessions.id, id)))[0]?.status).toBe("cancelled");
+      // A reopen that arrives after the cancel has committed starts a new attempt, not a process for the cancelled one.
+      const next = await login.start(companyId, owner, intent);
+      expect(next.sessionId).not.toBe(id);
+      await login.cancel(companyId, owner, next.sessionId);
+      expect([...running]).toEqual([]);
+    } finally {
+      browserLoginMock.startLocalBrowserLogin.mockReset(); remove.mockRestore();
+      await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.startedByUserId, owner));
+    }
+  });
+  it("launches no sign-in process when the attempt cannot be read under its lock", async () => {
+    const owner = "launch-read-fails";
+    const intent = { provider: "anthropic", method: "subscription", ownership: "personal", name: "Read fails", allAgents: false, agentIds: [] as string[] } as const;
+    const remove = vi.spyOn(claudeServer, "deleteIsolatedClaudeKeychainCredential").mockResolvedValue(true);
+    let launched = 0;
+    browserLoginMock.startLocalBrowserLogin.mockImplementation(() => { launched += 1; return { abort: () => {} } as never; });
+    const login = localAiLoginService(db);
+    const transaction = db.transaction.bind(db);
+    let calls = 0;
+    const spy = vi.spyOn(db, "transaction").mockImplementation((async (...args: Parameters<typeof transaction>) => {
+      calls += 1;
+      if (calls === 2) throw new Error("database unavailable");
+      return transaction(...args);
+    }) as typeof db.transaction);
+    try {
+      await expect(login.start(companyId, owner, intent)).rejects.toThrow("database unavailable");
+      expect(launched).toBe(0);
+      const [attempt] = await db.select().from(adapterAuthSessions).where(eq(adapterAuthSessions.startedByUserId, owner));
+      expect(attempt).toMatchObject({ status: "waiting_for_user", expiresAt: expect.any(Date) });
+    } finally {
+      spy.mockRestore(); browserLoginMock.startLocalBrowserLogin.mockReset(); remove.mockRestore();
+      await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.startedByUserId, owner));
+    }
+  });
+  it("launches no sign-in process for an attempt that expired after it was read", async () => {
+    const owner = "expired-before-launch";
+    const intent = { provider: "anthropic", method: "subscription", ownership: "personal", name: "Expired", allAgents: false, agentIds: [] as string[] } as const;
+    const remove = vi.spyOn(claudeServer, "deleteIsolatedClaudeKeychainCredential").mockResolvedValue(true);
+    let launched = 0;
+    browserLoginMock.startLocalBrowserLogin.mockImplementation(() => { launched += 1; return { abort: () => {} } as never; });
+    const login = localAiLoginService(db);
+    const transaction = db.transaction.bind(db);
+    let calls = 0;
+    const spy = vi.spyOn(db, "transaction").mockImplementation((async (...args: Parameters<typeof transaction>) => {
+      calls += 1;
+      if (calls === 2) await db.update(adapterAuthSessions).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(adapterAuthSessions.startedByUserId, owner));
+      return transaction(...args);
+    }) as typeof db.transaction);
+    try {
+      await expect(login.start(companyId, owner, intent)).rejects.toThrow("This sign-in has ended");
+      expect(launched).toBe(0);
+    } finally {
+      spy.mockRestore(); browserLoginMock.startLocalBrowserLogin.mockReset(); remove.mockRestore();
+      await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.startedByUserId, owner));
+    }
+  });
+  it("stops a sign-in process that was launched after the expiry worker stopped the previous one", async () => {
+    const owner = "launch-during-expiry";
+    const intent = { provider: "anthropic", method: "subscription", ownership: "personal", name: "Expiring", allAgents: false, agentIds: [] as string[] } as const;
+    const remove = vi.spyOn(claudeServer, "deleteIsolatedClaudeKeychainCredential").mockResolvedValue(true);
+    const running = new Set<number>();
+    let launched = 0;
+    browserLoginMock.startLocalBrowserLogin.mockImplementation(() => { const process = ++launched; running.add(process); return { abort: () => { running.delete(process); } } as never; });
+    const login = localAiLoginService(db);
+    try {
+      const id = (await login.start(companyId, owner, intent)).sessionId;
+      const expire = (at: number) => db.update(adapterAuthSessions).set({ expiresAt: new Date(at) }).where(eq(adapterAuthSessions.id, id));
+      await expire(Date.now() - 1000);
+      // The worker has stopped the first process. A start that read the attempt
+      // before it expired now launches a second one, and then the attempt expires.
+      const transaction = db.transaction.bind(db);
+      let relaunched = false;
+      const spy = vi.spyOn(db, "transaction").mockImplementation((async (...args: Parameters<typeof transaction>) => {
+        if (!relaunched && running.size === 0) {
+          relaunched = true;
+          await expire(Date.now() + 60_000);
+          await login.start(companyId, owner, intent);
+          expect([...running]).toEqual([2]);
+          await expire(Date.now() - 1000);
+        }
+        return transaction(...args);
+      }) as typeof db.transaction);
+      try { await login.reapExpired(); } finally { spy.mockRestore(); }
+      expect(relaunched).toBe(true);
+      expect([...running]).toEqual([]);
+      expect((await db.select().from(adapterAuthSessions).where(eq(adapterAuthSessions.id, id)))[0]).toMatchObject({ status: "timed_out", expiresAt: null });
+    } finally {
+      browserLoginMock.startLocalBrowserLogin.mockReset(); remove.mockRestore();
+      await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.startedByUserId, owner));
+    }
+  });
+  it("records a pending cancellation when a process that a reopen launched does not stop in time", async () => {
+    const owner = "slow-second-stop";
+    const intent = { provider: "anthropic", method: "subscription", ownership: "personal", name: "Slow stop", allAgents: false, agentIds: [] as string[] } as const;
+    const remove = vi.spyOn(claudeServer, "deleteIsolatedClaudeKeychainCredential").mockResolvedValue(true);
+    let launched = 0;
+    // The first process stops at once. The second one, which the reopen launches, never confirms its stop.
+    browserLoginMock.startLocalBrowserLogin.mockImplementation(() => (++launched === 1 ? { abort: () => {} } : { abort: () => new Promise<void>(() => {}) }) as never);
+    const login = localAiLoginService(db);
+    // The stop deadline is five seconds. Let it pass at once; other timers keep their time.
+    const realSetTimeout = globalThis.setTimeout;
+    const clock = vi.spyOn(globalThis, "setTimeout").mockImplementation(((handler: () => void, ms?: number, ...rest: unknown[]) =>
+      realSetTimeout(handler, ms === 5_000 ? 0 : ms, ...rest)) as typeof setTimeout);
+    try {
+      const id = (await login.start(companyId, owner, intent)).sessionId;
+      const transaction = db.transaction.bind(db);
+      let reopened = false;
+      const spy = vi.spyOn(db, "transaction").mockImplementation((async (...args: Parameters<typeof transaction>) => {
+        if (!reopened) { reopened = true; await login.start(companyId, owner, intent); }
+        return transaction(...args);
+      }) as typeof db.transaction);
+      try { await expect(login.cancel(companyId, owner, id)).rejects.toThrow("still stopping"); } finally { spy.mockRestore(); }
+      expect(launched).toBe(2);
+      const [attempt] = await db.select().from(adapterAuthSessions).where(eq(adapterAuthSessions.id, id));
+      expect(attempt).toMatchObject({ status: "waiting_for_user", failureReason: "local_login_retirement_pending" });
+      expect(attempt!.expiresAt!.getTime()).toBeLessThanOrEqual(Date.now());
+    } finally {
+      clock.mockRestore();
+      browserLoginMock.startLocalBrowserLogin.mockReset(); remove.mockRestore();
+      await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.startedByUserId, owner));
+    }
+  });
+  it("keeps a Claude sign-in pending for the expiry worker until its Keychain item is deleted", async () => {
+    const [environment] = await db.select().from(environments).where(eq(environments.driver, "local")).limit(1);
+    const id = randomUUID();
+    const owner = "keychain-retry";
+    const intent = { provider: "anthropic", method: "subscription", ownership: "personal", name: "Locked Keychain", allAgents: false, agentIds: [] } as const;
+    await db.insert(adapterAuthSessions).values({ id, publicSessionId: id, companyId, environmentId: environment.id, startedByUserId: owner, adapterType: "claude_local", aiConnection: { ...intent, agentIds: [] }, connectionMethod: "local_subscription", status: "waiting_for_user", expiresAt: new Date(Date.now() + 60_000) });
+    const directory = path.join(home, "instances", "ai-connection-fixture", "ai-local-logins", id);
+    const read = async () => (await db.select().from(adapterAuthSessions).where(eq(adapterAuthSessions.id, id)))[0]!;
+    const remove = vi.spyOn(claudeServer, "deleteIsolatedClaudeKeychainCredential").mockResolvedValue(false);
+    try {
+      const login = localAiLoginService(db);
+      await mkdir(directory, { recursive: true });
+      await expect(login.cancel(companyId, owner, id)).rejects.toThrow("Keychain item");
+      // The failed cancel makes the attempt due now, not at its original expiry a minute later.
+      const pending = await read();
+      expect(pending).toMatchObject({ status: "waiting_for_user", expiresAt: expect.any(Date) });
+      expect(pending.expiresAt!.getTime()).toBeLessThanOrEqual(Date.now());
+      await expect(login.reapExpired()).rejects.toThrow("cleanup failed");
+      expect(await read()).toMatchObject({ status: "waiting_for_user", expiresAt: expect.any(Date) });
+      await expect(stat(directory)).resolves.toBeTruthy();
+      expect(await login.nextCleanupAt()).not.toBeNull();
+      remove.mockResolvedValue(true);
+      await login.reapExpired();
+      expect(await read()).toMatchObject({ status: "cancelled", expiresAt: null });
+      await expect(stat(directory)).rejects.toThrow();
+    } finally { remove.mockRestore(); await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.id, id)); }
+  });
+  it.skipIf(process.getuid?.() === 0)("makes a cancel due for the expiry worker when its login home cannot be removed", async () => {
+    const [environment] = await db.select().from(environments).where(eq(environments.driver, "local")).limit(1);
+    const id = randomUUID();
+    const owner = "unremovable-home";
+    const intent = { provider: "openai", method: "subscription", ownership: "personal", name: "Unremovable home", allAgents: false, agentIds: [] } as const;
+    await db.insert(adapterAuthSessions).values({ id, publicSessionId: id, companyId, environmentId: environment.id, startedByUserId: owner, adapterType: "codex_local", aiConnection: { ...intent, agentIds: [] }, connectionMethod: "local_subscription", status: "waiting_for_user", expiresAt: new Date(Date.now() + 60_000) });
+    const parent = path.join(home, "instances", "ai-connection-fixture", "ai-local-logins");
+    const read = async () => (await db.select().from(adapterAuthSessions).where(eq(adapterAuthSessions.id, id)))[0]!;
+    await mkdir(path.join(parent, id), { recursive: true });
+    await chmod(parent, 0o500);
+    try {
+      const login = localAiLoginService(db);
+      await expect(login.cancel(companyId, owner, id)).rejects.toMatchObject({ code: "EACCES" });
+      const pending = await read();
+      expect(pending).toMatchObject({ status: "waiting_for_user", failureReason: "local_login_retirement_pending" });
+      expect(pending.expiresAt!.getTime()).toBeLessThanOrEqual(Date.now());
+      await expect(login.start(companyId, owner, { ...intent, agentIds: [] })).rejects.toThrow();
+      await chmod(parent, 0o700);
+      await login.reapExpired();
+      expect(await read()).toMatchObject({ status: "cancelled", expiresAt: null });
+    } finally { await chmod(parent, 0o700); await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.id, id)); }
+  });
+  it("reaches later expired sign-ins while older ones continue to fail their cleanup", async () => {
+    const [environment] = await db.select().from(environments).where(eq(environments.driver, "local")).limit(1);
+    const attempt = (provider: "anthropic" | "openai", age: number) => {
+      const id = randomUUID();
+      return { id, publicSessionId: id, companyId, environmentId: environment.id, startedByUserId: `batch-${id}`, adapterType: provider === "anthropic" ? "claude_local" : "codex_local",
+        aiConnection: { provider, method: "subscription" as const, ownership: "personal" as const, name: "Expired sign-in", allAgents: false, agentIds: [] as string[] },
+        connectionMethod: "local_subscription" as const, status: "waiting_for_user" as const, expiresAt: new Date(Date.now() - age) };
+    };
+    const stuck = Array.from({ length: 16 }, (_, index) => attempt("anthropic", 120_000 - index));
+    const later = attempt("openai", 1000);
+    await db.insert(adapterAuthSessions).values([...stuck, later]);
+    const status = async () => (await db.select().from(adapterAuthSessions).where(eq(adapterAuthSessions.id, later.id)))[0]!.status;
+    const remove = vi.spyOn(claudeServer, "deleteIsolatedClaudeKeychainCredential").mockResolvedValue(false);
+    try {
+      const login = localAiLoginService(db);
+      await expect(login.reapExpired()).rejects.toThrow("cleanup failed");
+      expect(await status()).toBe("waiting_for_user");
+      await expect(login.reapExpired()).rejects.toThrow("cleanup failed");
+      expect(await status()).toBe("timed_out");
+      expect(await login.nextCleanupAt()).not.toBeNull();
+    } finally { remove.mockRestore(); await db.delete(adapterAuthSessions).where(inArray(adapterAuthSessions.id, [...stuck, later].map(row => row.id))); }
   });
   it("requires an owned browser sign-in attempt for local subscriptions", async () => {
     const reader = vi.spyOn(localCredentials, "readVerifiedLocalAiCredentialDetails").mockResolvedValue({ credential: "fixture-local-token", accountLabel: undefined });

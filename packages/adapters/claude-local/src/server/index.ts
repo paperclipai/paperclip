@@ -24,6 +24,8 @@ export {
   readClaudeAuthStatus,
   readClaudeToken,
   readIsolatedClaudeKeychainToken,
+  readIsolatedClaudeKeychainCredential,
+  deleteIsolatedClaudeKeychainCredential,
   fetchClaudeQuota,
   fetchClaudeCliQuota,
   captureClaudeCliUsageText,

@@ -154,6 +154,75 @@ setup shows an agent-access checkbox, enabled for all company agents by default
 for connection managers. The owner can limit access to the current agent. This access applies only to
 the owner's tasks. Reconnect never expands existing access.
 
+## Claude subscription renewal
+
+Local Claude browser sign-in uses `claude auth login` in a connection-specific
+home. Paperclip stores the access token, refresh token, expiry and subscription
+metadata in the encrypted credential secret. On macOS, it reads only that home's
+namespaced Keychain item, with the credential file as fallback when the item is
+absent. It never imports the operator's ambient login. When the sign-in attempt
+completes, is cancelled, is replaced or expires, Paperclip deletes that Keychain
+item together with the home. It stops the sign-in process first, also a process
+that another browser tab started for the same attempt in the meantime.
+
+When a run or account probe uses a credential with less than two hours left,
+the server renews it under the existing company credential mutation lock. The
+rotated pair is saved before the access token is returned. A new broad login
+credential is first renewed with only `user:inference`. Runs never receive the
+broader login token. If the provider refuses that scope, execution waits for
+repair. Account probes can report `permission_denied` because the narrowed token
+has no `user:profile` permission, as with the previous setup-token flow. Legacy and native
+runs receive only the access token through `CLAUDE_CODE_OAUTH_TOKEN`. Renewal
+preserves the session epoch and records `ai_connection.credential_refreshed`.
+There is no background renewal scan.
+
+A temporary provider failure keeps a still-valid access token. Once the token
+expires, a temporary failure defers execution; a refused refresh requests sign-in.
+Save retries retain the successful exchange in memory and never exchange the
+same refresh token again. If all save attempts fail, the server keeps the pair
+in memory for the next credential use. Recovery first saves that pair, then
+renews it if it expired or is near expiry. A reconnect discards the pending pair.
+As with the server-side Codex quota exchange, a process
+loss after the provider exchange and before the vault commit can require sign-in.
+
+Existing bare-token connections and long-lived setup tokens retain their current
+format. The discarded refresh token cannot be recovered from a bare access token.
+Reconnect an affected connection once to obtain a renewable credential. An
+unexpired long-lived setup token needs no change.
+
+### Renewal waits for running work
+
+The provider revokes the previous access token as soon as it issues a new one,
+and a running Claude process cannot replace the token it started with. An early
+renewal therefore waits while another run of the same grant is `running`: the
+new run receives the current token, which is still valid. The server renews when
+no other run holds the token, both when a run starts and when a run's runtime is
+cleaned up, so a busy connection is renewed in the gap after its last run ends.
+A run counts as a holder from the moment it receives the token until its status
+is final. That includes a run whose controller detached for a restart and left
+its runner alive, and a run that restart recovery reconnects to a live runner.
+An account test or an agent verification in flight counts as a holder too. It
+has no run, so the server counts it in memory until the test ends, or until its
+native process has retired if that takes longer.
+Once less than five minutes remain, renewal no longer waits; the other runs would
+lose the token at expiry either way. A run that outlasts the token it started
+with fails with an authentication error and can be retried. That failure does
+not request sign-in: the stored token is marked spent, the next use renews it,
+and only the provider refusing the renewal marks the connection for sign-in.
+The token is marked spent for each failed run whose provider rejected it, also
+for a run with no task and no repair card. A run that failed before it reached
+the provider says nothing about its token and marks nothing. A run that restart
+recovery reconnected to a live runner keeps the identity of the token that
+runner holds, so its failure is not attributed to a token that was renewed
+during the recovery. If the recovery replaces the runner, the run records the
+identity of the token that the replacement receives.
+
+An exchanged pair that could not be saved to the vault stays in server memory
+until the next credential read saves it. The server reports it as pending local
+work, so an idle shutdown waits for the save. While a pair is pending, the
+server checks at most every 30 seconds whether its grant is still active, and
+drops the pair when the grant was revoked or its connection was removed.
+
 ## Storage and API
 
 AI connections pair `connectionPurpose: ai` with `transport: runtime_auth`.

@@ -2949,7 +2949,8 @@ export function heartbeatService(
       const executionConfiguration = await timePreparation("execution_configuration", () => prepareHeartbeatExecutionConfiguration(db, {
         run, agent,
         task: { issueId, context, responsibleUserId, acceptedPlanContinuationWake, acceptedPlanWakeRoutingDecision, taskProjectContext, routineEnvContext, pinnedSkillTest,
-          adoptingLiveRunner: adoptsLiveRemoteRunner({ run, restartRecovery: runOptions.nativeRestartRecovery, leaseOwner: runOptions.nativeLeaseOwner }) },
+          adoptingLiveRunner: adoptsLiveRemoteRunner({ run, restartRecovery: runOptions.nativeRestartRecovery, leaseOwner: runOptions.nativeLeaseOwner }),
+          reattachingLiveRunner: runOptions.nativeRestartRecovery?.kind === "reattach_existing_runner" || runOptions.nativeRestartRecovery?.kind === "reattach_remote_runner" },
         config: { sourceWorkspaceConfig: workspaceSelection.sourceWorkspaceConfig, aiBinding },
         policy: { trustPreset, useIsolatedTaskDirectory: workspaceSelection.useIsolatedTaskDirectory,
           explicitTaskDirectory: workspaceSelection.explicitTaskDirectory, requestedExecutionWorkspaceMode },

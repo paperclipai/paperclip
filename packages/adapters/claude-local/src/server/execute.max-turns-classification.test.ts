@@ -102,4 +102,14 @@ describe("claude_local failure classification precedence", () => {
 
     expect(result.errorCode).toBe("model_not_found");
   });
+  it("adds the typed provider rejection only for a refused subscription token", async () => {
+    mockExecutionResult(buildProcResult({ is_error: true, api_error_status: 401, result: "Failed to authenticate. API Error: 401 Invalid bearer token" }));
+    const withToken = { ...buildContext(), config: { engine: "cli", env: { CLAUDE_CODE_OAUTH_TOKEN: "fixture-token" } } };
+    const refused = await execute(withToken as never);
+    expect(refused.errorCode).toBe("claude_auth_required");
+    expect(refused.resultJson?.providerFailure).toMatchObject({ provider: "anthropic", category: "authentication", httpStatus: 401 });
+    const other = await execute(buildContext() as never);
+    expect(other.errorCode).toBe("claude_auth_required");
+    expect(other.resultJson?.providerFailure).toBeUndefined();
+  });
 });

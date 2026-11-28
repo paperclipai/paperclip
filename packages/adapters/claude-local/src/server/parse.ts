@@ -1,4 +1,5 @@
 import type { UsageSummary } from "@paperclipai/adapter-utils";
+import type { ProviderFailure } from "@paperclipai/shared";
 import {
   asString,
   asNumber,
@@ -260,14 +261,44 @@ export function detectClaudeLoginRequired(input: {
   // The token-failure markers match only against the parsed terminal fields of
   // a failed run. The raw stdout is untrusted, so a model that prints a token
   // phrase, or a successful run that repeats one, does not flip the classifier.
-  const tokenFailure =
-    parsed !== null &&
-    claudeResultIndicatesAuthFailure(parsed) &&
-    CLAUDE_AUTH_TOKEN_FAILURE_RE.test(collectClaudeTerminalText(parsed));
+  const tokenFailure = claudeTerminalTokenFailure(parsed);
 
   return {
     requiresLogin: loginPrompt || tokenFailure,
     loginUrl: extractClaudeLoginUrl([input.stdout, input.stderr].join("\n")),
+  };
+}
+
+function claudeTerminalTokenFailure(parsed: Record<string, unknown> | null): boolean {
+  return parsed !== null &&
+    claudeResultIndicatesAuthFailure(parsed) &&
+    CLAUDE_AUTH_TOKEN_FAILURE_RE.test(collectClaudeTerminalText(parsed));
+}
+
+/**
+ * The typed report that the provider refused the subscription token of a run.
+ * The error code `claude_auth_required` also covers a login prompt that is
+ * matched in raw output, so the code alone does not show that the provider
+ * saw the token. This report is made only from the terminal result of a
+ * failed run, and only for a run that was given a subscription token: for
+ * any other credential the provider of the failure can differ from the
+ * provider of the connection.
+ */
+export function claudeSubscriptionTokenRejection(input: {
+  parsed: Record<string, unknown> | null;
+  subscriptionToken: boolean;
+}): ProviderFailure | null {
+  const { parsed } = input;
+  if (!input.subscriptionToken || parsed === null || !claudeTerminalTokenFailure(parsed)) return null;
+  const status = asNumber(parsed.api_error_status, 0) || asNumber(parsed.error_status, 0);
+  return {
+    schema: "paperclip.provider-failure.v1",
+    provider: "anthropic",
+    phase: "turn",
+    category: "authentication",
+    message: collectClaudeTerminalText(parsed).slice(0, 4000),
+    ...(status === 401 || status === 403 ? { httpStatus: status } : {}),
+    retryability: "requires_action",
   };
 }
 
