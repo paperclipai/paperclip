@@ -2,6 +2,13 @@
 
 Module map and behavior notes for the heartbeat service and the server's background workers. The rules are in [Heartbeat execution boundaries](../rules/heartbeat-execution-boundaries.mdc).
 
+## Assigned reviewer wake
+
+When an issue enters `in_review`, its assigned company QA agent receives a
+task-bound wake. Assigning a QA agent to an issue already in review also requests
+a run. An issue description that asks for QA has no effect on routing. The
+reviewer reads the issue and records its own verdict.
+
 ## Agent status recovery
 
 Lifecycle verification stops automatic attempts after missing authentication,

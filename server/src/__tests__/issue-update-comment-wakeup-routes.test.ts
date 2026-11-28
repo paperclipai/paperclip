@@ -35,6 +35,7 @@ const mockIssueService = vi.hoisted(() => ({
 const mockPauseGate = vi.hoisted(() => vi.fn(async (): Promise<Record<string, unknown> | null> => null));
 const mockExecutionBlocker = vi.hoisted(() => vi.fn(async (): Promise<Record<string, unknown> | null> => null));
 vi.mock("../services/execution-blocker.js", () => ({ getExecutionBlocker: mockExecutionBlocker }));
+const mockGetAgent = vi.hoisted(() => vi.fn());
 const mockAccessDecide = vi.hoisted(() => vi.fn(async (input: { action?: string; resource?: { issueId?: string } }) => ({
   allowed: true,
   action: input.action,
@@ -94,7 +95,7 @@ const createServicesMock = vi.hoisted(() => () => ({
     hasPermission: vi.fn(async () => true),
   }),
   agentService: () => ({
-    getById: vi.fn(async () => null),
+    getById: mockGetAgent,
     resolveByReference: vi.fn(async (_companyId: string, raw: string) => ({
       ambiguous: false,
       agent: { id: raw },
@@ -231,6 +232,7 @@ describe("issue update comment wakeups", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     mockAccessDecide.mockImplementation(async (input) => ({ allowed: true, action: input.action, reason: "allow_explicit_grant", explanation: "Allowed by test grant." }));
+    mockGetAgent.mockResolvedValue(null);
     mockPauseGate.mockResolvedValue(null);
     mockExecutionBlocker.mockResolvedValue(null);
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
@@ -242,6 +244,37 @@ describe("issue update comment wakeups", () => {
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
     mockIssueService.listReviewAttention.mockResolvedValue(new Map());
+  });
+
+  it.each([
+    ["in_progress", ASSIGNEE_AGENT_ID, "qa", 1],
+    ["in_review", null, "qa", 1],
+    ["in_progress", ASSIGNEE_AGENT_ID, "engineer", 0],
+    ["in_review", ASSIGNEE_AGENT_ID, "qa", 0],
+  ] as const)("routes %s to review for assignee %s with role %s", async (status, priorAgent, role, count) => {
+    const existing = makeIssue({ status, assigneeAgentId: priorAgent, assigneeUserId: null });
+    const updated = {
+      ...existing, status: "in_review", assigneeAgentId: ASSIGNEE_AGENT_ID, statusVersion: 2,
+      changes: {
+        ...(priorAgent === null ? { assigneeAgentId: { from: null, to: ASSIGNEE_AGENT_ID } } : {}),
+        ...(status !== "in_review" ? { status: { from: status, to: "in_review" } } : {}),
+      },
+    };
+    mockGetAgent.mockResolvedValue({ companyId: existing.companyId, role });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+
+    const changes = priorAgent === null ? { assigneeAgentId: ASSIGNEE_AGENT_ID } : { status: "in_review" };
+    const res = await request(await createApp()).patch(`/api/issues/${existing.id}`).send(changes);
+
+    expect(res.status).toBe(200);
+    await new Promise(resolve => setImmediate(resolve));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(count);
+    if (count) expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(ASSIGNEE_AGENT_ID, expect.objectContaining({
+      contextSnapshot: expect.objectContaining({ taskId: existing.id, assignedReviewerHandoff: true }),
+      issueStateGuard: { assigneeAgentId: ASSIGNEE_AGENT_ID, statuses: ["in_review"], statusVersion: 2 },
+    }));
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
   it.each(["post", "patch"] as const)("rejects %s board messages under an inherited pause before any mutation", async (method) => {
