@@ -75,7 +75,10 @@ export function githubCredentialsFixture(getDb: () => Db) {
       status: "active",
       enabled: true,
       credentialPolicy: dedicated ? "per_agent" : "per_user",
-      config: { sourceTemplateKey: "github" },
+      config: {
+        sourceTemplateKey: "github",
+        oauth: { connectorProfile: "github.code" },
+      },
     });
     await db.insert(toolConnectionInstalls).values({
       companyId: input.companyId,

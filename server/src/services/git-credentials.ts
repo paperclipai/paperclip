@@ -355,6 +355,20 @@ export function createGitRemoteAuthProvider(
   };
 }
 
+function isManagedGitHubIdentityConnection(connection: { config?: unknown; transportConfig?: unknown }) {
+  const config = connection.config && typeof connection.config === "object"
+    ? connection.config as Record<string, unknown>
+    : {};
+  const transportConfig = connection.transportConfig && typeof connection.transportConfig === "object"
+    ? connection.transportConfig as Record<string, unknown>
+    : {};
+  const oauth = config.oauth && typeof config.oauth === "object"
+    ? config.oauth as Record<string, unknown>
+    : {};
+  return (config.sourceTemplateKey === "github" || transportConfig.sourceTemplateKey === "github")
+    && oauth.connectorProfile === "github.code";
+}
+
 export async function resolveManagedGitHubIdentitySelection(
   db: Db,
   companyId: string,
@@ -378,13 +392,7 @@ export async function resolveManagedGitHubIdentitySelection(
       sql`${toolConnections.transportConfig}->'sourceTemplateKey' = '"github"'::jsonb`,
     ),
   ));
-  const githubConnections = connections.filter((connection) => {
-    const config = connection.config && typeof connection.config === "object" ? connection.config as Record<string, unknown> : {};
-    const transportConfig = connection.transportConfig && typeof connection.transportConfig === "object"
-      ? connection.transportConfig as Record<string, unknown>
-      : {};
-    return config.sourceTemplateKey === "github" || transportConfig.sourceTemplateKey === "github";
-  });
+  const githubConnections = connections.filter(isManagedGitHubIdentityConnection);
   if (githubConnections.length === 0) return { configured: false };
 
   const connectionIds = githubConnections.map((connection) => connection.id);
@@ -508,15 +516,7 @@ export async function filterResolvedGitHubConnectionsForRun<T extends {
   responsibleUserId?: string | null;
   connections: T[];
 }): Promise<T[]> {
-  const githubConnections = input.connections.filter((connection) => {
-    const config = connection.config && typeof connection.config === "object"
-      ? connection.config as Record<string, unknown>
-      : {};
-    const transportConfig = connection.transportConfig && typeof connection.transportConfig === "object"
-      ? connection.transportConfig as Record<string, unknown>
-      : {};
-    return config.sourceTemplateKey === "github" || transportConfig.sourceTemplateKey === "github";
-  });
+  const githubConnections = input.connections.filter(isManagedGitHubIdentityConnection);
   if (githubConnections.length === 0) return input.connections;
   const selection = await resolveManagedGitHubIdentitySelection(input.db, input.companyId, {
     agentId: input.agentId,
