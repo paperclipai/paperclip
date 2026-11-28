@@ -107,7 +107,6 @@ async function readJsonObject(filepath: string): Promise<Record<string, unknown>
 export async function prepareOpenCodeRuntimeConfig(input: {
   env: Record<string, string>;
   config: Record<string, unknown>;
-  targetIsRemote?: boolean;
   /**
    * Point OpenCode at the global AGENTS.md and skills in the source config dir
    * instead of the per-run copy. Only valid when the run can read host paths;
