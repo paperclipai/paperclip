@@ -1028,12 +1028,12 @@ describe("durable same-task case handoffs", () => {
       const receipt = await f.service.handoff(f.companyId, f.actor, f.input);
       expect(receipt).toMatchObject({ state: "awaiting_completion", callerMustYield: false });
       // The source stopped before completing the ordinary task. A terminal
-      // intent owns no successor run: paused-owner recovery must stay visible.
+      // intent owns no successor run: terminated-owner recovery must stay visible.
       const [failedRun] = await db.update(heartbeatRuns).set({
         status: "failed", errorCode: "process_lost", error: "Source crashed after recording terminal intent",
         finishedAt: new Date(),
       }).where(eq(heartbeatRuns.id, f.runId)).returning();
-      await db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.engineer));
+      await db.update(agents).set({ status: "terminated" }).where(eq(agents.id, f.engineer));
       const [observed] = await db.select().from(issues).where(eq(issues.id, f.first.taskId));
       const enqueueWakeup = vi.fn(async () => null);
       const recovery = recoveryService(db, { enqueueWakeup });
@@ -1043,7 +1043,7 @@ describe("durable same-task case handoffs", () => {
       } else {
         expect(await recovery.escalateStrandedAssignedIssue({
           issue: observed!, previousStatus: "in_progress", latestRun: failedRun!,
-          comment: "The source stopped before the task completed and its assignee is paused.",
+          comment: "The source stopped before the task completed and its assignee is terminated.",
         })).toMatchObject({ id: f.first.taskId, status: "blocked" });
       }
       expect((await db.select().from(issues).where(eq(issues.id, f.first.taskId)))[0])
