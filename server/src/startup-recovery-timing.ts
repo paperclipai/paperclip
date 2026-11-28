@@ -1,8 +1,8 @@
 import { ROOT_CONTEXT, SpanStatusCode, trace, type Span } from "@opentelemetry/api";
 
-type StartupRecoveryPhase = "tool_reviews" | "gateway_sessions" | "delivery_workers"
+type StartupRecoveryPhase = "tool_reviews" | "gateway_sessions" | "mcp_tasks" | "delivery_workers"
   | "accounting" | "plugin_workers" | "native_recovery" | "hot_restart"
-  | "orphan_reaping" | "scheduled_retries" | "queued_runs" | "goal_actions" | "active_goals"
+  | "orphan_reaping" | "scheduled_retries" | "queued_runs" | "fresh_queued_runs" | "goal_actions" | "active_goals"
   | "gateway_run_tokens";
 
 export async function timeStartupRecovery<T>(phase: StartupRecoveryPhase, work: () => Promise<T>): Promise<T> {

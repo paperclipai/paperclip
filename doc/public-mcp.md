@@ -9,10 +9,9 @@ separate. The accepted roadmap is in
 
 ## Enable an instance
 
-Apply database migrations with the normal instance upgrade workflow. In Paperclip,
-open **Settings → Experimental → Assistant connections (MCP)** and turn it on.
-Instance administrators can change this setting. It is off by default and takes
-effect immediately without restarting the server.
+Assistant connections are on for every authenticated instance with a public URL,
+including Paperclip Cloud workspaces. There is no setting to turn on. Apply database
+migrations with the normal instance upgrade workflow.
 
 Use the instance's configured authentication public URL, or explicitly set:
 
@@ -20,15 +19,15 @@ Use the instance's configured authentication public URL, or explicitly set:
 PAPERCLIP_PUBLIC_URL=https://YOUR-PAPERCLIP-HOST
 ```
 
-The retired `PAPERCLIP_PUBLIC_MCP_ENABLED` variable has no effect. The persisted
-`enablePublicMcp` setting controls discovery, sign-in, tools and event delivery.
-Turning it off blocks new calls and deliveries; already delegated work continues.
-Connection management and revocation remain available. Turning it back on allows
-unexpired connections and subscriptions to resume.
+The retired `PAPERCLIP_PUBLIC_MCP_ENABLED` variable has no effect. The former
+experimental `enablePublicMcp` setting is a compatibility key only: stored, patched
+and Cloud-managed values are accepted but ignored, so an old "off" value cannot
+disable discovery, sign-in, tools or event delivery. To stop an individual
+assistant, revoke its connection. OpenAI Dot, Grok Bot and Muse agent connections
+keep their own experimental settings.
 
 The URL must be an origin without a path, credentials, query or fragment. HTTP
-is allowed only for localhost/loopback development. The feature is disabled by
-default. Use authenticated deployment with real user accounts and company
+is allowed only for localhost/loopback development. Use authenticated deployment with real user accounts and company
 memberships; local implicit board authority and agent/board API keys cannot
 approve user OAuth connections. Configure `TRUST_PROXY` correctly at your edge.
 
@@ -41,16 +40,13 @@ instances require a directly reachable endpoint; no managed relay is included.
 Unclaimed Cloud warm-standby instances return `503 workspace_unclaimed` for MCP
 setup, discovery and protocol requests without reading the database. The event
 poller also stays idle until the instance is claimed. After claim, both resume
-without a restart and remain subject to the experimental setting and normal
-authorization.
+without a restart and remain subject to normal authorization.
 
 ## Start from Connections
 
 Inside your organization, open **Connectors → Assistant Connection (MCP) → Set up**.
 This connects an outside assistant to Paperclip using your human account; no agent
-is selected or impersonated. The entry is discoverable while disabled, but its
-setup instructions require the experimental setting. Follow **Open Experimental
-settings**, enable **Assistant connections (MCP)**, then return to setup.
+is selected or impersonated.
 
 Click **Copy invitation** to copy the message and preview it in the shared animated
 setup prompt, then paste it into your assistant. Client-specific instructions are
@@ -93,15 +89,15 @@ profile avatar and defaults to a name such as “Dotta’s Codex connection.” 
 connections disappear from the list; their audit records remain. The legacy
 `/assistant-connections` URL remains available for account-wide management.
 
-`GET /api/mcp/setup` returns the live experimental gate, canonical endpoint,
-invitation URL and copyable invitation to
-authenticated browser/Cloud users, including while disabled. It cannot grant
+`GET /api/mcp/setup` returns `enabled: true` (kept for older clients), the
+canonical endpoint, invitation URL and copyable invitation to
+authenticated browser/Cloud users. It cannot grant
 access, accepts no destination URL, never reflects forwarded hosts, and is not
 available to agent keys, MCP bearer tokens, or implicit local authority.
 
 ## Connect an assistant directly
 
-After the instance is enabled and reachable, an existing team member can connect
+Once the instance is reachable, an existing team member can connect
 without a store listing. For Codex CLI:
 
 ```sh
@@ -158,7 +154,7 @@ requests have separately hashed codes, ten-minute expiry, five-second initial
 polling, persistent backoff and atomic redemption. Shared database quotas bound
 new requests. Consent uses the same company, role, scope, grant, audit and
 revocation checks as browser OAuth. This is human authorization, not client
-credentials or agent impersonation. Both flows require the experimental setting.
+credentials or agent impersonation.
 
 Tenant Cloud gateways forward setup and device protocol requests without browser
 cookies. Browser approval remains authenticated. The central directory broker
@@ -241,14 +237,24 @@ OAuth credential bodies and redirect locations are redacted from HTTP logs.
 | --- | --- |
 | `paperclip_connection` | Person, company, scopes, connection management link |
 | `paperclip_list_agents` | Safe agent summary and availability |
+| `paperclip_list_people` | Active human members: user ID, name and role (no email) |
 | `paperclip_list_projects` | Safe project summary |
 | `paperclip_search_tasks` | Bounded task search with offset pagination |
 | `paperclip_read_task` | Current task plus recent comments/history |
-| `paperclip_create_task` | Assigned task, submitted to existing scheduling |
+| `paperclip_create_task` | Task for an agent, a person or no one; only an agent assignee is scheduled |
 | `paperclip_add_comment` | Human feedback; may wake or queue work |
 | `paperclip_list_deliverables` | Documents, attachments and work-product references |
 | `paperclip_read_document` | Durable document body and current revision |
 | `paperclip_pending_approvals` | Pending approvals and existing decision links |
+
+`paperclip_create_task` takes at most one of `assigneeAgentId` and
+`assigneeUserId`, the same fields as the REST issues API; passing both is a
+validation error. An agent assignee is submitted to normal scheduling and may
+start a run that spends the company's budget. A person (a `userId` from
+`paperclip_list_people`) or no assignee creates a `todo` task without waking any
+agent, so a connection from another Paperclip instance can file work without
+spending the receiving company's budget. A person outside the company is
+rejected by the normal REST assignment check, identically to an unknown user ID.
 
 Every company-scoped call requires its explicit authorized company ID. The
 server emits bounded projections without upstream credentials. Direct connections
@@ -314,6 +320,51 @@ not stored. Configure trusted proxies correctly. Authorization starts atomically
 remove expired requests and enforce 10 pending-consent requests per client and 1,000
 instance-wide, independently of further client registrations. Existing grants
 remain usable when anonymous registration or authorization is throttled.
+
+## Private Dot original-token authority
+
+`POST /mcp/runner/oauth/cloud-principal` is a machine-only Cloud-to-tenant
+identity check for the existing `assistant-connections/client-use` boundary.
+It is not an agent-facing REST/MCP tool, a consent endpoint, or a board-control
+operation. Normal hostname, runtime-claim and unclaimed-standby checks run
+before principal resolution. The route uses the same normally constructed Dot OAuth owner; an
+absent owner or current namespace fails closed.
+
+The caller needs an existing Cloud signature for the closed
+`mcp-dot:principal` action and the original Dot access token. The existing
+signature/nonce verifier applies, with at most a 60-second action lifetime.
+The request ID binds a UUID and the SHA-256 digest of this ordered, UTF-8 JSON
+field tuple:
+
+```text
+["paperclip-dot-original-principal-v1", "mcp-dot:principal", expectedInstanceId,
+ canonicalVerifiedResource, upstreamClientId, selectingUserId,
+ requestedCompanyId ?? null, accessToken]
+```
+
+This covers every accepted body field, independent of JSON property order.
+The raw request is limited to 16 KiB; compressed bodies, invalid UTF-8, malformed
+JSON and unknown fields are rejected. The resource must be the current origin's
+`/mcp/runner`. The stack, claim, instance, origin and connector identity must
+remain current before and after the OAuth call. OAuth authenticates the original
+token once and retains its client, selected user, company, purpose, scope,
+membership and feature checks. The reply contains only the checked user,
+company, grant, client, resource and agent-purpose identity. It creates no board
+actor, grant, agent binding or execution authority.
+
+The original token and signed request remain credentials. Request/response
+headers, bodies, raw buffers, query data and reflected errors must not enter
+logs on accepted or refused paths. The application uses a closed log projection
+for this reserved path, including malformed variants; operators must keep the
+same restriction at proxies. The Cloud caller requires the already verified
+current instance and HTTPS tenant route, refuses redirects, and checks the
+bounded reply and current namespace again.
+
+This private boundary does not advertise or enable a hosted Dot profile, grant
+anonymous wake authority, or change Personal MCP. Hosted discovery, wake,
+capability, operation, event, retry/reactivation and revocation lifecycles and
+Muse integration remain separate requirements. A controlled local HTTP proof
+does not establish durable Cloud server bootstrap or a deployed provider path.
 
 ## Task monitoring with MCP Events
 
@@ -387,7 +438,7 @@ local protocol and paid model tests do not establish store/UI readiness.
 ## Storybook previews
 
 Run `pnpm storybook` and open the **Assistant connections** group. The stories
-render the production consent, connection-management, and Experimental pages,
+render the production consent and connection-management pages,
 including read-only roles, loading, empty, unavailable, pending, revoked, and
 failed-save states. Interactive stories verify organization-switch consent reset,
 revocation, and settings rollback. All MCP actions use per-story in-memory
@@ -407,8 +458,8 @@ interactive product preview; Reset this screen restores that step’s fixture.
 Each screen starts fresh, so sample state does not persist between chapters.
 
 The Cloud walkthrough covers sign-in, choosing or creating an organization,
-readiness, and the handoff. The Paperclip walkthrough covers the experimental
-setting, organization consent, example delegation and retrieval conversations, and
+readiness, and the handoff. The Paperclip walkthrough covers
+organization consent, example delegation and retrieval conversations, and
 revocation. Assistant conversations are explicitly illustrative; product
 screens use isolated service fixtures. No paid work or real OAuth runs here.
 
@@ -453,8 +504,7 @@ Existing direct requests and grants are unchanged.
 
 Direct instance connections expose 37 explicitly registered operations. The central
 public directory broker retains its original ten tools and rejects expanded calls.
-The existing experimental setting gates both surfaces; sharing a setup link still
-conveys no authority. Consent has one **Write all of your Paperclip data** checkbox,
+Sharing a setup link conveys no authority. Consent has one **Write all of your Paperclip data** checkbox,
 checked by default for eligible roles. It approves the requested work and
 configuration scopes together; unchecking it grants read-only access. Clients must
 request `paperclip:configure` to configure agents, projects and skills. Existing
@@ -493,8 +543,8 @@ File URLs are ten-minute, transfer-specific credentials: keep them out of chat a
 logs. Only their hashes are stored. Use host HTTP/file tools to send/receive bytes;
 if unavailable, upload/download through the Paperclip task page manually. The server
 never fetches a supplied remote URL or reads a supplied local path. Existing file
-type and size limits apply (10 MB default). Grants, membership, organization,
-experimental availability and write authority are checked again during transfer.
+type and size limits apply (10 MB default). Grants, membership, organization
+and write authority are checked again during transfer.
 Revocation prevents future use, including of previously issued file URLs. Expired
 pending storage is cleaned on subsequent transfer requests; completed attachments
 remain durable. Cloud deployments also need the narrowly scoped transfer proxy.

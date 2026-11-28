@@ -34,6 +34,7 @@ fn tool_set() -> AuthorizedToolSet {
 
 fn config(mode: &str) -> AcpxProviderSessionConfig {
     AcpxProviderSessionConfig {
+        candidate_admission: None,
         transport: AcpxSidecarTransportConfig {
             command: PathBuf::from(env!("CARGO_BIN_EXE_fake-acpx-sidecar")),
             args: vec!["--mode".to_owned(), mode.to_owned()],
@@ -52,6 +53,8 @@ fn config(mode: &str) -> AcpxProviderSessionConfig {
         mode: None,
         pi_thinking_level: None,
         claude_effort: None,
+        grok_effort: None,
+        grok_disable_web_search: None,
         permission_mode_pinned: true,
         provider_policy: None,
         system_instructions: "Complete the supplied task.".to_owned(),
@@ -232,6 +235,31 @@ fn redacts_failed_tool_payload_without_losing_correlation_or_retry() {
     session
         .deliver_tool_result(&failed)
         .expect("the failure receipt also deduplicates");
+    session.shutdown("test complete").unwrap();
+}
+
+#[test]
+fn tells_the_agent_which_field_failed_validation_without_its_value() {
+    let mut session = started("resolutions-error-detail");
+    // A zod refusal reaches runnerd as its parsed issue list. The issue
+    // message and the agent's own value must not cross the sidecar boundary.
+    let failed = ToolResult {
+        call_id: "call-1".to_owned(),
+        operation_id: "issues.read".to_owned(),
+        result: json!([{
+            "origin":"string",
+            "code":"too_big",
+            "maximum":1000,
+            "inclusive":true,
+            "path":["payload","prompt"],
+            "message":"Too big: violet-prompt-value-4821",
+            "input":"violet-prompt-value-4821",
+        }]),
+        is_error: true,
+    };
+
+    session.deliver_tool_result(&failed).unwrap();
+    assert!(session.state().pending_tool("call-1").is_none());
     session.shutdown("test complete").unwrap();
 }
 

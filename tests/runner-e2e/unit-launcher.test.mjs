@@ -37,8 +37,10 @@ it.skipIf(process.env.PAPERCLIP_UNIT_BOUNDARY_PROBE === "1")("runs the documente
     expect(preloads.some(record => record.argv.some(arg => /pnpm(?:\.c?js)?$/.test(arg)))).toBe(true);
     expect(preloads.some(record => record.argv[1]?.endsWith("/run-unit.mjs")
       && record.nodePath?.split(path.delimiter).includes(foreignModules))).toBe(true);
-    expect(preloads.every(record => !/vitest|tinypool|\.test\.(?:ts|mjs)$/.test(record.argv[1] ?? "")
-      && !record.execArgv.includes("--test"))).toBe(true);
+    expect(preloads.every(record => {
+      const target = record.argv[1] ? path.relative(root, record.argv[1]) : "";
+      return !/vitest|tinypool|\.test\.(?:ts|mjs)$/.test(target) && !record.execArgv.includes("--test");
+    })).toBe(true);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -56,5 +58,62 @@ it("reports a missing test runner as a launcher/environment failure before any p
     expect(result.stdout).toBe("");
   } finally {
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+it("shards Vitest and node:test suites into a complete, non-overlapping cover", () => {
+  const launcher = path.join(root, "tests/runner-e2e/run-unit.mjs");
+  const dryRun = (args) => {
+    const result = spawnSync(process.execPath, [launcher, ...args, "--dry-run"], {
+      cwd: root,
+      encoding: "utf8",
+      timeout: 5000,
+    });
+    expect(result.status, result.stderr).toBe(0);
+    return JSON.parse(result.stdout);
+  };
+
+  const unsharded = dryRun([]);
+  expect(unsharded.vitestShard).toBeNull();
+  expect(unsharded.nodeTestFiles.length).toBeGreaterThan(0);
+
+  const shardCount = 4;
+  const shards = Array.from({ length: shardCount }, (_, index) =>
+    dryRun(["--shard-index", String(index), "--shard-count", String(shardCount)]),
+  );
+  expect(shards.map((s) => s.vitestShard)).toEqual(["--shard=1/4", "--shard=2/4", "--shard=3/4", "--shard=4/4"]);
+  for (let i = 0; i < shardCount; i += 1) {
+    expect(shards[i].vitestArgs).toContain(`--shard=${i + 1}/4`);
+    expect(shards[i].vitestArgs).not.toContain("--shard-index");
+    expect(shards[i].vitestArgs).not.toContain("--shard-count");
+  }
+  const combinedNodeTests = shards.flatMap((s) => s.nodeTestFiles);
+  expect(new Set(combinedNodeTests).size).toBe(combinedNodeTests.length);
+  expect([...combinedNodeTests].sort()).toEqual([...unsharded.nodeTestFiles].sort());
+
+  // Supports `=` flag form and leading `--` separator used by `pnpm run`.
+  const eqShard = dryRun(["--", "--shard-index=2", "--shard-count=4"]);
+  expect(eqShard).toEqual(shards[2]);
+
+  // Over-sharded trailing shards get an empty node:test list rather than duplicating files.
+  const emptyNodeShard = dryRun(["--shard-index", "20", "--shard-count", "25"]);
+  expect(emptyNodeShard.nodeTestFiles).toEqual([]);
+  expect(emptyNodeShard.vitestShard).toBe("--shard=21/25");
+
+  // Invalid or conflicting shard arguments fail fast with exit code 1.
+  for (const badArgs of [
+    ["--shard-index", "0"],
+    ["--shard-count", "4"],
+    ["--shard-index", "4", "--shard-count", "4"],
+    ["--shard-index", "-1", "--shard-count", "4"],
+    ["--shard-index", "0", "--shard-count", "0"],
+    ["--shard-index", "0", "--shard-count", "4", "--shard=1/4"],
+  ]) {
+    const failed = spawnSync(process.execPath, [launcher, ...badArgs, "--dry-run"], {
+      cwd: root,
+      encoding: "utf8",
+      timeout: 5000,
+    });
+    expect(failed.status, `expected failure for ${badArgs.join(" ")}`).toBe(1);
   }
 });

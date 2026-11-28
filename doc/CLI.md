@@ -9,7 +9,9 @@ Paperclip CLI now supports both:
 ## Browser-approved Board authentication
 
 `npx paperclipai auth login --api-base <instance-url>` creates a ten-minute
-challenge and prints a browser approval link. Sign in to the instance, review
+challenge and prints a browser approval link. The link uses the instance's
+canonical public origin when configured, so reverse proxies do not send the
+browser to an internal upstream hostname. Sign in to the instance, review
 the requesting command and full Board access, then approve. The pending token
 cannot authenticate before approval. The CLI verifies its resulting identity
 before storing its credential in its private auth store. The default Board key
@@ -575,6 +577,7 @@ npx paperclipai agent inbox-mine --user-id <board-user-id>
 npx paperclipai agent wake <agent-id-or-shortname> [--company-id <company-id>] [--reason "..."] [--payload '{"issueId":"..."}']
 npx paperclipai agent pause <agent-id>
 npx paperclipai agent resume <agent-id>
+npx paperclipai agent clear-error <agent-id>
 npx paperclipai agent approve <agent-id>
 npx paperclipai agent terminate <agent-id>
 npx paperclipai agent heartbeat:invoke <agent-id>
@@ -582,10 +585,16 @@ npx paperclipai agent claude-login <agent-id>
 npx paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-id>
 ```
 
+`agent clear-error` uses the server's existing clear-error action. The server
+checks permissions and the agent state. Use it to clear an error after addressing
+its cause; use `agent resume` to resume a paused agent.
+
 Agent configuration and runtime endpoints:
 
 ```sh
 npx paperclipai agent permissions:update <agent-id> --payload-json '{"canCreateAgents":true,"canCreateSkills":true,"canAssignTasks":true}'
+npx paperclipai agent permission:grant <agent-id> commentary:view
+npx paperclipai agent permission:revoke <agent-id> commentary:view
 npx paperclipai agent configuration <agent-id>
 npx paperclipai agent config-revisions <agent-id>
 npx paperclipai agent config-revision:get <agent-id> <revision-id>
@@ -602,6 +611,13 @@ npx paperclipai agent instructions-file:get <agent-id> --path AGENTS.md
 npx paperclipai agent instructions-file:put <agent-id> --path AGENTS.md --content-file ./AGENTS.md
 npx paperclipai agent instructions-file:delete <agent-id> --path AGENTS.md --yes
 ```
+
+`permission:grant` and `permission:revoke` require a Board login with
+`users:manage_permissions` in the agent's company. They change one permission
+key and preserve all other grants. A grant applies without starting a new run.
+Granting a key replaces that key's scope with an unscoped company grant;
+revoking removes the key. Use `agent get <agent-id> --json` to inspect
+`access.grants`. These commands do not reactivate an inactive membership.
 
 Agent config, instructions, skills, project env, environment, secret, and workspace edits affect the next run. Active runs finish with the config they started with. When a saved session, reused workspace, or sandbox lease no longer matches the effective next-run config, Paperclip may start fresh execution and records non-sensitive freshness categories in run result JSON and workspace operation logs.
 
@@ -884,7 +900,7 @@ bootstrap credentials in Paperclip secrets.
 
 Per-company provider vaults (multiple vault instances per provider, default
 vault selection, coming-soon GCP/Vault) can be configured from the board UI under
-`Organization Settings → Secrets → Provider vaults` or through the provider-config CLI
+`Organization Settings → Secrets → Vaults` or through the provider-config CLI
 commands above. See the
 [secrets deploy guide](../docs/deploy/secrets.md#provider-vaults) and
 [API reference](../docs/api/secrets.md#provider-vaults) for the contract.
