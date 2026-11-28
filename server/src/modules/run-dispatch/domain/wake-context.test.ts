@@ -4,6 +4,7 @@ import {
   deriveCommentId,
   extractWakeCommentIds,
   isNonAssigneeWorkspaceBusyRetry,
+  isPendingInteractionWakeOrigin,
   isResolvedInteractionContinuationWakeContext,
   readPendingInteractionWakeId,
   WORKSPACE_BUSY_RETRY_REASON,
@@ -117,6 +118,17 @@ describe("wake context", () => {
       wakeReason: "transient_failure_retry",
       originalWakeReason: "interaction_pending",
     })).toBeNull();
+  });
+
+  it("reports a card origin from either the wake or the retried wake", () => {
+    expect(isPendingInteractionWakeOrigin({ wakeReason: "interaction_pending" })).toBe(true);
+    expect(isPendingInteractionWakeOrigin({
+      wakeReason: "workspace_busy",
+      originalWakeReason: "interaction_pending",
+    })).toBe(true);
+    expect(isPendingInteractionWakeOrigin({ wakeReason: "issue_commented" })).toBe(false);
+    expect(isPendingInteractionWakeOrigin({ originalWakeReason: "issue_commented" })).toBe(false);
+    expect(isPendingInteractionWakeOrigin(null)).toBe(false);
   });
 
   it.each(["accepted", "answered", "cancelled", "rejected"])(

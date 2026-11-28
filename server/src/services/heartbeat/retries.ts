@@ -637,10 +637,6 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         : null;
     const transientRetryNotBefore = transientRecovery?.retryNotBefore ?? null;
     const contextSnapshot = parseObject(run.contextSnapshot);
-    // A bounded retry rewrites `wakeReason`, so a pending-card wake would lose
-    // the identity that exempts its addressee from assignee-ship and be
-    // cancelled as a reassignment on promotion. Carry that identity forward,
-    // including across chained retries.
     const originalWakeReason =
       readNonEmptyString(contextSnapshot[ORIGINAL_WAKE_REASON_KEY]) ??
       (readNonEmptyString(contextSnapshot.wakeReason) ===

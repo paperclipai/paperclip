@@ -900,8 +900,6 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       interactionId: fixture.interaction.id,
     });
 
-    // A retry of the retry must keep the card identity too: the wake rewrite
-    // happens on every hop, and only the promoted run is promoted from here.
     await db.update(heartbeatRuns).set({
       status: "failed",
       error: "upstream overload",
@@ -944,6 +942,38 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
 
     const dueAt = new Date(fixture.now.getTime() + BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS[0]);
     expect(await heartbeat.promoteDueScheduledRetries(dueAt)).toEqual({ promoted: 0, runIds: [] });
+    expect(await heartbeat.getRun(scheduled.run.id)).toMatchObject({
+      status: "cancelled",
+      errorCode: "issue_reassigned",
+    });
+  });
+
+  it("still cancels a card wake retried behind a busy workspace when the card is answered before promotion", async () => {
+    const fixture = await seedPendingCardWake();
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(fixture.runId, {
+      now: fixture.now,
+      random: () => 0,
+      retryReason: "workspace_busy",
+    });
+    expect(scheduled.outcome).toBe("scheduled");
+    if (scheduled.outcome !== "scheduled") throw new Error("Expected a bounded retry");
+    expect(scheduled.run.contextSnapshot).toMatchObject({
+      originalWakeReason: "interaction_pending",
+      retryReason: "workspace_busy",
+      interactionId: fixture.interaction.id,
+    });
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: {
+        ...scheduled.run.contextSnapshot,
+        workspaceBusyDeferredWhileAssignee: false,
+      },
+    }).where(eq(heartbeatRuns.id, scheduled.run.id));
+    await db.update(issueThreadInteractions).set({ status: "answered", resolvedAt: fixture.now })
+      .where(eq(issueThreadInteractions.id, fixture.interaction.id));
+
+    expect(await heartbeat.promoteDueScheduledRetries(scheduled.run.scheduledRetryAt!))
+      .toEqual({ promoted: 0, runIds: [] });
     expect(await heartbeat.getRun(scheduled.run.id)).toMatchObject({
       status: "cancelled",
       errorCode: "issue_reassigned",

@@ -83,6 +83,7 @@ import {
   allowsIssueInteractionWake,
   deriveCommentId,
   isNonAssigneeWorkspaceBusyRetry,
+  isPendingInteractionWakeOrigin,
   isResolvedInteractionContinuationWakeContext,
   readPendingInteractionWakeId,
 } from "../domain/wake-context.js";
@@ -151,12 +152,6 @@ const NO_REVIEW_PARTICIPANT: ReviewParticipantFacts = {
   currentParticipant: null,
 };
 
-/**
- * A card addressed to an agent is that agent's authority to answer it, even
- * when the issue belongs to someone else. The run snapshot only names the
- * interaction, so re-read it here: the exemption holds only while the
- * interaction is still pending and still addressed to this run's agent.
- */
 async function hasAddressedPendingInteractionWake(
   dbOrTx: Db,
   input: {
@@ -417,6 +412,7 @@ export function createPostgresRunDispatchAdapter(
       retryReasonKind,
       enforceIssueExecutionLock: retryReasonKind === "max_turn_continuation" || retryReasonKind === "ai_connection_wait",
       isNonAssigneeWorkspaceBusyRetry: isNonAssigneeWorkspaceBusyRetry(retryReason, input.contextSnapshot),
+      isPendingInteractionWakeOrigin: isPendingInteractionWakeOrigin(input.contextSnapshot),
       isAddressedPendingInteractionWake: false,
       budgetBlock: null,
       agentInvokable: true,
@@ -792,6 +788,7 @@ export function createPostgresRunDispatchAdapter(
       isConnectionContinuation: (isResolvedInteractionContinuation && context.interactionKind === "connection_intent")
         || context.source === "connection_tools.refreshed",
       isInteractionWake,
+      isPendingInteractionWakeOrigin: isPendingInteractionWakeOrigin(context),
       isAddressedPendingInteractionWake,
       isAuthorizedSourceScopedRecovery,
       isNonAssigneeWorkspaceBusyRetry: isNonAssigneeWorkspaceBusyRetry(retryReason, context),

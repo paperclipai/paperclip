@@ -97,10 +97,7 @@ export type ScheduledRetryFacts = {
   issueCheckoutRunId?: string | null;
 
   isNonAssigneeWorkspaceBusyRetry: boolean;
-  /**
-   * A pending card was explicitly addressed to this run's agent, but the issue
-   * belongs to someone else. The addressee owns the answer, not the task.
-   */
+  isPendingInteractionWakeOrigin: boolean;
   isAddressedPendingInteractionWake: boolean;
   reviewParticipant: ReviewParticipantFacts;
   activePauseHold: PauseHoldFacts | null;
@@ -163,10 +160,7 @@ export type QueuedRunFacts = {
   isInteractionWake: boolean;
   isAuthorizedSourceScopedRecovery: boolean;
   isNonAssigneeWorkspaceBusyRetry: boolean;
-  /**
-   * A pending card was explicitly addressed to this run's agent, but the issue
-   * belongs to someone else. The addressee owns the answer, not the task.
-   */
+  isPendingInteractionWakeOrigin: boolean;
   isAddressedPendingInteractionWake: boolean;
 
   resumeIntent: boolean;
@@ -192,6 +186,7 @@ type OwnershipFacts = {
   isInteractionWake?: boolean;
   isCurrentReviewParticipant?: boolean;
   isAuthorizedSourceScopedRecovery?: boolean;
+  isPendingInteractionWakeOrigin?: boolean;
   isAddressedPendingInteractionWake?: boolean;
 };
 
@@ -204,6 +199,9 @@ type OwnershipOutcome = "current_owner" | "reassigned";
  */
 function decideIssueOwnership(facts: OwnershipFacts): OwnershipOutcome {
   if (facts.issueAssigneeAgentId === facts.runAgentId) return "current_owner";
+  if (facts.isPendingInteractionWakeOrigin) {
+    return facts.isAddressedPendingInteractionWake ? "current_owner" : "reassigned";
+  }
   if (facts.isNonAssigneeWorkspaceBusyRetry) return "current_owner";
   if (facts.isInteractionWake) return "current_owner";
   if (facts.isAddressedPendingInteractionWake) return "current_owner";
@@ -363,6 +361,7 @@ export function decideScheduledRetryGate(
     runAgentId: facts.runAgentId,
     issueAssigneeAgentId: facts.issueAssigneeAgentId,
     isNonAssigneeWorkspaceBusyRetry: facts.isNonAssigneeWorkspaceBusyRetry,
+    isPendingInteractionWakeOrigin: facts.isPendingInteractionWakeOrigin,
     isAddressedPendingInteractionWake: facts.isAddressedPendingInteractionWake,
     isCurrentReviewParticipant:
       facts.reviewParticipant.isInReview &&
@@ -599,6 +598,7 @@ export function decideQueuedRunStaleness(
     issueAssigneeAgentId: facts.issueAssigneeAgentId,
     isNonAssigneeWorkspaceBusyRetry: facts.isNonAssigneeWorkspaceBusyRetry,
     isInteractionWake: facts.isInteractionWake,
+    isPendingInteractionWakeOrigin: facts.isPendingInteractionWakeOrigin,
     isAddressedPendingInteractionWake: facts.isAddressedPendingInteractionWake,
     isCurrentReviewParticipant:
       facts.reviewParticipant.isInReview &&

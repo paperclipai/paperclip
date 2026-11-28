@@ -35,6 +35,7 @@ function baseGateFacts(): ScheduledRetryFacts {
     issueAssigneeAgentId: "agent-1",
     issueExecutionRunId: "run-1",
     isNonAssigneeWorkspaceBusyRetry: false,
+    isPendingInteractionWakeOrigin: false,
     isAddressedPendingInteractionWake: false,
     reviewParticipant: NO_PARTICIPANT,
     activePauseHold: null,
@@ -57,6 +58,7 @@ function baseStalenessFacts(): QueuedRunFacts {
     isInteractionWake: false,
     isAuthorizedSourceScopedRecovery: false,
     isNonAssigneeWorkspaceBusyRetry: false,
+    isPendingInteractionWakeOrigin: false,
     isAddressedPendingInteractionWake: false,
     resumeIntent: false,
     wakeCommentIdPresent: false,
@@ -257,6 +259,17 @@ describe("decideScheduledRetryGate", () => {
       isAddressedPendingInteractionWake: true,
     };
     expect(decideScheduledRetryGate(facts, NOW)).toEqual({ allowed: true });
+  });
+
+  it("still rejects a retried card wake when the card was answered, even as a non-assignee workspace-busy retry", () => {
+    const facts: ScheduledRetryFacts = {
+      ...baseGateFacts(),
+      issueAssigneeAgentId: "agent-2",
+      isPendingInteractionWakeOrigin: true,
+      isAddressedPendingInteractionWake: false,
+      isNonAssigneeWorkspaceBusyRetry: true,
+    };
+    expect(decideScheduledRetryGate(facts, NOW)).toMatchObject({ allowed: false, errorCode: "issue_reassigned" });
   });
 
   it("keeps the legacy missing-issue exception's precondition: issue_not_found is reported the same way for a non-max-turn retry as for a max-turn retry", () => {
@@ -533,10 +546,29 @@ describe("decideQueuedRunStaleness", () => {
     expect(decideQueuedRunStaleness(facts, NOW)).toEqual({ stale: false });
   });
 
+  it.each([
+    { kind: "non-assignee workspace-busy retry", facts: { isNonAssigneeWorkspaceBusyRetry: true } },
+    { kind: "interaction wake", facts: { isInteractionWake: true } },
+    { kind: "authorized source-scoped recovery", facts: { isAuthorizedSourceScopedRecovery: true } },
+  ])("still cancels a retried card wake when the card was answered, even as a $kind", ({ facts: other }) => {
+    const facts: QueuedRunFacts = {
+      ...baseStalenessFacts(),
+      issueAssigneeAgentId: "agent-2",
+      isPendingInteractionWakeOrigin: true,
+      isAddressedPendingInteractionWake: false,
+      ...other,
+    };
+    expect(decideQueuedRunStaleness(facts, NOW)).toMatchObject({
+      stale: true,
+      errorCode: "issue_assignee_changed",
+    });
+  });
+
   it("still cancels a non-assignee pending-card wake when the addressee is not verified", () => {
     const facts: QueuedRunFacts = {
       ...baseStalenessFacts(),
       issueAssigneeAgentId: "agent-2",
+      isPendingInteractionWakeOrigin: true,
       isAddressedPendingInteractionWake: false,
     };
     expect(decideQueuedRunStaleness(facts, NOW)).toMatchObject({
