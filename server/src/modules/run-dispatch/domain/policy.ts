@@ -156,6 +156,9 @@ export type QueuedRunFacts = {
   /** A connection resolution or tool refresh can resume an agent waiting in review. */
   isConnectionContinuation?: boolean;
   isInteractionWake: boolean;
+  /** True for owner-directed handoff comments (e.g. cancelled dependency handoff) that must not bypass assignee ownership. */
+  isOwnerBoundInteractionWake?: boolean;
+  expectedAssigneeAgentId?: string | null;
   isAuthorizedSourceScopedRecovery: boolean;
   isNonAssigneeWorkspaceBusyRetry: boolean;
 
@@ -585,14 +588,19 @@ export function decideQueuedRunStaleness(
     runAgentId: facts.runAgentId,
     issueAssigneeAgentId: facts.issueAssigneeAgentId,
     isNonAssigneeWorkspaceBusyRetry: facts.isNonAssigneeWorkspaceBusyRetry,
-    isInteractionWake: facts.isInteractionWake,
+    isInteractionWake: facts.isInteractionWake && !facts.isOwnerBoundInteractionWake,
     isCurrentReviewParticipant:
       facts.reviewParticipant.isInReview &&
       facts.reviewParticipant.participantIsAgent &&
       facts.reviewParticipant.participantAgentId === facts.runAgentId,
     isAuthorizedSourceScopedRecovery: facts.isAuthorizedSourceScopedRecovery,
   });
-  if (ownership === "reassigned") {
+  const ownerBoundMismatch =
+    facts.isOwnerBoundInteractionWake === true &&
+    (facts.issueAssigneeAgentId !== facts.runAgentId ||
+      (facts.expectedAssigneeAgentId != null &&
+        facts.expectedAssigneeAgentId !== facts.runAgentId));
+  if (ownership === "reassigned" || ownerBoundMismatch) {
     return {
       stale: true,
       errorCode: "issue_assignee_changed",
@@ -640,7 +648,7 @@ export function decideQueuedRunStaleness(
   const statusOutcome = decideIssueStatus({
     status: facts.issueStatus,
     requiresInProgress,
-    terminalBypass: facts.resumeIntent || facts.wakeCommentIdPresent || (
+    terminalBypass: facts.resumeIntent || (facts.wakeCommentIdPresent && !facts.isOwnerBoundInteractionWake) || (
       facts.isCompletedOnboardingHandoffWake === true &&
       facts.wakeReason === "issue_children_completed" && facts.issueStatus === "done"
     ),

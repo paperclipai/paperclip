@@ -174,6 +174,7 @@ import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   isDependencyResolvedWakePayload,
   dependencyResolvedWakePayloadSql,
+  findExistingCancelledDependencyHandoffWake,
 } from "../issue-dependency-wakeups.js";
 import { resumeIfPauseAlreadyReleased } from "../issue-tree-resume.js";
 import {
@@ -3572,6 +3573,28 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       return recheckUsageWaitOnReply(await wakeQueue.admitIssueWake(
         { companyId: agent.companyId, issueId, durableChatRequest: durableRequest },
         async (tx, { lockedIssue, lockIssue, prepareRecovery }) => {
+          // Route delivery and recovery share this admission fence. The comment
+          // transaction alone cannot serialize two subsequent queue writes, and
+          // reassignment can commit between handoff creation and wake admission.
+          if (wakeCommentId && opts.idempotencyKey === `issue_dependency_cancelled:${wakeCommentId}`) {
+            const lockedForHandoff = lockedIssue ?? await lockIssue();
+            const expectedAssigneeAgentId =
+              readNonEmptyString(payload.expectedAssigneeAgentId) ??
+              readNonEmptyString(enrichedContextSnapshot.expectedAssigneeAgentId) ??
+              agentId;
+            if (
+              !lockedForHandoff ||
+              lockedForHandoff.assigneeAgentId !== agentId ||
+              expectedAssigneeAgentId !== agentId ||
+              !["blocked", "todo", "in_progress"].includes(lockedForHandoff.status)
+            ) {
+              return { kind: "deferred" as const };
+            }
+            const existing = await findExistingCancelledDependencyHandoffWake(tx as unknown as Db, {
+              companyId: agent.companyId, commentId: wakeCommentId,
+            });
+            if (existing && existing.id !== executionWaitRequestId) return { kind: "deferred" as const };
+          }
           if (executionWaitRequestId) {
             const [pending] = await tx.select().from(agentWakeupRequests).where(and(
               eq(agentWakeupRequests.id, executionWaitRequestId), eq(agentWakeupRequests.companyId, agent.companyId),

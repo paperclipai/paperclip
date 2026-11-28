@@ -473,6 +473,52 @@ describe("decideQueuedRunStaleness", () => {
     expect(decideQueuedRunStaleness(facts, NOW)).toEqual({ stale: false });
   });
 
+  it("rejects an owner-bound interaction wake when the issue was reassigned before start", () => {
+    const facts: QueuedRunFacts = {
+      ...baseStalenessFacts(),
+      runAgentId: "agent-1",
+      issueAssigneeAgentId: "agent-2",
+      isInteractionWake: true,
+      isOwnerBoundInteractionWake: true,
+      expectedAssigneeAgentId: "agent-1",
+      wakeCommentIdPresent: true,
+    };
+    expect(decideQueuedRunStaleness(facts, NOW)).toMatchObject({
+      stale: true,
+      errorCode: "issue_assignee_changed",
+    });
+  });
+
+  it("allows an owner-bound interaction wake when the expected assignee still owns the issue", () => {
+    const facts: QueuedRunFacts = {
+      ...baseStalenessFacts(),
+      runAgentId: "agent-1",
+      issueAssigneeAgentId: "agent-1",
+      isInteractionWake: true,
+      isOwnerBoundInteractionWake: true,
+      expectedAssigneeAgentId: "agent-1",
+      wakeCommentIdPresent: true,
+    };
+    expect(decideQueuedRunStaleness(facts, NOW)).toEqual({ stale: false });
+  });
+
+  it("rejects an owner-bound interaction wake when the issue reached a terminal status before start", () => {
+    const facts: QueuedRunFacts = {
+      ...baseStalenessFacts(),
+      runAgentId: "agent-1",
+      issueAssigneeAgentId: "agent-1",
+      issueStatus: "done",
+      isInteractionWake: true,
+      isOwnerBoundInteractionWake: true,
+      expectedAssigneeAgentId: "agent-1",
+      wakeCommentIdPresent: true,
+    };
+    expect(decideQueuedRunStaleness(facts, NOW)).toMatchObject({
+      stale: true,
+      errorCode: "issue_terminal_status",
+    });
+  });
+
   it("allows resume intent to bypass a terminal status", () => {
     const facts: QueuedRunFacts = {
       ...baseStalenessFacts(),
