@@ -890,4 +890,106 @@ describeAttentionEmbeddedPostgres("attention service", () => {
     expect(failures.map((item) => item.subject.id).sort()).toEqual([failedId, timedOutId].sort());
     expect(failures.find((item) => item.subject.id === timedOutId)?.relatedIssue?.id).toBe(taskId);
   });
+
+  it("bounds the newer-run scan per agent without changing failed-run feed results", async () => {
+    const { companyId, workerId, reviewerId } = await seedCompany("AGW");
+    const workerIssueId = await insertIssue({
+      companyId,
+      identifier: "AGW-1",
+      title: "Worker failed task",
+      status: "in_progress",
+    });
+    const reviewerIssueId = await insertIssue({
+      companyId,
+      identifier: "AGW-2",
+      title: "Reviewer failed task",
+      status: "in_progress",
+    });
+    // The worker's exhausted failure is much older than the reviewer's. The
+    // newer-run window must be computed per agent: the reviewer's window
+    // starts at its own failure, so the old worker run and the stale
+    // pre-failure reviewer run must not leak into it, while the reviewer's
+    // newer succeeded run on the same issue still suppresses its failure.
+    const workerFailureId = randomUUID();
+    const workerFailureAt = new Date("2026-07-01T12:00:00.000Z");
+    const reviewerFailureId = randomUUID();
+    const reviewerFailureAt = new Date("2026-07-09T12:00:00.000Z");
+    await db.insert(heartbeatRuns).values([
+      {
+        id: workerFailureId,
+        companyId,
+        agentId: workerId,
+        invocationSource: "automation",
+        status: "failed",
+        error: "worker adapter failed",
+        contextSnapshot: { issueId: workerIssueId },
+        createdAt: workerFailureAt,
+        updatedAt: workerFailureAt,
+        finishedAt: workerFailureAt,
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        agentId: reviewerId,
+        invocationSource: "automation",
+        status: "succeeded",
+        // Older than the reviewer's failure: outside its per-agent window
+        // and never a "newer run" for the failure either way.
+        contextSnapshot: { issueId: reviewerIssueId },
+        createdAt: new Date("2026-07-08T12:00:00.000Z"),
+        updatedAt: new Date("2026-07-08T12:00:00.000Z"),
+        finishedAt: new Date("2026-07-08T12:00:00.000Z"),
+      },
+      {
+        id: reviewerFailureId,
+        companyId,
+        agentId: reviewerId,
+        invocationSource: "automation",
+        status: "failed",
+        error: "reviewer adapter failed",
+        contextSnapshot: { issueId: reviewerIssueId },
+        createdAt: reviewerFailureAt,
+        updatedAt: reviewerFailureAt,
+        finishedAt: reviewerFailureAt,
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        agentId: reviewerId,
+        invocationSource: "automation",
+        status: "succeeded",
+        // Newer run for the same issue/agent pair: suppresses the failure.
+        contextSnapshot: { issueId: reviewerIssueId },
+        createdAt: new Date("2026-07-09T12:01:00.000Z"),
+        updatedAt: new Date("2026-07-09T12:01:00.000Z"),
+        finishedAt: new Date("2026-07-09T12:01:00.000Z"),
+      },
+    ]);
+    await db.insert(heartbeatRunEvents).values([
+      {
+        companyId,
+        runId: workerFailureId,
+        agentId: workerId,
+        seq: 1,
+        eventType: "lifecycle",
+        message: "Bounded retry exhausted after 4 scheduled attempts; no further automatic retry will be queued",
+        createdAt: new Date("2026-07-01T12:00:01.000Z"),
+      },
+      {
+        companyId,
+        runId: reviewerFailureId,
+        agentId: reviewerId,
+        seq: 1,
+        eventType: "lifecycle",
+        message: "Bounded retry exhausted after 4 scheduled attempts; no further automatic retry will be queued",
+        createdAt: new Date("2026-07-09T12:00:01.000Z"),
+      },
+    ]);
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+
+    const failures = feed.items.filter((item) => item.sourceKind === "failed_run");
+    expect(failures.map((item) => item.subject.id)).toEqual([workerFailureId]);
+    expect(failures[0]?.relatedIssue?.id).toBe(workerIssueId);
+  });
 });
