@@ -4,6 +4,10 @@ import { KNOWN_ADAPTER_TYPES } from "./adapter-defaults.js";
 
 const cidrRegex = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/;
 
+export const MAX_POD_START_TIMEOUT_SEC = 300;
+
+export const KUBERNETES_ACQUIRE_TIMEOUT_MS = MAX_POD_START_TIMEOUT_SEC * 1000 + 60_000;
+
 export const kubernetesProviderConfigSchema = z
   .object({
     inCluster: z.boolean().default(false),
@@ -32,6 +36,7 @@ export const kubernetesProviderConfigSchema = z
 
     jobTtlSecondsAfterFinished: z.number().int().nonnegative().default(900),
     podActivityDeadlineSec: z.number().int().positive().default(3600),
+    podStartTimeoutSec: z.number().int().positive().max(MAX_POD_START_TIMEOUT_SEC).default(MAX_POD_START_TIMEOUT_SEC),
 
     /**
      * The adapter type that Jobs in this environment will run.

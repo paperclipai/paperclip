@@ -74,6 +74,7 @@ Common optional fields:
 | `serviceAccountAnnotations` | `{}` | Annotations applied to per-tenant ServiceAccount (e.g. IRSA `eks.amazonaws.com/role-arn`). |
 | `jobTtlSecondsAfterFinished` | `900` | Seconds after a Job completes before garbage-collection. |
 | `podActivityDeadlineSec` | `3600` | Hard ceiling on a single run's wall-clock time. |
+| `podStartTimeoutSec` | `300` | How long acquiring a Sandbox lease (`sandbox-cr` backend) waits for its pod to become Ready, including scheduling and image pull. At most `300`, so the wait fits inside the host's acquire deadline. Separate from command timeouts. |
 
 Full JSON Schema in `src/manifest.ts`.
 

@@ -19,6 +19,7 @@ import type {
   PluginEnvironmentValidationResult,
 } from "@paperclipai/plugin-sdk";
 import {
+  KUBERNETES_ACQUIRE_TIMEOUT_MS,
   kubernetesProviderConfigSchema,
   type KubernetesProviderConfig,
   type KubernetesLeaseMetadata,
@@ -201,6 +202,23 @@ async function resolveSyncPodExec(
   return { exec, timeoutMs };
 }
 
+const HOST_RPC_OVERHEAD_MS = 30_000;
+
+const ACQUIRE_AFTER_READY_RESERVE_MS = 45_000;
+
+const MIN_READY_WAIT_MS = 1_000;
+
+function acquireReadyDeadline(config: Record<string, unknown>, startedAt: number): number {
+  const positive = (value: unknown) =>
+    typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.trunc(value) : 0;
+  const providerBudgetMs = Math.max(
+    positive(config.timeoutMs) || KUBERNETES_ACQUIRE_TIMEOUT_MS,
+    positive(config.bridgeRequestTimeoutMs),
+  );
+  const hostDeadlineMs = providerBudgetMs + HOST_RPC_OVERHEAD_MS;
+  return startedAt + hostDeadlineMs - Math.min(ACQUIRE_AFTER_READY_RESERVE_MS, Math.floor(hostDeadlineMs / 2));
+}
+
 const plugin = definePlugin({
   async setup(ctx) {
     ctx.logger.info("Kubernetes sandbox provider plugin ready");
@@ -299,6 +317,7 @@ const plugin = definePlugin({
       executionWorkspaceSettings?: Record<string, unknown> | null;
     },
   ): Promise<PluginEnvironmentLease> {
+    const acquireStartedAt = Date.now();
     const config = kubernetesProviderConfigSchema.parse(params.config);
     const namespace = deriveTenantNamespace(config, params.companyId);
 
@@ -444,6 +463,29 @@ const plugin = definePlugin({
       bootstrapToken,
       adapterEnv,
     });
+
+    if (isSandboxCrBackend) {
+      try {
+        await sandboxCrOrchestrator.waitForCompletion(clients, namespace, jobName, {
+          timeoutMs: Math.max(MIN_READY_WAIT_MS, Math.min(
+            config.podStartTimeoutSec * 1000,
+            acquireReadyDeadline(params.config, acquireStartedAt) - Date.now(),
+          )),
+          pollMs: 1000,
+        });
+      } catch (readyError) {
+        try {
+          await orchestrator.release(clients, namespace, jobName);
+        } catch (releaseError) {
+          throw new AggregateError(
+            [readyError, releaseError],
+            "Sandbox did not become Ready and could not be released",
+          );
+        }
+        throw readyError;
+      }
+      readySandboxesByLease.add(jobName);
+    }
 
     const podName = await orchestrator.findPod(clients, namespace, jobName);
 

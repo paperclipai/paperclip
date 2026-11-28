@@ -1,4 +1,5 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+import { KUBERNETES_ACQUIRE_TIMEOUT_MS, MAX_POD_START_TIMEOUT_SEC } from "./types.js";
 
 const PLUGIN_ID = "paperclip.kubernetes-sandbox-provider";
 const PLUGIN_VERSION = "0.1.0-alpha.1";
@@ -19,6 +20,7 @@ const manifest: PaperclipPluginManifestV1 = {
   environmentDrivers: [
     {
       driverKey: "kubernetes",
+      defaultAcquireTimeoutMs: KUBERNETES_ACQUIRE_TIMEOUT_MS,
       kind: "sandbox_provider",
       displayName: "Kubernetes",
       description:
@@ -96,6 +98,13 @@ const manifest: PaperclipPluginManifestV1 = {
             type: "integer",
             minimum: 1,
             description: "Hard ceiling on a single run's wall-clock time (default: 3600).",
+          },
+          podStartTimeoutSec: {
+            type: "integer",
+            minimum: 1,
+            maximum: MAX_POD_START_TIMEOUT_SEC,
+            description:
+              "How long acquiring a Sandbox lease waits for its pod to become Ready, including scheduling and image pull (default and maximum: 300). Separate from command timeouts.",
           },
           adapterType: {
             type: "string",
