@@ -122,6 +122,7 @@ export type ReleaseIssueExecutionInput = {
   now: Date;
   suppressImmediateRecovery?: boolean;
   resumeStrandedQueue?: boolean;
+  existingExecutionRepairSuppressed?: boolean;
 };
 
 type PauseHoldFacts = Awaited<ReturnType<WakeQueueTransaction["getPauseHoldFacts"]>>;
@@ -1053,7 +1054,8 @@ export function createReleaseIssueExecution(deps: {
   ): Promise<{ outcome: ReleaseOutcome; postCommitEffects: PostCommitEffect[] }> {
     const result = await deps.issueLock.withIssueExecutionLock(
       { companyId: input.companyId, runId: input.runId, now: input.now,
-        ...(input.resumeStrandedQueue ? { resumeStrandedQueue: true } : {}) },
+        ...(input.resumeStrandedQueue ? { resumeStrandedQueue: true } : {}),
+        ...(input.existingExecutionRepairSuppressed ? { existingExecutionRepairSuppressed: true } : {}) },
       (locked, ports) => runReleaseDrain(locked, ports, input),
     );
 

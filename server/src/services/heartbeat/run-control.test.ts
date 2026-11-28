@@ -16,10 +16,12 @@ import { captureException } from "../../sentry.js";
 import { terminateLocalService } from "../local-service-supervisor.js";
 import { publishLiveEvent } from "../live-events.js";
 import { createHeartbeatRunState } from "./run-state.js";
-import { createHeartbeatRunControl } from "./run-control.js";
+import { createHeartbeatRunControl, shouldResumeStrandedQueueAfterRelease } from "./run-control.js";
 import { createScheduledRetryCancellationRecovery } from "./scheduled-retry-cancellation.js";
 import { preserveCancelledNativeWorkspaces } from "../native-runtime/native-failed-workspace-recovery.js";
 import { createPostgresRunDispatchAdapter } from "../../modules/run-dispatch/adapters/postgres.js";
+import { createPostgresWakeQueueAdapter } from "../../modules/wake-queue/adapters/postgres.js";
+import { createReleaseIssueExecution } from "../../modules/wake-queue/application/use-cases.js";
 import { caseHandoffService } from "../case-handoffs.js";
 import { withQueuedCommentIdsInWakePayload } from "../issue-queued-comment-queue.js";
 import { instanceSettingsService } from "../instance-settings.js";
@@ -59,6 +61,22 @@ function guardedDatabase() {
 
 describe("heartbeat run-control module boundary", () => {
   afterEach(() => adapterExecutionControls.clear());
+
+  it.each([
+    { reason: "an explicit request", requested: true, errorCode: null, error: null },
+    { reason: "a repair suppressed by existing execution", requested: false,
+      errorCode: "legacy_disposition_repair_suppressed", error: "Disposition repair suppressed: existing_execution" },
+  ])("resumes a stranded queue for $reason", ({ requested, errorCode, error }) => {
+    expect(shouldResumeStrandedQueueAfterRelease({ errorCode, error }, requested)).toBe(true);
+  });
+
+  it.each([
+    { errorCode: "operator_cancelled", error: null },
+    { errorCode: "legacy_disposition_repair_suppressed", error: "Disposition repair suppressed: budget_blocked" },
+    { errorCode: "legacy_disposition_repair_suppressed", error: "Disposition repair suppressed: stopped" },
+  ])("keeps gated and ordinary releases on the normal queue path", source => {
+    expect(shouldResumeStrandedQueueAfterRelease(source, false)).toBe(false);
+  });
 
   it("constructs without database access, cancellation, or cleanup", () => {
     const database = guardedDatabase();
@@ -142,6 +160,56 @@ describe("heartbeat run-control module boundary", () => {
 describe.skipIf(!runControlPostgresSupport.supported)("heartbeat run-control database wiring", () => {
   let db: Db;
   const { fixture, liveRun } = setupRunControlDatabase("paperclip-heartbeat-run-control-module", value => { db = value; });
+
+  it.each([
+    { reason: "a repair suppressed by existing execution", errorCode: "legacy_disposition_repair_suppressed",
+      error: "Disposition repair suppressed: existing_execution", requested: false, expectedStatus: "queued" },
+    { reason: "a budget-blocked repair", errorCode: "legacy_disposition_repair_suppressed",
+      error: "Disposition repair suppressed: budget_blocked", requested: false, expectedStatus: "deferred_issue_execution" },
+    { reason: "an explicitly requested ordinary retry", errorCode: "operator_cancelled",
+      error: "Operator cancelled", requested: true, expectedStatus: "deferred_issue_execution" },
+  ] as const)("handles a continuation behind $reason", async ({ errorCode, error, requested, expectedStatus }) => {
+    const { company, agent } = await fixture();
+    const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Resume after approval",
+      status: "in_progress", assigneeAgentId: agent.id, responsibleUserId: "responsible-user" }).returning();
+    const [repair] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id,
+      status: "cancelled", finishedAt: new Date(), runtimeMode: "legacy", runtimeModeResolvedAt: new Date(),
+      contextSnapshot: { issueId: issue.id, wakeReason: "issue_disposition_repair" },
+      errorCode, error }).returning();
+    await db.update(issues).set({ executionRunId: repair.id, checkoutRunId: repair.id }).where(eq(issues.id, issue.id));
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId: company.id, agentId: agent.id,
+      source: "automation", reason: "issue_execution_deferred", status: "deferred_issue_execution",
+      requestedByActorType: "user", requestedByActorId: "responsible-user",
+      payload: { issueId: issue.id, approvalId: "approval-1", approvalStatus: "approved",
+        _paperclipWakeContext: { issueId: issue.id, taskId: issue.id, approvalId: "approval-1",
+          approvalStatus: "approved", wakeReason: "approval_approved" } } }).returning();
+    const deps = callbacks(db);
+    vi.mocked(deps.wakeQueue.releaseIssueExecution).mockImplementation(createReleaseIssueExecution({
+      issueLock: createPostgresWakeQueueAdapter(db, {
+        resolveResponsibleUserId: async () => "responsible-user",
+        getRoutineEnv: async () => ({ routineId: null, env: null, responsibleUserId: null }),
+        resolveSessionBeforeForWakeup: async () => null,
+      }),
+      recovery: { escalateStrandedAssignedIssue: async () => undefined,
+        escalateStrandedRecoveryIssueInPlace: async () => undefined },
+    }));
+
+    await createHeartbeatRunControl(db, deps).releaseIssueExecutionAndPromote(
+      repair,
+      requested ? { resumeStrandedQueue: true } : undefined,
+    );
+
+    const [promoted] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id));
+    expect(promoted.status).toBe(expectedStatus);
+    if (expectedStatus === "queued") {
+      expect(promoted.runId).toEqual(expect.any(String));
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.wakeupRequestId, wake.id)))[0])
+        .toMatchObject({ status: "queued", contextSnapshot: expect.objectContaining({ wakeReason: "approval_approved" }) });
+    } else {
+      expect(promoted.runId).toBeNull();
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.wakeupRequestId, wake.id))).toHaveLength(0);
+    }
+  });
 
   it.each(["queued", "running", "cancelled", "succeeded"] as const)("does not supersede a retry that becomes %s between lookup and the cancellation fence", async status => {
     const { company, agent } = await fixture();
