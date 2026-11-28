@@ -11,6 +11,7 @@ import { configure } from "./commands/configure.js";
 import { addAllowedHostname } from "./commands/allowed-hostname.js";
 import { heartbeatRun } from "./commands/heartbeat-run.js";
 import { runCommand } from "./commands/run.js";
+import { formatCliError } from "./format-cli-error.js";
 import { bootstrapCeoInvite } from "./commands/auth-bootstrap-ceo.js";
 import { dbBackupCommand } from "./commands/db-backup.js";
 import { registerEnvLabCommands } from "./commands/env-lab.js";
@@ -288,7 +289,7 @@ async function main(): Promise<void> {
     await program.parseAsync();
   } catch (err) {
     failed = true;
-    console.error(err instanceof Error ? err.message : String(err));
+    console.error(formatCliError(err));
   } finally {
     await flushTelemetry();
   }

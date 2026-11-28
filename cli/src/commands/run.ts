@@ -196,19 +196,36 @@ function maybeEnableUiDevMiddleware(entrypoint: string): void {
   }
 }
 
+// A cold workspace build can take well over two minutes on slower machines.
+const DEFAULT_DEV_BUILD_DEPS_TIMEOUT_MS = 20 * 60_000;
+
+export function resolveDevBuildDepsTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.PAPERCLIP_DEV_BUILD_TIMEOUT_MS?.trim();
+  if (!raw) return DEFAULT_DEV_BUILD_DEPS_TIMEOUT_MS;
+  const parsed = Number(raw);
+  // spawnSync requires an unsigned integer; fractions would throw ERR_OUT_OF_RANGE.
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_DEV_BUILD_DEPS_TIMEOUT_MS;
+}
+
 function ensureDevWorkspaceBuildDeps(projectRoot: string): void {
   const buildScript = path.resolve(projectRoot, "scripts/ensure-plugin-build-deps.mjs");
   if (!fs.existsSync(buildScript)) return;
 
+  const timeoutMs = resolveDevBuildDepsTimeoutMs();
   const result = spawnSync(process.execPath, [buildScript], {
     cwd: projectRoot,
     stdio: "inherit",
-    timeout: 120_000,
+    timeout: timeoutMs,
   });
 
   if (result.error) {
+    const timedOut = (result.error as { code?: unknown }).code === "ETIMEDOUT";
+    const hint = timedOut
+      ? `\nThe build did not finish within ${Math.round(timeoutMs / 1000)}s. Run \`node scripts/ensure-plugin-build-deps.mjs\` ` +
+        "once to finish it, or raise PAPERCLIP_DEV_BUILD_TIMEOUT_MS."
+      : "";
     throw new Error(
-      `Failed to prepare workspace build artifacts before starting the Paperclip dev server.\n${formatError(result.error)}`,
+      `Failed to prepare workspace build artifacts before starting the Paperclip dev server.\n${formatError(result.error)}${hint}`,
     );
   }
 
