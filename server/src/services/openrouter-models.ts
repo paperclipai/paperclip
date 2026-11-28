@@ -8,6 +8,7 @@ const CATALOG_UNAVAILABLE = "Could not load OpenRouter models. Retry or enter a 
 
 let cached: { until: number; models: AdapterModel[] } | undefined;
 let pending: Promise<AdapterModel[]> | undefined;
+const minimaxModelOrder = ["openrouter/minimax/minimax-m3.1-flash:free", "openrouter/minimax/minimax-m3"];
 
 // Local provenance: only errors this module created for an actual outage of
 // the public catalog (its own deadline, a classified transport failure, or a
@@ -36,7 +37,7 @@ export async function listOpenRouterModels(refresh = false): Promise<AdapterMode
   if (pending) return pending;
   pending = (async () => {
     const signal = AbortSignal.timeout(CATALOG_TIMEOUT_MS);
-    let body: { data?: Array<{ id?: unknown; name?: unknown }> };
+    let body: { data?: Array<{ id?: unknown; name?: unknown; architecture?: { output_modalities?: unknown } }> };
     try {
       const response = await fetch(CATALOG_URL, { signal });
       if (!response.ok) {
@@ -50,11 +51,22 @@ export async function listOpenRouterModels(refresh = false): Promise<AdapterMode
       throw requestFailure(error, signal);
     }
     if (!Array.isArray(body.data)) throw new Error("OpenRouter returned an invalid model catalog.");
-    const models = body.data.flatMap(model => typeof model.id === "string" && model.id.includes("/")
-      ? [{ id: `openrouter/${model.id}`, label: typeof model.name === "string" ? model.name : model.id }]
-      : []);
-    cached = { until: Date.now() + 60_000, models };
-    return models;
+    const minimaxModels: AdapterModel[] = [];
+    const models = body.data.flatMap(model => {
+      if (typeof model.id !== "string" || !model.id.includes("/")) return [];
+      const entry = { id: `openrouter/${model.id}`, label: typeof model.name === "string" ? model.name : model.id };
+      const outputs = model.architecture?.output_modalities;
+      if (model.id.startsWith("minimax/") && Array.isArray(outputs) && outputs.length === 1 && outputs[0] === "text") {
+        if (!minimaxModelOrder.includes(entry.id)) return [];
+        minimaxModels.push(entry);
+      }
+      return [entry];
+    });
+    minimaxModels.sort((a, b) => minimaxModelOrder.indexOf(a.id) - minimaxModelOrder.indexOf(b.id));
+    let minimaxIndex = 0;
+    const orderedModels = models.map(model => minimaxModels.includes(model) ? minimaxModels[minimaxIndex++]! : model);
+    cached = { until: Date.now() + 60_000, models: orderedModels };
+    return orderedModels;
   })();
   try { return await pending; } finally { pending = undefined; }
 }
