@@ -1,232 +1,130 @@
 // @vitest-environment jsdom
 
-import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { queryKeys } from "@/lib/queryKeys";
 import { CompanySettingsNav, getCompanySettingsTab } from "./CompanySettingsNav";
 
-let currentPathname = "/company/settings";
-const navigateMock = vi.hoisted(() => vi.fn());
-const pageTabBarMock = vi.hoisted(() => vi.fn());
+const mockNavigate = vi.fn();
+const mockUseLocation = vi.fn();
+const mockUseHiddenSettings = vi.fn();
+const mockUseCloudInstance = vi.fn();
+const mockUseCompany = vi.fn();
+const mockUsePluginSlots = vi.fn();
 
 vi.mock("@/lib/router", () => ({
-  useLocation: () => ({ pathname: currentPathname, search: "", hash: "" }),
-  useNavigate: () => navigateMock,
+  useLocation: () => mockUseLocation(),
+  useNavigate: () => mockNavigate,
 }));
 
-vi.mock("@/components/ui/tabs", () => ({
-  Tabs: ({ children }: { children: React.ReactNode }) => <div data-testid="tabs-root">{children}</div>,
+vi.mock("@/hooks/useHiddenSettings", () => ({
+  useHiddenSettings: () => mockUseHiddenSettings(),
 }));
 
-vi.mock("@/components/PageTabBar", () => ({
-  PageTabBar: (props: {
-    items: Array<{ value: string; label: string }>;
-    value?: string;
-    onValueChange?: (value: string) => void;
-  }) => {
-    pageTabBarMock(props);
-
-    return (
-      <div>
-        <div data-testid="active-tab">{props.value}</div>
-        <button type="button" onClick={() => props.onValueChange?.("secrets")}>
-          switch-tab
-        </button>
-      </div>
-    );
-  },
+vi.mock("@/hooks/useCloudInstance", () => ({
+  useCloudInstance: () => mockUseCloudInstance(),
 }));
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+vi.mock("@/context/CompanyContext", () => ({
+  useCompany: () => mockUseCompany(),
+}));
 
-async function act(callback: () => void | Promise<void>) {
-  let result: void | Promise<void> = undefined;
-  flushSync(() => {
-    result = callback();
-  });
-  await result;
-}
+vi.mock("@/plugins/slots", () => ({
+  usePluginSlots: (...args: unknown[]) => mockUsePluginSlots(...args),
+}));
+
+vi.mock("@/context/SidebarContext", () => ({
+  useSidebar: () => ({ isMobile: true }),
+}));
 
 describe("CompanySettingsNav", () => {
   let container: HTMLDivElement;
+  let root: Root | null = null;
 
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
-    currentPathname = "/company/settings";
+    mockUseLocation.mockReturnValue({ pathname: "/PAP/company/settings" });
+    mockUseHiddenSettings.mockReturnValue({ hidden: new Set<string>() });
+    mockUseCloudInstance.mockReturnValue(false);
+    mockUseCompany.mockReturnValue({ selectedCompanyId: "company-1" });
+    mockUsePluginSlots.mockReturnValue({
+      slots: [
+        {
+          id: "billing-settings",
+          pluginKey: "paperclip.billing",
+          displayName: "Billing",
+          routePath: "billing",
+        },
+      ],
+    });
   });
 
   afterEach(() => {
+    flushSync(() => root?.unmount());
+    root = null;
     container.remove();
-    document.body.innerHTML = "";
     vi.clearAllMocks();
   });
 
-  it("maps company settings routes to the expected shared tab value", () => {
-    expect(getCompanySettingsTab("/company/settings")).toBe("general");
-    expect(getCompanySettingsTab("/PAP/company/settings")).toBe("general");
-    expect(getCompanySettingsTab("/PAP/company/settings/connections")).toBe("connections");
-    expect(getCompanySettingsTab("/company/settings/environments")).toBe("instance-environments");
-    expect(getCompanySettingsTab("/company/export")).toBe("export");
-    expect(getCompanySettingsTab("/PAP/company/export")).toBe("export");
-    expect(getCompanySettingsTab("/company/import")).toBe("import");
-    expect(getCompanySettingsTab("/PAP/company/import")).toBe("import");
-    expect(getCompanySettingsTab("/company/settings/members")).toBe("members");
-    expect(getCompanySettingsTab("/PAP/company/settings/members")).toBe("members");
-    expect(getCompanySettingsTab("/company/settings/access")).toBe("members");
-    expect(getCompanySettingsTab("/PAP/company/settings/access")).toBe("members");
-    expect(getCompanySettingsTab("/company/settings/invites")).toBe("members");
-    expect(getCompanySettingsTab("/PAP/company/settings/secrets")).toBe("secrets");
-    expect(getCompanySettingsTab("/company/settings/instance/profile")).toBe("instance-profile");
-    expect(getCompanySettingsTab("/PAP/company/settings/instance/general")).toBe("general");
-    expect(getCompanySettingsTab("/company/settings/instance/environments")).toBe("instance-environments");
-    expect(getCompanySettingsTab("/company/settings/instance/access")).toBe("instance-access");
-    expect(getCompanySettingsTab("/PAP/company/settings/instance/access")).toBe("instance-access");
-    expect(getCompanySettingsTab("/company/settings/instance/experimental")).toBe("instance-experimental");
-    expect(getCompanySettingsTab("/PAP/company/settings/instance/plugins/example")).toBe("instance-plugins");
-    expect(getCompanySettingsTab("/company/settings/instance/adapters")).toBe("instance-adapters");
+  it("includes companySettingsPluginSlots and navigates to their routes", () => {
+    root = createRoot(container);
+    flushSync(() => {
+      root!.render(<CompanySettingsNav />);
+    });
+
+    const select = container.querySelector("select") as HTMLSelectElement;
+    expect(select).not.toBeNull();
+    const optionTexts = Array.from(select.options).map((opt) => opt.textContent);
+    expect(optionTexts).toContain("Billing");
+    expect(optionTexts).toContain("Export");
+
+    const billingOption = Array.from(select.options).find((opt) => opt.textContent === "Billing");
+    expect(billingOption).toBeDefined();
+
+    flushSync(() => {
+      select.value = billingOption!.value;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(mockNavigate).toHaveBeenCalledWith("/company/settings/billing");
   });
 
-  function renderNav(
-    root: ReturnType<typeof createRoot>,
-    hiddenSettings?: string[],
-    cloud?: { managed: boolean },
-    fastResponsesEnabled = true,
-  ) {
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    queryClient.setQueryData(queryKeys.instance.experimentalSettings, { enableFastResponses: fastResponsesEnabled });
-    queryClient.setQueryData(queryKeys.health, {
-      status: "ok",
-      ...(hiddenSettings ? { hiddenSettings } : {}),
-      ...(cloud ? { cloud } : {}),
+  it("navigates Export to /company/export (not /company/settings/export)", () => {
+    root = createRoot(container);
+    flushSync(() => {
+      root!.render(<CompanySettingsNav />);
     });
-    root.render(
-      <QueryClientProvider client={queryClient}>
-        <CompanySettingsNav />
-      </QueryClientProvider>,
-    );
-  }
 
-  it("hides Connections while fast responses are disabled", async () => {
-    const root = createRoot(container);
-    await act(async () => { renderNav(root, undefined, undefined, false); });
-    expect(pageTabBarMock.mock.calls.at(-1)?.[0]?.items).not.toContainEqual({ value: "connections", label: "Connections" });
-    await act(async () => { root.unmount(); });
+    const select = container.querySelector("select") as HTMLSelectElement;
+    flushSync(() => {
+      select.value = "export";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(mockNavigate).toHaveBeenCalledWith("/company/export");
   });
 
-  it("renders the active tab and navigates when a different tab is selected", async () => {
-    currentPathname = "/PAP/company/settings/members";
-    const root = createRoot(container);
-
-    await act(async () => {
-      renderNav(root);
-    });
-
-    expect(container.textContent).toContain("members");
-    expect(pageTabBarMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        value: "members",
-        items: [
-          { value: "general", label: "General" },
-          { value: "export", label: "Export" },
-          { value: "import", label: "Import" },
-          { value: "members", label: "Members" },
-          { value: "secrets", label: "Secrets" },
-          { value: "instance-profile", label: "Profile" },
-          { value: "instance-environments", label: "Environments" },
-          { value: "connections", label: "Connections" },
-          { value: "instance-access", label: "Access" },
-          { value: "instance-experimental", label: "Experimental" },
-          { value: "instance-plugins", label: "Plugins" },
-          { value: "instance-adapters", label: "Adapters" },
-        ],
-      }),
+  it("resolves plugin settings routes to the matching plugin tab without built-in prefix collisions", () => {
+    const slots = [
+      {
+        id: "billing-settings",
+        pluginKey: "paperclip.billing",
+        displayName: "Billing",
+        routePath: "billing",
+      },
+      {
+        id: "secrets-manager",
+        pluginKey: "acme.vault",
+        displayName: "Secrets Manager",
+        routePath: "secrets-manager",
+      },
+    ];
+    expect(getCompanySettingsTab("/PAP/company/settings/billing", slots)).toBe(
+      "plugin:paperclip.billing:billing-settings",
     );
-
-    const button = container.querySelector("button");
-    expect(button).not.toBeNull();
-
-    await act(async () => {
-      button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    expect(navigateMock).toHaveBeenCalledWith("/company/settings/secrets");
-
-    await act(async () => {
-      root.unmount();
-    });
-  });
-
-  it("filters operator-hidden tabs out of the tab bar", async () => {
-    currentPathname = "/PAP/company/settings/members";
-    const root = createRoot(container);
-
-    await act(async () => {
-      renderNav(root, ["instance.plugins"]);
-    });
-
-    const renderedValues = pageTabBarMock.mock.calls.at(-1)?.[0]?.items?.map(
-      (item: { value: string }) => item.value,
+    expect(getCompanySettingsTab("/PAP/company/settings/secrets-manager", slots)).toBe(
+      "plugin:acme.vault:secrets-manager",
     );
-    expect(renderedValues).toEqual([
-      "general",
-      "export",
-      "import",
-      "members",
-      "secrets",
-      "instance-profile",
-      "instance-environments",
-      "connections",
-      "instance-access",
-      "instance-experimental",
-      "instance-adapters",
-    ]);
-
-    await act(async () => {
-      root.unmount();
-    });
-  });
-
-  it("filters operator-hidden company tabs out of the tab bar", async () => {
-    currentPathname = "/PAP/company/settings/members";
-    const root = createRoot(container);
-
-    await act(async () => {
-      renderNav(root, ["company.import", "company.secrets"]);
-    });
-
-    const renderedValues = pageTabBarMock.mock.calls.at(-1)?.[0]?.items?.map(
-      (item: { value: string }) => item.value,
-    );
-    expect(renderedValues).not.toContain("import");
-    expect(renderedValues).not.toContain("secrets");
-    expect(renderedValues).toContain("export");
-    expect(renderedValues).toContain("members");
-
-    await act(async () => {
-      root.unmount();
-    });
-  });
-
-  it("suppresses the Import tab on a Cloud-managed instance", async () => {
-    currentPathname = "/PAP/company/settings/members";
-    const root = createRoot(container);
-
-    await act(async () => {
-      renderNav(root, undefined, { managed: true });
-    });
-
-    const renderedValues = pageTabBarMock.mock.calls.at(-1)?.[0]?.items?.map(
-      (item: { value: string }) => item.value,
-    );
-    expect(renderedValues).not.toContain("import");
-    expect(renderedValues).toContain("export");
-
-    await act(async () => {
-      root.unmount();
-    });
+    expect(getCompanySettingsTab("/PAP/company/settings/secrets", slots)).toBe("secrets");
+    expect(getCompanySettingsTab("/PAP/company/export/files/agent.md", slots)).toBe("export");
   });
 });

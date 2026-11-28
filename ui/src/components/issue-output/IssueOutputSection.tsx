@@ -137,7 +137,7 @@ export function IssueOutputSection({ workProducts, resolveCreatorName, onMediaCl
         <div className="space-y-2">
           <p className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">Also produced</p>
           {mediaRest.length > 0 ? (
-            <div className="grid grid-cols-4 gap-2">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
               {mediaRest.map((item) => (
                 <div key={item.id} id={`work-product-${item.id}`} className="scroll-mt-20">
                   <OutputMediaPreview

@@ -12,7 +12,8 @@ import { Link } from "@/lib/router";
 import { authApi } from "@/api/auth";
 import { queryKeys } from "@/lib/queryKeys";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
-import { useCloudInviteUrl } from "@/hooks/useCloudInviteUrl";
+import { useCloudSidebarLinks } from "@/hooks/useCloudSidebarLinks";
+import { SidebarSlackFeedback } from "./SidebarSlackFeedback";
 import { useCanInviteCompanyMembers } from "@/hooks/useCompanyInviteAccess";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { useSignOut } from "@/hooks/useSignOut";
@@ -22,7 +23,7 @@ import { useSidebar } from "../context/SidebarContext";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
+import { cn } from "../lib/utils";
 import { ThemeToggle } from "./ThemeToggle";
 import { SidebarServerInfo } from "./SidebarServerInfo";
 
@@ -129,7 +130,7 @@ export function SidebarAccountMenu({
   // On Cloud the shortcut exists only for the current stack's owner/admin and
   // only once the stack metadata is known; the in-app Invites tab is never a
   // fallback there because it drives a different invitation flow.
-  const cloudInviteUrl = useCloudInviteUrl();
+  const { inviteUrl: cloudInviteUrl, slackFeedback } = useCloudSidebarLinks(cloud);
   // Self-hosted invites need the `users:invite` grant. Offer the shortcut only
   // to boards with role-default access (company owner/admin/operator,
   // instance admins, local boards). The server checks the actual grants.
@@ -141,15 +142,13 @@ export function SidebarAccountMenu({
     !hidesCompanyPage(hiddenSettings, "company.members") &&
     !hidesCompanyPage(hiddenSettings, "company.invites");
   const [internalOpen, setInternalOpen] = useState(false);
-  const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
-  const rail = collapsed && !peeking;
+  const { isMobile, setSidebarOpen } = useSidebar();
   const open = controlledOpen ?? internalOpen;
   const stagingCommit = useStagingCommit(open);
   const setOpen = onOpenChange ?? setInternalOpen;
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
-    retry: false,
   });
 
   const signOutMutation = useSignOut({ onSignedOut: closeNavigationChrome });
@@ -171,14 +170,14 @@ export function SidebarAccountMenu({
 
   return (
     <div className="border-t border-r border-border bg-background px-3 py-2">
-      <div className={cn("flex items-center gap-0.5", !rail && "px-2")}>
+      <div className="flex items-center gap-0.5 px-2">
         <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
           <button
             type="button"
             className={cn(
               "flex min-w-0 items-center gap-2.5 rounded-lg text-left text-(length:--text-compact) font-medium text-foreground/80 transition-colors hover:bg-accent/50 hover:text-foreground",
-              rail ? "w-full px-3 py-2" : "flex-1 px-2 py-1.5",
+              "flex-1 px-2 py-1.5",
             )}
             aria-label="Open account menu"
           >
@@ -186,7 +185,7 @@ export function SidebarAccountMenu({
               {session?.user.image ? <AvatarImage src={session.user.image} alt={displayName} /> : null}
               <AvatarFallback>{initials}</AvatarFallback>
             </Avatar>
-            <span className={cn("min-w-0 flex-1 truncate", rail && SIDEBAR_RAIL_HIDDEN_LABEL)}>{displayName}</span>
+            <span className="min-w-0 flex-1 truncate">{displayName}</span>
           </button>
         </PopoverTrigger>
         <PopoverContent
@@ -277,7 +276,8 @@ export function SidebarAccountMenu({
           </div>
         </PopoverContent>
         </Popover>
-        {!rail && !isCloud ? (
+        {slackFeedback && <SidebarSlackFeedback feedback={slackFeedback} className="hover:bg-accent/50" />}
+        {!isCloud ? (
           <Tooltip>
             <TooltipTrigger asChild>
               <a

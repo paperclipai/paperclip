@@ -170,6 +170,21 @@ describe("native external chat workspace boundary", () => {
     ).rejects.toThrow("native_chat_workspace_issue_unavailable");
   });
 
+  it("keeps an admitted fresh chat attempt separate from the original task root", async () => {
+    const freshAttemptId = "01000000-0000-4000-8000-000000000090";
+    const original = await materializeNativeChatTaskRoot(scopeA);
+    await writeFile(path.join(original, "retained.txt"), "retained original");
+    const fresh = (await findNativeChatWorkspaceScope(db, { ...scopeInput(issueA), freshAttemptId }))!;
+    const directory = await materializeNativeChatTaskRoot(fresh);
+    expect(directory).toBe(path.join(instanceRoot, "isolated-workspace-attempts", companyId, issueA, freshAttemptId));
+    expect(path.relative(original, directory).startsWith("..")).toBe(true);
+    expect(await readdir(directory)).toEqual([]);
+    expect(nativeChatWorkspaceCwd(fresh, null, false)).toBe(directory);
+    expect(await readFile(path.join(original, "retained.txt"), "utf8")).toBe("retained original");
+    expect(nativeChatWorkspaceCwd({ ...fresh, taskRoot: path.join(original, "attempts", freshAttemptId, "escape") }, null, false)).toBeNull();
+    expect(nativeChatWorkspaceCwd({ ...fresh, taskRoot: path.join(instanceRoot, "isolated-workspace-attempts", companyId, issueB, freshAttemptId) }, null, false)).toBeNull();
+  });
+
   it("does not expose another active task's staged inbound files or register its generated file", async () => {
     const [rootA, rootB] = await Promise.all([
       materializeNativeChatTaskRoot(scopeA),

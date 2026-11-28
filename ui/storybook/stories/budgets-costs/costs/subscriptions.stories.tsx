@@ -1,10 +1,13 @@
 import { useLayoutEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, userEvent, within } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 import { monthlySubscriptionCents, type SubscriptionCostReport, type CostDataQualityReport } from "@paperclipai/shared";
+import { Layout } from "@/components/Layout";
+import { Route, Routes } from "@/lib/router";
 import { Costs } from "@/pages/Costs";
 import { ToastViewport } from "@/components/ToastViewport";
+import { PluginLauncherProvider } from "@/plugins/launchers";
 
 function fixture(): SubscriptionCostReport {
   const zero = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, costCents: "0", eventCount: 0, estimatedEventCount: 0, unpricedEventCount: 0 };
@@ -15,7 +18,7 @@ function fixture(): SubscriptionCostReport {
     subscription: { ...zero, inputTokens: 10000000, cachedInputTokens: 74000000, outputTokens: 1100000, eventCount: 50 },
     unknown: { ...zero }, unattributedSubscription: { ...zero },
     accounts: [
-      { id: "plus", provider: "openai", name: "Goldie’s ChatGPT", ownerUserId: "goldie", ownerName: "Goldie", shared: false, identityVerified: true,
+      { id: "plus", provider: "openai", name: "Sample ChatGPT", ownerUserId: "sample-user", ownerName: "Sample User", shared: false, identityVerified: true,
         detectedPlan: "plus", observedAt: new Date().toISOString(), lastCheckedAt: new Date().toISOString(), refreshStatus: "ok", canEdit: true,
         price, usage: { ...zero, inputTokens: 8000000, cachedInputTokens: 60000000, outputTokens: 1000000, eventCount: 40 }, agents: [{ id: "codie", name: "Codie" }, { id: "fry", name: "Fry" }] },
       { id: "max", provider: "anthropic", name: "Shared Claude", ownerUserId: null, ownerName: null, shared: true, identityVerified: true,
@@ -27,7 +30,7 @@ function fixture(): SubscriptionCostReport {
 }
 
 /** Production Costs page; only API responses are fixtures. Edits persist in the story. */
-function SubscriptionCostsStory({ unknownPrice = false, stale = false, costGaps = false }: { unknownPrice?: boolean; stale?: boolean; costGaps?: boolean }) {
+function SubscriptionCostsStory({ unknownPrice = false, stale = false, costGaps = false, inShell = false }: { unknownPrice?: boolean; stale?: boolean; costGaps?: boolean; inShell?: boolean }) {
   const [ready, setReady] = useState(false);
   const client = useQueryClient();
   useLayoutEffect(() => {
@@ -88,7 +91,7 @@ function SubscriptionCostsStory({ unknownPrice = false, stale = false, costGaps 
         { agentId: "fry", agentName: "Fry", agentStatus: "active", costCents: 0, inputTokens: 2000000, cachedInputTokens: 10000000, outputTokens: 200000, eventCount: 10, estimatedEventCount: 0, apiRunCount: 0, subscriptionRunCount: 10 },
         { agentId: "leela", agentName: "Leela", agentStatus: "active", costCents: 0, inputTokens: 2000000, cachedInputTokens: 14000000, outputTokens: 100000, eventCount: 10, estimatedEventCount: 0, apiRunCount: 0, subscriptionRunCount: 10 },
       ]);
-      if (path === "costs/by-user") return Response.json({ activeUserCount: 1, rows: [{ userId: "goldie", userName: "Goldie", userImage: null, costCents: 4217, costCentsExact: "4217", inputTokens: 16000000, cachedInputTokens: 80200000, outputTokens: 1300000, eventCount: 74, estimatedEventCount: 12, unpricedEventCount: 0, runCount: 74 }] });
+      if (path === "costs/by-user") return Response.json({ activeUserCount: 1, rows: [{ userId: "sample-user", userName: "Sample User", userImage: null, costCents: 4217, costCentsExact: "4217", inputTokens: 16000000, cachedInputTokens: 80200000, outputTokens: 1300000, eventCount: 74, estimatedEventCount: 12, unpricedEventCount: 0, runCount: 74 }] });
       if (path === "costs/by-project") return Response.json([{ projectId: "costs-project", projectName: "Cost reporting", costCents: 4217, inputTokens: 16000000, cachedInputTokens: 80200000, outputTokens: 1300000, eventCount: 74, estimatedEventCount: 12 }]);
       if (path === "costs/finance-summary") return Response.json({ netCents: 0, debitCents: 0, creditCents: 0, estimatedDebitCents: 0, eventCount: 0, currencies: [] });
       if (path.startsWith("costs/")) return Response.json([]);
@@ -97,7 +100,20 @@ function SubscriptionCostsStory({ unknownPrice = false, stale = false, costGaps 
     client.removeQueries({ queryKey: ["cost-subscriptions"] }); client.removeQueries({ queryKey: ["costs"] }); setReady(true);
     return () => { window.fetch = original; client.removeQueries({ queryKey: ["cost-subscriptions"] }); client.removeQueries({ queryKey: ["costs"] }); };
   }, [client, unknownPrice, stale, costGaps]);
-  return ready ? <><Costs embedded hideBudgetsTab /><ToastViewport /></> : null;
+  if (!ready) return null;
+  if (inShell) {
+    return (
+      <PluginLauncherProvider>
+        <Routes>
+          <Route path="/:companyPrefix" element={<Layout />}>
+            <Route path="activity/costs" element={<Costs embedded hideBudgetsTab />} />
+          </Route>
+        </Routes>
+        <ToastViewport />
+      </PluginLauncherProvider>
+    );
+  }
+  return <><Costs embedded hideBudgetsTab /><ToastViewport /></>;
 }
 
 const meta = { id: "costs-subscriptions",
@@ -126,12 +142,43 @@ export const AccountDetails: Story = { play: async ({ canvasElement }) => {
   const canvas = within(canvasElement);
   await userEvent.click(await canvas.findByRole("button", { name: "View details" }));
   const dialog = within(document.body);
-  await expect(await dialog.findByText("Goldie’s ChatGPT")).toBeVisible();
+  await expect(await dialog.findByText("Sample ChatGPT")).toBeVisible();
   await expect(await dialog.findByText("Used by Codie, Fry")).toBeVisible();
 } };
 export const UnknownPrice: Story = { args: { unknownPrice: true } };
 export const ProviderUnavailable: Story = { args: { stale: true } };
 export const Mobile: Story = { globals: { viewport: { value: "mobile1", isRotated: false } } };
+export const CostsMobile: Story = {
+  args: { inShell: true },
+  globals: { viewport: { value: "mobile", isRotated: false } },
+  parameters: {
+    layout: "fullscreen",
+    waitForViewport: true,
+    initialEntries: ["/PAP/activity/costs"],
+  },
+  play: async () => {
+    const page = within(document.body);
+    await expect(await page.findByText("API spend")).toBeVisible();
+    const table = await page.findByRole("table", { name: "Costs by user" });
+    const scroller = table.parentElement as HTMLElement;
+    await waitFor(() => {
+      const rect = scroller.getBoundingClientRect();
+      expect(rect.width).toBeGreaterThan(0);
+      expect(rect.right).toBeLessThanOrEqual(window.innerWidth + 1);
+      expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
+    });
+    if (scroller.scrollWidth > scroller.clientWidth) {
+      scroller.scrollLeft = scroller.scrollWidth;
+      const headers = within(table).getAllByRole("columnheader");
+      const lastHeader = headers[headers.length - 1]!;
+      await waitFor(() => {
+        expect(lastHeader.getBoundingClientRect().right).toBeLessThanOrEqual(
+          scroller.getBoundingClientRect().right + 1,
+        );
+      });
+    }
+  },
+};
 export const CostDataQuality: Story = { args: { costGaps: true }, play: async ({ canvasElement }) => {
   const canvas = within(canvasElement);
   await expect(await canvas.findByRole("button", { name: "5 run costs unavailable" })).toHaveAttribute("aria-expanded", "false");
