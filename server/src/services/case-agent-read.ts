@@ -89,7 +89,7 @@ export function projectAgentCaseRead(detail: CaseDetail, rawOptions: unknown, do
   const section = options.section ?? "case", offset = options.offsetBytes ?? 0;
   const limit = options.limitBytes ?? CASE_READ_PAGE_BYTES;
   const routing = { id: detail.id, companyId: detail.companyId, workIssueId: detail.workIssueId,
-    phase: detail.phase, handoffVersion: detail.handoffVersion,
+    phase: detail.phase, handoffVersion: detail.handoffVersion, workflowId: detail.workflowId, workflow: detail.workflow,
     workIssue: detail.workIssue ? { id: detail.workIssue.id, status: detail.workIssue.status, statusVersion: detail.workIssue.statusVersion } : null };
   if (section === "document" && (!document || document.key !== (options.documentIssueId ? options.documentKey!.toLowerCase() : options.documentKey) ||
       document.sourceIssueId !== (options.documentIssueId?.toLowerCase() ?? null))) throw badRequest("Document read requires the selected authorized document");

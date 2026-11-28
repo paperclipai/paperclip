@@ -79,6 +79,11 @@ export const workspaceFileListQuerySchema = z.object({
 });
 
 export const resolvedWorkspaceResourceSchema = z.object({
+  source: z.object({
+    kind: z.enum(["live", "saved"]),
+    savedAt: z.string().datetime().nullable(),
+    snapshotId: z.string().guid().nullable(),
+  }).optional(),
   kind: workspaceFileResourceKindSchema,
   provider: z.string().min(1),
   title: z.string().min(1),

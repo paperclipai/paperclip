@@ -55,6 +55,7 @@
       "defaults": {
         "serverUrl": "https://mcp.asana.com/v2/mcp",
         "discoveryUrl": "https://mcp.asana.com/.well-known/oauth-protected-resource/v2",
+        "tokenEndpoint": "https://app.asana.com/-/oauth_token",
         "scopesHint": [
           "default"
         ]

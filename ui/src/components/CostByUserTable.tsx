@@ -6,12 +6,12 @@ import { formatTokens } from "../lib/utils";
 
 export function CostByUserTable({ report }: { report: CostByUserReport }) {
   return (
-    <Card className="gap-3 py-4">
+    <Card className="min-w-0 max-w-full gap-3 py-4">
       <CardHeader className="gap-0 px-5">
         <CardTitle className="text-base">By user</CardTitle>
       </CardHeader>
-      <CardContent className="px-5">
-        <div className="overflow-x-auto">
+      <CardContent className="min-w-0 px-5">
+        <div className="max-w-full overflow-x-auto">
           <table aria-label="Costs by user" className="w-full text-sm">
             <thead className="text-muted-foreground">
               <tr className="border-b border-border">

@@ -13,7 +13,7 @@ const actor = (role: string) => caseActors[role];
 export function caseFixtureHandoffs(record: CaseRecord): CaseHandoffView[] {
   return record.handoffs.map((handoff, index) => ({
     id: handoff.id, companyId, caseId: caseId(record), issueId: taskId(record)!,
-    version: record.handoffs.length - index, destinationKind: "agent", completedAt: null,
+    version: record.handoffs.length - index, destinationKind: "agent", completedAt: null, workflowTransition: null,
     fromAgentId: actor(handoff.from)?.kind === "agent" ? actor(handoff.from).id : null,
     fromAgentName: actor(handoff.from)?.kind === "agent" ? actor(handoff.from).name : null,
     toAgentId: actor(handoff.to).id, toAgentName: actor(handoff.to).name,
