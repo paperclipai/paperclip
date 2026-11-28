@@ -35,7 +35,7 @@ import { prepareCompatibleClaudeCommand } from "./sandbox-cli-version.js";
 import { isBedrockModelId } from "./models.js";
 import { buildClaudeProbePermissionArgs, claudeSandboxPermissionEnv } from "./permissions.js";
 import { prepareSandboxClaudeProbeRuntime } from "./claude-config.js";
-import { resolveClaudeModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
+import { resolveClaudeAuthMode, resolveClaudeModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { resolveClaudeExecutionEngineForRun, testClaudeAcpEnvironment } from "./acp.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
 import {
@@ -185,29 +185,27 @@ export async function testEnvironment(
     // vars from the adapter config in that case; the probe itself will surface
     // any auth issues on the remote box.
     const considerHostEnv = !targetIsRemote && !config.managedAiConnection;
-    const hasBedrock =
-      env.CLAUDE_CODE_USE_BEDROCK === "1" ||
-      env.CLAUDE_CODE_USE_BEDROCK === "true" ||
-      (considerHostEnv && process.env.CLAUDE_CODE_USE_BEDROCK === "1") ||
-      (considerHostEnv && process.env.CLAUDE_CODE_USE_BEDROCK === "true") ||
-      isNonEmpty(env.ANTHROPIC_BEDROCK_BASE_URL) ||
-      (considerHostEnv && isNonEmpty(process.env.ANTHROPIC_BEDROCK_BASE_URL));
+    const authMode = resolveClaudeAuthMode(considerHostEnv ? { ...process.env, ...env } : env);
+    const authSource = resolveClaudeAuthMode(env) === authMode ? "adapter config env" : "server environment";
+    const hasBedrock = authMode === "bedrock";
 
     const configApiKey = env.ANTHROPIC_API_KEY;
     const hostApiKey = considerHostEnv ? process.env.ANTHROPIC_API_KEY : undefined;
     if (hasBedrock) {
-      const source =
-        env.CLAUDE_CODE_USE_BEDROCK === "1" ||
-        env.CLAUDE_CODE_USE_BEDROCK === "true" ||
-        isNonEmpty(env.ANTHROPIC_BEDROCK_BASE_URL)
-          ? "adapter config env"
-          : "server environment";
       checks.push({
         code: "claude_bedrock_auth",
         level: "info",
         message: "AWS Bedrock auth detected. Claude will use Bedrock for inference.",
-        detail: `Detected in ${source}.`,
+        detail: `Detected in ${authSource}.`,
         hint: "Ensure AWS credentials (AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY or AWS_PROFILE) and AWS_REGION are configured.",
+      });
+    } else if (authMode === "foundry") {
+      checks.push({
+        code: "claude_foundry_auth",
+        level: "info",
+        message: "Microsoft Foundry auth detected. Claude will use Foundry for inference.",
+        detail: `Detected in ${authSource}.`,
+        hint: "Ensure ANTHROPIC_FOUNDRY_RESOURCE or ANTHROPIC_FOUNDRY_BASE_URL, and ANTHROPIC_FOUNDRY_API_KEY or Azure credentials, are configured.",
       });
     } else if (config.managedAiRouting) {
       checks.push({ code: "claude_managed_provider_configured", level: "info", message: "Testing the selected connection’s provider and model." });

@@ -1831,6 +1831,35 @@ describe("resolveClaudeAcpBillingIdentity", () => {
     ).toEqual({ provider: "anthropic", biller: "aws_bedrock", billingType: "metered_api" });
   });
 
+  it("classifies Foundry auth as metered_api billed to microsoft_foundry", () => {
+    expect(
+      resolveClaudeAcpBillingIdentity({ config: { env: { CLAUDE_CODE_USE_FOUNDRY: "1" } } }),
+    ).toEqual({ provider: "anthropic", biller: "microsoft_foundry", billingType: "metered_api" });
+  });
+
+  it("bills from the launch env: host Foundry outside the ACP allowlist does not count", () => {
+    const originalFoundry = process.env.CLAUDE_CODE_USE_FOUNDRY;
+    process.env.CLAUDE_CODE_USE_FOUNDRY = "1";
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.CLAUDE_CODE_USE_BEDROCK;
+    delete process.env.ANTHROPIC_BEDROCK_BASE_URL;
+    try {
+      expect(resolveClaudeAcpBillingIdentity({ config: {} })).toEqual({
+        provider: "anthropic",
+        biller: "anthropic",
+        billingType: "subscription",
+      });
+    } finally {
+      if (originalFoundry === undefined) delete process.env.CLAUDE_CODE_USE_FOUNDRY;
+      else process.env.CLAUDE_CODE_USE_FOUNDRY = originalFoundry;
+    }
+  });
+
+  it("bills host Bedrock, which the ACP allowlist passes to Claude", () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+    expect(resolveClaudeAcpBillingIdentity({ config: {} }).biller).toBe("aws_bedrock");
+  });
+
   it("falls back to subscription without API-key or Bedrock auth", () => {
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.CLAUDE_CODE_USE_BEDROCK;

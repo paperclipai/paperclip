@@ -783,6 +783,35 @@ describe("claude remote execution", () => {
       });
     });
 
+    it.each([
+      ["the agent env enables Foundry", { CLAUDE_CODE_USE_FOUNDRY: "1" }, undefined, "microsoft_foundry", "metered_api"],
+      ["only the host enables Foundry", {}, "1", "anthropic", "subscription"],
+    ])("bills a remote run from its own env when %s", async (_name, env, hostFoundry, biller, billingType) => {
+      const original = process.env.CLAUDE_CODE_USE_FOUNDRY;
+      if (hostFoundry) process.env.CLAUDE_CODE_USE_FOUNDRY = hostFoundry;
+      else delete process.env.CLAUDE_CODE_USE_FOUNDRY;
+      runChildProcess.mockResolvedValueOnce({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "2.1.279 (Claude Code)\n",
+        stderr: "",
+        pid: 123,
+        startedAt: new Date().toISOString(),
+      });
+      try {
+        const { result } = await executeWithModel("paperclip-claude-remote-billing-", {
+          model: "claude-opus-5-5",
+          env,
+        });
+        expect(result.errorCode).toBe("claude_cli_version_incompatible");
+        expect(result).toMatchObject({ provider: "anthropic", biller, billingType });
+      } finally {
+        if (original === undefined) delete process.env.CLAUDE_CODE_USE_FOUNDRY;
+        else process.env.CLAUDE_CODE_USE_FOUNDRY = original;
+      }
+    });
+
     it("leaves Fable compatibility to explicitly configured custom CLI wrappers", async () => {
       const { args, result } = await executeWithModel("paperclip-claude-model-wrapper-", {
         command: "/opt/paperclip/claude-wrapper",

@@ -1,5 +1,12 @@
 export const DEFAULT_CLAUDE_LOCAL_MODEL = "claude-opus-5-5";
 
+export {
+  claudeBillingIdentity,
+  resolveClaudeAuthMode,
+  type ClaudeAuthMode,
+  type ClaudeBillingIdentity,
+} from "./auth-mode.js";
+
 /** Resolve Paperclip's default without replacing an explicit provider model. */
 export function resolveClaudeModel(
   model: unknown,

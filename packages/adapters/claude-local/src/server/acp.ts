@@ -34,13 +34,14 @@ import type {
   AcpxTerminalSessionFailure,
   AcpxTerminalFailureClassification,
 } from "@paperclipai/adapter-utils/acpx-engine/execute";
+import { projectAcpxInheritedHostEnvironment } from "@paperclipai/adapter-utils/acpx-engine/inherited-host-env";
 import {
   asBoolean,
   asNumber,
   asString,
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
-import { resolveEnvBillingIdentity, resolveManagedApiKeyBilling } from "./acp-billing.js";
+import { resolveManagedApiKeyBilling } from "./acp-billing.js";
 import {
   materializeRemoteClaudeConfig,
   overrideRemoteClaudeLocalPermissionMode,
@@ -64,7 +65,7 @@ import {
   minimumClaudeCliVersionForModel,
   readBundledClaudeCodeVersion,
 } from "./cli-capabilities.js";
-import { resolveClaudeModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
+import { claudeBillingIdentity, resolveClaudeAuthMode, resolveClaudeModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRootDir = path.resolve(moduleDir, "../..");
@@ -181,19 +182,20 @@ export function resolveClaudeAcpBillingIdentity(
 ): { provider: string; biller: string; billingType: AdapterBillingType; preferRequestedModel?: true } {
   const connection = resolveManagedApiKeyBilling(ctx.config);
   if (connection) return connection;
-  const envConfig = parseObject(parseObject(ctx.config).env);
   const target = readAdapterExecutionTarget({
     executionTarget: ctx.executionTarget,
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
   });
-  const considerHostEnv = target?.kind !== "remote";
-  const readEnvValue = (key: string): string => {
-    const fromConfig = envConfig[key];
-    if (typeof fromConfig === "string" && fromConfig.trim()) return fromConfig.trim();
-    const fromHost = considerHostEnv ? process.env[key] : undefined;
-    return typeof fromHost === "string" ? fromHost.trim() : "";
-  };
-  return resolveEnvBillingIdentity(readEnvValue);
+  const authEnv = claudeAcpAuthEnv(parseObject(parseObject(ctx.config).env), target?.kind !== "remote");
+  return claudeBillingIdentity(resolveClaudeAuthMode(authEnv));
+}
+
+function claudeAcpAuthEnv(envConfig: Record<string, unknown>, inheritHostEnvironment: boolean): Record<string, unknown> {
+  const authEnv: Record<string, unknown> = projectAcpxInheritedHostEnvironment(process.env, "claude", inheritHostEnvironment);
+  for (const [key, value] of Object.entries(envConfig)) {
+    if (typeof value === "string") authEnv[key] = value;
+  }
+  return authEnv;
 }
 
 /**
@@ -903,13 +905,8 @@ export async function testClaudeAcpEnvironment(
 
   const envConfig = parseObject(config.env);
   const considerHostEnv = !targetIsRemote && !config.managedAiConnection;
-  const hasBedrock =
-    envConfig.CLAUDE_CODE_USE_BEDROCK === "1" ||
-    envConfig.CLAUDE_CODE_USE_BEDROCK === "true" ||
-    (considerHostEnv && process.env.CLAUDE_CODE_USE_BEDROCK === "1") ||
-    (considerHostEnv && process.env.CLAUDE_CODE_USE_BEDROCK === "true") ||
-    isNonEmpty(envConfig.ANTHROPIC_BEDROCK_BASE_URL) ||
-    (considerHostEnv && isNonEmpty(process.env.ANTHROPIC_BEDROCK_BASE_URL));
+  const authMode = resolveClaudeAuthMode(claudeAcpAuthEnv(envConfig, considerHostEnv));
+  const hasBedrock = authMode === "bedrock";
   const configApiKey = envConfig.ANTHROPIC_API_KEY;
   const hostApiKey = considerHostEnv ? process.env.ANTHROPIC_API_KEY : undefined;
   const hostOauthToken = considerHostEnv ? process.env.CLAUDE_CODE_OAUTH_TOKEN : undefined;
@@ -921,6 +918,13 @@ export async function testClaudeAcpEnvironment(
       level: "info",
       message: "AWS Bedrock auth detected. Claude ACP will use Bedrock for inference.",
       hint: "Ensure AWS credentials and AWS_REGION are configured in this environment.",
+    });
+  } else if (authMode === "foundry") {
+    checks.push({
+      code: "claude_acp_foundry_auth",
+      level: "info",
+      message: "Microsoft Foundry auth detected. Claude ACP will use Foundry for inference.",
+      hint: "Ensure ANTHROPIC_FOUNDRY_RESOURCE or ANTHROPIC_FOUNDRY_BASE_URL, and ANTHROPIC_FOUNDRY_API_KEY or Azure credentials, are configured in this environment.",
     });
   } else if (isNonEmpty(configApiKey) || isNonEmpty(hostApiKey)) {
     const source = isNonEmpty(configApiKey) ? "adapter config env" : "server environment";

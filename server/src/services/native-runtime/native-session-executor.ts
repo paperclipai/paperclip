@@ -25,6 +25,7 @@ import { LocalRuntimeApiListenerClosedError, resolveLocalRuntimeApiUrl } from ".
 import { providerFailureFromError } from "../../vendor/paperclip-runner/index.js";
 import { isProviderQuotaActionRequired } from "../provider-quota-reset.js";
 import { readProviderFailure } from "@paperclipai/shared";
+import { claudeBillingIdentity, resolveClaudeAuthMode } from "@paperclipai/adapter-claude-local";
 import { nativeCancellationHasUnsettledOwner, notifyNativeCancellation, waitForNativeCancellation } from "./native-cancellation-delivery.js";
 import { readClaimedNativeStopRecovery } from "./native-cancellation-request.js";
 import { publishNativeHarnessBackup } from "./native-harness-backup-publication.js";
@@ -14430,7 +14431,8 @@ export function resolveNativeBilling(provider: NativeExecutionInput["provider"],
     return { provider: "xai", biller: "xai", billingType: env.XAI_API_KEY ? "metered_api" : "unknown" };
   }
   if (provider.kind === "acpx" && provider.agent === "claude") {
-    if (env.CLAUDE_CODE_USE_BEDROCK === "1") return { provider: "anthropic", biller: "aws_bedrock", billingType: "metered_api" };
+    const authMode = resolveClaudeAuthMode(env);
+    if (authMode === "bedrock" || authMode === "foundry") return claudeBillingIdentity(authMode);
     return { provider: "anthropic", biller: "anthropic", billingType: env.ANTHROPIC_API_KEY ? "metered_api" : env.CLAUDE_CODE_OAUTH_TOKEN ? "subscription_included" : "unknown" };
   }
   if (provider.kind === "opencode" || (provider.kind === "acpx" && provider.agent === "pi")) {

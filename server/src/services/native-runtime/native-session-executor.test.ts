@@ -2842,6 +2842,13 @@ describe("native provider usage normalization", () => {
   it("does not treat a protocol-default price as free usage", () => {
     expect(nativeUsageCostUsd({ runDelta: { inputTokens: 20, outputTokens: 10, providerCostUsd: 0 } })).toBeUndefined();
   });
+  it.each([
+    [{ CLAUDE_CODE_USE_BEDROCK: "1" }, "aws_bedrock"],
+    [{ CLAUDE_CODE_USE_FOUNDRY: "1" }, "microsoft_foundry"],
+  ] as const)("bills a native Claude run on a cloud provider as metered_api (%o)", (env, biller) => {
+    const provider = { kind: "acpx", agent: "claude", model: "claude-opus-5-5" } as NativeExecutionInput["provider"];
+    expect(resolveNativeBilling(provider, env)).toEqual({ provider: "anthropic", biller, billingType: "metered_api" });
+  });
   it("attributes Grok API usage while preserving managed billing identity", () => {
     const provider = { kind: "acpx", agent: "grok", model: "grok-4.7" } as NativeExecutionInput["provider"];
     expect(nativeUsageBiller(provider)).toBe("xai");
