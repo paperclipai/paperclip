@@ -23,7 +23,11 @@ Metrics, raw API bodies and Codex Guardian assessments are disabled.
 
 Native OpenCode 1.18.34 uses a runner-owned HTTP/JSON exporter. Each completed,
 failed or cancelled turn produces a trace with Paperclip company, agent, run and
-turn IDs. Authenticated Paperclip tool dispatch outcomes, native tool outcomes and
+turn IDs. Each root and child span also has `session.id`, the native OpenCode
+conversation ID. This ID stays the same for follow-up runs and session recovery;
+a new native conversation gets a new ID. It is separate from Paperclip's normalized
+session ID and remains available when content capture is off.
+Authenticated Paperclip tool dispatch outcomes, native tool outcomes and
 message-level token/cost receipts are child spans;
 repeated usage updates replace the same message receipt. Missing prices remain
 unknown. This projection excludes hidden reasoning, raw provider payloads and

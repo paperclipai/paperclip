@@ -57,11 +57,49 @@ it.skipIf(!enabled).each([true, false])("exports the current request through ins
       if (["turn.completed", "turn.failed", "turn.interrupted", "turn.cancelled"].includes(event.eventType)) break;
     }
     expect(events.at(-1)?.eventType).toBe("turn.completed");
+    const nativeId = (await session.snapshot()).providerSessionId;
+    expect(nativeId).toBeTruthy();
+    expect(nativeId).not.toBe("disposable-session");
+    const runTurn = async (text: string) => {
+      await session!.startTurn({ message: { role: "user", text } });
+      for await (const event of session!.events()) {
+        if (["turn.completed", "turn.failed", "turn.interrupted", "turn.cancelled"].includes(event.eventType)) {
+          expect(event.eventType).toBe("turn.completed");
+          break;
+        }
+      }
+    };
+    session.attachRun!({ runId: "follow-up-run" });
+    await runTurn("follow-up-runtime-request");
+    const snapshot = await session.snapshot();
+    await session.close({ reason: "test" });
+    session = undefined;
+    const recovered = await driver.recoverSession(snapshot);
+    expect(recovered.recovered).toBe(true);
+    if (!recovered.recovered || !recovered.session) throw new Error(recovered.reason);
+    session = recovered.session;
+    await runTurn("recovered-runtime-request");
+    await session.close({ reason: "test" });
+    session = await driver.openSession({ runId: "fresh-run", normalizedSessionId: "fresh-session", workingDirectory: root });
+    const freshId = (await session.snapshot()).providerSessionId;
+    expect(freshId).toBeTruthy();
+    expect(freshId).not.toBe(nativeId);
+    await runTurn("fresh-runtime-request");
     await session.close({ reason: "test" });
     session = undefined;
     expect(modelRequests.some(body => body.includes("current-runtime-request-canary") && body.includes("old history"))).toBe(true);
     expect(events.find(event => event.eventType === "turn.submitted")?.payload.text).toBe(text);
-    expect(exports).toHaveLength(1);
+    expect(exports).toHaveLength(4);
+    for (const [index, body] of exports.entries()) {
+      const spans = body.resourceSpans[0].scopeSpans[0].spans;
+      expect(spans.length).toBeGreaterThan(0);
+      for (const span of spans) {
+        const values = Object.fromEntries(span.attributes.map((a: any) => [a.key, a.value.stringValue]));
+        expect(values["session.id"]).toBe(index === 3 ? freshId : nativeId);
+        expect(values["paperclip.company.id"]).toBe("disposable-company");
+        expect(values["paperclip.run.id"]).toBe(["disposable-run", "follow-up-run", "follow-up-run", "fresh-run"][index]);
+      }
+    }
     const attrs = Object.fromEntries(exports[0].resourceSpans[0].scopeSpans[0].spans[0].attributes.map((a: any) => [a.key, a.value.stringValue ?? a.value.boolValue]));
     expect(attrs["braintrust.output"]).toBe("observability-runtime-answer");
     if (capture) {
@@ -78,4 +116,4 @@ it.skipIf(!enabled).each([true, false])("exports the current request through ins
     await Promise.all([close(model), close(receiver)]);
     await rm(root, { recursive: true, force: true });
   }
-}, 60_000);
+}, 120_000);

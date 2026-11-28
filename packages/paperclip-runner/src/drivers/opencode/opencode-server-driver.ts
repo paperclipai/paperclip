@@ -612,6 +612,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     this.#runtime = input.runtime;
     this.#companyObservability = createOpenCodeCompanyObservability({
       environment: input.observabilityEnvironment, model: input.model, sensitiveValues: input.runtime.sensitiveValues,
+      providerSessionId: input.providerSessionId,
       managedToolNames: input.managedToolNames,
       onDiagnostic: input.onDiagnostic ?? ((message) => console.warn(message)),
     });

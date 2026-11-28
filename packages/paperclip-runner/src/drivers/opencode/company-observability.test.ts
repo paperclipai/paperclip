@@ -19,12 +19,12 @@ function setup(env = environment, response = new Response("{}")) {
   const bodies: any[] = [];
   const transport = vi.fn<typeof fetch>(async (_url, init) => { bodies.push(JSON.parse(String(init?.body))); return response; });
   const diagnostic = vi.fn();
-  const observer = createOpenCodeCompanyObservability({ environment: env, model: "openrouter/test-model", sensitiveValues: ["provider-secret"], fetch: transport, onDiagnostic: diagnostic });
+  const observer = createOpenCodeCompanyObservability({ environment: env, model: "openrouter/test-model", providerSessionId: "ses_native", sensitiveValues: ["provider-secret"], fetch: transport, onDiagnostic: diagnostic });
   return { observer: observer!, bodies, transport, diagnostic };
 }
 it("requires an explicit controller opt-in even when ambient OTLP is configured", () => {
   expect(setup({ ...environment, PAPERCLIP_OBSERVABILITY_OPENCODE: "0" }).observer).toBeUndefined();
-  expect(createOpenCodeCompanyObservability({ environment: undefined, model: "test", sensitiveValues: [] })).toBeUndefined();
+  expect(createOpenCodeCompanyObservability({ environment: undefined, model: "test", providerSessionId: "ses_native", sensitiveValues: [] })).toBeUndefined();
 });
 it("exports turn and tool content without raw payloads, reasoning, credentials or duplicate usage", async () => {
   const { observer, bodies, transport } = setup();
@@ -43,6 +43,7 @@ it("exports turn and tool content without raw payloads, reasoning, credentials o
   for (const excluded of ["secret-canary", "provider-secret", "private", "HIDDEN REASONING"]) expect(wire).not.toContain(excluded);
   const spans = bodies[0].resourceSpans[0].scopeSpans[0].spans;
   expect(spans).toHaveLength(3);
+  for (const span of spans) expect(spanAttributes(span)["session.id"]).toBe("ses_native");
   expect(spanAttributes(spans[0])).toMatchObject({ "braintrust.input": "question [REDACTED] [REDACTED]", "braintrust.output": "final answer", "paperclip.run.id": "run-one", "paperclip.company.id": "company" });
   expect(spans[1].status.code).toBe(2);
   expect(spanAttributes(spans[2])).toMatchObject({ "gen_ai.usage.input_tokens": 12, "gen_ai.usage.cache_read.input_tokens": 4, "paperclip.cost.usd": 0.2 });
@@ -63,6 +64,7 @@ it("honors all capture switches while retaining usage and the correct warm-run i
   expect(spanAttributes(spans[0][0])["paperclip.run.id"]).toBe("first");
   expect(spanAttributes(spans[1][0])["paperclip.run.id"]).toBe("second");
   expect(spans[0][0].traceId).not.toBe(spans[1][0].traceId);
+  for (const turn of spans) for (const span of turn) expect(spanAttributes(span)["session.id"]).toBe("ses_native");
   expect(spanAttributes(spans[1][2])).not.toHaveProperty("paperclip.cost.usd");
 });
 it.each([new Response('{"partialSuccess":{"rejectedSpans":"1"}}'), new Response("secret-canary", { status: 403 }), new Response("[]")])(
@@ -109,7 +111,7 @@ it("does not block event delivery when a receiver stalls and cancels the request
   const transport: typeof fetch = async (_url, init) => new Promise((_resolve, reject) => {
     init?.signal?.addEventListener("abort", () => { aborted = true; reject(new Error("private receiver failure")); }, { once: true });
   });
-  const observer = createOpenCodeCompanyObservability({ environment, model: "test", sensitiveValues: [], fetch: transport, onDiagnostic: text => diagnostics.push(text) })!;
+  const observer = createOpenCodeCompanyObservability({ environment, model: "test", providerSessionId: "ses_native", sensitiveValues: [], fetch: transport, onDiagnostic: text => diagnostics.push(text) })!;
   const start = performance.now();
   observer.observe(event("turn.submitted")); observer.observe(event("turn.completed"));
   expect(performance.now() - start).toBeLessThan(100);
@@ -155,7 +157,7 @@ it("does not export dispatch spans when tool details are disabled", async () => 
 
 it("retains provider failures for declared tools even before any dispatch", async () => {
   const bodies: any[] = [];
-  const observer = createOpenCodeCompanyObservability({ environment, model: "test", sensitiveValues: [], managedToolNames: ["paperclip_call_assigned_tool"],
+  const observer = createOpenCodeCompanyObservability({ environment, model: "test", providerSessionId: "ses_native", sensitiveValues: [], managedToolNames: ["paperclip_call_assigned_tool"],
     fetch: async (_url, init) => { bodies.push(JSON.parse(String(init?.body))); return new Response("{}"); } })!;
   observer.observe(event("turn.submitted"));
   observer.observe(event("tool.execution.completed", { name: "paperclip_call_assigned_tool", status: "failed", output: "request exceeded limit" }, "run-one", "native-rejection"));
