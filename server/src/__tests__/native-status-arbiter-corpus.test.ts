@@ -16,7 +16,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   agents,
   assets,
@@ -2209,7 +2209,9 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
         fixtures.push(...await Promise.all(Array.from({ length: batchSize }, () => seedEffects())));
       }
       await start(); await flush(30_000);
-      const states = await Promise.all(fixtures.map((f) => effect(f.effect.id)));
+      const states = await db.select().from(statusDecisionEffects)
+        .where(inArray(statusDecisionEffects.id, fixtures.map((f) => f.effect.id)));
+      expect(states).toHaveLength(fixtures.length);
       for (const state of states) expect(state.deliveryState).toBe("delivered");
       await quiet();
     }, 60_000);
@@ -2488,7 +2490,9 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
         created.push(...await Promise.all(Array.from({ length: batchSize }, () => seedReview())));
       }
       await start(); await flush(30_000);
-      const cards = await Promise.all(created.map((value) => card(value.interaction.id)));
+      const cards = await db.select().from(issueThreadInteractions)
+        .where(inArray(issueThreadInteractions.id, created.map((value) => value.interaction.id)));
+      expect(cards).toHaveLength(created.length);
       for (const settled of cards) expect(settled.status).toBe("cancelled");
       await quiet();
     }, 60_000);

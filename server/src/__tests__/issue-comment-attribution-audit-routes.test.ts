@@ -62,15 +62,13 @@ describeEmbeddedPostgres("issue comment attribution and patch audit routes", () 
       import("../routes/activity.js"),
       import("../routes/issues.js"),
     ]);
-    if (dbResult.status === "fulfilled") {
-      tempDb = dbResult.value;
-    }
     if (dbResult.status === "rejected") throw dbResult.reason;
+    tempDb = dbResult.value;
     if (activityResult.status === "rejected") throw activityResult.reason;
     if (issueResult.status === "rejected") throw issueResult.reason;
     loadedActivityRoutes = activityResult.value.activityRoutes;
     loadedIssueRoutes = issueResult.value.issueRoutes;
-    db = createDb(tempDb.connectionString);
+    db = createDb(dbResult.value.connectionString);
   }, 30_000);
 
   afterEach(async () => {
