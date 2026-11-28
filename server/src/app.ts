@@ -202,6 +202,7 @@ import { resolvePostHogProxyMount } from "./routes/posthog-proxy.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { userRoutes } from "./routes/users.js";
+import { webhookRoutes } from "./routes/webhooks.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import {
   mcpGatewayProtocolRoutes,
@@ -940,6 +941,7 @@ export async function createApp(
     process.env.PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST ??
     null;
   api.use(userRoutes(db));
+  api.use(webhookRoutes(db));
   api.use(costRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
