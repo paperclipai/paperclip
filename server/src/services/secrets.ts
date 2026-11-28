@@ -94,6 +94,23 @@ import {
   withAccountHomeSecretMutationLock,
 } from "@paperclipai/adapter-codex-local/server";
 
+const secretRefSyncLocks = new Map<string, Promise<void>>();
+
+async function withSecretRefSyncLock<T>(key: string, run: () => Promise<T>): Promise<T> {
+  const previous = secretRefSyncLocks.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const queued = previous.then(() => gate);
+  secretRefSyncLocks.set(key, queued);
+  await previous;
+  try {
+    return await run();
+  } finally {
+    release();
+    if (secretRefSyncLocks.get(key) === queued) secretRefSyncLocks.delete(key);
+  }
+}
+
 function latestDate(a: Date | null, b: Date | null): Date | null {
   if (!a) return b;
   if (!b) return a;
@@ -5024,15 +5041,13 @@ export function secretService(db: Db | DbTransaction) {
       }
 
       const pathPrefixes = [...new Set(normalizedRefs.map((ref) => ref.configPath.split(".")[0]))];
+      const syncKey = `${companyId}\u0000${target.targetType}\u0000${target.targetId}`;
 
-      await db.transaction(async (tx) => {
+      await withSecretRefSyncLock(syncKey, () => db.transaction(async (tx) => {
         const bindingKey = (secretId: string, configPath: string, versionSelector: string) =>
           `${secretId}\u0000${configPath}\u0000${versionSelector}`;
         const keptKeys = new Set<string>();
         if (options?.replaceAll) {
-          // Keep the id of a binding whose secret reference did not change.
-          // Low-trust allowlists store binding ids, so deleting and reinserting
-          // an unchanged ref silently invalidates them on every config update.
           const existing = await tx
             .select()
             .from(companySecretBindings)
@@ -5117,7 +5132,7 @@ export function secretService(db: Db | DbTransaction) {
             projectionAllowlistKey: ref.projectionAllowlistKey,
           })),
         );
-      });
+      }));
       return normalizedRefs;
     },
 

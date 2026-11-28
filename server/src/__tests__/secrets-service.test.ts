@@ -1514,6 +1514,44 @@ describeEmbeddedPostgres("secretService", () => {
     expect(after[0]!.id).toBe(before[0]!.id);
   });
 
+  it("serializes overlapping replace-all syncs for the same target", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const first = await svc.create(companyId, {
+      name: `race-first-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "first",
+    });
+    const second = await svc.create(companyId, {
+      name: `race-second-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "second",
+    });
+    const target = { targetType: "agent" as const, targetId: `agent-${randomUUID()}` };
+
+    await Promise.all([
+      svc.syncSecretRefsForTarget(
+        companyId,
+        target,
+        [{ secretId: first.id, configPath: "env.API_KEY" }],
+        { replaceAll: true },
+      ),
+      svc.syncSecretRefsForTarget(
+        companyId,
+        target,
+        [{ secretId: second.id, configPath: "env.API_KEY" }],
+        { replaceAll: true },
+      ),
+    ]);
+
+    const bindings = await db
+      .select()
+      .from(companySecretBindings)
+      .where(eq(companySecretBindings.targetId, target.targetId));
+    expect(bindings).toHaveLength(1);
+    expect([first.id, second.id]).toContain(bindings[0]!.secretId);
+  });
+
   it("reports reference counts and resolves binding target labels", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
