@@ -61,6 +61,30 @@ describe.skipIf(!support.supported)("pending agent interaction delivery", () => 
     expect(await readRun(f.run.id)).toEqual(before);
   });
 
+  it("rechecks a prepared assignment without waiting on a locked agent row", async () => {
+    const f = await seed(); await wake(f);
+    let release!: () => void;
+    const released = new Promise<void>(resolve => { release = resolve; });
+    let locked!: () => void;
+    const lockTaken = new Promise<void>(resolve => { locked = resolve; });
+    const holder = db.transaction(async tx => {
+      await tx.select({ id: agents.id }).from(agents).where(eq(agents.id, f.sender)).for("no key update");
+      locked();
+      await released;
+    });
+    const timed = createDb(database.connectionString, { statementTimeoutMs: 500 });
+    try {
+      await lockTaken;
+      await expect(preparedRunInteractionDeliveryDenied(timed, await readRun(f.run.id))).resolves.toBe(false);
+    } finally {
+      release();
+      await holder;
+      await timed.$client.end();
+    }
+    await restriction(f.sender, { canAssignTasksToAgents: false });
+    expect(await preparedRunInteractionDeliveryDenied(db, await readRun(f.run.id))).toBe(true);
+  });
+
   it("preserves an unrestricted old queue's rendered continuation and timestamps", async () => {
     const f = await seed(); const message = await comment(f, "agent"); const receipt = await wake(f, { commentIds: [message] });
     const run = await readRun(f.run.id);
