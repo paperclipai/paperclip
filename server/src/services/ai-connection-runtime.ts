@@ -202,7 +202,8 @@ done`,
           throw projectAuthConflict([relative]);
         }
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
       }
     }
     const parent = path.dirname(directory);
