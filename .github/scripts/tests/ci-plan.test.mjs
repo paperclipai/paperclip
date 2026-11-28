@@ -241,8 +241,9 @@ test("PR workflow keeps Build fast and passes PR-mode context to typecheck and V
   assert.equal(prRunnerDistKey, releaseRunnerDistKey, "runner-dist-v1 reader and writer keys must match exactly");
   assert.doesNotMatch(typecheck.split("Restore prebuilt Runner dist")[1].split("Restore incremental typecheck")[0], /restore-keys:/);
 
+  const releaseTypecheck = releaseVerify.split("\n  typecheck:\n")[1].split("\n  general_tests:\n")[0];
   const prIncPrefix = typecheck.match(/key: (typecheck-incremental-v1-.+)-\$\{\{ github\.event\.pull_request\.base\.sha \}\}/)?.[1];
-  const releaseIncPrefix = releaseBuild.match(/key: (typecheck-incremental-v1-.+)-\$\{\{ github\.sha \}\}/)?.[1];
+  const releaseIncPrefix = releaseTypecheck.match(/key: (typecheck-incremental-v1-.+)-\$\{\{ github\.sha \}\}/)?.[1];
   assert.ok(prIncPrefix && releaseIncPrefix, "both pr-trusted.yml and release-verify.yml must define typecheck-incremental-v1 prefix");
   assert.equal(prIncPrefix, releaseIncPrefix, "typecheck-incremental-v1 reader and writer prefixes must match exactly");
   assert.doesNotMatch(workflow, /actions\/cache\/save@/, "pr-trusted.yml must never save caches");
