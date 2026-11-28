@@ -70,3 +70,17 @@ export const ConfigureTestDisable: Story = { play: async ({ canvasElement }) => 
   await userEvent.click(section.getByRole("button", { name: "Remove configuration" }));
   await waitFor(() => expect(section.queryByText("API key configured")).not.toBeInTheDocument());
 } };
+
+export const CompanySettingsMobile: Story = {
+  globals: { viewport: { value: "mobile", isRotated: false } },
+  parameters: {
+    layout: "fullscreen",
+    waitForViewport: true,
+    initialEntries: ["/PAP/company/settings"],
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByRole("heading", { name: "General" })).toBeVisible());
+    await waitFor(() => expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth));
+  },
+};

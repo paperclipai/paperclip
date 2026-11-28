@@ -9,6 +9,8 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { AppLogo } from "./AppLogo";
 import { remoteMcpProviders } from "@/features/connections/remote-mcp/providers";
 import { ComposioAppSetup } from "./ComposioAppSetup";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 export function aggregatorAppConnectHref(route: AggregatorAppRoute, connection?: ToolConnection) {
   const params = new URLSearchParams({ source: route.provider, targetToolkit: route.toolkit });
@@ -37,7 +39,7 @@ export function AggregatorConnectDialog({ app, connections, initialProvider, onC
     else setSelected(route);
   }
   return <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
-    <DialogContent>
+    <DialogContent className={ANALYTICS_MASK_CLASS}>
       <DialogHeader>
         <DialogTitle>{provider ? `Connect ${app.name} through ${provider.name}` : `Connect ${app.name}`}</DialogTitle>
         <DialogDescription className={selected?.provider === "composio" ? "sr-only" : undefined}>{selected?.provider === "composio"
@@ -59,7 +61,7 @@ export function AggregatorConnectDialog({ app, connections, initialProvider, onC
         </button>;
       })}</div> : <div className="space-y-4">
         {selected.provider !== "composio" ? <div className="space-y-2"><Label htmlFor="aggregator-account">{provider!.name} account</Label>
-          <select id="aggregator-account" value={account?.id ?? ""} onChange={event => setSelectedAccountId(event.target.value)} className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm">
+          <select id="aggregator-account" value={account?.id ?? ""} onChange={event => setSelectedAccountId(event.target.value)} className={cn("h-9 w-full rounded-md border border-input bg-background px-3 text-sm", ANALYTICS_MASK_CLASS)}>
             {existing.map(connection => <option key={connection.id} value={connection.id}>{connection.name}</option>)}
           </select>
         </div> : null}

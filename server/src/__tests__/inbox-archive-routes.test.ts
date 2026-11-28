@@ -154,16 +154,16 @@ describeEmbeddedPostgres("inbox archive routes", () => {
     return { companyId, agentId, runId, issueId, responsibleUserId, targetUserId };
   }
 
-  function agentActor(seed: Awaited<ReturnType<typeof seed>>): Express.Request["actor"] {
+  function agentActor(seeded: Awaited<ReturnType<typeof seed>>): Express.Request["actor"] {
     return {
       type: "agent",
       source: "agent_jwt",
-      agentId: seed.agentId,
-      companyId: seed.companyId,
-      runId: seed.runId,
-      onBehalfOfUserId: seed.responsibleUserId,
+      agentId: seeded.agentId,
+      companyId: seeded.companyId,
+      runId: seeded.runId,
+      onBehalfOfUserId: seeded.responsibleUserId,
       onBehalfOfMemberships: [{
-        companyId: seed.companyId,
+        companyId: seeded.companyId,
         membershipRole: "operator",
         status: "active",
       }],
@@ -193,6 +193,45 @@ describeEmbeddedPostgres("inbox archive routes", () => {
       .send({})
       .expect(200)
       .expect(({ body }) => expect(body).toEqual({ ok: true, userId: seeded.responsibleUserId }));
+  });
+
+  it("lists active archives for the signed-in person and keeps them in All tasks", async () => {
+    const seeded = await seed();
+    const boardApp = (userId: string) => appFor({
+      type: "board",
+      source: "session",
+      userId,
+      companyIds: [seeded.companyId],
+      memberships: [{ companyId: seeded.companyId, membershipRole: "operator", status: "active" }],
+      isInstanceAdmin: false,
+    });
+    const app = boardApp(seeded.responsibleUserId);
+    const peer = boardApp(seeded.targetUserId);
+    const path = `/api/companies/${seeded.companyId}/issues`;
+    const list = (viewer: ReturnType<typeof boardApp>, inboxArchive: string) =>
+      request(viewer).get(path).query({ view: "index", inboxArchive }).expect(200);
+
+    expect((await list(app, "archived")).body).toEqual([]);
+    await request(app).post(`/api/issues/${seeded.issueId}/inbox-archive`).send({}).expect(200);
+    expect((await list(app, "archived")).body).toMatchObject([{ id: seeded.issueId, isArchivedForMe: true }]);
+    expect((await list(app, "include")).body).toMatchObject([{ id: seeded.issueId, status: "todo", isArchivedForMe: true }]);
+    expect((await list(peer, "archived")).body).toEqual([]);
+    expect((await list(peer, "include")).body).toMatchObject([{ id: seeded.issueId, isArchivedForMe: false }]);
+
+    await request(app).delete(`/api/issues/${seeded.issueId}/inbox-archive`).send({}).expect(200);
+    expect((await list(app, "archived")).body).toEqual([]);
+
+    await request(app).post(`/api/issues/${seeded.issueId}/inbox-archive`).send({}).expect(200);
+    await db.insert(issueComments).values({
+      companyId: seeded.companyId,
+      issueId: seeded.issueId,
+      authorUserId: seeded.targetUserId,
+      body: "New reply",
+      createdAt: new Date(Date.now() + 10_000),
+    });
+    expect((await list(app, "archived")).body).toEqual([]);
+    expect((await list(app, "include")).body).toMatchObject([{ id: seeded.issueId, isArchivedForMe: false }]);
+    await request(appFor(agentActor(seeded))).get(path).query({ view: "index", inboxArchive: "archived" }).expect(403);
   });
 
   it.each([false, true])("allows manual archive during human completion (existing archive: %s)", async (alreadyArchived) => {

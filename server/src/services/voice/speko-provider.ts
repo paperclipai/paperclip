@@ -10,7 +10,12 @@ const mediaUrl = z.string().url().refine((value) => { const url = new URL(value)
 const sessionSchema = z.object({ sessionId: providerId, transportToken: z.string().min(1).max(32_000), transportUrl: mediaUrl });
 export type SpekoBrowserSession = z.infer<typeof sessionSchema>;
 export class SpekoProviderError extends Error {
-  constructor(readonly code: "credentials_rejected" | "insufficient_credits" | "rate_limited" | "provider_unavailable" | "invalid_response", readonly outcomeUnknown: boolean, readonly httpStatus?: number) {
+  constructor(
+    readonly code: "credentials_rejected" | "insufficient_credits" | "rate_limited" | "provider_unavailable" | "invalid_response",
+    readonly outcomeUnknown: boolean,
+    readonly httpStatus?: number,
+    readonly providerCode?: string,
+  ) {
     super(`Speko ${code}`);
   }
 }
@@ -30,8 +35,21 @@ export function createSpekoProvider(apiKey: string, transport: typeof fetch = fe
     } catch { throw new SpekoProviderError("provider_unavailable", body !== undefined); }
     onResponse?.(response.status);
     if (!response.ok) {
-      await response.body?.cancel();
-      throw new SpekoProviderError(response.status === 401 || response.status === 403 ? "credentials_rejected" : response.status === 402 ? "insufficient_credits" : response.status === 429 ? "rate_limited" : "provider_unavailable", body !== undefined && response.status >= 500, response.status);
+      let providerCode: string | undefined;
+      if (response.status === 400) {
+        try {
+          const text = await response.text();
+          if (text.length <= 16_384) {
+            const parsedError = z.object({ code: z.string().regex(/^[A-Z0-9_]{1,64}$/) }).safeParse(JSON.parse(text));
+            if (parsedError.success) providerCode = parsedError.data.code;
+          }
+        } catch {
+          // Never expose raw provider error bodies.
+        }
+      } else {
+        await response.body?.cancel();
+      }
+      throw new SpekoProviderError(response.status === 401 || response.status === 403 ? "credentials_rejected" : response.status === 402 ? "insufficient_credits" : response.status === 429 ? "rate_limited" : "provider_unavailable", body !== undefined && response.status >= 500, response.status, providerCode);
     }
     try {
       const reader = response.body?.getReader();
@@ -70,7 +88,18 @@ export function createSpekoProvider(apiKey: string, transport: typeof fetch = fe
       // Incoming calls inherit realtime mode; browser creation explicitly uses
       // cascade. Browser sessions do not dispatch pre-call hooks, so the persona
       // default must keep idle prompts off. Telephone hooks enable them per call.
-      await request(`/v1/agents/${pathId(agentId)}`, {runMode: "s2s", systemPrompt: PHONE_VOICE_PROMPT, idleRePrompts: {enabled: false}}, "PATCH");
+      try {
+        await request(`/v1/agents/${pathId(agentId)}`, {runMode: "s2s", systemPrompt: PHONE_VOICE_PROMPT, idleRePrompts: {enabled: false}}, "PATCH");
+      } catch (error) {
+        // Personas created with a cascade-only voice reject runMode: "s2s" with S2S_VOICE_UNSUPPORTED.
+        // Fall back to a supported S2S voice only for that exact provider error code.
+        if (error instanceof SpekoProviderError && error.httpStatus === 400 && error.providerCode === "S2S_VOICE_UNSUPPORTED") {
+          logger.info({ event: "voice.setup.s2s_voice_fallback", fallbackVoice: "marin" }, "Speko persona voice unsupported in S2S mode; applying S2S voice fallback");
+          await request(`/v1/agents/${pathId(agentId)}`, {runMode: "s2s", voice: "marin", systemPrompt: PHONE_VOICE_PROMPT, idleRePrompts: {enabled: false}}, "PATCH");
+          return;
+        }
+        throw error;
+      }
     },
     async createBrowserSession(input: { agentId: string; maxDurationSeconds: number; bindingId: string; toolToken: string; systemPrompt: string }) {
       const maxDurationSeconds = z.number().int().min(30).max(1800).parse(input.maxDurationSeconds);
@@ -85,16 +114,19 @@ export function createSpekoProvider(apiKey: string, transport: typeof fetch = fe
       if (!parsed.success) throw new SpekoProviderError("invalid_response", true);
       return parsed.data;
     },
-    async createPhoneSession(input: { agentId: string; maxDurationSeconds: number; bindingId: string; toolToken: string; systemPrompt: string; to: string }) {
+    async createPhoneSession(input: { agentId: string; maxDurationSeconds: number; bindingId: string; toolToken: string; systemPrompt: string; to: string; firstMessage?: string }) {
       const agentId = providerId.parse(input.agentId);
       const to = z.string().regex(/^\+[1-9]\d{6,14}$/).parse(input.to);
       const maxDurationSeconds = z.number().int().min(30).max(1800).parse(input.maxDurationSeconds);
+      const firstMessage = input.firstMessage !== undefined
+        ? z.string().trim().min(1).max(2000).parse(input.firstMessage)
+        : "Hi, this is your Paperclip agent calling as requested. Is now a good time?";
       // Per-call signed pre-call overrides bind automatic reply delivery. Never mutate
       // the shared persona during dialing: browser sessions use result hints.
       const result = await request("/v1/sessions/phone", {
         runMode: "s2s",
         agentId, to, maxDurationSeconds,
-        systemPrompt: input.systemPrompt, firstMessage: "Hi, this is your Paperclip agent calling as requested. Is now a good time?",
+        systemPrompt: input.systemPrompt, firstMessage,
         metadata: { paperclipVoiceBindingId: input.bindingId },
         toolSecrets: { paperclip_session_token: input.toolToken },
         telephony: { amd: { mode: "disabled" } },

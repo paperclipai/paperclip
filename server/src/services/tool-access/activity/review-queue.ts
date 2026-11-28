@@ -1,9 +1,11 @@
+import { writeToolReviewChange } from "../../tool-review-work-notifications.js";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { toolApplications, toolActionRequests, toolCatalogEntries, toolConnections, toolInvocations } from "@paperclipai/db";
 import type { ToolActionRequestListItem, ToolActionRequestStatus } from "@paperclipai/shared";
 import { readSignedToolArgumentsPayload, TOOL_ACTION_REQUEST_SIGNING_GRACE_MS } from "../../tool-content-guards.js";
 import { toToolActionRequest } from "./projection.js";
+import { googleWorkspaceCatalogToolTitle } from "../../google-workspace-rest-dispatch.js";
 /** Pending requests stay hidden until signing completes; invalid signatures are cancelled. */
 export function createToolActionReviewQueue(db: Db) {
   return {
@@ -86,7 +88,7 @@ listActionRequests: async (
           if (!readable) invalidRequestIds.push(request.id);
         }
         if (invalidRequestIds.length > 0) {
-          await db
+          await writeToolReviewChange(db, companyId, tx => tx
             .update(toolActionRequests)
             .set({
               status: "cancelled",
@@ -99,7 +101,7 @@ listActionRequests: async (
                 eq(toolActionRequests.status, "pending"),
                 inArray(toolActionRequests.id, invalidRequestIds),
               ),
-            );
+            ));
         }
         const hiddenIds = new Set([
           ...invalidRequestIds,
@@ -184,7 +186,7 @@ listActionRequests: async (
         return {
           request: toToolActionRequest(request),
           toolName: invocation?.toolName ?? catalogEntry?.toolName ?? "",
-          toolTitle: catalogEntry?.title ?? null,
+          toolTitle: googleWorkspaceCatalogToolTitle(connection?.config?.sourceTemplateKey, catalogEntry?.toolName ?? invocation?.toolName ?? "", catalogEntry?.title),
           connectionId: connection?.id ?? invocation?.connectionId ?? null,
           connectionName: connection?.name ?? null,
           applicationName: application?.name ?? null,
