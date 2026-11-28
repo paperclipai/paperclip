@@ -87,17 +87,27 @@ describe("Runner workspace bridge", () => {
     expect(await readFile(join(directory, "result.txt"), "utf8")).toBe("hello");
   });
 
-  it("tells agents that a comment on a running task waits for the assignee's next turn", () => {
-    // A chat lead routing a requirement change to busy work otherwise reads "without interrupting"
-    // as "never delivered" and reaches for the assignee's workspace or a duplicate task instead.
+  it("distinguishes asking for help from requesting execution on the target task", () => {
     const comment = runnerBridgeDefinitions({ workspace: false, skills: false, api: true, mode: "standard" }).find(tool => tool.name === "comment_on_task");
-    expect(comment?.description).toContain("existing task's assignee a new or changed requirement");
-    expect(comment?.description).toContain("rather than creating a duplicate task or editing that task's workspace files");
-    expect(comment?.description).toContain("delivers it at the start of the assignee's next turn on that task");
-    expect(comment?.description).toContain("set resume: true for such a requirement");
-    expect(comment?.description).toContain("delivery still happens if the assignee completes the task first");
-    expect(comment?.description).toContain("not as already applied");
-    expect((comment?.inputSchema as { properties?: Record<string, unknown> }).properties?.resume).toEqual({ type: "boolean" });
+    expect(comment?.description).toContain("Omit `resume` when asking for help with your own task, even if the target task is blocked on yours.");
+    expect(comment?.description).toContain("`resume` applies to the target task, not the task you are asking help with.");
+    expect(comment?.description).toContain("bounded interaction while the target is blocked; it does not resume the target's normal work.");
+    expect(comment?.description).toContain("even if the target task finishes before they read the comment.");
+    expect(comment?.description).toContain("On a finished task, this reopens the task for follow-up.");
+    expect(comment?.description).toContain("Resume does not interrupt an active run or force immediate execution.");
+    expect(comment?.description).toContain("ask for an existing test result without `resume`; request a new test run with `resume: true`.");
+    expect(comment?.description).toContain("rather than creating a duplicate task or editing that task's workspace files.");
+    expect(comment?.description).toContain("Comments on running work are normally queued for the start of the assignee's next turn.");
+    expect(comment?.description).toContain("If the assignee has an active session goal that is currently working and the live runner acknowledges steering, the comment may instead be delivered to the current turn.");
+    expect(comment?.description).toContain("For a queued comment, resume: true preserves delivery even if the assignee completes the task first; without it, a comment on finished work is only a note.");
+    expect(comment?.description).toContain("If the live runner acknowledges steering, report the comment as delivered, not completed.");
+    expect(comment?.description).toContain("Report a queued requirement as saved for the next turn, not as already applied.");
+    expect(comment?.description).toContain("Requires an explicit taskId UUID; use report_progress with body and idempotencyKey for the active task.");
+    const schema = comment?.inputSchema as { required: string[]; properties: Record<string, { type: string; description?: string }> };
+    expect(schema.required).not.toContain("resume");
+    expect(schema.properties.resume?.type).toBe("boolean");
+    expect(schema.properties.resume?.description).toContain("This flag applies to the target task, not the caller's task.");
+    expect(schema.properties.resume?.description).toContain("even if the task finishes before they read the comment.");
   });
   it("forwards a comment's explicit resume intent to the comment API and omits it otherwise", () => {
     const taskId = "8ba8b5a2-066a-4bb2-b591-e396942ecdf5";
