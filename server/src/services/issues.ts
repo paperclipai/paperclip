@@ -217,6 +217,8 @@ import {
 import {
   applyIssueExecutionPolicyTransition,
   buildInitialIssueMonitorFields,
+  buildIssueMonitorClearedPatch,
+  monitorClearReasonForIssue,
   normalizeIssueExecutionPolicy,
 } from "./issue-execution-policy.js";
 import { assertQualityReviewPolicyMutation, assertQualityReviewPolicyReuse, assertRequiredQualityReviewComplete, requiredQualityReview } from "./required-quality-review.js";
@@ -13358,6 +13360,26 @@ export function issueService(db: Db) {
         const isTerminal = existing.status === "done" || existing.status === "cancelled";
         const releaseStatus =
           existing.status === "in_progress" ? "todo" : existing.status;
+        const nextAssigneeAgentId = isTerminal ? existing.assigneeAgentId : null;
+        const existingPolicy = normalizeIssueExecutionPolicy(existing.executionPolicy ?? null);
+        const hasArmedMonitor = Boolean(existing.monitorNextCheckAt || existingPolicy?.monitor);
+        const monitorClearReason = hasArmedMonitor
+          ? monitorClearReasonForIssue(releaseStatus, nextAssigneeAgentId, existing.assigneeUserId)
+          : null;
+        const monitorClearedPatch = monitorClearReason
+          ? buildIssueMonitorClearedPatch({
+              issue: existing,
+              policy: existingPolicy,
+              clearReason: monitorClearReason,
+            })
+          : null;
+        const nextExecutionPolicy = monitorClearedPatch
+          ? (() => {
+              const storedPolicy = { ...(existing.executionPolicy ?? {}) };
+              delete storedPolicy.monitor;
+              return Object.keys(storedPolicy).length > 0 ? storedPolicy : null;
+            })()
+          : undefined;
         await notifyTerminalWorkspaceWork(tx, `issue:${id}`);
         await notifyNativeStatusReassessment(tx, { companyId: existing.companyId, issueId: id });
         await notifyIssueAttentionRetentionWork(tx, { companyId: existing.companyId, issueId: id });
@@ -13370,11 +13392,17 @@ export function issueService(db: Db) {
           .update(issues)
           .set({
             status: releaseStatus,
-            assigneeAgentId: isTerminal ? existing.assigneeAgentId : null,
+            assigneeAgentId: nextAssigneeAgentId,
             checkoutRunId: null,
             executionRunId: null,
             executionAgentNameKey: null,
             executionLockedAt: null,
+            ...(monitorClearedPatch
+              ? {
+                  ...monitorClearedPatch,
+                  executionPolicy: nextExecutionPolicy,
+                }
+              : {}),
             updatedAt: new Date(),
           })
           .where(eq(issues.id, id))
@@ -13394,12 +13422,7 @@ export function issueService(db: Db) {
           sql`select ${issues.id} from ${issues} where ${issues.id} = ${id} for update`,
         );
         const existing = await tx
-          .select({
-            id: issues.id,
-            companyId: issues.companyId,
-            checkoutRunId: issues.checkoutRunId,
-            executionRunId: issues.executionRunId,
-          })
+          .select()
           .from(issues)
           .where(eq(issues.id, id))
           .then((rows) => rows[0] ?? null);
@@ -13414,6 +13437,23 @@ export function issueService(db: Db) {
         };
         if (options.clearAssignee) {
           patch.assigneeAgentId = null;
+          const existingPolicy = normalizeIssueExecutionPolicy(existing.executionPolicy ?? null);
+          const hasArmedMonitor = Boolean(existing.monitorNextCheckAt || existingPolicy?.monitor);
+          const monitorClearReason = hasArmedMonitor
+            ? monitorClearReasonForIssue(existing.status, null, existing.assigneeUserId)
+            : null;
+          if (monitorClearReason) {
+            const monitorClearedPatch = buildIssueMonitorClearedPatch({
+              issue: existing,
+              policy: existingPolicy,
+              clearReason: monitorClearReason,
+            });
+            const storedPolicy = { ...(existing.executionPolicy ?? {}) };
+            delete storedPolicy.monitor;
+            Object.assign(patch, monitorClearedPatch, {
+              executionPolicy: Object.keys(storedPolicy).length > 0 ? storedPolicy : null,
+            });
+          }
         }
 
         await notifyStatusCardIssueChange(tx, existing.companyId);
