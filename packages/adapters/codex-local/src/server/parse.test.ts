@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   classifyCodexAuthRefreshFailure,
   extractCodexRetryNotBefore,
@@ -205,6 +205,10 @@ describe("isCodexUnknownSessionError", () => {
 });
 
 describe("isCodexTransientUpstreamError", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("classifies the remote-compaction high-demand failure as transient upstream", () => {
     expect(
       isCodexTransientUpstreamError({
@@ -228,6 +232,44 @@ describe("isCodexTransientUpstreamError", () => {
     expect(extractCodexRetryNotBefore({ errorMessage }, now)?.getTime()).toBe(
       new Date(2026, 3, 22, 23, 31, 0, 0).getTime(),
     );
+  });
+
+  it("extracts the retry time from the subscription usage-limit wording", () => {
+    // ChatGPT Plus wording reported in #15613: no model name, no
+    // "switch to another model" clause, and a zone-less local reset clock.
+    const errorMessage = "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 8:13 PM.";
+    vi.stubEnv("TZ", "America/Chicago");
+    const now = new Date("2026-10-09T00:45:00.000Z");
+
+    expect(isCodexProviderQuotaError({ errorMessage })).toBe(true);
+    expect(extractCodexRetryNotBefore({ errorMessage }, now)?.toISOString()).toBe(
+      "2026-10-09T01:13:00.000Z",
+    );
+  });
+
+  it("rolls a past subscription reset clock to the next local day", () => {
+    const errorMessage = "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 8:13 PM.";
+    vi.stubEnv("TZ", "America/Chicago");
+    const now = new Date("2026-10-09T02:00:00.000Z");
+
+    expect(extractCodexRetryNotBefore({ errorMessage }, now)?.toISOString()).toBe(
+      "2026-10-10T01:13:00.000Z",
+    );
+  });
+
+  it("parses an explicit timezone hint on the subscription wording", () => {
+    const errorMessage = "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 11:31 PM (America/Chicago).";
+    const now = new Date("2026-04-23T03:29:02.000Z");
+
+    expect(extractCodexRetryNotBefore({ errorMessage }, now)?.toISOString()).toBe(
+      "2026-04-23T04:31:00.000Z",
+    );
+  });
+
+  it("returns no retry time for the subscription wording without a clock", () => {
+    const errorMessage = "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro) to keep going.";
+
+    expect(extractCodexRetryNotBefore({ errorMessage })).toBeNull();
   });
 
   it("classifies model-capacity messages as provider quota without reset metadata", () => {
