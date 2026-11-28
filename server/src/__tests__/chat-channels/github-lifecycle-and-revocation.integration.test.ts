@@ -20,6 +20,7 @@ import { dueChatAction } from "../../services/chat-action-work.js";
 import { CHAT_ACTION_QUEUES } from "../../services/chat-work-notifications.js";
 import { DELIVERY_QUEUES } from "../../services/delivery-work-notifications.js";
 import { secretService } from "../../services/secrets.js";
+import * as activityLogModule from "../../services/activity-log.js";
 import { githubChatManagementService } from "../../services/chat-github-management.js";
 import { githubResponseCommentService } from "../../services/chat-github-response-comments.js";
 import { initializeRunIdentity } from "../../services/run-identity.js";
@@ -35,7 +36,7 @@ import path from "node:path";
 import express from "express";
 import request from "supertest";
 import { and, asc, desc, eq, inArray, isNotNull, isNull, like, or, sql } from "drizzle-orm";
-import { beforeAll, expect, it, onTestFinished, vi } from "vitest";
+import { beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import { agents, agentWakeupRequests, activityLog, chatActions, chatConversations, chatDeliveries, chatEndpointResources, chatEndpoints, chatExternalPrincipals, chatIdentityLinks, chatMessageLinks, chatPublications, completionContracts, companyMemberships, companySkills, heartbeatRunEvents, heartbeatRuns, issueComments, issueRecoveryActions, issues, nativeRunResults, nativeRunFinalizations, environmentLeases, executionWorkspaces, executionWorkspaceSnapshots, workspaceOperations, toolConnections } from "@paperclipai/db";
 import { defaultGitHubReviewPolicy } from "@paperclipai/shared";
 import type { Message } from "chat";
@@ -57,6 +58,7 @@ import { resolveRunScopedMentionedSkillKeys } from "../../services/heartbeat/run
 import { type TestDb, describeEmbeddedPostgres, FakeEndpointRuntime, FakeChatSdkRuntime, makeThread, makeMessage, boardActor } from "./providers.js";
 import { createChatChannelHarness } from "./harness.js";
 import { createGitHubHarness } from "./github-harness.js";
+import { createGitHubReviewHarness } from "./github-review-harness.js";
 import { createRetryFixtures } from "./retry-fixtures.js";
 
 describeEmbeddedPostgres("chat channels: github lifecycle and revocation", () => {
@@ -64,6 +66,7 @@ describeEmbeddedPostgres("chat channels: github lifecycle and revocation", () =>
   let db!: TestDb;
   beforeAll(() => { db = h.db; });
   const gh = createGitHubHarness(h);
+  const { reviewBotFixture, addPeerGitHubBot } = createGitHubReviewHarness(h, gh);
   const rf = createRetryFixtures(h, gh);
   const { seedCompany, readChatConversationsByEndpointId, readChatEndpointsById, readIssueCommentsByIssueId, readChatDeliveriesByEndpointId, readHeartbeatRunsById, readChatActionsById, readChatPublicationsByEndpointId, readChatActionsByProviderActionId, readHeartbeatRunsByCompanyId, readAgentWakeupRequestsById, createService, createStorageService, retirePublicationFixture, chatWakeContext, addSelectedChatFinal, qualifySetupRoundTrip, deliverMessage } = h;
   const { signedGitHubWebhookRequest, configuredGitHubEndpoint, deliverLegacyGitHubReceipt, attachFakeGitHubIssueCommentWebhook } = gh;
@@ -883,5 +886,77 @@ describeEmbeddedPostgres("chat channels: github lifecycle and revocation", () =>
     } finally {
       await context.cleanup();
     }
+  });
+
+  describe("GitHub identity archival", () => {
+    it("removal waits for linking and revokes only that endpoint's committed links", async () => {
+      const f = await reviewBotFixture();
+      const peer = await addPeerGitHubBot(f);
+      const [peerLink] = await db.insert(chatIdentityLinks).values({ companyId: f.companyId,
+        endpointId: peer.id, principalId: f.principal.id, paperclipUserId: "owner-user", status: "linked" }).returning();
+      await db.update(chatIdentityLinks).set({ confirmationTokenHash: "pending-token" })
+        .where(eq(chatIdentityLinks.endpointId, f.endpoint.id));
+      let release!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      let ready!: (pid: number) => void;
+      const held = new Promise<number>(resolve => { ready = resolve; });
+      const linking = db.transaction(async tx => {
+        await githubChatManagementService(tx as unknown as Db, f.providerFetch)
+          .linkObservedIdentity(f.endpoint.id, "owner-user", { githubUserId: "84", login: "contributor" });
+        const [backend] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
+        ready(backend.pid);
+        await gate;
+      });
+      void linking.catch(() => undefined);
+      let removal: Promise<unknown> | undefined;
+      let completed = false;
+      try {
+        const pid = await Promise.race([held, linking.then(() => { throw new Error("Link ended before its barrier"); })]);
+        removal = f.service.configure(f.endpoint.id, { action: "remove" }, "owner-user")
+          .then(value => { completed = true; return value; }, error => { completed = true; return error; });
+        await expect.poll(async () => {
+          const [row] = await db.execute<{ blocked: boolean }>(sql`select exists (
+            select 1 from pg_stat_activity where datname = current_database()
+              and ${pid} = any(pg_blocking_pids(pid)) and query like '%chat_endpoints%'
+          ) as blocked`);
+          return completed || row.blocked;
+        }, { timeout: 5_000 }).toBe(true);
+        expect(completed).toBe(false);
+        release();
+        await linking;
+        expect(await removal).toMatchObject({ status: "archived" });
+        const links = await db.select().from(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, f.endpoint.id));
+        expect(links).toHaveLength(2);
+        for (const link of links) expect(link).toMatchObject({ status: "revoked", paperclipUserId: null,
+          confirmationTokenHash: null, revokedAt: expect.any(Date), updatedAt: expect.any(Date) });
+        expect(await db.select().from(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, peer.id))).toEqual([peerLink]);
+        expect(await db.select().from(activityLog).where(and(eq(activityLog.companyId, f.companyId),
+          eq(activityLog.action, "chat_github.removed")))).toMatchObject([{ details: {
+            endpointId: f.endpoint.id, revokedLinkCount: 2,
+          } }]);
+      } finally {
+        release();
+        await Promise.allSettled([linking, ...(removal ? [removal] : [])]);
+      }
+    });
+
+    it("rolls back archival and revocation when the removal audit fails", async () => {
+      const f = await reviewBotFixture();
+      const before = await db.select().from(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, f.endpoint.id));
+      const logActivity = activityLogModule.logActivity;
+      const audit = vi.spyOn(activityLogModule, "logActivity").mockImplementation(async (database, input) => {
+        const row = await logActivity(database, input);
+        if (input.action === "chat_github.removed") throw new Error("rollback GitHub removal");
+        return row;
+      });
+      try {
+        await expect(f.service.configure(f.endpoint.id, { action: "remove" }, "owner-user"))
+          .rejects.toThrow("rollback GitHub removal");
+        expect((await f.service.get(f.endpoint.id)).status).toBe(f.endpoint.status);
+        expect(await db.select().from(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, f.endpoint.id))).toEqual(before);
+        expect(await db.select().from(activityLog).where(and(eq(activityLog.companyId, f.companyId),
+          eq(activityLog.action, "chat_github.removed")))).toEqual([]);
+      } finally { audit.mockRestore(); }
+    });
   });
 });

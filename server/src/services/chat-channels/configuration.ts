@@ -8,6 +8,7 @@ import { createTelegramSetup } from "./telegram/setup.js";
 import { createGitHubSetup } from "./github/setup.js";
 import { createSpekoSetup } from "./speko/setup.js";
 import { createGitHubAppSetup } from "./github/app-setup.js";
+import { revokeGitHubEndpointIdentityLinks } from "./github/endpoint-removal.js";
 
 import type { VerifiedProviderIdentity } from "./runtime-types.js";
 
@@ -514,6 +515,13 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
             updatedAt: new Date(),
           })
           .where(eq(chatEndpoints.id, endpoint.id));
+        if (endpoint.provider === "github") {
+          await revokeGitHubEndpointIdentityLinks(
+            tx as unknown as Db,
+            endpoint,
+            managementContext?.audit ?? { actorType: "user", actorId: actorUserId ?? "board" },
+          );
+        }
         await tx
           .update(chatConversations)
           .set({ state: "endpoint_removed", updatedAt: new Date() })
