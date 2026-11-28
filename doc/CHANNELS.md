@@ -68,10 +68,15 @@ scripting).
 
 ## Switching channels
 
-Channel choice is per-install: install from a different tag and you're on that
-channel. Moving forward (stable → nightly) is always safe. Moving backward
-(nightly → stable) can mean running an older schema than your data was created
-with — treat a downgrade like a restore and keep a backup of your data
+For a managed CLI install, use `paperclipai update` with `--latest`, `--beta`,
+`--nightly`, or `--canary` to switch to any published channel. Later updates
+without a channel flag stay on the recorded channel. Exact versions selected
+with `--version` remain pinned.
+
+For an ephemeral npm / npx install, channel choice comes from the dist-tag in
+the install command. Moving forward (stable → nightly) is always safe. Moving
+backward (nightly → stable) can mean running an older schema than your data was
+created with — treat a downgrade like a restore and keep a backup of your data
 directory before switching down.
 
 ## Reading version strings
