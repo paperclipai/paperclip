@@ -18,4 +18,5 @@ export const BUILTIN_ADAPTER_TYPES = new Set([
   "pi_local",
   "process",
   "http",
+  "agentbridge",
 ]);

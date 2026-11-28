@@ -143,6 +143,7 @@ import { assertExternalAdapterCodeAllowed } from "../services/adapter-code-polic
 import { NativeEnvironmentProbeCleanupError } from "../vendor/paperclip-runner/index.js";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
+import { agentbridgeAdapter } from "./agentbridge/index.js";
 import {
   DEFAULT_OPENCODE_RUNNER_MODEL,
   PaperclipRunnerProviderProfileError,
@@ -1040,6 +1041,7 @@ function registerBuiltInAdapters() {
     openclawGatewayAdapter,
     processAdapter,
     httpAdapter,
+    agentbridgeAdapter,
   ]) {
     adaptersByType.set(adapter.type, adapter);
   }
