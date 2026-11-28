@@ -625,6 +625,8 @@ describe("ACPX runtime host", () => {
       permissions: { allow: ["mcp__paperclip__get_task_context"] },
     };
     await writeFile(join(claudeHome, "settings.json"), `${JSON.stringify(previousReleaseSettings)}\n`, { mode: 0o600 });
+    await mkdir(join(claudeHome, "plugins"), { recursive: true });
+    await writeFile(join(claudeHome, "plugins", "installed_plugins.json"), JSON.stringify({ version: 2, plugins: { "old@cloud": [{ scope: "user", installPath: "/old/plugin" }] } }));
     const transcript = join(claudeHome, "projects", "workspace", "agent-1.jsonl");
     await mkdir(join(claudeHome, "projects", "workspace"), { recursive: true });
     await writeFile(transcript, "{\"type\":\"user\",\"message\":\"saved by the previous release\"}\n");
@@ -637,8 +639,12 @@ describe("ACPX runtime host", () => {
       expect(launches[1]!.env.CLAUDE_CODE_DISABLE_CRON).toBe("1");
       expect(launches[1]!.settings).toEqual({
         ...previousReleaseSettings,
+        syncClaudeAiPlugins: false,
+        syncClaudeAiSkills: false,
+        disableClaudeAiConnectors: true,
         permissions: { ...previousReleaseSettings.permissions, deny: ["CronCreate", "CronDelete", "CronList", "ScheduleWakeup"] },
       });
+      expect(JSON.parse(await readFile(join(claudeHome, "plugins", "installed_plugins.json"), "utf8"))).toEqual({ version: 2, plugins: {} });
       expect(await readFile(transcript, "utf8")).toContain("saved by the previous release");
     } finally {
       await resumed.close({ reason: "previous-release session resumed" });

@@ -1,3 +1,4 @@
+import { enforceClaudeExtensionPolicy } from "./claude-extension-policy.js";
 import { admitAcpxSessionContext } from "./session-context-admission.js";
 import { createKimiInstructionAdmission } from "./kimi-instructions.js";
 import { kimiReadOnlyPermissionAllowed } from "./kimi-config.js";
@@ -482,6 +483,10 @@ export async function openQualifiedAcpxRuntime(
       return (direction: "inbound" | "outbound", message: unknown) => { open(direction, message); effort?.(direction, message); };
     } } : effortAdmission ? { protocolGuardFactory: () => effortAdmission.createGuard() } : {}),
     ...(antigravityAdmission ? { protocolGuardFactory: () => antigravityAdmission.createGuard() } : {}),
+    ...(options.profile.agent === "claude" && !preconfigured ? { protocolGuardFactory: () => {
+      const effort = effortAdmission?.createGuard();
+      return (direction: "inbound" | "outbound", message: unknown) => { enforceClaudeExtensionPolicy(direction, message); effort?.(direction, message); };
+    } } : {}),
     sessionStore,
     agentRegistry: createRegistry({
       // Preserve Claude's ACP capability identity. This is metadata only: the

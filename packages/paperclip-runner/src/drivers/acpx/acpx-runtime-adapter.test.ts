@@ -15,7 +15,7 @@ import type {
   AcpSessionRecord,
   AcpSessionStore,
 } from "acpx/runtime";
-import { decodeAcpxRuntimeHandleState } from "acpx/runtime";
+import { createAcpRuntime, decodeAcpxRuntimeHandleState } from "acpx/runtime";
 import { describe, expect, it, vi } from "vitest";
 
 import type { VerifiedAcpxCommandLease } from "./installation-integrity.js";
@@ -119,7 +119,9 @@ describe("Codex ACPX runtime adapter", () => {
     vi.mocked(runtime.setConfigOption!).mockImplementation(async input => {
       if (restoring) spawnProvider();
       const guard = created.protocolGuardFactory!();
-      guard("outbound", { id: 0, method: "session/load", params: { sessionId: "backend-1" } });
+      const load = { id: 0, method: "session/load", params: { sessionId: "backend-1" } };
+      guard("outbound", load);
+      expect(load).toMatchObject({ params: { _meta: { claudeCode: { options: { managedSettings: { strictKnownMarketplaces: [{ source: "skills-dir" }] } } } } } });
       guard("inbound", { id: 0, result: { configOptions: [{ id: "effort", currentValue: "default" }] } });
       guard("outbound", { id: 1, method: "session/set_config_option", params: { sessionId: "backend-1", configId: input.key, value: input.value } });
       guard("inbound", { id: 1, result: { configOptions: [{ id: "effort", currentValue: input.value }] } });
@@ -179,11 +181,11 @@ describe("Codex ACPX runtime adapter", () => {
     await port.close({ reason: "test complete" });
   });
 
-  it("admits an exact Claude model through the real ACP without a user model allowlist", async () => {
+  it.each([true, false])("admits an exact Claude model through the real ACP without a user model allowlist (preconfigured=%s)", async preconfigured => {
     const root = await mkdtemp(join(tmpdir(), "preconfigured-claude-model-"));
     const home = join(root, "home"), cwd = join(root, "workspace"), config = join(home, ".claude");
     await Promise.all([mkdir(config, { recursive: true }), mkdir(cwd)]);
-    const settings = JSON.stringify({ model: "claude-sonnet-5-5", permissions: { deny: ["Bash"] } });
+    const settings = JSON.stringify({ model: "claude-sonnet-5-5", ...(!preconfigured ? {availableModels:["claude-sonnet-5-5"]}:{}), permissions: { deny: ["Bash"] } });
     await writeFile(join(config, "settings.json"), settings);
     // Model validation can reach only this local fixture, never a provider.
     const api = createServer(async (request, response) => {
@@ -202,20 +204,26 @@ describe("Codex ACPX runtime adapter", () => {
     const options = { ...openOptions(command), profile: resolveQualifiedAcpxProfile("claude", "claude-sonnet-5-5"),
       cwd, stateDirectory: join(root, "state"), permissionMode: "approve-all" as const,
       launchEnvironment: { HOME: home, CLAUDE_CONFIG_DIR: config, PATH: "/usr/bin:/bin", TMPDIR: root,
-        PAPERCLIP_RUNNER_HOME_MODE: "preconfigured", ANTHROPIC_API_KEY: "local-fixture-only",
+        PAPERCLIP_RUNNER_HOME_MODE: preconfigured ? "preconfigured" : "isolated", PAPERCLIP_ACPX_ISOLATED_CONTEXT: preconfigured ? undefined : "1", ANTHROPIC_API_KEY: "local-fixture-only",
         ANTHROPIC_BASE_URL: `http://127.0.0.1:${address.port}`, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
     };
     let port: Awaited<ReturnType<typeof openQualifiedAcpxRuntime>> | undefined;
+    const observed: Array<Record<string, unknown>> = [];
     const priorSettingsFlag = process.env.ACPX_CLAUDE_INCLUDE_USER_SETTINGS;
     process.env.ACPX_CLAUDE_INCLUDE_USER_SETTINGS = "1";
     try {
       port = await openQualifiedAcpxRuntime(options, {
+        createRuntime: input => createAcpRuntime({ ...input, onAcpMessage: (direction,message) => {
+          if (direction === "outbound" && "method" in message && message.method === "session/new") observed.push(structuredClone(message));
+          input.onAcpMessage?.(direction,message);
+        } }),
         // This test exercises ACP/model admission; lifetime-fence tests are separate.
         awaitProviderOwnership: async () => undefined,
         awaitProviderExit: child => new Promise<void>(resolve => child.once("exit", () => resolve())),
       });
       expect(await port.getStatus()).toMatchObject({ models: { currentModelId: "claude-sonnet-5-5" } });
       expect(await readFile(join(config, "settings.json"), "utf8")).toBe(settings);
+      if (!preconfigured) expect(observed).toContainEqual(expect.objectContaining({params:expect.objectContaining({_meta:expect.objectContaining({claudeCode:expect.objectContaining({options:expect.objectContaining({managedSettings:{strictKnownMarketplaces:[{source:"skills-dir"}]}})})})})}));
     } finally {
       try { await port?.close({ reason: "exact model verified" }); }
       finally {
@@ -495,6 +503,10 @@ describe("Codex ACPX runtime adapter", () => {
         guard("outbound", request);
         // Grok binds its model at open even when no effort is selected.
         expect(request.params._meta).toEqual({ rules: options.systemInstructions ?? "", modelId: options.profile.reportedModelId });
+      } else if (agent === "claude") {
+        const request = { method: "session/new", params: { cwd: "/w" } };
+        created.protocolGuardFactory!()("outbound",request);
+        expect(request).toMatchObject({params:{_meta:{claudeCode:{options:{managedSettings:{strictKnownMarketplaces:[{source:"skills-dir"}]}}}}}});
       } else expect(created.protocolGuardFactory).toBeUndefined();
       if (agent === "copilot") {
         expect(() => port.startTurn({ text: "\n/yolo on", requestId: "bad" })).toThrow(/admitted permission policy/);
