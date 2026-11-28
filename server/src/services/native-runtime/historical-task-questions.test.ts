@@ -147,6 +147,23 @@ describe("historical task questions", () => {
     expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toEqual([]);
   });
 
+  it("selects the oldest eligible interaction and breaks timestamp ties by id", async () => {
+    const f = await fixture();
+    const secondId = "00000000-0000-4000-8000-000000000000";
+    const [second] = await db.insert(issueThreadInteractions).values({
+      ...f.question, id: secondId, title: "Earlier question", createdAt: new Date("2026-01-01T11:59:00Z"),
+    }).returning();
+
+    expect(await gate(f)).toEqual({ kind: "interaction", id: second.id });
+
+    await db.update(issueThreadInteractions).set({ createdAt: questionTime }).where(eq(issueThreadInteractions.id, second.id));
+    expect(await gate(f)).toEqual({ kind: "interaction", id: second.id });
+    expect(await pendingNativeGovernance({ db, ...f, executionState: null, ignoredInteractionIds: [second.id] }))
+      .toEqual({ kind: "interaction", id: f.question.id });
+    expect(await pendingNativeGovernance({ db, ...f, executionState: { status: "pending" } }))
+      .toEqual({ kind: "execution_stage", id: f.runId });
+  });
+
   it("keeps a real current question gated without commanding another reminder", async () => {
     const f = await fixture();
     expect(await gate(f)).toEqual({ kind: "interaction", id: f.question.id });

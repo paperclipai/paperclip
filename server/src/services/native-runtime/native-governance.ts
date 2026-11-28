@@ -1,4 +1,4 @@
-import { and, eq, inArray, notInArray } from "drizzle-orm";
+import { and, asc, eq, inArray, notInArray } from "drizzle-orm";
 import { approvals, issueApprovals, issueComments, issueThreadInteractions, issues, type Db } from "@paperclipai/db";
 import { activeIssueInteractionCondition } from "../issue-question-context.js";
 import { isConversation } from "../agent-conversations.js";
@@ -49,6 +49,7 @@ async function pendingNativeInteraction(input: {
         activeIssueInteractionCondition({ runId: input.runId, conversationMode: isConversation(issue) }),
       ),
     )
+    .orderBy(asc(issueThreadInteractions.createdAt), asc(issueThreadInteractions.id))
     .limit(1)
     .then((rows) => rows[0] ?? null);
 }
