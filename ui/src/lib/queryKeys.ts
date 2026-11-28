@@ -425,6 +425,7 @@ export const queryKeys = {
     attachments: (issueId: string) => ["issues", "attachments", issueId] as const,
     attachmentPreview: (attachmentId: string) => ["issues", "attachment-preview", attachmentId] as const,
     documents: (issueId: string) => ["issues", "documents", issueId] as const,
+    documentList: (issueId: string) => ["issues", "documents", issueId, { list: true }] as const,
     document: (issueId: string, key: string) =>
       ["issues", "document", issueId, key] as const,
     documentRevisions: (issueId: string, key: string) =>

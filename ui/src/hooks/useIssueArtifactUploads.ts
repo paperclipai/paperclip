@@ -32,7 +32,7 @@ export function useIssueArtifactUploads(issue: Pick<Issue, "id" | "companyId">) 
             const document = await issuesApi.upsertDocument(issue.id, key, {
               title: basename.replace(/[-_]+/g, " ").slice(0, 200), format: "markdown", body, baseRevisionId: null,
             });
-            client.setQueryData<IssueDocument[]>([...queryKeys.issues.documents(issue.id), "list"], current => [document, ...(current ?? []).filter(row => row.id !== document.id)]);
+            client.setQueryData<IssueDocument[]>(queryKeys.issues.documentList(issue.id), current => [document, ...(current ?? []).filter(row => row.id !== document.id)]);
             void client.invalidateQueries({ queryKey: queryKeys.issues.documents(issue.id) });
           } else {
             const attachment = await issuesApi.uploadAttachment(issue.companyId, issue.id, file);
