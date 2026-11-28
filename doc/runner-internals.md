@@ -79,8 +79,17 @@ bodies and Hermes prompt-template JSON variables remain supported.
 
 This removes the duplicate environment entry, not every possible `E2BIG` cause.
 Legacy CLI paths that put prompts in command-line arguments (Gemini, Grok, Kimi,
-Pi, and Hermes) still have argument-size limits. ACP turns, SDK requests, and
+and Pi) still have argument-size limits. ACP turns, SDK requests, and
 CLI paths that use stdin avoid that separate limit for the wake prompt.
+
+`hermes_local` also avoids that command-line limit. When the query no longer
+fits inline, the adapter writes it to a private file and passes `--query-file
+<path>` after probing that `hermes chat --help` advertises the flag. Linux caps
+a single argv entry at `MAX_ARG_STRLEN` (131072 bytes); Windows caps the whole
+command line at 32767 UTF-16 units and adds a margin for Hermes's Python
+relaunch step when `--query-file` is supported. If the prompt exceeds the hard
+OS limit and the binary does not support `--query-file`, the adapter refuses to
+start with an explicit error instead of failing at `spawn()`.
 
 ## Adding a native Runner harness
 
