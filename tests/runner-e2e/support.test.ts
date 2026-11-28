@@ -17,6 +17,7 @@ import {
   runnerE2EServerControlPaths,
 } from "./harness-env.js";
 import { runnerExecutionById, runnerMatrix } from "./catalog.js";
+import { CHAT_ANNOUNCEMENT_SCENARIO } from "./chat-announcement-fixture.js";
 import { assertEmbeddedDatabaseIsolation } from "./instance-isolation.js";
 import { evaluateMatchers, persistedFinalRunMessage } from "./matchers.js";
 import {
@@ -247,11 +248,11 @@ describe("runner E2E provider environment", () => {
     }
   });
 
-  it("disables announcements through the server boundary for every runner cell", () => {
+  it("disables announcements through the server boundary except the isolated dismissal fixture", () => {
     for (const execution of runnerMatrix) {
       const source = { PAPERCLIP_ANNOUNCEMENTS_ENABLED: "true" };
       const env = buildRunnerE2EProcessEnvironment(source, [execution]);
-      expect(buildPaperclipServerEnvironment(env).PAPERCLIP_ANNOUNCEMENTS_ENABLED).toBe("false");
+      expect(buildPaperclipServerEnvironment(env).PAPERCLIP_ANNOUNCEMENTS_ENABLED).toBe(execution.suite.id === "chat-features" && execution.task.id === CHAT_ANNOUNCEMENT_SCENARIO ? "true" : "false");
       expect(source.PAPERCLIP_ANNOUNCEMENTS_ENABLED).toBe("true");
     }
   });
@@ -802,6 +803,12 @@ describe("runner E2E run observations", () => {
 });
 
 describe("runner E2E failure policy", () => {
+  it("classifies settled oracle check failures as candidate failures whatever the check ids say", () => {
+    for (const ids of ["specific-operator-qualification-next-step", "provider-connection-timeout-explained", "unauthorized-write-denied, cleanup-reported"])
+      expect(classifyFailure(new Error(`Stopped waiting for agents.managed-profile: Settled scenario failed: ${ids}`))).toBe("candidate_failure");
+    expect(classifyFailure(new Error("Stopped waiting for x: Settled scenario failed: a; secret plaintext leak in server.log"))).toBe("secret_leak");
+  });
+
   it("classifies sandbox file-transfer RPC deadlines without hiding other RPC defects", () => {
     for (const method of ["environmentSyncIn", "environmentSyncOut"]) {
       expect(classifyFailure(new Error(
@@ -981,6 +988,32 @@ describe("runner E2E server isolation", () => {
         configPath: "/tmp/cell/paperclip-home/instances/e2e/config.json",
       }),
     ).not.toThrow();
+  });
+
+  it("admits only the wave's own generated secrets master key", () => {
+    const expected = {
+      temporaryRoot: "/tmp/cell",
+      paperclipHome: "/tmp/cell/paperclip-home",
+      configPath: "/tmp/cell/paperclip-home/instances/e2e/config.json",
+    };
+    const env = (extra: NodeJS.ProcessEnv) => ({
+      PAPERCLIP_HOME: expected.paperclipHome,
+      PAPERCLIP_CONFIG: expected.configPath,
+      XDG_CACHE_HOME: "/tmp/cell/xdg-cache",
+      PAPERCLIP_AGENT_JWT_SECRET: "generated-agent-jwt",
+      PAPERCLIP_DECISION_SIGNING_SECRET: "generated-decision-key",
+      PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: "generated-tool-key",
+      BETTER_AUTH_SECRET: "generated-auth-key",
+      ...extra,
+    });
+    expect(() => assertIsolatedServerEnvironment(env({ PAPERCLIP_SECRETS_MASTER_KEY: "wave-key" }),
+      { ...expected, generatedSecretsMasterKey: "wave-key" })).not.toThrow();
+    expect(() => assertIsolatedServerEnvironment(env({ PAPERCLIP_SECRETS_MASTER_KEY: "ambient-key" }), expected))
+      .toThrow("PAPERCLIP_SECRETS_MASTER_KEY");
+    expect(() => assertIsolatedServerEnvironment(env({ PAPERCLIP_SECRETS_MASTER_KEY: "ambient-key" }),
+      { ...expected, generatedSecretsMasterKey: "wave-key" })).toThrow("PAPERCLIP_SECRETS_MASTER_KEY");
+    expect(() => assertIsolatedServerEnvironment(env({ PAPERCLIP_SECRETS_MASTER_KEY: "wave-key", PAPERCLIP_SECRETS_MASTER_KEY_FILE: "/tmp/cell/key" }),
+      { ...expected, generatedSecretsMasterKey: "wave-key" })).toThrow("PAPERCLIP_SECRETS_MASTER_KEY_FILE");
   });
 
   it("uses absolute repository paths for the Playwright web server", () => {

@@ -1,8 +1,8 @@
-import { useEffect } from "react";
+import { companyProjectsQuery } from "@/lib/company-projects-query";
+import { useEffect, useState } from "react";
 import { useParams } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { goalsApi } from "../api/goals";
-import { projectsApi } from "../api/projects";
 import { assetsApi } from "../api/assets";
 import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
@@ -18,6 +18,8 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { QueryErrorState, useQueryView } from "../components/QueryView";
 import { cn, projectUrl } from "../lib/utils";
 import { Button } from "@/components/ui/button";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Plus, SlidersHorizontal } from "lucide-react";
 import type { Goal, Project } from "@paperclipai/shared";
@@ -40,6 +42,7 @@ export function GoalPropertiesToggleButton({
         panelVisible ? "opacity-0 pointer-events-none w-0 overflow-hidden" : "opacity-100",
       )}
       onClick={onShowProperties}
+      aria-label="Show properties"
       title="Show properties"
     >
       <SlidersHorizontal className="h-4 w-4" />
@@ -54,6 +57,7 @@ export function GoalDetail() {
   const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
+  const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
 
   const goalQuery = useQuery({
     queryKey: queryKeys.goals.detail(goalId!),
@@ -71,8 +75,7 @@ export function GoalDetail() {
   });
 
   const { data: allProjects } = useQuery({
-    queryKey: queryKeys.projects.list(resolvedCompanyId!, { includeArchived: true }),
-    queryFn: () => projectsApi.list(resolvedCompanyId!, { includeArchived: true }),
+    ...companyProjectsQuery(resolvedCompanyId!, { includeArchived: true }),
     enabled: !!resolvedCompanyId
   });
 
@@ -148,7 +151,17 @@ export function GoalDetail() {
             {goal.level}
           </span>
           <StatusBadge status={goal.status} />
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              className="inline-flex md:hidden shrink-0"
+              onClick={() => setMobilePropsOpen(true)}
+              aria-label="Properties"
+              title="Properties"
+            >
+              <SlidersHorizontal className="h-4 w-4" />
+            </Button>
             <GoalPropertiesToggleButton
               panelVisible={panelVisible}
               onShowProperties={() => setPanelVisible(true)}
@@ -223,6 +236,26 @@ export function GoalDetail() {
           )}
         </TabsContent>
       </Tabs>
+
+      <Sheet open={mobilePropsOpen} onOpenChange={setMobilePropsOpen}>
+        <SheetContent
+          side="bottom"
+          className="max-h-(--sz-85dvh) pb-(--sz-safe-bottom)"
+          data-testid="mobile-goal-properties-sheet"
+        >
+          <SheetHeader>
+            <SheetTitle className="text-sm">Properties</SheetTitle>
+          </SheetHeader>
+          <ScrollArea className="flex-1 overflow-y-auto">
+            <div className="px-4 pb-4">
+              <GoalProperties
+                goal={goal}
+                onUpdate={(data) => updateGoal.mutate(data)}
+              />
+            </div>
+          </ScrollArea>
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }

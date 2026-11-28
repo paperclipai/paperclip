@@ -34,6 +34,29 @@ async function makeConfigHome(initialConfig?: Record<string, unknown>) {
 }
 
 describe("prepareOpenCodeRuntimeConfig", () => {
+  it("stages isolated configuration for remote asset transfer even with remote target metadata", async () => {
+    const configHome = await makeConfigHome({ theme: "system" });
+    const input = {
+      env: { XDG_CONFIG_HOME: configHome },
+      config: { model: "gateway/test-model" },
+      targetIsRemote: true,
+    };
+    const prepared = await prepareOpenCodeRuntimeConfig(input);
+    expect(prepared.env.XDG_CONFIG_HOME).not.toBe(configHome);
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    expect(JSON.parse(await fs.readFile(
+      path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8",
+    ))).toMatchObject({
+      theme: "system",
+      permission: "allow",
+      provider: { gateway: { models: { "test-model": {} } } },
+    });
+    await prepared.cleanup();
+    await expect(fs.stat(prepared.env.XDG_CONFIG_HOME)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(JSON.parse(await fs.readFile(path.join(configHome, "opencode", "opencode.json"), "utf8")))
+      .toEqual({ theme: "system" });
+  });
+
   it("stages a relocatable sandbox shell hook without changing the parent environment", async () => {
     const configHome = await makeConfigHome({ plugin: ["operator-plugin"], permission: { bash: "ask" } });
     const input = { env: { XDG_CONFIG_HOME: configHome }, config: { dangerouslySkipPermissions: false }, sandboxToolOomPreference: true };
@@ -64,10 +87,13 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     expect(command.status).toBe(7);
     if (process.platform === "linux") {
       const parentScore = await fs.readFile("/proc/self/oom_score_adj", "utf8");
-      expect(execFileSync("bash", ["-c", "cat /proc/self/oom_score_adj"], {
-        env: { ...process.env, ...hookEnv.child }, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
-      }).trim()).toBe("1000");
-      expect(await fs.readFile("/proc/self/oom_score_adj", "utf8")).toBe(parentScore);
+      for (const shellLevel of ["0", "1"]) {
+        expect(execFileSync("bash", ["-c", "cat /proc/self/oom_score_adj"], {
+          env: { ...process.env, ...hookEnv.child, SHLVL: shellLevel }, encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+        }).trim()).toBe("1000");
+        expect(await fs.readFile("/proc/self/oom_score_adj", "utf8")).toBe(parentScore);
+      }
     }
     const config = JSON.parse(await fs.readFile(path.join(relocated, "opencode", "opencode.json"), "utf8"));
     expect(config).toMatchObject({ plugin: ["operator-plugin"], permission: { bash: "ask" } });

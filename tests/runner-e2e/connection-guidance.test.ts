@@ -52,7 +52,7 @@ describe("neutral decline evidence", () => {
   const native = () => ({ ...structuredClone(valid), caseId: "service-decline" as const, replies: [],
     decisions: [{ id: "decision", kind: "request_confirmation", status: "rejected", resolvedAt: "2026-10-06T22:00:00Z" }],
     runs: [{ ...valid.runs[0], runtimeMode: "native", startedAt: "2026-10-06T22:00:01Z" }],
-    nativeFinalReply: { runId: "run", agentId: "lead", body: valid.replies[0].body, source: "native-turn", observedAfterReload: true,
+    nativeFinalReply: { runId: "run", agentId: "lead", body: valid.replies[0].body, sourceBody: valid.replies[0].body, source: "native-turn", observedAfterReload: true,
       visible: true, settled: true, nativeFinal: true, anchor: "run:turn", finalEvent: { seq: 10, sourceEventId: "final", sourceInstanceId: "runner",
         sourceSeq: 10, protocolSchemaVersion: 1, body: valid.replies[0].body } },
   });
@@ -61,6 +61,17 @@ describe("neutral decline evidence", () => {
     expect(hasConnectionGuidanceDeclineReply(input)).toBe(true);
     expect(passes(input)).toBe(true);
     expect(input.replies).toEqual([]);
+  });
+  it("checks both the visible explanation and preserved native Markdown when links become chips", () => {
+    const input = native();
+    const body = "Contacts are unavailable. See [Connection outcome](/QA/issues/QA-123#document-outcome).";
+    Object.assign(input.nativeFinalReply, { sourceBody: body, body: "Contacts are unavailable. See QA-123.", origin: "https://fixture.test", pageUrl: "https://fixture.test/QA/issues/QA-123",
+      content: [{ text: "Contacts are unavailable. See " }, { href: "/QA/issues/QA-123#document-outcome", label: "QA-123", decorated: true }, { text: "." }] });
+    input.nativeFinalReply.finalEvent.body = body;
+    expect(passes(input)).toBe(true);
+    Object.assign(input.nativeFinalReply, { sourceBody: body.replace("Connection outcome", "PRIVATE_MARKER") });
+    input.nativeFinalReply.finalEvent.body = body.replace("Connection outcome", "PRIVATE_MARKER");
+    expect(passes(input)).toBe(false);
   });
   it("excludes an earlier successful native reply when a later successful run exists", () => {
     const input = native();
@@ -73,7 +84,7 @@ describe("neutral decline evidence", () => {
   });
   it("rejects stale, unbound or untruthful native decline output and unread service data", () => {
     for (const change of [{ runId: "other" }, { agentId: "other" }, { source: "summary" }, { observedAfterReload: false },
-      { settled: false }, { nativeFinal: false }, { visible: false }, { anchor: "other:turn" }, { finalEvent: null }]) {
+      { settled: false }, { nativeFinal: false }, { visible: false }, { anchor: "other:turn" }, { finalEvent: null }, { sourceBody: undefined }]) {
       const input = native(); Object.assign(input.nativeFinalReply, change); expect(passes(input)).toBe(false);
     }
     for (const change of [{ startedAt: "2026-10-06T21:59:00Z" }, { startedAt: "invalid" }, { runtimeMode: "legacy" },
@@ -81,7 +92,7 @@ describe("neutral decline evidence", () => {
       const input = native(); Object.assign(input.runs[0], change); expect(passes(input)).toBe(false);
     }
     for (const body of ["Done.", "Unavailable but PRIVATE_MARKER"]) {
-      const input = native(); input.nativeFinalReply.body = input.nativeFinalReply.finalEvent.body = body;
+      const input = native(); input.nativeFinalReply.body = input.nativeFinalReply.sourceBody = input.nativeFinalReply.finalEvent.body = body;
       expect(hasConnectionGuidanceDeclineReply(input)).toBe(true); expect(passes(input)).toBe(false);
     }
     for (const change of [{ calls: 1 }, { sameConnections: false }, { decisions: [] }]) expect(passes({ ...native(), ...change })).toBe(false);

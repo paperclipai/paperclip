@@ -1,5 +1,7 @@
+import { providerRetryAt } from "../provider-retry-after.js";
 import { randomUUID } from "node:crypto";
 import { unprocessable } from "../../errors.js";
+import { readGitHubRepositoryCatalogFailure } from "./github-repository-catalog-failure.js";
 
 function gitHubRepositoryOwnerType(repository: Record<string, unknown>) {
   const type = recordValue(repository.owner) ? repository.owner.type : undefined;
@@ -30,10 +32,13 @@ export async function loadGitHubTokenRepositories(
         signal: AbortSignal.timeout(15_000),
       },
     );
-    if (!response.ok)
+    if (!response.ok) {
+      const unavailable = readGitHubRepositoryCatalogFailure(response);
+      if (unavailable) throw unavailable;
       throw unprocessable(
         "Could not load GitHub repositories. Reconnect GitHub and try again.",
       );
+    }
     const rows: unknown = await response.json();
     if (!Array.isArray(rows))
       throw unprocessable("GitHub returned invalid repositories");
@@ -74,6 +79,7 @@ export async function loadGitHubGrantMetadata(
   repositorySelection: "all" | "selected" | "mixed" | "none";
   installationIds: string[];
   installationOwnerLogins: string[];
+  suspendedInstallationOwnerLogins?: string[];
   repositories: Array<{
     id: string;
     fullName: string;
@@ -103,15 +109,19 @@ export async function loadGitHubGrantMetadata(
       signal: AbortSignal.timeout(15_000),
     });
     if (!response.ok) {
-      throw unprocessable(
+      const unavailable = readGitHubRepositoryCatalogFailure(response);
+      const failure = unprocessable(
         "GitHub could not verify this account's installation access",
         {
+          retryAt: unavailable?.retryAt ?? providerRetryAt(response.headers.get("retry-after")),
           code:
             response.status === 401
               ? "oauth_reauthorization_required"
               : "github_access_check_failed",
         },
       );
+      if (unavailable) failure.cause = unavailable;
+      throw failure;
     }
     const value = (await response.json()) as unknown;
     if (!recordValue(value))
@@ -156,6 +166,7 @@ export async function loadGitHubGrantMetadata(
   const installations = await list("/user/installations", "installations");
   const installationIds: string[] = [];
   const owners = new Set<string>();
+  const suspendedOwners = new Set<string>();
   const selections = new Set<"all" | "selected">();
   const managementUrls = new Set<string>();
   const suspendedManagementUrls = new Set<string>();
@@ -182,6 +193,12 @@ export async function loadGitHubGrantMetadata(
     if (installation.suspended_at) {
       const suspendedUrl = githubInstallationManagementUrl(installation.html_url);
       if (suspendedUrl) suspendedManagementUrls.add(suspendedUrl);
+      const suspendedAccount = recordValue(installation.account)
+        ? installation.account
+        : null;
+      if (typeof suspendedAccount?.login === "string") {
+        suspendedOwners.add(suspendedAccount.login);
+      }
       suspendedCount += 1;
       continue;
     }
@@ -272,6 +289,9 @@ export async function loadGitHubGrantMetadata(
         : (selections.values().next().value ?? "none"),
     installationIds,
     installationOwnerLogins: [...owners],
+    ...(suspendedOwners.size > 0
+      ? { suspendedInstallationOwnerLogins: [...suspendedOwners] }
+      : {}),
     repositories: [...repositories.values()].sort((a, b) =>
       a.fullName.localeCompare(b.fullName),
     ),

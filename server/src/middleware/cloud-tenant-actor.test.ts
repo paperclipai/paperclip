@@ -30,6 +30,7 @@ function createFakeDb(options: {
   settingsRow?: Record<string, unknown> | null;
   selectThrows?: boolean;
   beforeWrite?: (table: unknown) => Promise<void>;
+  beforeRead?: (table: unknown) => Promise<void>;
   unchangedMembership?: boolean;
 } = {}) {
   const settingsRow =
@@ -64,6 +65,8 @@ function createFakeDb(options: {
   }
   const db = {
     transaction: async (work: (tx: Db) => Promise<unknown>) => work(db),
+    // Session settings such as the grant repair's lock timeout.
+    execute: async () => [],
     insert: (table: unknown) => {
       insertedTables.push(table);
       return writeChain(table);
@@ -75,6 +78,8 @@ function createFakeDb(options: {
     select: () => {
       return {
         from: (table: unknown) => ({
+          // Pending Muse bindings use a joined read; this fixture has none.
+          innerJoin() { return this; },
           where: (condition: unknown) => {
             // Only settings lookup is degradable. Membership locking and
             // permission seeding must still work in the fail-closed flag test.
@@ -91,6 +96,7 @@ function createFakeDb(options: {
                   : [];
             let locked = false;
             const result = {
+              orderBy: () => ({ limit: () => result }),
               for: () => { locked = true; selected.locked = true; return result; },
               then: (resolve: (v: unknown) => unknown, reject?: (error: unknown) => unknown) => {
                 // The optional cross-company read can fail independently of
@@ -98,7 +104,7 @@ function createFakeDb(options: {
                 const query = options.selectThrows && table === companyMemberships && !locked
                   ? Promise.reject(new Error("select unavailable"))
                   : Promise.resolve(rows);
-                return query.then(resolve, reject);
+                return Promise.resolve().then(() => options.beforeRead?.(table)).then(() => query).then(resolve, reject);
               },
             };
             return result;
@@ -180,6 +186,26 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     expect(actor!.source).toBe("cloud_tenant");
   });
 
+  it("settles its concurrent reads before a failed purge leaves authentication", async () => {
+    let settingsReadStarted = false;
+    let settingsReadSettled = false;
+    const { db } = createFakeDb({
+      beforeWrite: async (table) => {
+        if (table === instanceUserRoles) throw new Error("purge failed");
+      },
+      beforeRead: async (table) => {
+        if (table !== instanceSettings) return;
+        settingsReadStarted = true;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        settingsReadSettled = true;
+      },
+    });
+    await expect(resolveCloudTenantActor(db, fakeReq(VALID_HEADERS))).rejects.toThrow("purge failed");
+    // No started read may still be running once the error surfaces.
+    expect(settingsReadStarted).toBe(true);
+    expect(settingsReadSettled).toBe(true);
+  });
+
   it("purges stale instance_admin rows left by pre-hardening deployments", async () => {
     const { db, deletedTables } = createFakeDb();
     const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
@@ -195,7 +221,7 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     expect(insertedTables).toContain(companyMemberships);
   });
 
-  it.each(["/api/health", "/api/instance/task-drain"])("counts unfinished authentication on exempt %s requests", async (path) => {
+  it.each(["/api/health", "/api/instance/task-drain", "/api/instance/task-drain/status"])("counts unfinished authentication on exempt %s requests", async (path) => {
     let enterWrite!: () => void, finishWrite!: () => void;
     const entered = new Promise<void>(resolve => { enterWrite = resolve; });
     const pending = new Promise<void>(resolve => { finishWrite = resolve; });
@@ -205,14 +231,15 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     server.use(actorMiddleware(db, { deploymentMode: "authenticated", resolveSession: async () => null }));
     const hold = startTaskDrain({ purpose: "idle", ttlMs: 60_000 });
     const emptyDb = { transaction: async (run: (tx: unknown) => Promise<unknown>) =>
-      run({ execute: async () => [{ blocked: false }] }) } as unknown as Db;
+      run({ select: () => ({ from: () => ({ where: async () => [] }) }), execute: async () => [{ blocked: false }] }) } as unknown as Db;
     server.get("/api/health", (_req, res) => res.sendStatus(204));
     server.get("/api/instance/task-drain", async (_req, res) => {
       res.json(await readIdleSleepSafety(emptyDb, () => ({ ...hold, draining: true, activeRuns: 0, pendingWakes: 0 }),
         Date.now, hold.ownerId, async () => "none"));
     });
+    server.post("/api/instance/task-drain/status", (_req, res) => res.sendStatus(204));
     trackIdleRequestHandlers(server);
-    const accepted = request(server).get(path).set(VALID_HEADERS).then(response => response);
+    const accepted = (path.endsWith("/status") ? request(server).post(path) : request(server).get(path)).set(VALID_HEADERS).then(response => response);
     try {
       await entered;
       expect(idleWorkSnapshot().active).toBeGreaterThan(0);
@@ -254,7 +281,7 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     expect(insertedTables.filter((table) => table === companyMemberships)).toHaveLength(3);
   });
 
-  it("coalesces concurrent identical syncs while keeping authority reads and stale-admin purges per request", async () => {
+  it("coalesces concurrent identical syncs and settings reads while keeping membership reads and stale-admin purges per request", async () => {
     let release!: () => void;
     let entered!: () => void;
     const blocked = new Promise<void>(resolve => { release = resolve; });
@@ -269,7 +296,7 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     const actors = await Promise.all(requests);
     expect(insertedTables.filter(table => table === companyMemberships)).toHaveLength(1);
     expect(deletedTables.filter(table => table === instanceUserRoles)).toHaveLength(20);
-    expect(selectWheres.filter(entry => entry.table === instanceSettings)).toHaveLength(20);
+    expect(selectWheres.filter(entry => entry.table === instanceSettings)).toHaveLength(1);
     expect(selectWheres.filter(entry => entry.table === companyMemberships && !entry.locked)).toHaveLength(20);
     expect(selectWheres.filter(entry => entry.table === companyMemberships && entry.locked)).toHaveLength(1);
     expect(actors.every(actor => actor?.memberships?.[0]?.membershipRole === "owner")).toBe(true);
@@ -475,12 +502,15 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
       await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
       const membershipSelects = selectWheres.filter((entry) => entry.table === companyMemberships);
       expect(membershipSelects).toHaveLength(2);
-      // The first read locks the primary membership before its upsert; the
-      // second loads the user's active memberships for request authorization.
-      // Rows for other users and rows in any non-active status are excluded
-      // by the query itself: the filter binds exactly this user id and the
-      // "active" status — the same condition the session path applies.
-      expect(membershipSelects[1]!.condition).toEqual(
+      // One read locks the primary membership before its upsert; the other,
+      // which runs concurrently, loads the user's active memberships for
+      // request authorization. Rows for other users and rows in any
+      // non-active status are excluded by the query itself: the filter binds
+      // exactly this user id and the "active" status — the same condition
+      // the session path applies.
+      const authorizationReads = membershipSelects.filter((entry) => !entry.locked);
+      expect(authorizationReads).toHaveLength(1);
+      expect(authorizationReads[0]!.condition).toEqual(
         and(
           eq(companyMemberships.principalType, "user"),
           eq(companyMemberships.principalId, "user-123"),
@@ -562,4 +592,5 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
       expect(deletedTables).toContain(instanceUserRoles);
     });
   });
+
 });

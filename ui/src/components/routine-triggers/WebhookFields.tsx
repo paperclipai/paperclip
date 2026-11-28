@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { AgentSetupPrompt } from "@/components/AgentSetupPrompt";
+import { ANALYTICS_NO_CAPTURE_CLASS } from "@/lib/analytics/privacy";
 
 export function CopyField({
   label,
@@ -20,7 +21,7 @@ export function CopyField({
     <div className="space-y-1.5">
       <Label className="text-xs">{label}</Label>
       <div className="flex min-w-0 items-center gap-2 rounded-md border border-border bg-background px-3 py-2">
-        <code title={value} className="min-w-0 flex-1 truncate text-xs">
+        <code title={value} className={`min-w-0 flex-1 truncate text-xs ${ANALYTICS_NO_CAPTURE_CLASS}`}>
           {value}
         </code>
         <Button

@@ -63,6 +63,12 @@ export function parseConnectionConfig(input: unknown): ConnectionConfig {
 /** Only harness-owned error codes may enter a retained report. */
 export class ConnectionFailure extends Error {}
 
+/** A dropped connection or a gateway, throttling or timeout status. A read that
+ * failed this way is safe to repeat; nothing else is. */
+export function isTransientConnectionFailure(error: unknown): error is ConnectionFailure {
+  return error instanceof ConnectionFailure && /^(api_request_failed|api_status_(408|429|502|503|504))$/.test(error.message);
+}
+
 export class ConnectionBlock extends Error {
   constructor(readonly reason: "awaiting_user" | "missing_credential" | "blocked_target", readonly code: string) {
     super(code);

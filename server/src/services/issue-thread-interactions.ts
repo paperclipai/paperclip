@@ -1,11 +1,20 @@
+import { randomUUID } from "node:crypto";
+import { completionReviewStageEntry } from "./issue-execution-policy.js";
+import { agentConfigurationChangeTargetId } from "./change-consent-gate.js";
+import { assertAgentInteraction } from "./agent-interaction-policy.js";
+import { resolveNewTaskParent } from "./issue-hierarchy.js";
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { notifyMergeConfirmationWork, type MergeConfirmationScope } from "./merged-pr-confirmation-notifications.js";
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
 import { notifyIssueReviewState } from "./issue-review-state-notifications.js";
 import { notifyChatConfirmationResolution } from "./chat-confirmation-notifications.js";
+import { releaseDecisionHeldExecution } from "./deferred-execution-wait.js";
 import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
 import { notifyToolReviewChange } from "./tool-review-work-notifications.js";
+import { projectGitHubInteractionErrors } from "./tool-access/github-action-error-projection.js";
 import { normalizeEscapedLineBreaks } from "@paperclipai/shared/validators/text";
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notifications.js";
-import { historicalQuestionCondition } from "./issue-question-context.js";
+import { hasGovernedPayload, historicalQuestionCondition } from "./issue-question-context.js";
 import {
   currentContinuationOrigins,
   deliveredContinuationCommentIds,
@@ -80,6 +89,18 @@ import type {
   RejectIssueThreadInteraction,
   SkipIssueThreadInteraction,
   RespondIssueThreadInteraction,
+  SuggestRoutineInteraction,
+  SuggestRoutinePayload,
+  SuggestRoutineResult,
+  ProposeResponsibilityBarInteraction,
+  ProposeResponsibilityBarPayload,
+  ProposeResponsibilityBarResult,
+  ProposeAutomationInteraction,
+  ProposeAutomationPayload,
+  ProposeAutomationResult,
+  ProposeDashboardChangesInteraction,
+  ProposeDashboardChangesPayload,
+  ProposeDashboardChangesResult,
   SuggestTasksInteraction,
   SuggestTasksResultCreatedTask,
   SubmitIssueThreadInteractionVerdicts,
@@ -99,18 +120,35 @@ import {
   requestCheckboxConfirmationPayloadSchema,
   requestCheckboxConfirmationResultSchema,
   requestConfirmationPayloadSchema,
+  requestConfirmationCustomTargetSchema,
+  requestConfirmationIssueAttachmentTargetSchema,
+  requestConfirmationIssueDocumentTargetSchema,
   requestConfirmationResultSchema,
   requestItemVerdictsPayloadSchema,
   requestItemVerdictsResultSchema,
   skipIssueThreadInteractionSchema,
+  suggestRoutinePayloadSchema,
+  suggestRoutineResultSchema,
+  proposeResponsibilityBarPayloadSchema,
+  proposeResponsibilityBarResultSchema,
+  proposeAutomationPayloadSchema,
+  proposeAutomationResultSchema,
+  proposeDashboardChangesPayloadSchema,
+  proposeDashboardChangesResultSchema,
+  RESPONSIBILITY_BAR_ORIGIN_KIND,
+  RESPONSIBILITY_DASHBOARD_ORIGIN_KIND,
+  AUTOMATION_CONVERSATION_ORIGIN_KIND,
   suggestTasksPayloadSchema,
   suggestTasksResultSchema,
   submitIssueThreadInteractionVerdictsSchema,
   withdrawIssueThreadInteractionSchema,
 } from "@paperclipai/shared";
 import { z } from "zod";
+import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
+import { withTelemetryCompany } from "../telemetry-company-scope.js";
+import { emitPlanApprovedAfterCommit } from "./product-telemetry.js";
 import { authorizationService } from "./authorization.js";
 import { isCloudManagedInstance } from "./cloud-instance.js";
 import { resolveDeploymentMode } from "../config-file.js";
@@ -127,6 +165,8 @@ import {
 } from "./issue-review-policy.js";
 import {
   issueService,
+  executeIssuePostCommitActions,
+  type IssuePostCommitAction,
   ensureAssignmentIssueAccessGrant,
   readAcceptedPlanConfirmationTarget,
   runWorkspaceIsFinalized,
@@ -167,9 +207,15 @@ type InteractionActor = {
     | null;
   suggestedTaskEffectsAuthorized?: boolean;
   resolutionDetails?: Record<string, unknown>;
+  /** Set only by resolveConfirmationFromComment for its verified reply author. */
+  relayedHumanUserId?: string | null;
 };
 
-async function assertInteractionRunWriteAllowed(tx: Db, issue: { id: string; companyId: string }, actor: InteractionActor) {
+async function assertInteractionRunWriteAllowed(tx: Db, issue: { id: string; companyId: string }, actor: InteractionActor, texts: string[] = []) {
+  await assertAgentInteraction(tx, { companyId: issue.companyId, actorAgentId: actor.agentId,
+    operation: "edit", issueId: issue.id, lock: true });
+  await assertAgentInteraction(tx, { companyId: issue.companyId, actorAgentId: actor.agentId,
+    operation: "comment", issueId: issue.id, texts, lock: true });
   if (!actor.agentId || !actor.runId) return;
   // Keep the same issue -> run lock order as task mutation and checkout.
   await tx.select({ id: issues.id }).from(issues)
@@ -180,6 +226,10 @@ async function assertInteractionRunWriteAllowed(tx: Db, issue: { id: string; com
 type CreateInteractionOptions = {
   /** Keep independently owned pending cards actionable. Internal runtime bridges use this. */
   supersedePendingSiblingInteractions?: boolean;
+  replayAcceptedInteractionIds?: readonly string[];
+  requireAcceptedReplay?: boolean;
+  /** Runs once, in the insert transaction, only when this call created the card (never on an idempotent replay). */
+  afterInsertInTransaction?: (tx: Db, row: IssueThreadInteractionRow) => Promise<void>;
 };
 
 type InteractionWakeup = (
@@ -201,6 +251,7 @@ export type IssueThreadInteractionServiceOptions = {
   resolvePullRequestState?: (
     companyId: string,
     reference: GitHubPullRequestReference,
+    signal?: AbortSignal,
   ) => Promise<PullRequestMergeState>;
   wakeup?: InteractionWakeup;
   pullRequestCacheTtlMs?: number;
@@ -374,7 +425,7 @@ type ResolvedInteractionResult = {
 };
 
 type IssueThreadInteractionRow = typeof issueThreadInteractions.$inferSelect;
-type IssueTouchDb = Pick<Db, "update">;
+type IssueTouchDb = Pick<Db, "update" | "transaction">;
 
 function isNativeCompletionReview(
   row: Pick<IssueThreadInteractionRow, "kind" | "payload">,
@@ -405,6 +456,10 @@ export const DEFAULT_RESOLVER_POLICY_BY_KIND: Record<
   request_checkbox_confirmation: "anyone",
   request_item_verdicts: "anyone",
   connection_intent: "human_only",
+  suggest_routine: "human_only",
+  propose_responsibility_bar: "human_only",
+  propose_automation: "human_only",
+  propose_dashboard_changes: "human_only",
 };
 
 const RESOLVER_POLICY_RESTRICTION_RANK: Record<
@@ -467,6 +522,7 @@ function resolverActor(actor: InteractionActor) {
       type: "agent" as const,
       agentId: actor.agentId,
       runId: actor.runId,
+      relayedHumanUserId: actor.relayedHumanUserId ?? null,
     };
   }
   if (actor.userId) return { type: "user" as const, userId: actor.userId };
@@ -499,12 +555,16 @@ type IssueResolutionContext = {
   companyId: string;
   status: string;
   executionRunId: string | null;
+  hiddenAt?: Date | null;
   workMode: string;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
   reviewPolicy: IssueReviewPolicy | null;
   createdByAgentId: string | null;
   createdByUserId: string | null;
+  responsibleUserId?: string | null;
+  executionPolicy?: unknown;
+  executionState?: unknown;
 };
 
 async function assertRequestConfirmationResolutionAllowedUnderLock(
@@ -624,6 +684,36 @@ function isEquivalentCreateRequest(
   );
 }
 
+async function isEquivalentAcceptedReplay(
+  db: Db,
+  row: IssueThreadInteractionRow,
+  input: CreateIssueThreadInteraction,
+  actor: InteractionActor,
+  replayAcceptedInteractionIds: readonly string[] = [],
+  defaultAddresseeUserId: string | null = null,
+) {
+  if (
+    !replayAcceptedInteractionIds.includes(row.id)
+    || !isRequestConfirmationLikeKind(row.kind)
+    || hasGovernedPayload(row.payload)
+    || row.status !== "accepted"
+    || row.result?.outcome !== "accepted"
+    || !row.resolvedAt
+    || !actor.agentId
+    || !actor.runId
+    || input.sourceRunId !== actor.runId
+    || !row.sourceRunId
+    || row.sourceRunId === actor.runId
+    || !isEquivalentCreateRequest(row, { ...input, sourceRunId: row.sourceRunId }, actor, defaultAddresseeUserId)
+  ) return false;
+  const [latest] = await db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
+    eq(issueThreadInteractions.companyId, row.companyId),
+    eq(issueThreadInteractions.issueId, row.issueId),
+    inArray(issueThreadInteractions.kind, [...REQUEST_CONFIRMATION_INTERACTION_KINDS]),
+  )).orderBy(desc(issueThreadInteractions.createdAt), desc(issueThreadInteractions.id)).limit(1);
+  return latest?.id === row.id;
+}
+
 /**
  * Parse a stored interaction `result` blob tolerantly. Rows persisted by older
  * builds can carry a `result` shape that predates the current schema — e.g. a
@@ -649,6 +739,21 @@ function parseStoredInteractionResult<S extends z.ZodTypeAny>(
   );
   return null;
 }
+
+// Older internal writers persisted custom identity and display text without the
+// input length limits. Read those exact values across upgrades; never truncate
+// an identity or relax target types, URLs, revisions, or resolution authority.
+// New writes still use the strict shared payload schema.
+const storedRequestConfirmationPayloadSchema = requestConfirmationPayloadSchema.extend({
+  target: z.discriminatedUnion("type", [
+    requestConfirmationIssueDocumentTargetSchema,
+    requestConfirmationIssueAttachmentTargetSchema,
+    requestConfirmationCustomTargetSchema.extend({
+      key: z.string().trim().min(1),
+      label: z.string().trim().min(1).nullable().optional(),
+    }),
+  ]).nullable().optional(),
+});
 
 function hydrateInteraction(
   row: IssueThreadInteractionRow,
@@ -720,17 +825,19 @@ function hydrateInteraction(
           row,
         ),
       } satisfies AskUserQuestionsInteraction;
-    case "request_confirmation":
+    case "request_confirmation": {
+      const payload = storedRequestConfirmationPayloadSchema.parse(row.payload);
       return {
         ...base,
         kind: "request_confirmation",
-        payload: requestConfirmationPayloadSchema.parse(row.payload),
+        payload,
         result: parseStoredInteractionResult(
           requestConfirmationResultSchema,
           row.result,
           row,
         ),
       } satisfies RequestConfirmationInteraction;
+    }
     case "request_checkbox_confirmation":
       return {
         ...base,
@@ -764,20 +871,180 @@ function hydrateInteraction(
           row,
         ),
       } satisfies ConnectionIntentInteraction;
+    case "suggest_routine":
+      return {
+        ...base,
+        kind: "suggest_routine",
+        payload: suggestRoutinePayloadSchema.parse(row.payload),
+        result: parseStoredInteractionResult(
+          suggestRoutineResultSchema,
+          row.result,
+          row,
+        ),
+      } satisfies SuggestRoutineInteraction;
+    case "propose_responsibility_bar":
+      return {
+        ...base,
+        kind: "propose_responsibility_bar",
+        payload: proposeResponsibilityBarPayloadSchema.parse(row.payload),
+        result: parseStoredInteractionResult(
+          proposeResponsibilityBarResultSchema,
+          row.result,
+          row,
+        ),
+      } satisfies ProposeResponsibilityBarInteraction;
+    case "propose_automation":
+      return {
+        ...base,
+        kind: "propose_automation",
+        payload: proposeAutomationPayloadSchema.parse(row.payload),
+        result: parseStoredInteractionResult(
+          proposeAutomationResultSchema,
+          row.result,
+          row,
+        ),
+      } satisfies ProposeAutomationInteraction;
+    case "propose_dashboard_changes":
+      return {
+        ...base,
+        kind: "propose_dashboard_changes",
+        payload: proposeDashboardChangesPayloadSchema.parse(row.payload),
+        result: parseStoredInteractionResult(
+          proposeDashboardChangesResultSchema,
+          row.result,
+          row,
+        ),
+      } satisfies ProposeDashboardChangesInteraction;
     default:
       throw unprocessable(`Unknown interaction kind: ${row.kind}`);
   }
 }
 
-async function touchIssue(db: IssueTouchDb, issueId: string) {
-  await db
-    .update(issues)
-    .set({ updatedAt: new Date() })
-    .where(eq(issues.id, issueId));
+function interactionForCommentSupersession(row: IssueThreadInteractionRow) {
+  try {
+    return hydrateInteraction(row) as UserCommentSupersedableInteraction;
+  } catch (error) {
+    if (!(error instanceof z.ZodError)) throw error;
+    // The comment is useful even when a saved request cannot be decoded. Keep
+    // that gate pending, refuse its normal resolution, and report only schema
+    // locations, never payload/credential values. Valid siblings still expire.
+    logger.warn({
+      companyId: row.companyId, issueId: row.issueId, interactionId: row.id,
+      kind: row.kind,
+      validationIssues: error.issues.map(issue => ({ code: issue.code, path: issue.path })),
+    }, "Saved interaction is invalid; leaving it pending while saving a comment");
+    return null;
+  }
+}
+
+async function touchIssue(db: IssueTouchDb, issueId: string, companyId: string) {
+  await db.transaction(async tx => {
+    await notifyStatusCardIssueChange(tx, companyId);
+    await tx.update(issues).set({ updatedAt: new Date() }).where(eq(issues.id, issueId));
+  });
 }
 
 function isTerminalIssueStatus(status: string) {
   return status === "done" || status === "cancelled";
+}
+
+/**
+ * Throws 422 unless `userId` is a person who may answer requests on this task.
+ * Interaction create (an explicit addressee) and attention transfer ("Route to
+ * @x") both use it, so a card never goes to someone who cannot answer it.
+ */
+export async function assertInteractionAddresseeUserAvailable(
+  db: Db,
+  issue: { id: string; companyId: string },
+  issueRow: Record<string, unknown> | undefined,
+  userId: string,
+) {
+  const [user] = await db.select({ id: authUsers.id }).from(authUsers)
+    .where(eq(authUsers.id, userId));
+  const cloudManaged = isCloudManagedInstance();
+  // No-login installs have an implicit board, which need not have an
+  // auth row. Never infer this authority in authenticated/Cloud mode.
+  const localImplicit = userId === "local-board"
+    && !cloudManaged && resolveDeploymentMode() === "local_trusted";
+  // Use the normal board mutation policy, including viewer restrictions,
+  // local/instance-admin eligibility and Cloud's no-stale-admin rule.
+  const decision = user || localImplicit ? await authorizationService(db).decide({
+    actor: {
+      type: "board",
+      userId,
+      source: localImplicit ? "local_implicit" : cloudManaged ? "cloud_tenant" : "session",
+    },
+    action: "issue:mutate",
+    resource: { type: "issue", companyId: issue.companyId, issueId: issue.id, ...issueRow },
+  }) : null;
+  if (!decision?.allowed) {
+    throw unprocessable("addresseeUserId must identify a user authorized to respond in this company", {
+      code: "interaction_addressee_user_unavailable",
+    });
+  }
+}
+
+/** Routing changes the resolver addressee. Call under the task and interaction
+ * row locks, and validate the proposed recipient with the resolution owner's
+ * canonical audience and review-policy checks before changing that field. */
+export async function assertInteractionRoutingRecipientAllowed(
+  db: Db,
+  issue: IssueResolutionContext,
+  interaction: IssueThreadInteractionRow,
+  userId: string,
+) {
+  await assertInteractionAddresseeUserAvailable(db, issue, issue, userId);
+  await assertRequestConfirmationResolutionAllowedUnderLock(db, issue, {
+    ...interaction, addresseeUserId: userId, addresseeAgentId: null,
+  }, { userId });
+}
+
+/**
+ * A routine offer belongs to finished work. It is actionable (and stays
+ * pending) only while its task is done; an offer made before the agent's
+ * completion lands is held out of the conversation until then.
+ */
+function isRoutineSuggestionOpenOnIssue(row: Pick<IssueThreadInteractionRow, "kind">, issueStatus: string) {
+  return row.kind === "suggest_routine" && issueStatus === "done";
+}
+
+/**
+ * A bar proposal is an optional card in a bar conversation: it never holds the
+ * conversation open, and it stays actionable after the conversation task is
+ * done (the agent may finish right after proposing). Only cancelling the
+ * conversation withdraws it.
+ */
+function isBarProposalOpenOnIssue(row: Pick<IssueThreadInteractionRow, "kind">, issueStatus: string) {
+  return row.kind === "propose_responsibility_bar" && issueStatus !== "cancelled";
+}
+
+/**
+ * An automation proposal is, like a bar proposal, an optional card in its
+ * conversation: it never holds the conversation open and stays actionable
+ * after the conversation task is done. Only cancelling it withdraws it.
+ */
+function isAutomationProposalOpenOnIssue(row: Pick<IssueThreadInteractionRow, "kind">, issueStatus: string) {
+  return row.kind === "propose_automation" && issueStatus !== "cancelled";
+}
+
+/**
+ * Proposed dashboard changes are, like a bar proposal, an optional card in
+ * their conversation: they never hold it open and stay actionable after the
+ * conversation task is done. Only cancelling it withdraws them.
+ */
+function isDashboardChangesOpenOnIssue(row: Pick<IssueThreadInteractionRow, "kind">, issueStatus: string) {
+  return row.kind === "propose_dashboard_changes" && issueStatus !== "cancelled";
+}
+
+/** Cards that stay pending on a finished task instead of reading as expired. */
+function staysOpenOnTerminalIssue(row: Pick<IssueThreadInteractionRow, "kind">, issueStatus: string) {
+  return isRoutineSuggestionOpenOnIssue(row, issueStatus) || isBarProposalOpenOnIssue(row, issueStatus)
+    || isAutomationProposalOpenOnIssue(row, issueStatus) || isDashboardChangesOpenOnIssue(row, issueStatus);
+}
+
+function isHeldRoutineSuggestion(row: Pick<IssueThreadInteractionRow, "kind" | "status">, issueStatus: string | undefined) {
+  return row.kind === "suggest_routine" && row.status === "pending"
+    && issueStatus !== undefined && !isTerminalIssueStatus(issueStatus);
 }
 
 function interactionNotFoundError() {
@@ -983,6 +1250,132 @@ function buildSupersededByNewerInteractionResult(
     supersededByInteractionId: replacementInteractionId,
     summaryMarkdown: null,
   } as const;
+}
+
+// Scope matches the chat's direct-task projection (conversation-decision-receipts):
+// the onboarding task this chat's user created and assigned to this agent.
+async function supersedeOnboardingTaskQuestionsMovedToChat(
+  tx: Db,
+  input: {
+    companyId: string;
+    agentId: string;
+    conversationUserId: string;
+    replacementInteractionId: string;
+    actor: InteractionActor;
+    conversationIssue: { id: string; identifier: string | null };
+    postCommitActivityPublications: ActivityPublication[];
+    postCommitIssueActions: IssuePostCommitAction[];
+  },
+) {
+  // Lock the onboarding tasks before their questions, matching the
+  // task-then-question order of question creation on the task itself.
+  const onboardingTaskIds = (await tx.select({ id: issues.id }).from(issues).where(and(
+    eq(issues.companyId, input.companyId),
+    eq(issues.originKind, "onboarding_first_task"),
+    isNull(issues.conversationAgentId),
+    eq(issues.assigneeAgentId, input.agentId),
+    eq(issues.createdByUserId, input.conversationUserId),
+  )).orderBy(asc(issues.id)).for("update")).map(task => task.id);
+  if (onboardingTaskIds.length === 0) return [];
+  const now = new Date();
+  const rows = await tx
+    .update(issueThreadInteractions)
+    .set({
+      status: "expired",
+      result: buildSupersededByNewerInteractionResult(input.replacementInteractionId),
+      resolvedByAgentId: input.agentId,
+      resolvedByUserId: input.actor.userId ?? null,
+      resolvedAt: now,
+      updatedAt: now,
+    })
+    .where(and(
+      eq(issueThreadInteractions.companyId, input.companyId),
+      inArray(issueThreadInteractions.issueId, onboardingTaskIds),
+      eq(issueThreadInteractions.kind, "ask_user_questions"),
+      eq(issueThreadInteractions.createdByAgentId, input.agentId),
+      eq(issueThreadInteractions.status, "pending"),
+      // Only cards the chat owner sees mirrored in this chat; a question for
+      // another person or agent is not replaced by this chat's card.
+      isNull(issueThreadInteractions.addresseeAgentId),
+      or(isNull(issueThreadInteractions.addresseeUserId),
+        eq(issueThreadInteractions.addresseeUserId, input.conversationUserId)),
+    ))
+    .returning();
+  for (const issueId of new Set(rows.map(row => row.issueId))) {
+    await cancelPendingIssueInteractionChatPublications(tx, {
+      companyId: input.companyId,
+      issueId,
+      interactionIds: rows.filter(row => row.issueId === issueId).map(row => row.id),
+    });
+  }
+  for (const row of rows) {
+    await enqueueTerminalIssueInteractionChatPublications(tx, hydrateInteraction(row));
+  }
+  for (const issueId of new Set(rows.map(row => row.issueId))) {
+    await completeOnboardingTaskMovedToChat(tx, { ...input, issueId });
+  }
+  return rows;
+}
+
+// The onboarding task was waiting in review on the interview that just moved
+// to chat. Nothing drives it any more, so it would surface as a stalled review
+// asking the user how an internal task continues. Close it with a link to the
+// chat instead. A task still waiting on another pending card stays open.
+async function completeOnboardingTaskMovedToChat(
+  tx: Db,
+  input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    conversationIssue: { id: string; identifier: string | null };
+    postCommitActivityPublications: ActivityPublication[];
+    postCommitIssueActions: IssuePostCommitAction[];
+  },
+) {
+  // The caller already holds this task's row lock.
+  const [task] = await tx.select({ id: issues.id, status: issues.status, identifier: issues.identifier })
+    .from(issues)
+    .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)));
+  if (task?.status !== "in_review") return;
+  const [stillPending] = await tx.select({ id: issueThreadInteractions.id })
+    .from(issueThreadInteractions)
+    .where(and(
+      eq(issueThreadInteractions.companyId, input.companyId),
+      eq(issueThreadInteractions.issueId, task.id),
+      eq(issueThreadInteractions.status, "pending"),
+    ))
+    .limit(1);
+  if (stillPending) return;
+  const chatRef = input.conversationIssue.identifier ?? input.conversationIssue.id;
+  const svc = issueService(tx);
+  const comment = await svc.addComment(
+    task.id,
+    `Onboarding continues in [chat](/issues/${chatRef}). This task is closed so nothing is left waiting here.`,
+    {},
+    { authorType: "system" },
+    tx,
+  );
+  const updated = await svc.update(task.id, { status: "done", actorAgentId: input.agentId }, tx,
+    input.postCommitActivityPublications, input.postCommitIssueActions);
+  if (!updated) return;
+  await logActivity(tx, {
+    companyId: input.companyId,
+    actorType: "agent",
+    actorId: input.agentId,
+    agentId: input.agentId,
+    action: "issue.updated",
+    entityType: "issue",
+    entityId: task.id,
+    issueId: task.id,
+    details: {
+      status: "done",
+      identifier: task.identifier,
+      source: "onboarding_moved_to_chat",
+      conversationIssueId: input.conversationIssue.id,
+      commentId: comment.id,
+      _previous: { status: task.status },
+    },
+  }, input.postCommitActivityPublications);
 }
 
 function buildAdministrativeOutcomeResult(
@@ -1409,9 +1802,11 @@ async function emitInteractionResolvedTelemetry(
       ? (roleByAgentId.get(interaction.createdByAgentId) ?? undefined)
       : undefined;
 
-    trackInteractionResolved(telemetryClient, {
+    withTelemetryCompany(interaction.companyId, () => trackInteractionResolved(telemetryClient, {
       interactionKind:
-        interaction.kind === "connection_intent" ? "other" : interaction.kind,
+        interaction.kind === "connection_intent" || interaction.kind === "suggest_routine"
+          || interaction.kind === "propose_responsibility_bar" || interaction.kind === "propose_automation"
+          || interaction.kind === "propose_dashboard_changes" ? "other" : interaction.kind,
       status: interaction.status,
       resolvedByKind: resolveActorKind(interaction),
       resolutionReason: deriveResolutionReason(interaction),
@@ -1424,7 +1819,7 @@ async function emitInteractionResolvedTelemetry(
       }),
       legacyInheritedRestriction:
         interaction.resolverPolicyProvenance === "legacy_inherited_restriction",
-    });
+    }));
   } catch (error) {
     console.error(
       "[paperclip] Failed to emit interaction.resolved telemetry",
@@ -1433,7 +1828,8 @@ async function emitInteractionResolvedTelemetry(
   }
 }
 
-function emitInteractionCreatedTelemetry(args: {
+function emitInteractionCreatedTelemetry({ companyId, ...args }: {
+  companyId: string;
   interactionKind: IssueThreadInteractionKind;
   usedDeprecatedResolverPolicyAlias: boolean;
 }) {
@@ -1441,13 +1837,15 @@ function emitInteractionCreatedTelemetry(args: {
   if (!telemetryClient) return;
 
   try {
-    trackInteractionCreated(telemetryClient, {
+    withTelemetryCompany(companyId, () => trackInteractionCreated(telemetryClient, {
       ...args,
       interactionKind:
-        args.interactionKind === "connection_intent"
+        args.interactionKind === "connection_intent" || args.interactionKind === "suggest_routine"
+          || args.interactionKind === "propose_responsibility_bar" || args.interactionKind === "propose_automation"
+          || args.interactionKind === "propose_dashboard_changes"
           ? "other"
           : args.interactionKind,
-    });
+    }));
   } catch (error) {
     console.error(
       "[paperclip] Failed to emit interaction.created telemetry",
@@ -1981,7 +2379,7 @@ async function expireStaleRequestConfirmationTarget(
         "Interaction has already been resolved",
       );
     }
-    await touchIssue(tx, args.row.issueId);
+    await touchIssue(tx, args.row.issueId, args.row.companyId);
     const expired = hydrateInteraction(updated);
     await enqueueTerminalIssueInteractionChatPublications(tx, expired);
     return expired;
@@ -1993,6 +2391,57 @@ async function expireStaleRequestConfirmationTarget(
       : await expireInTransaction(db);
   await emitInteractionResolvedTelemetry(db, expired);
   return expired;
+}
+
+/**
+ * An accept claim on a routine offer or automation proposal holds the card
+ * while its routine is made. When the routine was never recorded (the server
+ * stopped midway), another accept may take the claim over after this long.
+ */
+export const STRANDED_ACCEPT_CLAIM_MS = 2 * 60_000;
+
+function strandedAcceptClaim(
+  current: Pick<IssueThreadInteractionRow, "status" | "result" | "updatedAt">,
+  outcome: "accepted" | "declined",
+  at: Date,
+): boolean {
+  if (outcome !== "accepted" || current.status !== "accepted") return false;
+  const result = current.result as { routineId?: unknown } | null;
+  if (result && typeof result.routineId === "string") return false;
+  return at.getTime() - new Date(current.updatedAt).getTime() >= STRANDED_ACCEPT_CLAIM_MS;
+}
+
+/**
+ * Who holds an accept claim. Each accept gets its own `claimId`, written on
+ * the card; recording, releasing and noting its routine all require it, so a
+ * slow accept that was taken over can no longer change the card.
+ * `strandedRoutineId` is the routine the taken-over accept had made, if any.
+ */
+export interface AcceptClaim {
+  claimId: string;
+  tookOver: boolean;
+  strandedRoutineId: string | null;
+}
+
+function pendingRoutineIdOf(result: unknown): string | null {
+  const value = (result as { pendingRoutineId?: unknown } | null)?.pendingRoutineId;
+  return typeof value === "string" ? value : null;
+}
+
+const ACCEPT_CLAIM_LOST_CODE = "accept_claim_taken_over";
+
+/** The accept no longer holds its claim: another accept took the card over. */
+function acceptClaimLostError() {
+  return conflict("Another accept took this over", { code: ACCEPT_CLAIM_LOST_CODE });
+}
+
+export function isAcceptClaimLost(error: unknown): boolean {
+  const details = (error as { details?: { code?: unknown } } | null)?.details;
+  return (error as { status?: unknown } | null)?.status === 409 && details?.code === ACCEPT_CLAIM_LOST_CODE;
+}
+
+function claimIdMatches(claimId: string) {
+  return sql`${issueThreadInteractions.result} ->> 'claimId' = ${claimId}`;
 }
 
 export function issueThreadInteractionService(
@@ -2011,10 +2460,11 @@ export function issueThreadInteractionService(
   async function resolvePullRequestState(
     companyId: string,
     reference: GitHubPullRequestReference,
+    signal?: AbortSignal,
   ): Promise<PullRequestMergeState> {
     if (opts.resolvePullRequestState)
-      return opts.resolvePullRequestState(companyId, reference);
-    return defaultPullRequestStateResolver?.(companyId, reference) ?? "unknown";
+      return opts.resolvePullRequestState(companyId, reference, signal);
+    return defaultPullRequestStateResolver?.(companyId, reference, signal) ?? "unknown";
   }
 
   async function resolvePullRequestStates(
@@ -2023,6 +2473,7 @@ export function issueThreadInteractionService(
       companyId: string;
       reference: GitHubPullRequestReference;
     }>,
+    signal?: AbortSignal,
   ) {
     const states = new Map<string, PullRequestMergeState>();
     const pending = entries.slice();
@@ -2030,11 +2481,13 @@ export function issueThreadInteractionService(
     await Promise.all(
       Array.from({ length: workerCount }, async () => {
         while (pending.length > 0) {
+          signal?.throwIfAborted();
           const entry = pending.shift();
           if (!entry) return;
           const state = await resolvePullRequestState(
             entry.companyId,
             entry.reference,
+            signal,
           );
           states.set(entry.key, state);
         }
@@ -2042,6 +2495,38 @@ export function issueThreadInteractionService(
     );
     return states;
   }
+  async function mergedPullRequestConfirmationPage(scope?: MergeConfirmationScope, after?: string) {
+    const rows = await db.select({ interaction: issueThreadInteractions, issue: {
+      id: issues.id, companyId: issues.companyId, projectId: issues.projectId, goalId: issues.goalId,
+      status: issues.status, assigneeAgentId: issues.assigneeAgentId,
+    } }).from(issueThreadInteractions).innerJoin(issues, and(
+      eq(issueThreadInteractions.issueId, issues.id), eq(issueThreadInteractions.companyId, issues.companyId),
+    )).where(and(
+      eq(issueThreadInteractions.kind, "request_confirmation"), eq(issueThreadInteractions.status, "pending"),
+      isNull(issues.hiddenAt), sql`${issues.status} NOT IN ('done', 'cancelled')`,
+      scope ? eq(issueThreadInteractions.companyId, scope.companyId) : undefined,
+      scope?.issueId ? eq(issueThreadInteractions.issueId, scope.issueId) : undefined,
+      scope?.interactionId ? eq(issueThreadInteractions.id, scope.interactionId) : undefined,
+      after ? sql`${issueThreadInteractions.id} > ${after}::uuid` : undefined,
+      sql`NOT EXISTS (SELECT 1 FROM ${toolActionRequests} WHERE ${toolActionRequests.interactionId} = ${issueThreadInteractions.id})`,
+    )).orderBy(asc(issueThreadInteractions.id)).limit(100);
+    return { rows: rows.flatMap(row => {
+      const references = getMergeConfirmationPullRequestReferences(row.interaction);
+      return references.length ? [{ ...row, references }] : [];
+    }), after: rows.at(-1)?.interaction.id, complete: rows.length < 100 };
+  }
+
+  async function mergedPullRequestConfirmationCandidates(scope?: MergeConfirmationScope) {
+    const candidates: Awaited<ReturnType<typeof mergedPullRequestConfirmationPage>>["rows"] = [];
+    let after: string | undefined;
+    while (true) {
+      const page = await mergedPullRequestConfirmationPage(scope, after);
+      candidates.push(...page.rows);
+      if (page.complete) return candidates;
+      after = page.after;
+    }
+  }
+
   async function getIdempotentInteraction(args: {
     issueId: string;
     companyId: string;
@@ -2066,6 +2551,7 @@ export function issueThreadInteractionService(
     interactions: IssueThreadInteraction[],
     issueWorkspace?: { companyId: string; executionWorkspaceId: string | null },
   ): Promise<IssueThreadInteraction[]> {
+    interactions = await projectGitHubInteractionErrors(db, interactions);
     const guarded = interactions.filter((interaction) =>
       interaction.status === "pending"
       && interaction.sourceRunId
@@ -2090,7 +2576,7 @@ export function issueThreadInteractionService(
     if (!workspace?.executionWorkspaceId) return interactions;
 
     // Only pending confirmations need checks, once per source run even if that
-    // run produced several cards. Historical interactions add no queries.
+    // run produced several cards. Historical interactions need no workspace queries.
     const { companyId, executionWorkspaceId } = workspace;
     const sourceRunIds = [...new Set(guarded.map((interaction) => interaction.sourceRunId!))];
     const pendingRunIds = new Set<string>();
@@ -2206,10 +2692,12 @@ export function issueThreadInteractionService(
     input: AcceptIssueThreadInteraction;
     actor: InteractionActor;
     mutationOptions?: InteractionResolutionMutationOptions;
+    signal?: AbortSignal;
   }): Promise<{
     interaction: IssueThreadInteraction;
     continuationIssue: IssueWakeTarget | null;
   }> {
+    args.signal?.throwIfAborted();
     const expired = await expireStaleRequestConfirmationTarget(db, {
       row: args.current,
       actor: args.actor,
@@ -2223,7 +2711,7 @@ export function issueThreadInteractionService(
     const now = new Date();
     const postCommitActivityPublications: ActivityPublication[] = [];
     const result = await db.transaction(async (tx) => {
-      await assertInteractionRunWriteAllowed(tx as unknown as Db, args.issue, args.actor);
+      await assertInteractionRunWriteAllowed(tx as unknown as Db, args.issue, args.actor, [JSON.stringify(args.input)]);
       await notifyChatConfirmationResolution(tx, args.current);
       if (args.current.kind === "request_confirmation") await notifyChatRunMilestones(tx, args.current);
       else await notifyIssueReviewState(tx, args.current);
@@ -2239,18 +2727,23 @@ export function issueThreadInteractionService(
           companyId: issues.companyId,
           status: issues.status,
           executionRunId: issues.executionRunId,
+          hiddenAt: issues.hiddenAt,
           workMode: issues.workMode,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
           reviewPolicy: issues.reviewPolicy,
           createdByAgentId: issues.createdByAgentId,
           createdByUserId: issues.createdByUserId,
+          responsibleUserId: issues.responsibleUserId,
+          executionPolicy: issues.executionPolicy,
+          executionState: issues.executionState,
         })
         .from(issues)
         .where(eq(issues.id, args.issue.id))
         .for("update")
         .then((rows: IssueResolutionContext[]) => rows[0] ?? null);
 
+      args.signal?.throwIfAborted();
       if (!issueContext || issueContext.companyId !== args.issue.companyId) {
         throw notFound("Issue not found");
       }
@@ -2277,6 +2770,10 @@ export function issueThreadInteractionService(
           "Interaction has already been resolved",
         );
       }
+      if (args.actor.systemId === "system:pr-merged" &&
+          (issueContext.hiddenAt || getMergeConfirmationPullRequestReferences(lockedCurrent).length === 0)) {
+        throw conflict("Merge confirmation is no longer actionable");
+      }
       await assertRequestConfirmationResolutionAllowedUnderLock(
         tx as unknown as Db,
         issueContext,
@@ -2299,6 +2796,7 @@ export function issueThreadInteractionService(
           : undefined;
 
       if (lockedCurrent.kind === "request_confirmation") await notifyToolProjectionForInteractions(tx, lockedCurrent.companyId, [lockedCurrent.id]);
+      args.signal?.throwIfAborted();
       const [updated] = await tx
         .update(issueThreadInteractions)
         .set({
@@ -2346,6 +2844,15 @@ export function issueThreadInteractionService(
         acceptedPlanTarget?.issueId === issueContext.id &&
         acceptedPlanTarget.key === "plan" &&
         issueContext.workMode === "planning";
+      if (lockedCurrent.kind === "request_confirmation" && acceptedPlanTarget?.issueId === issueContext.id
+        && acceptedPlanTarget.key === "plan") {
+        emitPlanApprovedAfterCommit({
+          companyId: issueContext.companyId,
+          actor: args.actor,
+          startsExecution: acceptedPlanStartsExecution,
+          task: { createdByUserId: issueContext.createdByUserId ?? null, responsibleUserId: issueContext.responsibleUserId ?? null },
+        });
+      }
       if (isNativeCompletionReview(lockedCurrent)) {
         const otherPending = await tx.select({ id: issueThreadInteractions.id })
           .from(issueThreadInteractions).where(and(
@@ -2363,10 +2870,18 @@ export function issueThreadInteractionService(
           )).limit(1);
         // Each explicit reviewer must be able to answer independently. Completing
         // on the first answer would cancel the other pending decisions.
+        // A task whose configured review stage has not run cannot be closed by
+        // this card (for example an early review of unfinished work): the
+        // answer resumes the worker, whose finished work then enters that stage.
+        const configuredReviewPending = completionReviewStageEntry({
+          status: issueContext.status, assigneeAgentId: issueContext.assigneeAgentId, assigneeUserId: issueContext.assigneeUserId,
+          executionPolicy: issueContext.executionPolicy as Record<string, unknown> | null,
+          executionState: issueContext.executionState as Record<string, unknown> | null,
+        }, issueContext.assigneeAgentId ?? "").kind !== "none";
         const completedIssue = otherPending.length > 0 || issueContext.status !== "in_review" ? null : await issueService(db).update(
           args.issue.id,
           {
-            status: "done",
+            status: configuredReviewPending ? "todo" : "done",
             actorAgentId: args.actor.agentId ?? null,
             actorUserId: args.actor.userId ?? null,
           },
@@ -2436,7 +2951,7 @@ export function issueThreadInteractionService(
           };
         }
       } else {
-        await touchIssue(tx, args.issue.id);
+        await touchIssue(tx, args.issue.id, args.issue.companyId);
       }
 
       // Snapshot the continuation target only after every lifecycle mutation
@@ -2470,6 +2985,7 @@ export function issueThreadInteractionService(
         });
       }
 
+      args.signal?.throwIfAborted();
       return {
         interaction: acceptedInteraction,
         continuationIssue,
@@ -2514,7 +3030,7 @@ export function issueThreadInteractionService(
 
     const now = new Date();
     const updated = await db.transaction(async (tx) => {
-      await assertInteractionRunWriteAllowed(tx as unknown as Db, args.issue, args.actor);
+      await assertInteractionRunWriteAllowed(tx as unknown as Db, args.issue, args.actor, [JSON.stringify(args.input)]);
       await notifyChatConfirmationResolution(tx, args.current);
       if (args.current.kind === "request_confirmation") await notifyChatRunMilestones(tx, args.current);
       else await notifyIssueReviewState(tx, args.current);
@@ -2531,6 +3047,8 @@ export function issueThreadInteractionService(
           reviewPolicy: issues.reviewPolicy,
           createdByAgentId: issues.createdByAgentId,
           createdByUserId: issues.createdByUserId,
+          executionPolicy: issues.executionPolicy,
+          executionState: issues.executionState,
         })
         .from(issues)
         .where(eq(issues.id, args.issue.id))
@@ -2630,8 +3148,18 @@ export function issueThreadInteractionService(
           lockedCurrent.payload,
           issueContext.id,
         )?.key === "plan";
+      // A response turn can reject its predecessor's proposal before replacing
+      // it. Requeueing here would revoke that responding run's tool ownership.
+      // Both identities are read under the issue/interaction locks above.
+      const activeResponseIsRevisingOlderProposal =
+        args.actor.agentId != null &&
+        args.actor.runId != null &&
+        args.actor.runId === issueContext.executionRunId &&
+        lockedCurrent.sourceRunId != null &&
+        lockedCurrent.sourceRunId !== issueContext.executionRunId;
       const shouldResumeReviewedIssue =
         issueContext.status === "in_review" &&
+        !activeResponseIsRevisingOlderProposal &&
         (lockedCurrent.continuationPolicy === "wake_assignee" ||
           rejectedPlanNeedsRevision);
       if (
@@ -2650,7 +3178,7 @@ export function issueThreadInteractionService(
           tx,
         );
       } else {
-        await touchIssue(tx, args.issue.id);
+        await touchIssue(tx, args.issue.id, args.issue.companyId);
       }
       await enqueueTerminalIssueInteractionChatPublications(
         tx as unknown as Db,
@@ -2680,7 +3208,9 @@ export function issueThreadInteractionService(
     ) => {
       const payload = connectionIntentPayloadSchema.parse(input.payload);
       const sameSavedSetup = (candidate: typeof payload) =>
-        candidate.savedSetup?.endpointId === payload.savedSetup?.endpointId
+        candidate.agentSetup === payload.agentSetup
+        && candidate.agentSetupOperationId === payload.agentSetupOperationId
+        && candidate.savedSetup?.endpointId === payload.savedSetup?.endpointId
         && candidate.savedSetup?.connectionId === payload.savedSetup?.connectionId
         && candidate.savedSetup?.action === payload.savedSetup?.action
         && Boolean(candidate.savedSetup?.credentialRotation) === Boolean(payload.savedSetup?.credentialRotation)
@@ -2734,7 +3264,8 @@ export function issueThreadInteractionService(
             eq(issueThreadInteractionIdempotencyKeys.idempotencyKey, input.idempotencyKey))).limit(1);
         if (qualityAlias) throw conflict("Interaction idempotency key already exists for a different request", { idempotencyKey: input.idempotencyKey });
 
-        // Serialize on the task so retries and later runs share the same live card.
+        // Generic requests share live cards across runs. Setup cards stay bound
+        // to the queued turn that their delivery can repair.
         const pending = await tx.select().from(issueThreadInteractions).where(and(
           eq(issueThreadInteractions.companyId, issue.companyId),
           eq(issueThreadInteractions.issueId, issue.id),
@@ -2744,14 +3275,21 @@ export function issueThreadInteractionService(
           eq(issueThreadInteractions.addresseeUserId, input.addresseeUserId),
         ));
         const reusable = pending.find((candidate) =>
-          connectionIntentPayloadSchema.parse(candidate.payload).serviceSlug === payload.serviceSlug && connectionIntentPayloadSchema.parse(candidate.payload).purpose === payload.purpose && sameSavedSetup(connectionIntentPayloadSchema.parse(candidate.payload)) && isDeepStrictEqual(connectionIntentPayloadSchema.parse(candidate.payload).accessRequest, payload.accessRequest));
+          (!payload.agentSetup || candidate.sourceRunId === input.sourceRunId)
+          && connectionIntentPayloadSchema.parse(candidate.payload).serviceSlug === payload.serviceSlug && connectionIntentPayloadSchema.parse(candidate.payload).purpose === payload.purpose && sameSavedSetup(connectionIntentPayloadSchema.parse(candidate.payload)) && isDeepStrictEqual(connectionIntentPayloadSchema.parse(candidate.payload).accessRequest, payload.accessRequest));
         if (reusable) {
           await enqueueIssueInteractionChatPublications(tx as unknown as Db, hydrateInteraction(reusable));
           return reusable;
         }
 
-        const [sourceRun] = await tx.select({ context: heartbeatRuns.contextSnapshot }).from(heartbeatRuns)
+        const sourceQuery = tx.select({ context: heartbeatRuns.contextSnapshot, status: heartbeatRuns.status,
+          agentId: heartbeatRuns.agentId, startedAt: heartbeatRuns.startedAt, runtimeMode: heartbeatRuns.runtimeMode }).from(heartbeatRuns)
           .where(and(eq(heartbeatRuns.id, input.sourceRunId), eq(heartbeatRuns.companyId, issue.companyId)));
+        const [sourceRun] = await (payload.agentSetup ? sourceQuery.for("no key update") : sourceQuery);
+        if (payload.agentSetup && (payload.purpose !== "ai" || sourceRun?.agentId !== payload.requestingAgentId
+          || sourceRun.status !== "queued" || sourceRun.startedAt !== null || sourceRun.runtimeMode !== "legacy")) {
+          throw conflict("Agent setup requests require an unstarted queued turn");
+        }
         if (!sourceRun) throw unprocessable("Interaction source run is unavailable");
         const originCommentIds = await currentContinuationOrigins(tx as unknown as Db, issue.companyId, issue.id, sourceRun.context);
         await notifyIssueReviewState(tx, { companyId: issue.companyId, issueId: issue.id });
@@ -2832,7 +3370,7 @@ export function issueThreadInteractionService(
             await enqueueTerminalIssueInteractionChatPublications(tx as unknown as Db, hydrateInteraction(previous));
           }
         }
-        await touchIssue(tx, issue.id);
+        await touchIssue(tx, issue.id, issue.companyId);
         inserted = true;
         await enqueueIssueInteractionChatPublications(tx as unknown as Db, hydrateInteraction(row));
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
@@ -2841,6 +3379,7 @@ export function issueThreadInteractionService(
 
       const interaction = hydrateInteraction(created) as ConnectionIntentInteraction;
       if (inserted) emitInteractionCreatedTelemetry({
+        companyId: issue.companyId,
         interactionKind: "connection_intent",
         usedDeprecatedResolverPolicyAlias: false,
       });
@@ -2851,6 +3390,7 @@ export function issueThreadInteractionService(
       interactionId: string,
       phase: ConnectionIntentInteraction["payload"]["phase"],
       actor: InteractionActor,
+      setupAccess?: ConnectionIntentInteraction["payload"]["setupAccess"],
     ) => {
       const current = await getPendingInteractionForResolution({
         issue,
@@ -2862,10 +3402,10 @@ export function issueThreadInteractionService(
         );
       }
       assertInteractionResolutionAllowed(current, actor);
-      const payload = connectionIntentPayloadSchema.parse(current.payload);
+      connectionIntentPayloadSchema.parse(current.payload);
       const [updated] = await db
         .update(issueThreadInteractions)
-        .set({ payload: { ...payload, phase }, updatedAt: now() })
+        .set({ payload: sql`${issueThreadInteractions.payload} || ${JSON.stringify({ phase, ...(setupAccess ? { setupAccess } : {}) })}::jsonb`, updatedAt: now() })
         .where(
           and(
             eq(issueThreadInteractions.id, interactionId),
@@ -2876,7 +3416,7 @@ export function issueThreadInteractionService(
         )
         .returning();
       if (!updated) throw interactionAlreadyResolvedError();
-      await touchIssue(db, issue.id);
+      await touchIssue(db, issue.id, issue.companyId);
       return hydrateInteraction(updated) as ConnectionIntentInteraction;
     },
     resolveConnectionIntent: async (
@@ -2940,13 +3480,915 @@ export function issueThreadInteractionService(
         return row;
       });
       if (!updated) throw interactionAlreadyResolvedError();
-      await touchIssue(db, issue.id);
+      await touchIssue(db, issue.id, issue.companyId);
       const interaction = hydrateInteraction(
         updated,
       ) as ConnectionIntentInteraction;
       await emitInteractionResolvedTelemetry(db, interaction);
       return interaction;
     },
+    /**
+     * Insert the one routine offer a finished task may carry. The routines
+     * module validates the offer and its product guardrails; this method owns
+     * the card row and the invariants that need the task lock: the task is
+     * done, the offering agent is its assignee, and the task has never carried
+     * an offer before (whatever became of it).
+     */
+    createRoutineSuggestion: async (
+      issue: { id: string; companyId: string },
+      input: {
+        payload: SuggestRoutinePayload;
+        title: string;
+        summary: string | null;
+        createdByAgentId: string;
+        sourceRunId: string | null;
+      },
+    ): Promise<SuggestRoutineInteraction> => {
+      const payload = suggestRoutinePayloadSchema.parse(input.payload);
+      const created = await db.transaction(async (tx) => {
+        const [issueRow] = await tx
+          .select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId })
+          .from(issues)
+          .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
+          .for("update");
+        if (!issueRow) throw notFound("Issue not found");
+        // An offer made while the agent's completion is still settling is held
+        // until the task is done; a cancelled task never gets one.
+        if (issueRow.status === "cancelled") {
+          throw conflict("A routine cannot be offered for a cancelled task", {
+            code: "routine_suggestion_task_not_done",
+          });
+        }
+        if (issueRow.assigneeAgentId !== input.createdByAgentId) {
+          throw forbidden("Only the agent assigned to the task can offer a routine for it");
+        }
+        const [existing] = await tx
+          .select({ id: issueThreadInteractions.id })
+          .from(issueThreadInteractions)
+          .where(and(
+            eq(issueThreadInteractions.companyId, issue.companyId),
+            eq(issueThreadInteractions.issueId, issue.id),
+            eq(issueThreadInteractions.kind, "suggest_routine"),
+          ))
+          .limit(1);
+        if (existing) {
+          throw conflict("This task already has a routine offer", {
+            code: "routine_suggestion_exists",
+            interactionId: existing.id,
+          });
+        }
+        let sourceRunId: string | null = null;
+        if (input.sourceRunId) {
+          const [run] = await tx
+            .select({ id: heartbeatRuns.id })
+            .from(heartbeatRuns)
+            .where(and(
+              eq(heartbeatRuns.id, input.sourceRunId),
+              eq(heartbeatRuns.companyId, issue.companyId),
+              eq(heartbeatRuns.agentId, input.createdByAgentId),
+            ));
+          sourceRunId = run?.id ?? null;
+        }
+        const [row] = await tx
+          .insert(issueThreadInteractions)
+          .values({
+            companyId: issue.companyId,
+            issueId: issue.id,
+            kind: "suggest_routine",
+            status: "pending",
+            continuationPolicy: "none",
+            requestedResolverPolicy: "human_only",
+            effectiveResolverPolicy: "human_only",
+            resolverPolicyProvenance: "explicit",
+            effectiveResolverPolicySource: "requested",
+            sourceRunId,
+            title: input.title,
+            summary: input.summary,
+            createdByAgentId: input.createdByAgentId,
+            payload,
+          })
+          .returning();
+        await touchIssue(tx, issue.id, issue.companyId);
+        return row!;
+      });
+      emitInteractionCreatedTelemetry({
+        companyId: issue.companyId,
+        interactionKind: "suggest_routine",
+        usedDeprecatedResolverPolicyAlias: false,
+      });
+      return hydrateInteraction(created) as SuggestRoutineInteraction;
+    },
+
+    /**
+     * Settle a pending routine offer for a person. Accepting claims the card
+     * (pending -> accepted) before the routine exists, so concurrent accepts
+     * create one routine; the caller then records the routine with
+     * `recordAcceptedRoutineSuggestion`, or `releaseRoutineSuggestionClaim`
+     * when creating it failed. Declining is final.
+     */
+    claimRoutineSuggestion: async (
+      issue: { id: string; companyId: string },
+      interactionId: string,
+      outcome: "accepted" | "declined",
+      actor: InteractionActor,
+    ): Promise<SuggestRoutineInteraction & { claim: AcceptClaim | null }> => {
+      let claim: string | null = null;
+      let tookOver = false;
+      let strandedRoutineId: string | null = null;
+      const updated = await db.transaction(async (tx) => {
+        const [issueRow] = await tx
+          .select({ status: issues.status })
+          .from(issues)
+          .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
+          .for("update");
+        if (!issueRow) throw notFound("Issue not found");
+        const [current] = await tx
+          .select()
+          .from(issueThreadInteractions)
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.companyId, issue.companyId),
+            eq(issueThreadInteractions.issueId, issue.id),
+          ));
+        if (!current || current.kind !== "suggest_routine") throw interactionNotFoundError();
+        const claimedAt = now();
+        const stranded = strandedAcceptClaim(current, outcome, claimedAt);
+        if (current.status !== "pending" && !stranded) throw interactionTerminalError(current);
+        if (issueRow.status === "cancelled") throw interactionIssueClosedError();
+        if (!isRoutineSuggestionOpenOnIssue(current, issueRow.status)) {
+          throw conflict("This offer opens once the task is done", { code: "routine_suggestion_task_not_done" });
+        }
+        assertInteractionResolutionAllowed(current, actor);
+        const claimId = outcome === "accepted" ? randomUUID() : null;
+        const result = { version: 1, outcome, ...(claimId ? { claimId } : {}) } as SuggestRoutineResult;
+        strandedRoutineId = stranded ? pendingRoutineIdOf(current.result) : null;
+        tookOver = stranded;
+        claim = claimId;
+        const [row] = await tx
+          .update(issueThreadInteractions)
+          .set(stranded
+            ? { result, resolvedByUserId: actor.userId ?? null, updatedAt: claimedAt }
+            : {
+              status: outcome === "accepted" ? "accepted" : "rejected",
+              result,
+              resolvedByUserId: actor.userId ?? null,
+              resolvedByAgentId: null,
+              resolvedAt: claimedAt,
+              updatedAt: claimedAt,
+            })
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            stranded
+              ? and(eq(issueThreadInteractions.status, "accepted"), eq(issueThreadInteractions.updatedAt, current.updatedAt))
+              : eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
+        if (!row) throw interactionAlreadyResolvedError();
+        return row;
+      });
+      await touchIssue(db, issue.id, issue.companyId);
+      const interaction = hydrateInteraction(updated) as SuggestRoutineInteraction;
+      if (outcome === "declined") await emitInteractionResolvedTelemetry(db, interaction);
+      const accepted: SuggestRoutineInteraction & { claim: AcceptClaim | null } = Object.assign(interaction, {
+        claim: claim ? { claimId: claim, tookOver, strandedRoutineId } : null,
+      });
+      return accepted;
+    },
+
+    recordAcceptedRoutineSuggestion: async (
+      issue: { id: string; companyId: string },
+      interactionId: string,
+      claimId: string,
+      result: Omit<SuggestRoutineResult, "version" | "outcome">,
+    ): Promise<SuggestRoutineInteraction> => {
+      const parsed = suggestRoutineResultSchema.parse({ version: 1, outcome: "accepted", ...result });
+      const [row] = await db
+        .update(issueThreadInteractions)
+        .set({ result: parsed, updatedAt: now() })
+        .where(and(
+          eq(issueThreadInteractions.id, interactionId),
+          eq(issueThreadInteractions.companyId, issue.companyId),
+          eq(issueThreadInteractions.issueId, issue.id),
+          eq(issueThreadInteractions.kind, "suggest_routine"),
+          eq(issueThreadInteractions.status, "accepted"),
+          claimIdMatches(claimId),
+        ))
+        .returning();
+      if (!row) throw acceptClaimLostError();
+      const interaction = hydrateInteraction(row) as SuggestRoutineInteraction;
+      // The acceptance is saved: what follows must not undo it.
+      try {
+        await touchIssue(db, issue.id, issue.companyId);
+        await emitInteractionResolvedTelemetry(db, interaction);
+      } catch (error) {
+        logger.warn({ err: error, interactionId }, "Saved an accepted card but could not refresh its task");
+      }
+      return interaction;
+    },
+
+    /**
+     * The routine offers on many tasks in one query, for the responsibilities
+     * automation read: pending ones (open only once the task is done, which
+     * the caller checks) and accepted ones (the task already repeats).
+     * Declined, withdrawn and expired offers are left out.
+     */
+    routineSuggestionsForIssues: async (
+      companyId: string,
+      issueIds: readonly string[],
+    ): Promise<Array<{
+      id: string;
+      issueId: string;
+      status: "pending" | "accepted";
+      createdByAgentId: string | null;
+      payload: SuggestRoutinePayload;
+    }>> => {
+      if (issueIds.length === 0) return [];
+      const rows = await db
+        .select({
+          id: issueThreadInteractions.id,
+          issueId: issueThreadInteractions.issueId,
+          status: issueThreadInteractions.status,
+          createdByAgentId: issueThreadInteractions.createdByAgentId,
+          payload: issueThreadInteractions.payload,
+        })
+        .from(issueThreadInteractions)
+        .where(and(
+          eq(issueThreadInteractions.companyId, companyId),
+          inArray(issueThreadInteractions.issueId, [...new Set(issueIds)]),
+          eq(issueThreadInteractions.kind, "suggest_routine"),
+          inArray(issueThreadInteractions.status, ["pending", "accepted"]),
+        ))
+        .orderBy(desc(issueThreadInteractions.createdAt));
+      return rows.flatMap((row) => {
+        const payload = suggestRoutinePayloadSchema.safeParse(row.payload);
+        if (!payload.success) return [];
+        return [{
+          id: row.id,
+          issueId: row.issueId,
+          status: row.status as "pending" | "accepted",
+          createdByAgentId: row.createdByAgentId,
+          payload: payload.data,
+        }];
+      });
+    },
+
+    /**
+     * Note on the card the routine an accept claim just made, before its
+     * trigger and filing, so an accept that takes the claim over can archive
+     * it. False when the claim is no longer this accept's.
+     */
+    noteAcceptClaimRoutine: async (
+      issue: { id: string; companyId: string },
+      interactionId: string,
+      claimId: string,
+      routineId: string,
+    ): Promise<boolean> => {
+      const rows = await db
+        .update(issueThreadInteractions)
+        .set({
+          result: sql`jsonb_set(${issueThreadInteractions.result}, '{pendingRoutineId}', to_jsonb(${routineId}::text))`,
+          updatedAt: now(),
+        })
+        .where(and(
+          eq(issueThreadInteractions.id, interactionId),
+          eq(issueThreadInteractions.companyId, issue.companyId),
+          eq(issueThreadInteractions.issueId, issue.id),
+          inArray(issueThreadInteractions.kind, ["suggest_routine", "propose_automation"]),
+          eq(issueThreadInteractions.status, "accepted"),
+          claimIdMatches(claimId),
+        ))
+        .returning({ id: issueThreadInteractions.id });
+      return rows.length > 0;
+    },
+
+    /** Close an accept claim that has nothing left to do: the task already repeats. */
+    expireAcceptClaim: async (
+      issue: { id: string; companyId: string },
+      interactionId: string,
+      claimId: string,
+    ) => {
+      await db
+        .update(issueThreadInteractions)
+        .set({ status: "expired", result: null, updatedAt: now() })
+        .where(and(
+          eq(issueThreadInteractions.id, interactionId),
+          eq(issueThreadInteractions.companyId, issue.companyId),
+          eq(issueThreadInteractions.issueId, issue.id),
+          inArray(issueThreadInteractions.kind, ["suggest_routine", "propose_automation"]),
+          eq(issueThreadInteractions.status, "accepted"),
+          claimIdMatches(claimId),
+        ));
+      await touchIssue(db, issue.id, issue.companyId);
+    },
+
+    /** Reopen an accepted offer whose routine could not be created. */
+    releaseRoutineSuggestionClaim: async (
+      issue: { id: string; companyId: string },
+      interactionId: string,
+      claimId: string,
+    ) => {
+      await db
+        .update(issueThreadInteractions)
+        .set({ status: "pending", result: null, resolvedByUserId: null, resolvedAt: null, updatedAt: now() })
+        .where(and(
+          eq(issueThreadInteractions.id, interactionId),
+          eq(issueThreadInteractions.companyId, issue.companyId),
+          eq(issueThreadInteractions.issueId, issue.id),
+          eq(issueThreadInteractions.kind, "suggest_routine"),
+          eq(issueThreadInteractions.status, "accepted"),
+          claimIdMatches(claimId),
+          sql`${issueThreadInteractions.result} ->> 'routineId' is null`,
+        ));
+      await touchIssue(db, issue.id, issue.companyId);
+    },
+    /**
+     * Insert a bar proposal in a responsibility's bar conversation. The
+     * responsibility-bars module validates the bar and derives its plain
+     * words; this method owns the card row and the invariants that need the
+     * task lock: the task is a bar conversation that is not cancelled, the
+     * proposing agent is its assignee, and only one proposal is pending (a
+     * new one replaces the old, which reads as `replaced`).
+     */
+    createBarProposal: async (
+      issue: { id: string; companyId: string },
+      input: {
+        payload: ProposeResponsibilityBarPayload;
+        title: string;
+        summary: string | null;
+        createdByAgentId: string;
+        sourceRunId: string | null;
+      },
+    ): Promise<{ interaction: ProposeResponsibilityBarInteraction; replacedIds: string[] }> => {
+      const payload = proposeResponsibilityBarPayloadSchema.parse(input.payload);
+      const created = await db.transaction(async (tx) => {
+        const [issueRow] = await tx
+          .select({
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            originKind: issues.originKind,
+            originId: issues.originId,
+          })
+          .from(issues)
+          .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
+          .for("update");
+        if (!issueRow) throw notFound("Issue not found");
+        if (issueRow.originKind !== RESPONSIBILITY_BAR_ORIGIN_KIND || issueRow.originId !== payload.responsibilityId) {
+          throw unprocessable("A bar can only be proposed in that responsibility's bar conversation", {
+            code: "responsibility_bar_not_bar_conversation",
+          });
+        }
+        if (issueRow.status === "cancelled") {
+          throw conflict("This bar conversation was cancelled", { code: "responsibility_bar_conversation_cancelled" });
+        }
+        if (issueRow.assigneeAgentId !== input.createdByAgentId) {
+          throw forbidden("Only the agent in this bar conversation can propose a bar");
+        }
+        let sourceRunId: string | null = null;
+        if (input.sourceRunId) {
+          const [run] = await tx
+            .select({ id: heartbeatRuns.id })
+            .from(heartbeatRuns)
+            .where(and(
+              eq(heartbeatRuns.id, input.sourceRunId),
+              eq(heartbeatRuns.companyId, issue.companyId),
+              eq(heartbeatRuns.agentId, input.createdByAgentId),
+            ));
+          sourceRunId = run?.id ?? null;
+        }
+        const [row] = await tx
+          .insert(issueThreadInteractions)
+          .values({
+            companyId: issue.companyId,
+            issueId: issue.id,
+            kind: "propose_responsibility_bar",
+            status: "pending",
+            continuationPolicy: "none",
+            requestedResolverPolicy: "human_only",
+            effectiveResolverPolicy: "human_only",
+            resolverPolicyProvenance: "explicit",
+            effectiveResolverPolicySource: "requested",
+            sourceRunId,
+            title: input.title,
+            summary: input.summary,
+            createdByAgentId: input.createdByAgentId,
+            payload,
+          })
+          .returning();
+        const resolvedAt = now();
+        const replaced = await tx
+          .update(issueThreadInteractions)
+          .set({
+            status: "expired",
+            result: {
+              version: 1,
+              outcome: "replaced",
+              replacedByInteractionId: row!.id,
+            } satisfies ProposeResponsibilityBarResult,
+            resolvedAt,
+            updatedAt: resolvedAt,
+          })
+          .where(and(
+            eq(issueThreadInteractions.companyId, issue.companyId),
+            eq(issueThreadInteractions.issueId, issue.id),
+            eq(issueThreadInteractions.kind, "propose_responsibility_bar"),
+            eq(issueThreadInteractions.status, "pending"),
+            ne(issueThreadInteractions.id, row!.id),
+          ))
+          .returning({ id: issueThreadInteractions.id });
+        await touchIssue(tx, issue.id, issue.companyId);
+        return { row: row!, replacedIds: replaced.map((entry) => entry.id) };
+      });
+      emitInteractionCreatedTelemetry({
+        companyId: issue.companyId,
+        interactionKind: "propose_responsibility_bar",
+        usedDeprecatedResolverPolicyAlias: false,
+      });
+      return {
+        interaction: hydrateInteraction(created.row) as ProposeResponsibilityBarInteraction,
+        replacedIds: created.replacedIds,
+      };
+    },
+
+    /**
+     * Settle a pending bar proposal for a person. `applyInTransaction` runs in
+     * the same transaction, after the card is locked as pending and before it
+     * is marked accepted, so applying the bar and settling the card commit or
+     * fail together. Declining is quiet: the conversation simply continues.
+     */
+    resolveBarProposal: async <T>(
+      issue: { id: string; companyId: string },
+      interactionId: string,
+      outcome: "accepted" | "declined",
+      actor: InteractionActor,
+      applyInTransaction?: (tx: DbTransaction, interaction: ProposeResponsibilityBarInteraction) => Promise<T>,
+      /** What an accepted card records beyond its outcome (the supporting metrics the person dropped). */
+      acceptedDetails?: (interaction: ProposeResponsibilityBarInteraction) => Pick<ProposeResponsibilityBarResult, "droppedMetrics">,
+    ): Promise<{ interaction: ProposeResponsibilityBarInteraction; applied: T | null }> => {
+      const settled = await db.transaction(async (tx) => {
+        const [issueRow] = await tx
+          .select({ status: issues.status })
+          .from(issues)
+          .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
+          .for("update");
+        if (!issueRow) throw notFound("Issue not found");
+        const [current] = await tx
+          .select()
+          .from(issueThreadInteractions)
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.companyId, issue.companyId),
+            eq(issueThreadInteractions.issueId, issue.id),
+          ))
+          .for("update");
+        if (!current || current.kind !== "propose_responsibility_bar") throw interactionNotFoundError();
+        if (current.status !== "pending") throw interactionTerminalError(current);
+        if (!isBarProposalOpenOnIssue(current, issueRow.status)) throw interactionIssueClosedError();
+        assertInteractionResolutionAllowed(current, actor);
+        const hydrated = hydrateInteraction(current) as ProposeResponsibilityBarInteraction;
+        const applied = outcome === "accepted" && applyInTransaction
+          ? await applyInTransaction(tx as unknown as DbTransaction, hydrated)
+          : null;
+        const resolvedAt = now();
+        const result: ProposeResponsibilityBarResult = outcome === "accepted"
+          ? { version: 1, outcome, responsibilityId: hydrated.payload.responsibilityId, ...acceptedDetails?.(hydrated) }
+          : { version: 1, outcome };
+        const [row] = await tx
+          .update(issueThreadInteractions)
+          .set({
+            status: outcome === "accepted" ? "accepted" : "rejected",
+            result,
+            resolvedByUserId: actor.userId ?? null,
+            resolvedByAgentId: null,
+            resolvedAt,
+            updatedAt: resolvedAt,
+          })
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
+        if (!row) throw interactionAlreadyResolvedError();
+        await touchIssue(tx, issue.id, issue.companyId);
+        return { row, applied };
+      });
+      const interaction = hydrateInteraction(settled.row) as ProposeResponsibilityBarInteraction;
+      await emitInteractionResolvedTelemetry(db, interaction);
+      return { interaction, applied: settled.applied };
+    },
+
+    /**
+     * Insert proposed dashboard changes in a person's dashboard conversation.
+     * The responsibility-dashboard module validates the change set and
+     * derives its plain words; this method owns the card row and the
+     * invariants that need the task lock: the task is that person's dashboard
+     * conversation and not cancelled, the proposing agent is its assignee, and
+     * only one proposal is pending (a new one replaces the old, which reads as
+     * `replaced`).
+     */
+    createDashboardChangesProposal: async (
+      issue: { id: string; companyId: string },
+      input: {
+        payload: ProposeDashboardChangesPayload;
+        title: string;
+        summary: string | null;
+        createdByAgentId: string;
+        sourceRunId: string | null;
+      },
+    ): Promise<{ interaction: ProposeDashboardChangesInteraction; replacedIds: string[] }> => {
+      const payload = proposeDashboardChangesPayloadSchema.parse(input.payload) as ProposeDashboardChangesPayload;
+      const created = await db.transaction(async (tx) => {
+        const [issueRow] = await tx
+          .select({
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            originKind: issues.originKind,
+            originId: issues.originId,
+          })
+          .from(issues)
+          .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
+          .for("update");
+        if (!issueRow) throw notFound("Issue not found");
+        if (issueRow.originKind !== RESPONSIBILITY_DASHBOARD_ORIGIN_KIND || issueRow.originId !== payload.ownerUserId) {
+          throw unprocessable("Dashboard changes can only be proposed in that person's dashboard conversation", {
+            code: "responsibility_dashboard_not_dashboard_conversation",
+          });
+        }
+        if (issueRow.status === "cancelled") {
+          throw conflict("This dashboard conversation was cancelled", { code: "responsibility_dashboard_conversation_cancelled" });
+        }
+        if (issueRow.assigneeAgentId !== input.createdByAgentId) {
+          throw forbidden("Only the agent in this dashboard conversation can propose changes");
+        }
+        let sourceRunId: string | null = null;
+        if (input.sourceRunId) {
+          const [run] = await tx
+            .select({ id: heartbeatRuns.id })
+            .from(heartbeatRuns)
+            .where(and(
+              eq(heartbeatRuns.id, input.sourceRunId),
+              eq(heartbeatRuns.companyId, issue.companyId),
+              eq(heartbeatRuns.agentId, input.createdByAgentId),
+            ));
+          sourceRunId = run?.id ?? null;
+        }
+        const [row] = await tx
+          .insert(issueThreadInteractions)
+          .values({
+            companyId: issue.companyId,
+            issueId: issue.id,
+            kind: "propose_dashboard_changes",
+            status: "pending",
+            continuationPolicy: "none",
+            requestedResolverPolicy: "human_only",
+            effectiveResolverPolicy: "human_only",
+            resolverPolicyProvenance: "explicit",
+            effectiveResolverPolicySource: "requested",
+            sourceRunId,
+            title: input.title,
+            summary: input.summary,
+            createdByAgentId: input.createdByAgentId,
+            payload,
+          })
+          .returning();
+        const resolvedAt = now();
+        const replaced = await tx
+          .update(issueThreadInteractions)
+          .set({
+            status: "expired",
+            result: {
+              version: 1,
+              outcome: "replaced",
+              replacedByInteractionId: row!.id,
+            } satisfies ProposeDashboardChangesResult,
+            resolvedAt,
+            updatedAt: resolvedAt,
+          })
+          .where(and(
+            eq(issueThreadInteractions.companyId, issue.companyId),
+            eq(issueThreadInteractions.issueId, issue.id),
+            eq(issueThreadInteractions.kind, "propose_dashboard_changes"),
+            eq(issueThreadInteractions.status, "pending"),
+            ne(issueThreadInteractions.id, row!.id),
+          ))
+          .returning({ id: issueThreadInteractions.id });
+        await touchIssue(tx, issue.id, issue.companyId);
+        return { row: row!, replacedIds: replaced.map((entry) => entry.id) };
+      });
+      emitInteractionCreatedTelemetry({
+        companyId: issue.companyId,
+        interactionKind: "propose_dashboard_changes",
+        usedDeprecatedResolverPolicyAlias: false,
+      });
+      return {
+        interaction: hydrateInteraction(created.row) as ProposeDashboardChangesInteraction,
+        replacedIds: created.replacedIds,
+      };
+    },
+
+    /**
+     * Settle pending dashboard changes for a person. `applyInTransaction`
+     * runs in the same transaction, after the card is locked as pending and
+     * before it is marked accepted, so applying the changes, saving the
+     * versions and settling the card commit or fail together. Declining is
+     * quiet: the conversation simply continues.
+     */
+    resolveDashboardChangesProposal: async <T>(
+      issue: { id: string; companyId: string },
+      interactionId: string,
+      outcome: "accepted" | "declined",
+      actor: InteractionActor,
+      applyInTransaction?: (tx: DbTransaction, interaction: ProposeDashboardChangesInteraction) => Promise<T>,
+      /** What an accepted card records beyond its outcome. */
+      acceptedDetails?: (applied: T) => Omit<ProposeDashboardChangesResult, "version" | "outcome">,
+    ): Promise<{ interaction: ProposeDashboardChangesInteraction; applied: T | null }> => {
+      const settled = await db.transaction(async (tx) => {
+        const [issueRow] = await tx
+          .select({ status: issues.status })
+          .from(issues)
+          .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
+          .for("update");
+        if (!issueRow) throw notFound("Issue not found");
+        const [current] = await tx
+          .select()
+          .from(issueThreadInteractions)
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.companyId, issue.companyId),
+            eq(issueThreadInteractions.issueId, issue.id),
+          ))
+          .for("update");
+        if (!current || current.kind !== "propose_dashboard_changes") throw interactionNotFoundError();
+        if (current.status !== "pending") throw interactionTerminalError(current);
+        if (!isDashboardChangesOpenOnIssue(current, issueRow.status)) throw interactionIssueClosedError();
+        assertInteractionResolutionAllowed(current, actor);
+        const hydrated = hydrateInteraction(current) as ProposeDashboardChangesInteraction;
+        const applied = outcome === "accepted" && applyInTransaction
+          ? await applyInTransaction(tx as unknown as DbTransaction, hydrated)
+          : null;
+        const resolvedAt = now();
+        const result: ProposeDashboardChangesResult = outcome === "accepted"
+          ? { version: 1, outcome, ...(applied !== null && acceptedDetails ? acceptedDetails(applied) : {}) }
+          : { version: 1, outcome };
+        const [row] = await tx
+          .update(issueThreadInteractions)
+          .set({
+            status: outcome === "accepted" ? "accepted" : "rejected",
+            result,
+            resolvedByUserId: actor.userId ?? null,
+            resolvedByAgentId: null,
+            resolvedAt,
+            updatedAt: resolvedAt,
+          })
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
+        if (!row) throw interactionAlreadyResolvedError();
+        await touchIssue(tx, issue.id, issue.companyId);
+        return { row, applied };
+      });
+      const interaction = hydrateInteraction(settled.row) as ProposeDashboardChangesInteraction;
+      await emitInteractionResolvedTelemetry(db, interaction);
+      return { interaction, applied: settled.applied };
+    },
+
+    /**
+     * Insert an automation proposal in a task's automation conversation. The
+     * automation-conversations module validates it and derives its plain
+     * words; this method owns the card row and the invariants that need the
+     * task lock: the task is that automation conversation and not cancelled,
+     * the proposing agent is its assignee, and only one proposal is pending (a
+     * new one replaces the old, which reads as `replaced`).
+     */
+    createAutomationProposal: async (
+      issue: { id: string; companyId: string },
+      input: {
+        payload: ProposeAutomationPayload;
+        title: string;
+        summary: string | null;
+        createdByAgentId: string;
+        sourceRunId: string | null;
+      },
+    ): Promise<{ interaction: ProposeAutomationInteraction; replacedIds: string[] }> => {
+      const payload = proposeAutomationPayloadSchema.parse(input.payload);
+      const created = await db.transaction(async (tx) => {
+        const [issueRow] = await tx
+          .select({
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            originKind: issues.originKind,
+            originId: issues.originId,
+          })
+          .from(issues)
+          .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
+          .for("update");
+        if (!issueRow) throw notFound("Issue not found");
+        if (issueRow.originKind !== AUTOMATION_CONVERSATION_ORIGIN_KIND || issueRow.originId !== payload.sourceIssueId) {
+          throw unprocessable("An automation can only be proposed in that task's automation conversation", {
+            code: "automation_not_automation_conversation",
+          });
+        }
+        if (issueRow.status === "cancelled") {
+          throw conflict("This automation conversation was cancelled", { code: "automation_conversation_cancelled" });
+        }
+        if (issueRow.assigneeAgentId !== input.createdByAgentId) {
+          throw forbidden("Only the agent in this automation conversation can propose an automation");
+        }
+        let sourceRunId: string | null = null;
+        if (input.sourceRunId) {
+          const [run] = await tx
+            .select({ id: heartbeatRuns.id })
+            .from(heartbeatRuns)
+            .where(and(
+              eq(heartbeatRuns.id, input.sourceRunId),
+              eq(heartbeatRuns.companyId, issue.companyId),
+              eq(heartbeatRuns.agentId, input.createdByAgentId),
+            ));
+          sourceRunId = run?.id ?? null;
+        }
+        const [row] = await tx
+          .insert(issueThreadInteractions)
+          .values({
+            companyId: issue.companyId,
+            issueId: issue.id,
+            kind: "propose_automation",
+            status: "pending",
+            continuationPolicy: "none",
+            requestedResolverPolicy: "human_only",
+            effectiveResolverPolicy: "human_only",
+            resolverPolicyProvenance: "explicit",
+            effectiveResolverPolicySource: "requested",
+            sourceRunId,
+            title: input.title,
+            summary: input.summary,
+            createdByAgentId: input.createdByAgentId,
+            payload,
+          })
+          .returning();
+        const resolvedAt = now();
+        const replaced = await tx
+          .update(issueThreadInteractions)
+          .set({
+            status: "expired",
+            result: {
+              version: 1,
+              outcome: "replaced",
+              replacedByInteractionId: row!.id,
+            } satisfies ProposeAutomationResult,
+            resolvedAt,
+            updatedAt: resolvedAt,
+          })
+          .where(and(
+            eq(issueThreadInteractions.companyId, issue.companyId),
+            eq(issueThreadInteractions.issueId, issue.id),
+            eq(issueThreadInteractions.kind, "propose_automation"),
+            eq(issueThreadInteractions.status, "pending"),
+            ne(issueThreadInteractions.id, row!.id),
+          ))
+          .returning({ id: issueThreadInteractions.id });
+        await touchIssue(tx, issue.id, issue.companyId);
+        return { row: row!, replacedIds: replaced.map((entry) => entry.id) };
+      });
+      emitInteractionCreatedTelemetry({
+        companyId: issue.companyId,
+        interactionKind: "propose_automation",
+        usedDeprecatedResolverPolicyAlias: false,
+      });
+      return {
+        interaction: hydrateInteraction(created.row) as ProposeAutomationInteraction,
+        replacedIds: created.replacedIds,
+      };
+    },
+
+    /**
+     * Settle a pending automation proposal for a person. Accepting claims the
+     * card (pending -> accepted) before the automation exists, so concurrent
+     * accepts create one; the caller then records it with
+     * `recordAcceptedAutomationProposal`, or `releaseAutomationProposalClaim`
+     * when creating it failed. Declining is quiet: the conversation continues.
+     */
+    claimAutomationProposal: async (
+      issue: { id: string; companyId: string },
+      interactionId: string,
+      outcome: "accepted" | "declined",
+      actor: InteractionActor,
+    ): Promise<ProposeAutomationInteraction & { claim: AcceptClaim | null }> => {
+      let claim: string | null = null;
+      let tookOver = false;
+      let strandedRoutineId: string | null = null;
+      const updated = await db.transaction(async (tx) => {
+        const [issueRow] = await tx
+          .select({ status: issues.status })
+          .from(issues)
+          .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
+          .for("update");
+        if (!issueRow) throw notFound("Issue not found");
+        const [current] = await tx
+          .select()
+          .from(issueThreadInteractions)
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.companyId, issue.companyId),
+            eq(issueThreadInteractions.issueId, issue.id),
+          ))
+          .for("update");
+        if (!current || current.kind !== "propose_automation") throw interactionNotFoundError();
+        const claimedAt = now();
+        const stranded = strandedAcceptClaim(current, outcome, claimedAt);
+        if (current.status !== "pending" && !stranded) throw interactionTerminalError(current);
+        if (!isAutomationProposalOpenOnIssue(current, issueRow.status)) throw interactionIssueClosedError();
+        assertInteractionResolutionAllowed(current, actor);
+        const claimId = outcome === "accepted" ? randomUUID() : null;
+        const result = { version: 1, outcome, ...(claimId ? { claimId } : {}) } as ProposeAutomationResult;
+        strandedRoutineId = stranded ? pendingRoutineIdOf(current.result) : null;
+        tookOver = stranded;
+        claim = claimId;
+        const [row] = await tx
+          .update(issueThreadInteractions)
+          .set(stranded
+            ? { result, resolvedByUserId: actor.userId ?? null, updatedAt: claimedAt }
+            : {
+              status: outcome === "accepted" ? "accepted" : "rejected",
+              result,
+              resolvedByUserId: actor.userId ?? null,
+              resolvedByAgentId: null,
+              resolvedAt: claimedAt,
+              updatedAt: claimedAt,
+            })
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            stranded
+              ? and(eq(issueThreadInteractions.status, "accepted"), eq(issueThreadInteractions.updatedAt, current.updatedAt))
+              : eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
+        if (!row) throw interactionAlreadyResolvedError();
+        return row;
+      });
+      await touchIssue(db, issue.id, issue.companyId);
+      const interaction = hydrateInteraction(updated) as ProposeAutomationInteraction;
+      if (outcome === "declined") await emitInteractionResolvedTelemetry(db, interaction);
+      const accepted: ProposeAutomationInteraction & { claim: AcceptClaim | null } = Object.assign(interaction, {
+        claim: claim ? { claimId: claim, tookOver, strandedRoutineId } : null,
+      });
+      return accepted;
+    },
+
+    recordAcceptedAutomationProposal: async (
+      issue: { id: string; companyId: string },
+      interactionId: string,
+      claimId: string,
+      result: Omit<ProposeAutomationResult, "version" | "outcome">,
+    ): Promise<ProposeAutomationInteraction> => {
+      const parsed = proposeAutomationResultSchema.parse({ version: 1, outcome: "accepted", ...result });
+      const [row] = await db
+        .update(issueThreadInteractions)
+        .set({ result: parsed, updatedAt: now() })
+        .where(and(
+          eq(issueThreadInteractions.id, interactionId),
+          eq(issueThreadInteractions.companyId, issue.companyId),
+          eq(issueThreadInteractions.issueId, issue.id),
+          eq(issueThreadInteractions.kind, "propose_automation"),
+          eq(issueThreadInteractions.status, "accepted"),
+          claimIdMatches(claimId),
+        ))
+        .returning();
+      if (!row) throw acceptClaimLostError();
+      const interaction = hydrateInteraction(row) as ProposeAutomationInteraction;
+      // The acceptance is saved: what follows must not undo it.
+      try {
+        await touchIssue(db, issue.id, issue.companyId);
+        await emitInteractionResolvedTelemetry(db, interaction);
+      } catch (error) {
+        logger.warn({ err: error, interactionId }, "Saved an accepted card but could not refresh its task");
+      }
+      return interaction;
+    },
+
+    /** Reopen an accepted proposal whose automation could not be created. */
+    releaseAutomationProposalClaim: async (
+      issue: { id: string; companyId: string },
+      interactionId: string,
+      claimId: string,
+    ) => {
+      await db
+        .update(issueThreadInteractions)
+        .set({ status: "pending", result: null, resolvedByUserId: null, resolvedAt: null, updatedAt: now() })
+        .where(and(
+          eq(issueThreadInteractions.id, interactionId),
+          eq(issueThreadInteractions.companyId, issue.companyId),
+          eq(issueThreadInteractions.issueId, issue.id),
+          eq(issueThreadInteractions.kind, "propose_automation"),
+          eq(issueThreadInteractions.status, "accepted"),
+          claimIdMatches(claimId),
+          sql`${issueThreadInteractions.result} ->> 'routineId' is null`,
+        ));
+      await touchIssue(db, issue.id, issue.companyId);
+    },
+
+    mergedPullRequestConfirmationPage,
+    mergedPullRequestConfirmationCandidates,
     sweepMergedPullRequestConfirmations: async (
       mergedHints: Array<{
         companyId: string;
@@ -2954,51 +4396,21 @@ export function issueThreadInteractionService(
         repo: string;
         number: number;
       }> = [],
+      scope?: MergeConfirmationScope,
+      signal?: AbortSignal,
+      mutationOptions: InteractionResolutionMutationOptions = {},
     ) => {
-      const rows = await db
-        .select({
-          interaction: issueThreadInteractions,
-          issue: {
-            id: issues.id,
-            companyId: issues.companyId,
-            projectId: issues.projectId,
-            goalId: issues.goalId,
-            status: issues.status,
-            assigneeAgentId: issues.assigneeAgentId,
-          },
-        })
-        .from(issueThreadInteractions)
-        .innerJoin(issues, eq(issueThreadInteractions.issueId, issues.id))
-        .where(
-          and(
-            eq(issueThreadInteractions.kind, "request_confirmation"),
-            eq(issueThreadInteractions.status, "pending"),
-          ),
-        );
-
-      const candidates = rows.flatMap((row) => {
-        const references = getMergeConfirmationPullRequestReferences(
-          row.interaction,
-        );
-        return references.length > 0 ? [{ ...row, references }] : [];
-      });
-      if (candidates.length === 0) {
-        return { checked: rows.length, candidates: 0, accepted: 0, woken: 0 };
-      }
-
-      const candidateIds = candidates.map(({ interaction }) => interaction.id);
-      const linkedToolActions = await db
-        .select({ interactionId: toolActionRequests.interactionId })
-        .from(toolActionRequests)
-        .where(inArray(toolActionRequests.interactionId, candidateIds));
-      const toolActionInteractionIds = new Set(
-        linkedToolActions
-          .map((row) => row.interactionId)
-          .filter((value): value is string => Boolean(value)),
-      );
-      const eligible = candidates.filter(
-        ({ interaction }) => !toolActionInteractionIds.has(interaction.id),
-      );
+      const scopes = scope ? [scope] : mergedHints.length
+        ? [...new Set(mergedHints.map(hint => hint.companyId))].map(companyId => ({ companyId }))
+        : [undefined];
+      const candidates: Awaited<ReturnType<typeof mergedPullRequestConfirmationCandidates>> = [];
+      for (const candidateScope of scopes) candidates.push(...await mergedPullRequestConfirmationCandidates(candidateScope));
+      const eligible = mergedHints.length ? candidates.filter(candidate => mergedHints.some(hint =>
+        hint.companyId === candidate.issue.companyId && candidate.references.some(reference =>
+          hint.owner.toLowerCase() === reference.owner.toLowerCase() &&
+          hint.repo.toLowerCase() === reference.repo.toLowerCase() && hint.number === reference.number),
+      )) : candidates;
+      if (eligible.length === 0) return { checked: 0, candidates: 0, accepted: 0, woken: 0 };
 
       const checkedAt = now().getTime();
       const cacheTtlMs = opts.pullRequestCacheTtlMs ?? 5 * 60 * 1000;
@@ -3032,7 +4444,10 @@ export function issueThreadInteractionService(
 
       const refreshedStates = await resolvePullRequestStates([
         ...uniqueReferences.values(),
-      ]);
+      ], signal);
+      if (scope && [...refreshedStates.values()].some(state => state === "unknown")) {
+        throw new Error("Merge confirmation provider state is unavailable");
+      }
       for (const [key, state] of refreshedStates) {
         setBoundedPullRequestCacheEntry(pullRequestStateCache, key, {
           state,
@@ -3043,6 +4458,7 @@ export function issueThreadInteractionService(
       let accepted = 0;
       let woken = 0;
       for (const candidate of eligible) {
+        if (signal?.aborted) break;
         const allMerged = candidate.references.every((reference) => {
           const key = `${candidate.issue.companyId}:${reference.owner.toLowerCase()}/${reference.repo.toLowerCase()}#${reference.number}`;
           return pullRequestStateCache.get(key)?.state === "merged";
@@ -3054,7 +4470,9 @@ export function issueThreadInteractionService(
           resolved = await acceptRequestConfirmation({
             issue: candidate.issue,
             current: candidate.interaction,
+            signal,
             input: {},
+            mutationOptions,
             actor: {
               systemId: "system:pr-merged",
               resolutionDetails: {
@@ -3079,19 +4497,23 @@ export function issueThreadInteractionService(
         if (resolved.interaction.status !== "accepted") continue;
         accepted += 1;
 
-        const wakeIssue = resolved.continuationIssue ?? candidate.issue;
+        const wakeIssue = resolved.continuationIssue ?? await db.select({
+          id: issues.id, assigneeAgentId: issues.assigneeAgentId, status: issues.status,
+        }).from(issues).where(and(eq(issues.id, candidate.issue.id),
+          eq(issues.companyId, candidate.issue.companyId), isNull(issues.hiddenAt))).then(rows => rows[0]);
         const shouldWake =
           resolved.interaction.continuationPolicy === "wake_assignee" ||
           resolved.interaction.continuationPolicy === "wake_assignee_on_accept";
         if (
           !opts.wakeup ||
+          !wakeIssue ||
           !shouldWake ||
           !wakeIssue.assigneeAgentId ||
           isTerminalIssueStatus(wakeIssue.status)
         ) {
           continue;
         }
-        await opts.wakeup(wakeIssue.assigneeAgentId, {
+        const wake = async () => { await opts.wakeup!(wakeIssue.assigneeAgentId!, {
           source: "automation",
           triggerDetail: "system",
           reason: "issue_commented",
@@ -3122,17 +4544,23 @@ export function issueThreadInteractionService(
             source: "merged_pull_request_sweep",
           },
         });
+        };
+        if (mutationOptions.deferConfirmationCommitEffects) mutationOptions.deferConfirmationCommitEffects(wake);
+        else await wake();
         woken += 1;
       }
 
       return {
-        checked: rows.length,
+        checked: candidates.length,
         candidates: eligible.length,
         accepted,
         woken,
       };
     },
-    listForIssue: async (issueId: string) => {
+    listForIssue: async (
+      issueId: string,
+      known?: { status: string; companyId: string; executionWorkspaceId: string | null },
+    ) => {
       const [rows, issue] = await Promise.all([
         db
           .select()
@@ -3142,7 +4570,7 @@ export function issueThreadInteractionService(
             asc(issueThreadInteractions.createdAt),
             asc(issueThreadInteractions.id),
           ),
-        db
+        known ? { status: known.status, companyId: known.companyId, executionWorkspaceId: known.executionWorkspaceId } : db
           .select({
             status: issues.status,
             companyId: issues.companyId,
@@ -3153,11 +4581,12 @@ export function issueThreadInteractionService(
           .then((issueRows) => issueRows[0]),
       ]);
 
-      const interactions = rows.map((row) =>
+      const interactions = rows.filter((row) => !isHeldRoutineSuggestion(row, issue?.status)).map((row) =>
         hydrateInteraction(
           issue &&
             isTerminalIssueStatus(issue.status) &&
-            row.status === "pending"
+            row.status === "pending" &&
+            !staysOpenOnTerminalIssue(row, issue.status)
             ? {
                 ...row,
                 status: "expired",
@@ -3319,7 +4748,7 @@ export function issueThreadInteractionService(
           })
           .where(eq(issueThreadInteractions.id, current.id))
           .returning();
-        await touchIssue(tx, issue.id);
+        await touchIssue(tx, issue.id, issue.companyId);
         return row;
       });
       return hydrateInteraction(updated);
@@ -3382,10 +4811,8 @@ export function issueThreadInteractionService(
         if (updated) cancelled.push(updated);
       }
 
-      for (const issueId of new Set(
-        cancelled.map((interaction) => interaction.issueId),
-      )) {
-        await touchIssue(db, issueId);
+      for (const [issueId, companyId] of new Map(cancelled.map(interaction => [interaction.issueId, interaction.companyId]))) {
+        await touchIssue(db, issueId, companyId);
       }
       await emitResolvedInteractionsTelemetry(db, cancelled);
       return cancelled;
@@ -3417,7 +4844,7 @@ export function issueThreadInteractionService(
         replacementInteractionId: string;
       }> = [];
       for (const row of rows) {
-        if (!row.createdByAgentId) continue;
+        if (!row.createdByAgentId || isNativeCompletionReview(row)) continue;
         const groupKey = `${row.companyId}:${row.issueId}:${row.kind}:${row.createdByAgentId}`;
         const newest = newestByGroup.get(groupKey);
         if (!newest) {
@@ -3474,10 +4901,8 @@ export function issueThreadInteractionService(
       }
 
       if (expired.length > 0) {
-        for (const issueId of new Set(
-          expired.map((interaction) => interaction.issueId),
-        )) {
-          await touchIssue(db, issueId);
+        for (const [issueId, companyId] of new Map(expired.map(interaction => [interaction.issueId, interaction.companyId]))) {
+          await touchIssue(db, issueId, companyId);
         }
         await emitResolvedInteractionsTelemetry(db, expired);
       }
@@ -3617,16 +5042,17 @@ export function issueThreadInteractionService(
         });
         if (existing) {
           if (!isEquivalentCreateRequest(existing, normalizedData, actor, defaultAddresseeUserId)) {
-            throw conflict(
-              "Interaction idempotency key already exists for a different request",
-              {
-                idempotencyKey: normalizedData.idempotencyKey,
-              },
-            );
+            if (!options.replayAcceptedInteractionIds?.includes(existing.id)) {
+              throw conflict(
+                "Interaction idempotency key already exists for a different request",
+                { idempotencyKey: normalizedData.idempotencyKey },
+              );
+            }
+          } else if (!options.requireAcceptedReplay) {
+            const interaction = hydrateInteraction(existing);
+            await enqueueIssueInteractionChatPublications(db, interaction);
+            return interaction;
           }
-          const interaction = hydrateInteraction(existing);
-          await enqueueIssueInteractionChatPublications(db, interaction);
-          return interaction;
         }
       }
 
@@ -3704,6 +5130,8 @@ export function issueThreadInteractionService(
 
       let created: IssueThreadInteractionRow;
       let superseded: IssueThreadInteractionRow[] = [];
+      const postCommitActivityPublications: ActivityPublication[] = [];
+      const postCommitIssueActions: IssuePostCommitAction[] = [];
       try {
         // A terminal issue must not regain pending actionable cards. FOR UPDATE
         // on the issue row serializes this insert both against terminal status
@@ -3711,9 +5139,24 @@ export function issueThreadInteractionService(
         // Idempotent reuse above stays allowed so retries of a pre-close
         // create keep returning the (by now expired) original.
         const result = await db.transaction(async (tx) => {
-          await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);
+          await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor, [JSON.stringify(input)]);
+          await assertAgentInteraction(tx, { companyId: issue.companyId, actorAgentId: actor.agentId,
+            operation: "mention", issueId: issue.id, texts: [JSON.stringify(normalizedData)], lock: true });
+          const configurationTarget = normalizedData.kind === "request_confirmation" || normalizedData.kind === "request_checkbox_confirmation"
+            ? normalizedData.payload.target : null;
+          const configurationAgentId = configurationTarget?.type === "custom"
+            ? agentConfigurationChangeTargetId(configurationTarget.key) : null;
+          if (configurationAgentId) await assertAgentInteraction(tx, {
+            companyId: issue.companyId, actorAgentId: actor.agentId, operation: "configure",
+            targetAgentId: configurationAgentId, lock: true,
+          });
+          if (normalizedData.addresseeAgentId || normalizedData.addresseeUserId) {
+            await assertAgentInteraction(tx, { companyId: issue.companyId, actorAgentId: actor.agentId,
+              operation: "assign", targetAgentId: normalizedData.addresseeAgentId,
+              assigneeUserId: normalizedData.addresseeUserId, lock: true });
+          }
           const [issueRow] = await tx
-            .select({ executionPolicy: issues.executionPolicy, status: issues.status, assigneeAgentId: issues.assigneeAgentId, assigneeUserId: issues.assigneeUserId, conversationAgentId: issues.conversationAgentId, conversationUserId: issues.conversationUserId })
+            .select({ executionPolicy: issues.executionPolicy, status: issues.status, assigneeAgentId: issues.assigneeAgentId, assigneeUserId: issues.assigneeUserId, conversationAgentId: issues.conversationAgentId, conversationUserId: issues.conversationUserId, identifier: issues.identifier })
             .from(issues)
             .where(
               and(
@@ -3728,38 +5171,24 @@ export function issueThreadInteractionService(
           if (normalizedData.idempotencyKey) {
             const existing = await getIdempotentInteraction({ ...issue, issueId: issue.id, idempotencyKey: normalizedData.idempotencyKey }, tx as unknown as Db);
             if (existing) {
-              if (!isEquivalentCreateRequest(existing, normalizedData, actor, defaultAddresseeUserId)) throw conflict("Interaction idempotency key already exists for a different request", { idempotencyKey: normalizedData.idempotencyKey });
+              const acceptedReplay = await isEquivalentAcceptedReplay(tx as unknown as Db, existing, normalizedData, actor,
+                options.replayAcceptedInteractionIds, defaultAddresseeUserId);
+              if ((options.requireAcceptedReplay || !isEquivalentCreateRequest(existing, normalizedData, actor, defaultAddresseeUserId)) && !acceptedReplay) {
+                throw conflict("Interaction idempotency key already exists for a different request", { idempotencyKey: normalizedData.idempotencyKey });
+              }
+              if (acceptedReplay) return { row: existing, supersededRows: [], reused: true };
               await enqueueIssueInteractionChatPublications(tx as unknown as Db, hydrateInteraction(existing));
               return { row: existing, supersededRows: [], reused: true };
             }
+          }
+          if (options.requireAcceptedReplay) {
+            throw conflict("Interaction idempotency key already exists for a different request", { idempotencyKey: normalizedData.idempotencyKey });
           }
           if (!issueRow || isTerminalIssueStatus(issueRow.status)) {
             throw conflict("Cannot create an interaction on a closed issue");
           }
           if (data.addresseeUserId) {
-            const [user] = await tx.select({ id: authUsers.id }).from(authUsers)
-              .where(eq(authUsers.id, data.addresseeUserId));
-            const cloudManaged = isCloudManagedInstance();
-            // No-login installs have an implicit board, which need not have an
-            // auth row. Never infer this authority in authenticated/Cloud mode.
-            const localImplicit = data.addresseeUserId === "local-board"
-              && !cloudManaged && resolveDeploymentMode() === "local_trusted";
-            // Use the normal board mutation policy, including viewer restrictions,
-            // local/instance-admin eligibility and Cloud's no-stale-admin rule.
-            const decision = user || localImplicit ? await authorizationService(tx).decide({
-              actor: {
-                type: "board",
-                userId: data.addresseeUserId,
-                source: localImplicit ? "local_implicit" : cloudManaged ? "cloud_tenant" : "session",
-              },
-              action: "issue:mutate",
-              resource: { type: "issue", companyId: issue.companyId, issueId: issue.id, ...issueRow },
-            }) : null;
-            if (!decision?.allowed) {
-              throw unprocessable("addresseeUserId must identify a user authorized to respond in this company", {
-                code: "interaction_addressee_user_unavailable",
-              });
-            }
+            await assertInteractionAddresseeUserAvailable(tx as unknown as Db, issue, issueRow, data.addresseeUserId);
           }
           if (
             data.kind === "ask_user_questions" &&
@@ -3868,6 +5297,7 @@ export function issueThreadInteractionService(
           } else {
             await notifyNativeStatusReassessment(tx, { companyId: issue.companyId, issueId: issue.id });
           }
+          if (data.kind === "request_confirmation") await notifyMergeConfirmationWork(tx, { companyId: issue.companyId, issueId: issue.id });
           const [row] = await tx
             .insert(issueThreadInteractions)
             .values({
@@ -3896,6 +5326,7 @@ export function issueThreadInteractionService(
             })
             .returning();
 
+          await options.afterInsertInTransaction?.(tx as unknown as Db, row);
           if (row.addresseeAgentId || row.addresseeUserId) {
             const [privacyIssue] = await tx.select().from(issues).where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)));
             await ensureAssignmentIssueAccessGrant(tx, { ...privacyIssue!,
@@ -3916,11 +5347,35 @@ export function issueThreadInteractionService(
               data.payload.qualityReview === undefined) ||
               (data.kind === "ask_user_questions" && (!issueRow.conversationAgentId || !issueRow.conversationUserId)));
           if (!actor.agentId || !canSupersedeSiblingCards) {
+            // The user's chat with this agent already mirrors the agent's
+            // pending onboarding-task questions. A question the agent asks in
+            // that chat means onboarding moved there, so the onboarding task's
+            // pending questions are replaced instead of showing two answerable
+            // interview cards. Other direct-task questions are untouched.
+            // Not gated on supersedePendingSiblingInteractions: that flag keeps
+            // same-issue provider requests side by side, while this is a
+            // cross-issue move that native provider questions must also make.
+            const movedOnboardingRows =
+              data.kind === "ask_user_questions" &&
+              actor.agentId &&
+              issueRow.conversationAgentId === actor.agentId &&
+              issueRow.conversationUserId
+                ? await supersedeOnboardingTaskQuestionsMovedToChat(tx as unknown as Db, {
+                    companyId: issue.companyId,
+                    agentId: actor.agentId,
+                    conversationUserId: issueRow.conversationUserId,
+                    replacementInteractionId: row.id,
+                    actor,
+                    conversationIssue: { id: issue.id, identifier: issueRow.identifier },
+                    postCommitActivityPublications,
+                    postCommitIssueActions,
+                  })
+                : [];
             await enqueueIssueInteractionChatPublications(
               tx as unknown as Db,
               hydrateInteraction(row),
             );
-            return { row, supersededRows: [] };
+            return { row, supersededRows: movedOnboardingRows };
           }
 
           const now = new Date();
@@ -3936,6 +5391,8 @@ export function issueThreadInteractionService(
             eq(issueThreadInteractions.status, "pending"),
             ne(issueThreadInteractions.id, row.id),
             sql`${issueThreadInteractions.payload}->'qualityReview' IS NULL`,
+            sql`not coalesce(${issueThreadInteractions.payload}->'target'->>'type' = 'custom'
+              and ${issueThreadInteractions.payload}->'target'->>'key' = 'native_completion_review', false)`,
           );
           if (data.kind === "request_confirmation") {
             // The issue lock above excludes concurrent interaction creation.
@@ -4011,7 +5468,9 @@ export function issueThreadInteractionService(
         return interaction;
       }
 
-      await touchIssue(db, issue.id);
+      for (const publication of postCommitActivityPublications) publishActivity(publication);
+      await executeIssuePostCommitActions(db, postCommitIssueActions);
+      await touchIssue(db, issue.id, issue.companyId);
       if (superseded.length > 0) {
         await emitResolvedInteractionsTelemetry(
           db,
@@ -4020,6 +5479,7 @@ export function issueThreadInteractionService(
       }
       const interaction = hydrateInteraction(created);
       emitInteractionCreatedTelemetry({
+        companyId: issue.companyId,
         interactionKind: interaction.kind,
         usedDeprecatedResolverPolicyAlias,
       });
@@ -4204,7 +5664,7 @@ export function issueThreadInteractionService(
       await db.transaction(async (tx) => {
         await notifyChatConfirmationResolution(tx, current);
         await mutationOptions.beforeResolveInTransaction?.(tx);
-        await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);
+        await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor, [JSON.stringify(input)]);
         if (sourceConversation) {
           await lockAcceptedChatHandoffSource(tx, {
             companyId: issue.companyId, conversationId: sourceConversation.id,
@@ -4280,8 +5740,18 @@ export function issueThreadInteractionService(
             } } : {}),
           } satisfies Parameters<ReturnType<typeof issueService>["createChild"]>[1];
           const service = issueService(tx as unknown as Db);
+          // A nested suggestion may be placed beside its suggested parent, under
+          // that parent's own requested parent. The accept scope authorized that
+          // parent, so confirm the placement only when it lands exactly there.
+          const nestedUnder = task.parentClientKey ? createdByClientKey.get(task.parentClientKey) : undefined;
+          const placement = parentIssueId && nestedUnder
+            ? await resolveNewTaskParent(tx as unknown as Db, issue.companyId, parentIssueId, "flatten")
+            : null;
+          const confirmedParent = placement && placement.effectiveParentId === nestedUnder?.parentIssueId
+            ? { expectedParentId: placement.effectiveParentId }
+            : {};
           const createdIssue = parentIssueId
-            ? (await service.createChild(parentIssueId, createInput)).issue
+            ? (await service.createChild(parentIssueId, { ...createInput, ...confirmedParent })).issue
             : await service.create(issue.companyId, createInput);
 
           const parentIdentifier =
@@ -4316,7 +5786,7 @@ export function issueThreadInteractionService(
           .where(eq(issueThreadInteractions.id, interactionId))
           .returning();
 
-        await touchIssue(tx, issue.id);
+        await touchIssue(tx, issue.id, issue.companyId);
         await mutationOptions.afterResolveInTransaction?.(tx, hydrateInteraction(updated));
         await enqueueTerminalIssueInteractionChatPublications(tx as unknown as Db, hydrateInteraction(updated));
         current.status = updated.status;
@@ -4390,7 +5860,7 @@ export function issueThreadInteractionService(
       const data = submitIssueThreadInteractionVerdictsSchema.parse(input);
       const submission = await db.transaction(async (tx) => {
         await mutationOptions.beforeResolveInTransaction?.(tx);
-        await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);
+        await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor, [JSON.stringify(input)]);
         // Match completion/confirmation ordering: issue -> interaction -> output.
         // A pending multi-item review can contain already-approved output slots,
         // so a replay must not lock those outputs ahead of task completion.
@@ -4508,7 +5978,7 @@ export function issueThreadInteractionService(
           throw interactionAlreadyResolvedError();
         }
 
-        await touchIssue(tx, issue.id);
+        await touchIssue(tx, issue.id, issue.companyId);
         await mutationOptions.afterResolveInTransaction?.(tx, hydrateInteraction(updated));
         if (complete) await enqueueTerminalIssueInteractionChatPublications(tx as unknown as Db, hydrateInteraction(updated));
         return {
@@ -4550,7 +6020,7 @@ export function issueThreadInteractionService(
       const [updated] = await db.transaction(async (tx) => {
         await notifyChatConfirmationResolution(tx, current);
         await mutationOptions.beforeResolveInTransaction?.(tx);
-        await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);
+        await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor, [JSON.stringify(input)]);
         await notifyIssueReviewState(tx, { companyId: issue.companyId, issueId: issue.id });
         const rows = await tx.update(issueThreadInteractions)
         .set({
@@ -4581,7 +6051,7 @@ export function issueThreadInteractionService(
         throw interactionAlreadyResolvedError();
       }
 
-      await touchIssue(db, issue.id);
+      await touchIssue(db, issue.id, issue.companyId);
       const rejected = hydrateInteraction(updated);
       await emitInteractionResolvedTelemetry(db, rejected);
       return rejected;
@@ -4623,10 +6093,9 @@ export function issueThreadInteractionService(
       const superseded = rows.filter((row) => {
         if (row.kind === "ask_user_questions" && scope?.conversationAgentId && scope.conversationUserId) return false;
         if (!isUserCommentSupersedableKind(row.kind)) return false;
-        const interaction = hydrateInteraction(
-          row,
-        ) as UserCommentSupersedableInteraction;
+        const interaction = interactionForCommentSupersession(row);
         return (
+          interaction !== null &&
           shouldSupersedeInteractionOnUserComment(interaction) &&
           isCommentAtOrAfterInteraction({
             commentCreatedAt: comment.createdAt,
@@ -4679,7 +6148,7 @@ export function issueThreadInteractionService(
       }
 
       if (expired.length > 0) {
-        await touchIssue(db, issue.id);
+        await touchIssue(db, issue.id, issue.companyId);
         await emitResolvedInteractionsTelemetry(db, expired);
       }
       return expired;
@@ -4732,9 +6201,8 @@ export function issueThreadInteractionService(
       >();
       for (const row of rows) {
         if (!isUserCommentSupersedableKind(row.kind)) continue;
-        const interaction = hydrateInteraction(
-          row,
-        ) as UserCommentSupersedableInteraction;
+        const interaction = interactionForCommentSupersession(row);
+        if (!interaction) continue;
         if (!shouldSupersedeInteractionOnUserComment(interaction)) continue;
 
         const supersedingComment = comments.find((comment) =>
@@ -4911,7 +6379,7 @@ export function issueThreadInteractionService(
       }
 
       if (expired.length > 0) {
-        await touchIssue(db, issue.id);
+        await touchIssue(db, issue.id, issue.companyId);
         await emitResolvedInteractionsTelemetry(db, expired);
       }
       return expired;
@@ -5008,7 +6476,7 @@ export function issueThreadInteractionService(
       }
 
       if (expired.length > 0) {
-        await touchIssue(db, issue.id);
+        await touchIssue(db, issue.id, issue.companyId);
         await emitResolvedInteractionsTelemetry(db, expired);
       }
       return expired;
@@ -5079,6 +6547,15 @@ export function issueThreadInteractionService(
             // Completed work retains ordinary historical questions for later
             // human answers. Cancellation and governed requests still expire.
             issue.status === "done" ? sql`not ${historicalQuestionCondition()}` : undefined,
+            // A routine offer is made after the task is done and stays open;
+            // cancelling the task still withdraws it.
+            issue.status === "done" ? ne(issueThreadInteractions.kind, "suggest_routine") : undefined,
+            // A bar proposal stays open after its conversation is done.
+            issue.status === "done" ? ne(issueThreadInteractions.kind, "propose_responsibility_bar") : undefined,
+            // So does an automation proposal.
+            issue.status === "done" ? ne(issueThreadInteractions.kind, "propose_automation") : undefined,
+            // And proposed dashboard changes.
+            issue.status === "done" ? ne(issueThreadInteractions.kind, "propose_dashboard_changes") : undefined,
           ),
         );
       if (rows.length === 0) return [];
@@ -5148,20 +6625,29 @@ export function issueThreadInteractionService(
         if (updated) expired.push(hydrateInteraction(updated));
       }
       if (expired.length > 0) {
-        await touchIssue(db, issue.id);
+        await touchIssue(db, issue.id, issue.companyId);
         await emitResolvedInteractionsTelemetry(db, expired);
       }
       return expired;
     },
 
     withdrawInteraction: async (
-      issue: { id: string; companyId: string },
+      issue: { id: string; companyId: string; status?: string },
       interactionId: string,
       input: WithdrawIssueThreadInteraction,
       actor: InteractionActor,
-      mutationOptions: InteractionResolutionMutationOptions = {},
+      mutationOptions: InteractionResolutionMutationOptions & {
+        /**
+         * Let a person withdraw a card that outlived its closed task (PAP-749
+         * plan §2, Rule 10). This is cleanup only: a closed task is never woken.
+         */
+        allowClosedIssueForHuman?: boolean;
+      } = {},
     ) => {
-      assertIssueOpenForInteractionResolution(issue);
+      const humanActor = Boolean(actor.userId) && !actor.agentId && !actor.runId && !actor.systemId;
+      if (!(mutationOptions.allowClosedIssueForHuman && humanActor)) {
+        assertIssueOpenForInteractionResolution(issue);
+      }
       const data = withdrawIssueThreadInteractionSchema.parse(input);
       const current = await db
         .select()
@@ -5188,7 +6674,20 @@ export function issueThreadInteractionService(
       // review queue while the card is still pending, and an executable
       // request must not outlive a withdrawn card.
       const updated = await db.transaction(async (tx) => {
-        await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);
+        await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor, [JSON.stringify(input)]);
+        const [lockedIssue] = await tx.select({
+          id: issues.id, companyId: issues.companyId, status: issues.status,
+          reviewPolicy: issues.reviewPolicy, createdByAgentId: issues.createdByAgentId, createdByUserId: issues.createdByUserId,
+        }).from(issues).where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId))).for("update");
+        if (!lockedIssue) throw notFound("Issue not found");
+        if (!(mutationOptions.allowClosedIssueForHuman && humanActor)) assertIssueOpenForInteractionResolution(lockedIssue);
+        if (lockedIssue.status === "in_review" && isRequestConfirmationLikeKind(current.kind)
+          && await isIssueReviewVerdictInteraction(tx as unknown as Db, { issue: lockedIssue, interaction: current })) {
+          const verdictActor = actor.agentId ? { type: "agent" as const, id: actor.agentId }
+            : actor.userId ? { type: "user" as const, id: actor.userId } : null;
+          if (!verdictActor) throw forbidden("A review withdrawal requires an authenticated agent or user");
+          await assertIssueReviewVerdictActorAllowed(tx as unknown as Db, { issue: lockedIssue, actor: verdictActor });
+        }
         await notifyChatConfirmationResolution(tx, current);
         if (["ask_user_questions", "request_confirmation"].includes(current.kind)) await notifyChatRunMilestones(tx, current);
         else await notifyIssueReviewState(tx, current);
@@ -5253,7 +6752,7 @@ export function issueThreadInteractionService(
         return row;
       });
 
-      await touchIssue(db, issue.id);
+      await touchIssue(db, issue.id, issue.companyId);
       const withdrawn = hydrateInteraction(updated);
       await emitInteractionResolvedTelemetry(db, withdrawn);
       return withdrawn;
@@ -5326,8 +6825,9 @@ export function issueThreadInteractionService(
           }
           if (!historicalAnswer) throw interactionIssueClosedError();
         }
-        await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);
+        await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor, [JSON.stringify(input)]);
         await notifyChatRunMilestones(tx, current);
+        await releaseDecisionHeldExecution(tx, current);
         await mutationOptions.beforeResolveInTransaction?.(tx);
         const resolvedAt = new Date();
         const [row] = await tx
@@ -5376,7 +6876,7 @@ export function issueThreadInteractionService(
         return row;
       });
 
-      await touchIssue(db, issue.id);
+      await touchIssue(db, issue.id, issue.companyId);
       const answered = hydrateInteraction(updated);
       await emitInteractionResolvedTelemetry(db, answered);
       return answered;
@@ -5386,6 +6886,7 @@ export function issueThreadInteractionService(
       issue: { id: string; companyId: string },
       interactionId: string,
       actor: InteractionActor,
+      afterDismissed?: (tx: Db) => Promise<void>,
     ) => {
       if (!actor.userId || actor.agentId || actor.runId || actor.systemId) {
         throw forbidden("Only a human can dismiss a request");
@@ -5421,6 +6922,7 @@ export function issueThreadInteractionService(
         const [updated] = await tx.update(issueThreadInteractions)
           .set({ dismissedAt: now, dismissedByUserId: actor.userId, updatedAt: now })
           .where(eq(issueThreadInteractions.id, interactionId)).returning();
+        await afterDismissed?.(tx as unknown as Db);
         return hydrateInteraction(updated!);
       });
     },
@@ -5451,7 +6953,7 @@ export function issueThreadInteractionService(
       const reason = data.reason?.trim() || null;
       const now = new Date();
       const updated = await db.transaction(async (tx) => {
-        await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);
+        await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor, [JSON.stringify(input)]);
         await notifyChatConfirmationResolution(tx, current);
         if (["ask_user_questions", "request_confirmation"].includes(current.kind)) await notifyChatRunMilestones(tx, current);
         else await notifyIssueReviewState(tx, current);
@@ -5512,7 +7014,7 @@ export function issueThreadInteractionService(
         return row;
       });
 
-      await touchIssue(db, issue.id);
+      await touchIssue(db, issue.id, issue.companyId);
       const skipped = hydrateInteraction(updated);
       await emitInteractionResolvedTelemetry(db, skipped);
       return skipped;
@@ -5551,7 +7053,7 @@ export function issueThreadInteractionService(
 
       const reason = data.reason?.trim() || null;
       const updated = await db.transaction(async (tx) => {
-        await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);
+        await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor, [JSON.stringify(input)]);
         await notifyChatRunMilestones(tx, current);
         const resolvedAt = new Date();
         const [row] = await tx
@@ -5589,7 +7091,7 @@ export function issueThreadInteractionService(
         return row;
       });
 
-      await touchIssue(db, issue.id);
+      await touchIssue(db, issue.id, issue.companyId);
       const cancelled = hydrateInteraction(updated);
       await emitInteractionResolvedTelemetry(db, cancelled);
       return cancelled;

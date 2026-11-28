@@ -8,7 +8,7 @@ import { createRuntimeToolsToken } from "../runtime-tools-token.js";
 import { errorHandler } from "../middleware/index.js";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "./helpers/full-database-response-capture.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -87,7 +87,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       });
       await db.insert(toolConnections).values(irrelevant);
       const observed = createDb(external ?? database!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
-      const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+      const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
       installDatabaseResponseCapture(observed, { toolConnections }, capture);
       try {
         expect(await resolveManagedGitHubIdentitySelection(observed, input.companyId, { agentId: input.agentId, responsibleUserId: "A" }))
@@ -119,7 +119,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       }).where(eq(heartbeatRuns.id, input.runId));
       const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.runId));
       const observed = createDb(external ?? database!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
-      const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+      const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
       installDatabaseResponseCapture(observed, { heartbeatRuns }, capture);
       try {
         expect(await resolveGitHubOperationCredentials(observed, input)).toMatchObject({

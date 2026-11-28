@@ -272,7 +272,7 @@ describeEmbeddedPostgres("access service", () => {
       companyId: company.id,
       applicationKey: `instance-access-${randomUUID()}`,
       name: "Instance access app",
-      type: "mcp",
+      type: "mcp_http",
       status: "active",
     }).returning().then((rows) => rows[0]!);
     const connection = await db.insert(toolConnections).values({
@@ -333,7 +333,7 @@ describeEmbeddedPostgres("access service", () => {
       companyId: company.id,
       applicationKey: `app-${randomUUID()}`,
       name: "Personal mail",
-      type: "mcp",
+      type: "mcp_http",
       status: "active",
     }).returning().then((rows) => rows[0]!);
     const connection = await db.insert(toolConnections).values({
@@ -428,7 +428,7 @@ describeEmbeddedPostgres("access service", () => {
       companyId: company.id,
       applicationKey: `shared-personal-${randomUUID()}`,
       name: "Shared personal app",
-      type: "mcp",
+      type: "mcp_http",
       status: "active",
     }).returning().then((rows) => rows[0]!);
     const connection = await db.insert(toolConnections).values({
@@ -505,7 +505,7 @@ describeEmbeddedPostgres("access service", () => {
       companyId: company.id,
       applicationKey: `mixed-${randomUUID()}`,
       name: "Mixed credential app",
-      type: "mcp",
+      type: "mcp_http",
       status: "active",
     }).returning().then((rows) => rows[0]!);
     const definition = await db.insert(userSecretDefinitions).values({
@@ -595,7 +595,7 @@ describeEmbeddedPostgres("access service", () => {
       companyId: company.id,
       applicationKey: `shared-org-${randomUUID()}`,
       name: "Shared organization app",
-      type: "mcp",
+      type: "mcp_http",
       status: "active",
     }).returning().then((rows) => rows[0]!);
     const connection = await db.insert(toolConnections).values({
@@ -692,7 +692,7 @@ describeEmbeddedPostgres("access service", () => {
       companyId: company.id,
       applicationKey: `app-${randomUUID()}`,
       name: "Personal mail",
-      type: "mcp",
+      type: "mcp_http",
       status: "active",
     }).returning().then((rows) => rows[0]!);
     const connection = await db.insert(toolConnections).values({
@@ -754,7 +754,7 @@ describeEmbeddedPostgres("access service", () => {
       companyId: company.id,
       applicationKey: `app-${randomUUID()}`,
       name: "Personal shared credentials",
-      type: "mcp",
+      type: "mcp_http",
       status: "active",
     }).returning().then((rows) => rows[0]!);
     const definitions = await db.insert(userSecretDefinitions).values([

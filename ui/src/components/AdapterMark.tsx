@@ -6,8 +6,16 @@ const brandMarks: Record<string, { src: string; dark?: string }> = {
   claude_local: { src: "/brands/claude-color.svg" },
   codex_local: { src: "/brands/codex-color.svg" },
   gemini_local: { src: "/brands/adapters/gemini-color.svg" },
-  antigravity_runtime: { src: "/brands/apps/google.svg" },
+  antigravity_runtime: { src: "/brands/apps/antigravity.svg" },
+  copilot_runtime: {
+    src: "/brands/apps/github-copilot.svg",
+    dark: "/brands/apps/github-copilot-dark.svg",
+  },
   kimi_local: {
+    src: "/brands/adapters/kimi-color-light.svg",
+    dark: "/brands/adapters/kimi-color.svg",
+  },
+  kimi_runtime: {
     src: "/brands/adapters/kimi-color-light.svg",
     dark: "/brands/adapters/kimi-color.svg",
   },

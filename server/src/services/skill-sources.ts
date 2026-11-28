@@ -7,7 +7,6 @@ import { listSkillSourceBranches } from './skill-source-branches.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { skillSourceRetryAt } from './skill-source-retry.js';
 import path from 'node:path';
-import { promises as fs } from 'node:fs';
 import { folderService } from './folders.js';
 import { and, eq, isNull, lt, or, sql } from 'drizzle-orm';
 import { companySkillSources as sources, companySkillSourceEntries as entries, companySkills, companySkillRepositorySnapshots, projectSkillSources, projects, type Db, type SkillPackageRestoreRecipe, authUsers } from '@paperclipai/db';
@@ -450,20 +449,17 @@ export function skillSourceService(db: Db) {
       const [user] = await db.select({ name: authUsers.name }).from(authUsers).where(eq(authUsers.id, context.actor.userId));
       folderId = (await folderService(db).ensureMyFolder(companyId, context.actor.userId, user?.name ?? null)).id;
     }
-    const directories: string[] = [];
-    try {
-      return await db.transaction(async tx => {
-        await tx.execute(sql`SET CONSTRAINTS paperclip_skill_runtime_changed DEFERRED`);
-        await lock(tx);
-        for (const skillId of skillIds) await skills.makeImportedSkillEditable(companyId, skillId, context.actor, folderId, tx, directories);
-        await remove(tx, skillIds.length, 0);
-        return { id, copiedCount: skillIds.length, deletedCount: 0 };
-      });
-    } catch (error) {
-      await Promise.all(directories.map(directory => fs.rm(directory, { recursive: true, force: true })));
-      throw error;
-    }
+    const prepared: Array<Awaited<ReturnType<typeof skills.prepareImportedSkillEditable>>> = [];
+    for (const skillId of skillIds) prepared.push(await skills.prepareImportedSkillEditable(companyId, skillId));
+    return db.transaction(async tx => {
+      await tx.execute(sql`SET CONSTRAINTS paperclip_skill_runtime_changed DEFERRED`);
+      await lock(tx);
+      for (const candidate of prepared) await skills.makeImportedSkillEditable(candidate, context.actor, folderId, tx);
+      await remove(tx, skillIds.length, 0);
+      return { id, copiedCount: skillIds.length, deletedCount: 0 };
+    });
   }
+
   async function importFromUrl(companyId: string, input: string, context: SkillSourceContext) {
     const parsed = parseSkillImportSourceInput(input);
     const url = new URL(parsed.resolvedSource);

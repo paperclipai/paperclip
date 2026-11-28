@@ -18,18 +18,25 @@ const mockIssueService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
-const mockAccessService = vi.hoisted(() => ({
-  decide: vi.fn(async ({ action }: { action: string }) => ({
+const mockAccessService = vi.hoisted(() => {
+  const decide = vi.fn(async ({ action }: { action: string; actor?: unknown; resource?: unknown }) => ({
     action, allowed: action === "issue:read", reason: "allow_default", explanation: "Fixture task is readable",
-  })),
-  canUser: vi.fn(async () => false),
-  hasPermission: vi.fn(async () => false),
-}));
+  }));
+  return {
+    decide,
+    // The batched read asks the mocked decision once per task.
+    decideReads: async (actor: unknown, resources: unknown[]) =>
+      Promise.all(resources.map((resource) => decide({ actor, action: "issue:read", resource }))),
+    canUser: vi.fn(async () => false),
+    hasPermission: vi.fn(async () => false),
+  };
+});
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async () => undefined),
   reportRunActivity: vi.fn(async () => undefined),
   getRun: vi.fn(async () => null),
   getActiveRunForAgent: vi.fn(async () => null),
+  getQueuedAssignmentRunForIssue: vi.fn(async () => null),
   cancelRun: vi.fn(async () => null),
 }));
 const mockFeedbackService = vi.hoisted(() => ({
@@ -181,7 +188,7 @@ function makeIssue() {
     createdByUserId: "local-board",
     identifier: "PAP-580",
     title: "Activity event issue",
-    description: null,
+    description: null as string | null,
     priority: "medium",
     executionPolicy: null,
     executionState: null,
@@ -275,6 +282,32 @@ describe("issue activity event routes", () => {
       .send({ title: issue.title });
     expect(noOp.status).toBe(200);
     expect(noOp.body.changes).not.toHaveProperty("title");
+  });
+
+  it("includes field changes in the paired comment activity for one useful notification", async () => {
+    const issue = { ...makeIssue(), status: "backlog" };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
+      issueUpdateWithReceipt(issue, patch));
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-1", companyId: issue.companyId, issueId: issue.id,
+      body: "Please review first", authorUserId: "local-board", authorAgentId: null,
+      createdAt: new Date(), updatedAt: new Date(),
+    });
+
+    const response = await request(await createApp())
+      .patch(`/api/issues/${issue.id}`)
+      .send({ priority: "high", comment: "Please review first" });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "issue.updated", details: expect.objectContaining({ source: "comment" }),
+    }));
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "issue.comment_added", details: expect.objectContaining({
+        commentId: "comment-1", bodySnippet: "Please review first", updated: true,
+        changes: { priority: { from: "medium", to: "high" } },
+      }),
+    }));
   });
 
   it("echoes scalar blocker state and summaries when setting and clearing blockers", async () => {

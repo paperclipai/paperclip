@@ -42,6 +42,8 @@ import {
 import {
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   LOW_TRUST_REVIEW_PRESET,
+  type IssueCommentMetadata,
+  type IssueCommentPresentation,
 } from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
@@ -55,6 +57,7 @@ import { issueRoutes } from "../routes/issues.js";
 import { issueService } from "../services/issues.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { LOW_TRUST_QUARANTINED_BODY } from "../services/source-trust.js";
+import { uniqueIssuePrefix } from "./helpers/issue-prefix.js";
 
 const externalTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_LOW_TRUST_TEST_DATABASE_URL");
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -132,6 +135,14 @@ async function deleteCompanySkillsAfterLateHeartbeatWritesDrain(db: Db) {
     }
   }
   throw lastError;
+}
+
+function canaryCommentMetadata(canary: string): IssueCommentMetadata {
+  return { version: 1, sections: [{ title: canary, rows: [{ type: "key_value", label: "Output", value: canary }] }] };
+}
+
+function canaryCommentPresentation(canary: string): IssueCommentPresentation {
+  return { kind: "message", tone: "neutral", title: canary, detailsDefaultOpen: false };
 }
 
 function expectNoCanary(value: unknown, ...markers: string[]) {
@@ -434,7 +445,7 @@ async function seedLowTrustFixture(db: Db) {
     .insert(companies)
     .values({
       name: `Low trust ${nonce}`,
-      issuePrefix: `LT${nonce.slice(0, 4).toUpperCase()}`,
+      issuePrefix: uniqueIssuePrefix("LT"),
       defaultResponsibleUserId: "board-user",
     })
     .returning();
@@ -1488,7 +1499,7 @@ describeEmbeddedPostgres(
 
       const standardActor = agentActor(fixture, fixture.agents.standard.id);
       const standardRes = await request(
-        createApp(db, { ...standardActor, runId: null }),
+        createApp(db, { ...standardActor, runId: undefined }),
       ).get("/api/agents/me");
       expect(standardRes.status, JSON.stringify(standardRes.body)).toBe(200);
       expect(JSON.stringify(standardRes.body)).toContain(
@@ -1939,6 +1950,50 @@ describeEmbeddedPostgres(
       expect(lowTrustCount.body.count).toBe(1);
     });
 
+    it("withholds raw-page pagination headers from a low-trust agent", async () => {
+      const fixture = await seedLowTrustFixture(db);
+      const hiddenId = "00000000-0000-4000-8000-000000000001";
+      const visibleId = "00000000-0000-4000-8000-000000000002";
+      await db.insert(issues).values([
+        {
+          id: hiddenId,
+          companyId: fixture.company.id,
+          projectId: fixture.projects.outOfScope.id,
+          title: "Pagination probe hidden",
+          status: "todo",
+          priority: "medium",
+        },
+        {
+          id: visibleId,
+          companyId: fixture.company.id,
+          projectId: fixture.projects.allowed.id,
+          parentId: fixture.issues.reviewRoot.id,
+          title: "Pagination probe visible",
+          status: "todo",
+          priority: "medium",
+        },
+      ]);
+      const query = { q: "Pagination probe", sortField: "id", sortDir: "asc", limit: "1" };
+
+      const board = await request(createApp(db, boardActor(fixture)))
+        .get(`/api/companies/${fixture.company.id}/issues`)
+        .query(query);
+      expect(board.status, JSON.stringify(board.body)).toBe(200);
+      expect(board.headers["x-paperclip-has-more"]).toBe("true");
+      expect(board.headers["x-paperclip-next-after-id"]).toBe(hiddenId);
+
+      const lowTrust = await request(createApp(db, agentActor(fixture)))
+        .get(`/api/companies/${fixture.company.id}/issues`)
+        .query(query);
+      expect(lowTrust.status, JSON.stringify(lowTrust.body)).toBe(200);
+      expect(lowTrust.body).toEqual([]);
+      expect(lowTrust.headers["x-paperclip-has-more"]).toBeUndefined();
+      expect(lowTrust.headers["x-paperclip-limit"]).toBeUndefined();
+      expect(lowTrust.headers["x-paperclip-next-offset"]).toBeUndefined();
+      expect(lowTrust.headers["x-paperclip-next-after-id"]).toBeUndefined();
+      expect(JSON.stringify(lowTrust.headers)).not.toContain(hiddenId);
+    });
+
     it("redacts quarantined low-trust output from higher-trust wake and continuation contexts", async () => {
       const fixture = await seedLowTrustFixture(db);
       const lowTrustApp = createApp(db, agentActor(fixture));
@@ -1966,8 +2021,8 @@ describeEmbeddedPostgres(
         await db
           .update(issueComments)
           .set({
-            metadata: { canary: fixture.canaries.raw },
-            presentation: { markdown: fixture.canaries.raw },
+            metadata: canaryCommentMetadata(fixture.canaries.raw),
+            presentation: canaryCommentPresentation(fixture.canaries.raw),
           })
           .where(eq(issueComments.id, comment.body.id));
 
@@ -2001,8 +2056,8 @@ describeEmbeddedPostgres(
             authorAgentId: fixture.agents.lowTrust.id,
             createdByRunId: fixture.runs.lowTrust.id,
             body: `malicious scoped result ${fixture.canaries.raw}`,
-            metadata: { canary: fixture.canaries.raw },
-            presentation: { markdown: fixture.canaries.raw },
+            metadata: canaryCommentMetadata(fixture.canaries.raw),
+            presentation: canaryCommentPresentation(fixture.canaries.raw),
             sourceTrust: {
               preset: LOW_TRUST_REVIEW_PRESET,
               disposition: "quarantined",
@@ -2215,7 +2270,7 @@ describeEmbeddedPostgres(
         .insert(companies)
         .values({
           name: "Foreign low-trust source",
-          issuePrefix: `FGN${randomUUID().slice(0, 4).toUpperCase()}`,
+          issuePrefix: uniqueIssuePrefix("FGN"),
           defaultResponsibleUserId: "board-user",
         })
         .returning();

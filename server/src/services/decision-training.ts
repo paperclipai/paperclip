@@ -30,6 +30,7 @@ import type {
 } from "@paperclipai/shared";
 import { DECISION_TRAINING_RETENTION_POLICY } from "@paperclipai/shared";
 import { conflict, notFound } from "../errors.js";
+import { interactionCarriesGoogleWorkspaceAction, interactionsCarryingGoogleWorkspaceAction, runsThatUsedGoogleWorkspace } from "./tool-access/connections/google-content-retention.js";
 
 type CaptureInput = {
   companyId: string;
@@ -156,6 +157,68 @@ async function loadSourceDecision(db: Db, input: CaptureInput, capturedAt: Date)
   };
 }
 
+function googleRunStub(run: typeof heartbeatRuns.$inferSelect) {
+  return jsonCopy({
+    id: run.id,
+    agentId: run.agentId,
+    status: run.status,
+    startedAt: run.startedAt,
+    finishedAt: run.finishedAt,
+    googleWorkspaceContentOmitted: true,
+  });
+}
+
+function withoutHandoff<T>(run: T): T {
+  const record = run as unknown as { contextSnapshot?: unknown };
+  if (!record.contextSnapshot || typeof record.contextSnapshot !== "object") return run;
+  const { paperclipSessionHandoffMarkdown: _handoff, ...context } = record.contextSnapshot as Record<string, unknown>;
+  return { ...record, contextSnapshot: context } as unknown as T;
+}
+
+function withoutToolActionContent(value: Record<string, unknown>): Record<string, unknown> {
+  const record: Record<string, unknown> = { ...value };
+  for (const key of ["payload", "result"]) {
+    const inner = record[key];
+    if (inner && typeof inner === "object") {
+      const { toolAction: _toolAction, detailsMarkdown: _detailsMarkdown, ...rest } = inner as Record<string, unknown>;
+      record[key] = { ...rest, googleWorkspaceContentOmitted: true };
+    }
+  }
+  return record;
+}
+
+type ExportableExample = Pick<typeof decisionTrainingExamples.$inferSelect, "companyId" | "sourceKind" | "sourceId" | "snapshot">;
+
+function snapshotRuns(example: ExportableExample) {
+  const runs = (example.snapshot as unknown as { runs?: unknown }).runs;
+  return Array.isArray(runs) ? runs as Array<Record<string, unknown>> : [];
+}
+
+function omitGoogleWorkspaceContent(example: ExportableExample, googleRuns: Set<string>, googleCard: boolean) {
+  const snapshot = example.snapshot as unknown as { runs?: Array<Record<string, unknown>>; decision?: Record<string, unknown> };
+  const runs = snapshotRuns(example);
+  return {
+    ...snapshot,
+    runs: runs.map((run) => typeof run.id === "string" && googleRuns.has(run.id)
+      ? { id: run.id, agentId: run.agentId ?? null, status: run.status ?? null, startedAt: run.startedAt ?? null,
+        finishedAt: run.finishedAt ?? null, googleWorkspaceContentOmitted: true }
+      : withoutHandoff(run)),
+    ...(googleCard && snapshot.decision
+      ? { decision: { ...snapshot.decision, payload: withoutToolActionContent((snapshot.decision.payload ?? {}) as Record<string, unknown>) } }
+      : {}),
+  } as unknown as typeof example.snapshot;
+}
+
+export async function withoutGoogleWorkspaceContent(db: Db, companyId: string, examples: ExportableExample[]) {
+  const runIds = [...new Set(examples.flatMap((example) => snapshotRuns(example).flatMap((run) =>
+    typeof run.id === "string" && !run.googleWorkspaceContentOmitted && !run.contentDeleted ? [run.id] : [])))];
+  const googleRuns = await runsThatUsedGoogleWorkspace(db, companyId, runIds);
+  const googleCards = await interactionsCarryingGoogleWorkspaceAction(db, companyId,
+    examples.flatMap((example) => example.sourceKind === "interaction" ? [example.sourceId] : []));
+  return examples.map((example) =>
+    omitGoogleWorkspaceContent(example, googleRuns, example.sourceKind === "interaction" && googleCards.has(example.sourceId)));
+}
+
 export async function captureDecisionSnapshot(
   db: Db,
   input: CaptureInput,
@@ -217,6 +280,10 @@ export async function captureDecisionSnapshot(
     .orderBy(desc(executionWorkspaces.lastUsedAt), desc(executionWorkspaces.id))
     .limit(1);
 
+  const googleRuns = await runsThatUsedGoogleWorkspace(db, input.companyId, runs.map((run) => run.id));
+  if (input.sourceKind === "interaction" && await interactionCarriesGoogleWorkspaceAction(db, input.companyId, input.sourceId)) {
+    decision.payload = withoutToolActionContent(decision.payload);
+  }
   const exactRun = decision.exactRunId ? runs.find((run) => run.id === decision.exactRunId) ?? null : null;
   const latestRunWithCommit = [...runs].reverse().find((run) => findCommitSha(run.contextSnapshot)) ?? null;
   const exactCommit = exactRun ? findCommitSha(exactRun.contextSnapshot) : null;
@@ -242,7 +309,7 @@ export async function captureDecisionSnapshot(
       },
       issue: jsonCopy(issue),
       comments: comments.map(jsonCopy),
-      runs: runs.map(jsonCopy),
+      runs: runs.map((run) => googleRuns.has(run.id) ? googleRunStub(run) : withoutHandoff(jsonCopy(run))),
       decision: {
         kind: input.sourceKind,
         payload: decision.payload,
