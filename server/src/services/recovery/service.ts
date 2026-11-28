@@ -930,7 +930,18 @@ function isStrandedIssueRecoveryIssue(
  * stopped the agent, and re-waking it — or escalating "stranding" — would
  * fight the human. Any newer run or wake supersedes the exemption.
  */
-function isOperatorCancelledRun(
+export function selectOperatorCancelCandidate(
+  issueStatus: string,
+  participantAgentId: string | null | undefined,
+  executionRecoverySource: LatestIssueRun,
+  latestRun: LatestIssueRun,
+): LatestIssueRun {
+  return issueStatus === "in_review" && !participantAgentId
+    ? latestRun
+    : executionRecoverySource;
+}
+
+export function isOperatorCancelledRun(
   latestRun: LatestIssueRun,
   currentAgentId: string,
 ): boolean {
@@ -5264,7 +5275,13 @@ export function recoveryService(
         result.skipped += 1;
         continue;
       }
-      if (isOperatorCancelledRun(executionRecoverySource, agentId)) {
+      const operatorCancelCandidate = selectOperatorCancelCandidate(
+        issue.status,
+        participantAgentId,
+        executionRecoverySource,
+        latestRun,
+      );
+      if (isOperatorCancelledRun(operatorCancelCandidate, agentId)) {
         result.operatorCancelExempted += 1;
         continue;
       }

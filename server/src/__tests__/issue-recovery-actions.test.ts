@@ -1149,6 +1149,47 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(enqueueWakeup).not.toHaveBeenCalled();
   });
 
+  it("stands down after an operator cancel on an in_review issue without a review participant", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, sourceIssueId));
+    const resolvedAt = new Date(Date.now() - 10 * 60_000);
+    const cancelledRunId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId: sourceIssueId,
+      kind: "request_confirmation",
+      status: "accepted",
+      continuationPolicy: "wake_assignee_on_accept",
+      createdByAgentId: coderId,
+      resolvedAt,
+      updatedAt: resolvedAt,
+      payload: { version: 1, prompt: "Proceed with review?" },
+    });
+    await db.insert(heartbeatRuns).values({
+      id: cancelledRunId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "manual",
+      status: "cancelled",
+      error: "Cancelled by a board operator",
+      errorCode: "cancelled",
+      resultJson: { cancelledByActorType: "user", cancelledByUserId: "board-user" },
+      startedAt: new Date(resolvedAt.getTime() + 1_000),
+      finishedAt: new Date(resolvedAt.getTime() + 2_000),
+      createdAt: new Date(resolvedAt.getTime() + 1_000),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const enqueueWakeup = vi.fn(async () => ({ id: randomUUID() } as never));
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result.operatorCancelExempted).toBe(1);
+    expect(result.continuationRequeued).toBe(0);
+    expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
   it("still recovers system-cancelled runs with no operator attribution", async () => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();
     await db.insert(heartbeatRuns).values({
@@ -3740,5 +3781,45 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       .from(issueRecoveryActions)
       .where(eq(issueRecoveryActions.id, action.id));
     expect(actionRow?.status).toBe("active");
+  });
+
+  it("honors operator cancellation on in_review issues without a review participant", async () => {
+    const { isOperatorCancelledRun, selectOperatorCancelCandidate } = await import(
+      "../services/recovery/service.js"
+    );
+    const issueId = randomUUID();
+    const agentId = randomUUID();
+    const managerId = randomUUID();
+    const runId = randomUUID();
+    const operatorCancelledRun = {
+      id: runId,
+      agentId,
+      status: "cancelled",
+      error: "Cancelled by a board operator",
+      errorCode: "cancelled",
+      contextSnapshot: { issueId },
+      livenessState: null,
+      resultJson: { cancelledByActorType: "user", cancelledByUserId: "board-user" },
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      createdAt: new Date("2026-07-15T20:00:00.000Z"),
+    };
+
+    const withoutParticipant = selectOperatorCancelCandidate(
+      "in_review",
+      null,
+      null,
+      operatorCancelledRun,
+    );
+    expect(withoutParticipant).toBe(operatorCancelledRun);
+    expect(isOperatorCancelledRun(withoutParticipant, agentId)).toBe(true);
+
+    const withParticipantNoRun = selectOperatorCancelCandidate(
+      "in_review",
+      managerId,
+      null,
+      operatorCancelledRun,
+    );
+    expect(withParticipantNoRun).toBeNull();
+    expect(isOperatorCancelledRun(withParticipantNoRun, managerId)).toBe(false);
   });
 });
