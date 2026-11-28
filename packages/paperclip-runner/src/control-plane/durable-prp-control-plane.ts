@@ -47,6 +47,7 @@ import {
   type DurableWarmRunTransition,
 } from "./prp-transport-types.js";
 import { crashPoint } from "../crash-point.js";
+import { confineRunnerLaunch, type RunnerConfinementPolicy } from "./runner-confinement.js";
 import { runnerVersionCanResume } from "../contracts/runner-version.js";
 
 const protocol = "paperclip.runner";
@@ -5059,6 +5060,12 @@ export function spawnRunner(options: {
     executableSha256: string;
   };
   environment?: NodeJS.ProcessEnv;
+  /**
+   * Confines a local launch to its own session state. Applies only to
+   * providers qualified under confinement (OpenCode) and never to an external
+   * process owner, which provides its own isolation.
+   */
+  confinement?: RunnerConfinementPolicy;
   processLauncher?: (spec: RunnerProcessLaunchSpec) => RunnerProcessHandle;
   isRunnerConnected?: () => boolean;
   refreshBootstrapTicket?: () => Promise<string>;
@@ -5253,7 +5260,12 @@ export function spawnRunner(options: {
     atomicPrivateWrite(stdoutPath, "");
     atomicPrivateWrite(stderrPath, "");
   }
-  const child = spawn(command, args, {
+  // Other providers start their own operating-system sandboxes, which cannot
+  // nest inside this one; they stay unconfined until qualified.
+  const confined = options.confinement && options.opencodeLaunchProfile
+    ? confineRunnerLaunch({ policy: options.confinement, command, args, environment })
+    : null;
+  const child = spawn(confined?.command ?? command, confined?.args ?? args, {
     cwd: packageRoot,
     env: environment,
     detached,

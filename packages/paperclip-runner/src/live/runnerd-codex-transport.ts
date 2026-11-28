@@ -90,6 +90,7 @@ import {
   type DurablePrpControlPlaneOptions,
   runAttachToolCatalogFits,
 } from "../control-plane/durable-prp-control-plane.js";
+import { ensureRunnerConfinementProbe } from "../control-plane/runner-confinement.js";
 import {
   type QualifiedAcpxAgent,
 } from "../drivers/acpx/qualified-profiles.js";
@@ -1736,6 +1737,8 @@ export interface CapabilityRunnerdCodexTransportOptions extends RunnerExecutionD
   cursorCloudProxyPath?: string;
   cursorCloudProxySha256?: string;
   recoveryPurpose?: "execution" | "stop_cleanup";
+  /** Confines each local runnerd launch to its own session state (see runner-confinement.ts). */
+  runnerConfinement?: import("../control-plane/runner-confinement.js").RunnerConfinementPolicy;
   /** Cacheless preparation requires an authenticated authorityRunId throughout this transport's lifetime. */
   recoveryLaunch?: { requirements: RunnerProviderLaunchRequirements };
   opencodePermissionMode?: NativeOpenCodePermissionMode;
@@ -5781,6 +5784,13 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     return operation;
   }
 
+  /** A local confined launch proves the host first without blocking the event loop. */
+  async #awaitConfinementProbe(): Promise<void> {
+    const confinement = this.options.runnerConfinement;
+    if (!confinement || confinement.mode === "off" || this.options.runnerProcessLauncher) return;
+    await ensureRunnerConfinementProbe();
+  }
+
   async #refreshBootstrapTicket(core: DurablePrpControlPlane): Promise<string> {
     this.#assertStartupOpen();
     const ticket = core.issueBootstrapTicket(RUNNER_BOOTSTRAP_TICKET_TTL_MS);
@@ -6688,6 +6698,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const bootstrapTicket = core.issueBootstrapTicket(RUNNER_BOOTSTRAP_TICKET_TTL_MS);
     await core.flushCheckpoint();
     this.#assertStartupOpen();
+    // Prove confinement off the event loop; the launch below reads the cached result.
+    if (prepared.runnerOpenCodeLaunchProfile) {
+      await this.#awaitConfinementProbe();
+      // A stop or close during the probe must not start a runner afterward.
+      this.#assertStartupOpen();
+    }
     this.#startupSteps?.begin("runner.process.launch");
     const handle = spawnRunner({
       connection: registration?.connection ?? {
@@ -6712,6 +6728,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       cursorCloudLaunchProfile: prepared.runnerCursorCloudLaunchProfile,
       environment: prepared.environment,
       diagnosticsDirectory: resolve(this.#root, "diagnostics"),
+      confinement: this.options.runnerConfinement,
       processLauncher: this.options.runnerProcessLauncher,
       isRunnerConnected: () => core.activeRunnerConnectionCount() > 0,
       refreshBootstrapTicket: () => this.#refreshBootstrapTicket(core),
@@ -7555,7 +7572,15 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       : Math.min(this.#waitNow() + 30_000, this.#onWaitClock(this.#sourceAttachmentDeadline));
     // An adopted runner is already live: no launch step (a launch span means a fresh process).
     if (adoptedRunner) this.#startupSteps?.end();
-    else this.#startupSteps?.begin("runner.process.launch");
+    else {
+      // Prove confinement off the event loop; the launch below reads the cached result.
+      if (runnerOpenCodeLaunchProfile) {
+        await this.#awaitConfinementProbe();
+        // A stop or close during the probe must not start a runner afterward.
+        this.#assertStartupOpen();
+      }
+      this.#startupSteps?.begin("runner.process.launch");
+    }
     const handle = adoptedRunner
       ? null
       : spawnRunner({
@@ -7594,6 +7619,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             this.options.environment,
           ),
           diagnosticsDirectory: resolve(this.#root, "diagnostics"),
+          confinement: this.options.runnerConfinement,
           processLauncher: this.options.runnerProcessLauncher,
           isRunnerConnected: () => core.activeRunnerConnectionCount() > 0,
           ...(warmRecovery ? {} : { refreshBootstrapTicket: () => this.#refreshBootstrapTicket(core) }),

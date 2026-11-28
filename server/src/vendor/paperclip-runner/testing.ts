@@ -33,6 +33,10 @@ export const releaseMaterializedNativeRuntimeSkills: RunnerTestingModule["releas
 export const resolveRunnerdCodexSkillInputs: RunnerTestingModule["resolveRunnerdCodexSkillInputs"] =
   runnerTesting.resolveRunnerdCodexSkillInputs;
 export const spawnRunner: RunnerTestingModule["spawnRunner"] = runnerTesting.spawnRunner;
+export const resetRunnerConfinementAvailability: RunnerTestingModule["resetRunnerConfinementAvailability"] =
+  runnerTesting.resetRunnerConfinementAvailability;
+export const setRunnerConfinementAvailabilityForTest: RunnerTestingModule["setRunnerConfinementAvailabilityForTest"] =
+  runnerTesting.setRunnerConfinementAvailabilityForTest;
 
 export const startOpenCodeMcpBridge:
   RunnerTestingModule["startOpenCodeMcpBridge"] =

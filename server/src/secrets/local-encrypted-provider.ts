@@ -23,7 +23,7 @@ export type LocalEncryptedKeyEnv = Partial<Record<
   "PAPERCLIP_SECRETS_MASTER_KEY" | "PAPERCLIP_SECRETS_MASTER_KEY_FILE", string | undefined
 >>;
 
-function resolveMasterKeyFilePath(env: LocalEncryptedKeyEnv = process.env) {
+export function resolveMasterKeyFilePath(env: LocalEncryptedKeyEnv = process.env) {
   const fromEnv = env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
   if (fromEnv && fromEnv.trim().length > 0) return path.resolve(fromEnv.trim());
   return resolveDefaultSecretsKeyFilePath();

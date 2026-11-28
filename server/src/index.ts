@@ -11,6 +11,7 @@ import { readIdleRetrySchedule } from "./services/heartbeat/idle-retry-schedule.
 import { readIdleQuotaSchedule } from "./services/heartbeat/idle-quota-schedule.js";
 import { readIdleSkillSourceSchedule } from "./services/skill-source-idle-schedule.js";
 import { registerNativeCancellationDelivery } from "./services/native-runtime/native-cancellation-delivery.js";
+import { setLocalRunnerConfinementDatabase } from "./services/native-runtime/local-runner-confinement.js";
 import { registerNativeRuntimeResponseDelivery } from "./services/native-runtime/native-runtime-response-delivery.js";
 import { attentionRetentionService, registerAttentionRetentionWork } from "./services/attention-retention.js";
 import { registerRoutineExecutionStatusWork } from "./services/routine-execution-status-work.js";
@@ -755,6 +756,7 @@ async function startServerWithDatabaseTeardown(
     logger.info("Embedded PostgreSQL ready");
     activeDatabaseConnectionString = embeddedConnectionString;
     resolvedEmbeddedPostgresPort = port;
+    setLocalRunnerConfinementDatabase({ port, dataDir });
     startupDbInfo = { mode: "embedded-postgres", dataDir, port };
   }
 

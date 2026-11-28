@@ -331,6 +331,7 @@ import { emitStartupReuse, environmentStartupReuse } from "@paperclipai/adapter-
 import { persistActivity, publishActivity } from "../activity-log.js";
 import { commitNativeStatusDecision } from "./status-decision-committer.js";
 import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
+import { RUNNER_CONFINEMENT_UNAVAILABLE, localRunnerConfinementPolicy, runnerdStateBase } from "./local-runner-confinement.js";
 import { documentService } from "../documents.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { issueService } from "../issues.js";
@@ -2643,18 +2644,6 @@ function legacyCompanyNativeSessionScopeKey(
     execution.binding.companyId,
     nativeSessionKey(execution),
   ]);
-}
-
-function runnerdStateBase(): string {
-  return (
-    process.env.PAPERCLIP_RUNNER_STATE_DIR ??
-    resolve(
-      resolvePaperclipInstanceRoot(),
-      "runtime",
-      "paperclip-runner",
-      "durable-sessions",
-    )
-  );
 }
 
 /**
@@ -9105,6 +9094,8 @@ export function nativeSessionFailureDisposition(
     sourceFailureCode === NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE ||
     sourceFailureCode === "runner_task_admission_rejected" ||
     sourceFailureCode === "runner_ingress_access_rejected" ||
+    // The operator required confinement on a host that cannot provide it; a retry meets the same host.
+    sourceFailureCode === RUNNER_CONFINEMENT_UNAVAILABLE ||
     sourceFailureCode === "native_provider_runtime_missing" ||
     sourceFailureCode === "native_provider_model_rejected" ||
     sourceFailureCode === "native_provider_approval_required" ||
@@ -9363,6 +9354,7 @@ function classifyNativeSessionFailure(
   | "provider_session_open_timeout"
   | "runner_task_admission_rejected"
   | "runner_ingress_access_rejected"
+  | typeof RUNNER_CONFINEMENT_UNAVAILABLE
   | "runner_ingress_acquisition_failed"
   | "runner_ingress_startup_failed"
   | "local_runtime_api_listener_unavailable"
@@ -9415,6 +9407,11 @@ function classifyNativeSessionFailure(
   }
   if (runnerClosedTurnStartSession(error)) return NATIVE_PROVIDER_SESSION_CLOSED;
   const message = error instanceof Error ? error.message : String(error);
+  // A launch wrapper may keep the refusal only as a cause.
+  for (let cause: unknown = error, depth = 0; cause && depth < 8; cause = (cause as { cause?: unknown }).cause, depth += 1) {
+    if ((cause as { code?: unknown }).code === RUNNER_CONFINEMENT_UNAVAILABLE
+      || (cause instanceof Error ? cause.message : String(cause)).includes(RUNNER_CONFINEMENT_UNAVAILABLE)) return RUNNER_CONFINEMENT_UNAVAILABLE;
+  }
   if (/"code":"controller_sequence_mismatch"/.test(message)) return NATIVE_CONTROLLER_JOURNAL_BEHIND_RUNNER;
   if (isNativeRunPayloadTooLarge(error)) return NATIVE_RUN_PAYLOAD_TOO_LARGE;
   if (/^(?:runner_ingress_unavailable: runnerd exited unexpectedly with code 1: )?runner_task_admission_rejected: (session_state_unavailable|account_binding_mismatch)$/.test(message)) {
@@ -19071,6 +19068,7 @@ async function createRunnerdBackendWithinSessionClaim(
         onStartupStep: (step: Parameters<typeof recordNativeRunnerStartupStep>[1]) =>
           recordNativeRunnerStartupStep(input.trace, step, remoteTarget ? "remote" : "local"),
         onSpawn: input.onSpawn,
+        ...(remoteTarget ? {} : { runnerConfinement: localRunnerConfinementPolicy(input.execution.binding.companyId) }),
         ...(input.execution.provider.kind === "codex" ? { disableCodexWebSearch: "webSearch" in input.execution.provider && input.execution.provider.webSearch === "disabled" } : {}),
         homeMode: preconfiguredHome ? "preconfigured" : "isolated",
         ...accountingTransportOptions,

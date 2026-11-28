@@ -13,6 +13,7 @@ export { startOpenCodeMcpBridge } from "./drivers/opencode/mcp-bridge.js";
 export { prepareIsolatedCodexHome, releaseMaterializedNativeRuntimeSkills } from "./drivers/runtime-context-materializer.js";
 export { resolveRunnerdCodexSkillInputs } from "./live/runnerd-codex-transport.js";
 export { spawnRunner } from "./control-plane/durable-prp-control-plane.js";
+export { resetRunnerConfinementAvailability, setRunnerConfinementAvailabilityForTest } from "./control-plane/runner-confinement.js";
 export * from "./conformance/semantic-conformance.js";
 export * from "./mock-core/deterministic-harness-driver.js";
 export * from "./mock-core/mock-control-plane-adapter.js";
