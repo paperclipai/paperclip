@@ -1423,16 +1423,140 @@ export async function runSshCommand(
   }
 }
 
+export interface SshProcessCleanup {
+  stopped: false;
+  outputRecovered?: boolean;
+  stdout: string;
+  stderr: string;
+}
+
+/** The stop reader signals its own group, never a caller-supplied PID. Keep it
+ * alive until the signal is sent so the group identity cannot be recycled. */
+function ownedSshCommand(command: string, nonce: string, graceSec: number) {
+  const dir = `/tmp/paperclip-ssh-${nonce}`;
+  const reader = [
+    "trap ':' TERM INT HUP",
+    'dir=$1; grace=$2',
+    'group=$(ps -o pgid= -p $$ | tr -d " ")',
+    'case "$group" in ""|*[!0-9]*) exit 1;; esac',
+    '[ "$group" -gt 1 ] || exit 1',
+    'printf "%s\\n" "$$" > "$dir/reader"',
+    'IFS= read -r request < "$dir/control"',
+    '[ "$request" = stop ] || [ "$request" = complete ] || exit 1',
+    ': > "$dir/stopping"',
+    'kill -TERM -"$group"',
+    '[ "$request" = complete ] || sleep "$grace"',
+    'kill -KILL -"$group"',
+  ].join("\n");
+  const group = [
+    "trap ':' TERM INT HUP",
+    'dir=$1; grace=$2; shift 2',
+    'exec 3<&0',
+    'printf "%s\\n" "$$" > "$dir/group"',
+    `sh -c ${shellQuote(reader)} ${shellQuote(nonce)} "$dir" "$grace" &`,
+    'reader=$!',
+    // dash replaces fd 0 for background jobs before applying <&0. Save a
+    // different descriptor first, then close that extra descriptor in the CLI.
+    '"$@" <&3 3<&- &',
+    'provider=$!',
+    'while :; do wait "$provider"; code=$?; kill -0 "$provider" 2>/dev/null || break; done',
+    'printf "%s\\n" "$code" > "$dir/exit"',
+    // The foreground CLI is already gone. Stop its remaining helpers without
+    // spending an execution deadline waiting a cancellation grace period.
+    'printf "complete\\n" > "$dir/control"',
+    'wait "$reader"',
+  ].join("\n");
+  const script = [
+    'umask 077',
+    'exec 3<&0',
+    `dir=${shellQuote(dir)}`,
+    // Fail before starting the provider if the remote lacks these Linux tools.
+    'for tool in setsid tee mkfifo base64 timeout ps; do command -v "$tool" >/dev/null || exit 125; done',
+    '[ -r /proc/self/stat ] || exit 125',
+    'tee --output-error=warn-nopipe </dev/null >/dev/null || exit 125',
+    'base64 -w0 </dev/null >/dev/null || exit 125',
+    'mkdir "$dir" || exit 125',
+    ': > "$dir/stdout"; : > "$dir/stderr"',
+    'mkfifo "$dir/out" "$dir/err" "$dir/control" || exit 125',
+    "trap ':' HUP TERM INT",
+    // GNU tee keeps the spool writable when the SSH output pipe disconnects.
+    'tee --output-error=warn-nopipe "$dir/stdout" < "$dir/out" &',
+    'out=$!',
+    'tee --output-error=warn-nopipe "$dir/stderr" < "$dir/err" >&2 &',
+    'err=$!',
+    `setsid sh -c ${shellQuote(group)} ${shellQuote(nonce)} "$dir" ${shellQuote(String(graceSec))} sh -c ${shellQuote(command)} <&3 3<&- > "$dir/out" 2> "$dir/err" &`,
+    'leader=$!',
+    'wait "$leader" 2>/dev/null; code=$?',
+    'wait "$out"; outcode=$?; wait "$err"; errcode=$?',
+    '[ "$outcode" -eq 0 ] && [ "$errcode" -eq 0 ] || exit 125',
+    ': > "$dir/drained"',
+    '[ ! -f "$dir/exit" ] || code=$(cat "$dir/exit")',
+    'exit "$code"',
+  ].join("\n");
+  return { dir, script, graceSec };
+}
+
+async function finishOwnedSshProcess(spec: SshRemoteExecutionSpec, dir: string, nonce: string, graceSec: number,
+  stdoutBytes: number, stderrBytes: number): Promise<SshProcessCleanup> {
+  const script = [
+    `dir=${shellQuote(dir)}`,
+    // If cancellation wins before launch, mkdir fences the later launch out.
+    'if mkdir -m 700 "$dir" 2>/dev/null; then : > "$dir/cancelled"; fi',
+    'if [ -f "$dir/cancelled" ]; then printf "fenced\\n"; exit; fi',
+    'n=0; while [ ! -s "$dir/reader" ] || [ ! -s "$dir/group" ]; do n=$((n+1)); [ "$n" -lt 50 ] || exit 1; sleep .1; done',
+    'group=$(cat "$dir/group"); reader=$(cat "$dir/reader")',
+    'case "$group:$reader" in *[!0-9:]*|:*|*:) exit 1;; esac',
+    'alive() { rows=$(ps -eo pgid=,stat=) || exit 2; printf "%s\\n" "$rows" | awk -v g="$group" \'$1 == g && $2 !~ /^[ZX]/ { found=1 } END { exit !found }\'; }',
+    'if alive; then',
+    // Token and current group membership must match before writing the channel.
+    String.raw`tr '\000' '\n' < "/proc/$reader/cmdline" | grep -Fx ${shellQuote(nonce)} >/dev/null || exit 1`,
+    '[ "$(ps -o pgid= -p "$reader" | tr -d " ")" = "$group" ] || exit 1',
+    '[ -f "$dir/stopping" ] || timeout 2 sh -c \'printf "stop\\n" > "$1/control"\' sh "$dir" || [ -f "$dir/stopping" ] || exit 1',
+    'fi',
+    `n=0; while alive; do n=$((n+1)); [ "$n" -lt ${Math.ceil(graceSec * 10) + 50} ] || exit 1; sleep .1; done`,
+    'n=0; while [ ! -f "$dir/drained" ]; do n=$((n+1)); [ "$n" -lt 50 ] || exit 1; sleep .1; done',
+    'size=$(wc -c < "$dir/stdout") || exit 1',
+    'errsize=$(wc -c < "$dir/stderr") || exit 1',
+    `[ $((size - ${stdoutBytes} + errsize - ${stderrBytes})) -le 8388608 ] || exit 1`,
+    // Check the read and encoding steps independently: POSIX pipelines report
+    // only the last command's status and can hide a failed spool read.
+    `tail -c +${stdoutBytes + 1} "$dir/stdout" > "$dir/replay-out" || exit 1`,
+    `tail -c +${stderrBytes + 1} "$dir/stderr" > "$dir/replay-err" || exit 1`,
+    'out64=$(base64 -w0 "$dir/replay-out") || exit 1',
+    'err64=$(base64 -w0 "$dir/replay-err") || exit 1',
+    'printf "stopped\\n%s\\n%s\\n" "$out64" "$err64"',
+  ].join("\n");
+  try {
+    const result = await runSshCommand(spec, script, { timeoutMs: (graceSec + 15) * 1000, maxBuffer: 12 * 1024 * 1024 });
+    const lines = result.stdout.trimEnd().split("\n");
+    if (lines[0] === "fenced") return { stopped: false, stdout: "", stderr: "" };
+    if (lines[0] !== "stopped") return { stopped: false, stdout: "", stderr: "" };
+    const recovered: SshProcessCleanup = { stopped: false, outputRecovered: true, stdout: Buffer.from(lines[1] ?? "", "base64").toString(),
+      stderr: Buffer.from(lines[2] ?? "", "base64").toString() };
+    // Do not erase the spool until the SSH response has reached this process.
+    // A lost cleanup response may leave private files, but cannot lose usage.
+    await runSshCommand(spec, `rm -rf -- ${shellQuote(dir)}`, { timeoutMs: 5_000 })
+      .catch(() => undefined);
+    return recovered;
+  } catch {
+    // Retain the private spool and incomplete accounting when ownership, remote
+    // access, termination, or output collection cannot be established.
+    return { stopped: false, stdout: "", stderr: "" };
+  }
+}
+
 export async function buildSshSpawnTarget(input: {
   spec: SshRemoteExecutionSpec;
   command: string;
   args: string[];
   env: Record<string, string>;
+  ownedProcessGraceSec?: number;
 }): Promise<{
   command: string;
   args: string[];
   stdinPrefix: string;
   cleanup: () => Promise<void>;
+  finish?: (stdoutBytes: number, stderrBytes: number) => Promise<SshProcessCleanup>;
 }> {
   for (const key of Object.keys(input.env)) {
     if (!isValidShellEnvKey(key)) {
@@ -1467,6 +1591,25 @@ export async function buildSshSpawnTarget(input: {
       : `exec ${remoteCommandParts}`,
   ].join(" && ");
 
+  const nonce = randomUUID();
+  const owned = input.ownedProcessGraceSec == null ? null : ownedSshCommand(remoteScript, nonce,
+    Number.isFinite(input.ownedProcessGraceSec) ? Math.max(1, input.ownedProcessGraceSec) : 1);
+
+  // Keep client diagnostics out of the remote stderr byte offsets. OpenSSH
+  // writes them to its own private file; return them after output recovery.
+  let diagnostics: Awaited<ReturnType<typeof withTempFile>> | null = null;
+  try {
+    if (owned) {
+      diagnostics = await withTempFile("paperclip-ssh-diagnostics-", "", 0o600);
+      await fs.truncate(diagnostics.path, 0);
+      sshArgs.push("-E", diagnostics.path);
+    }
+  } catch (error) {
+    await Promise.all([auth.cleanup(), diagnostics?.cleanup()]);
+    throw error;
+  }
+  const diagnosticFile = diagnostics;
+
   sshArgs.push(
     "-p",
     String(input.spec.port),
@@ -1477,8 +1620,14 @@ export async function buildSshSpawnTarget(input: {
   return {
     command: "ssh",
     args: sshArgs,
-    stdinPrefix: Buffer.from(remoteScript).toString("base64") + "\n",
-    cleanup: auth.cleanup,
+    stdinPrefix: Buffer.from(owned?.script ?? remoteScript).toString("base64") + "\n",
+    cleanup: async () => { await Promise.all([auth.cleanup(), diagnosticFile?.cleanup()]); },
+    ...(owned && diagnosticFile ? { finish: async (out: number, err: number) => {
+      const recovered = await finishOwnedSshProcess(input.spec, owned.dir, nonce, owned.graceSec, out, err);
+      const localDiagnostics = await fs.readFile(diagnosticFile.path, "utf8").catch(() => null);
+      return localDiagnostics === null ? { ...recovered, outputRecovered: false }
+        : { ...recovered, stderr: recovered.stderr + localDiagnostics };
+    } } : {}),
   };
 }
 

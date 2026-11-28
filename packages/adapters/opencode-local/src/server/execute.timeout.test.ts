@@ -144,4 +144,31 @@ describe("OpenCode timeout reporting", () => {
       resultJson: { adapterExecutionTimeout: { timeoutSec: 0.1, source: "configured" } } });
     expect(mocks.process).toHaveBeenCalledTimes(1);
   });
+  it("keeps recovered usage incomplete after a confirmed remote timeout stop", async () => {
+    const stdout = JSON.stringify({type: "step_finish", part: {tokens: {
+      input: 10, output: 2, reasoning: 1, cache: {read: 5, write: 0}}, cost: 0.001}}) + "\n";
+    mocks.process.mockResolvedValue({...failed, stdout, remoteProcessStopped: true});
+    const ctx = context(12);
+    const result = await execute(ctx);
+    expect(result).toMatchObject({timedOut: true, usageComplete: false, costUsd: 0.001,
+      usage: {inputTokens: 10, outputTokens: 3, cachedInputTokens: 5}});
+  });
+
+  it("preserves observed cost without finalizing usage on an unverified SSH exit", async () => {
+    const stdout = JSON.stringify({ type: "step_finish", part: { tokens: {
+      input: 10, output: 2, reasoning: 0, cache: { read: 0, write: 0 },
+    }, cost: 0.001 } }) + "\n";
+    mocks.process.mockResolvedValue({ ...failed, timedOut: false, exitCode: 0, stdout, stderr: "", remoteProcessStopped: false });
+    expect(await execute(context(12))).toMatchObject({ exitCode: 0, costUsd: 0.001, usageComplete: false });
+  });
+
+  it("preserves the SSH cleanup failure code and incomplete usage", async () => {
+    mocks.process.mockResolvedValue({...failed, timedOut: false, exitCode: 1,
+      errorCode: "ssh_remote_cleanup_failed", remoteProcessStopped: false});
+    const result = await execute(context(12));
+    expect(result).toMatchObject({exitCode: 1, usageComplete: false,
+      errorCode: "ssh_remote_cleanup_failed"});
+    expect(result.errorMessage).toBeTruthy();
+  });
+
 });
