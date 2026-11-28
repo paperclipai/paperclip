@@ -90,6 +90,26 @@ receipt within the same 30-second budget used for warm admission. A Claude
 turn-end provider restart can delay that receipt beyond one second. The wait
 returns as soon as the drain is proved; it adds no fixed delay to a ready Runner.
 
+## Claude restore connects when the session opens
+
+When the Runner restores a Claude session, ACPX resumes the saved provider
+session during `session.open`. It starts the agent, sends `session/resume`, and
+keeps that connection for the first turn. Without this, ACPX reuses the saved
+record and starts the agent only at the first prompt. Then any setting applied
+at open, such as Claude effort, starts the agent on a temporary connection
+first, so the restore starts the agent twice.
+
+The adapter hides the saved record from ACPX for that one `ensureSession` call
+and passes the record's backend session id as `resumeSessionId`. The record is
+not changed first, so a failed open leaves it as it was. Only a prompted record
+qualifies, or one that an earlier restore of this kind wrote. Fresh opens and
+other agents keep the lazy reuse.
+
+ACPX then writes a new record with the same record id and backend session id,
+marked `session_origin: "resume"`. Its own message list starts empty. Claude
+keeps the conversation in its transcript, and `session/resume` loads it. A fresh
+open never resets a record marked this way as an abandoned bootstrap.
+
 ## ACPX checkpoints after a rejected turn start
 
 Recovered ACPX shutdown uses the same bounded five-second lifetime-fence proof
