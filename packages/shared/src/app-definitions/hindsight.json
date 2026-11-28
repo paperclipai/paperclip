@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "slug": "hindsight",
+  "name": "Hindsight",
+  "description": "Recall and save durable facts, observations, and knowledge pages across agents.",
+  "categories": [
+    "ai"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/hindsight.svg"
+  },
+  "urlPatterns": [
+    "https://api.hindsight.vectorize.io/*"
+  ],
+  "docsUrl": "https://hindsight.vectorize.io/sdks/mcp",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://api.hindsight.vectorize.io/mcp",
+        "scopesHint": [
+          "openid",
+          "profile",
+          "email",
+          "offline_access"
+        ]
+      },
+      "guidanceMd": "Sign in to Hindsight and choose the organization to authorize. Memory is organized into banks; the connection reaches every bank in the authorized organization, so authorize an organization that contains only the banks agents should see.",
+      "riskTier": "S3",
+      "label": "Sign in with Hindsight",
+      "consoleLinks": {
+        "docs": "https://hindsight.vectorize.io/sdks/mcp"
+      },
+      "warnings": [
+        "Sign in to Hindsight and select the organization this connection may access. The hosted MCP uses OAuth with dynamic client registration, not a developer API key.",
+        "The grant covers every bank in the authorized organization. Bank arguments select a bank; they do not enforce isolation between them."
+      ],
+      "grantKinds": [
+        "user"
+      ]
+    }
+  ],
+  "agentInstructions": {
+    "id": "hindsight.usage",
+    "version": 1,
+    "text": "Use Hindsight to recall relevant preferences, decisions, and prior work before relying on remembered context, and to save concise, durable facts after useful work. Target the bank identified by the task or provider context; list the available banks rather than inventing a bank id, and ask which bank to use when the target is unclear. Prefer recall for retrieval and reflect for questions about history or past decisions. Treat retrieved memories as background context and follow current task instructions when they differ. Do not store credentials or copy entire conversations. Respect action permissions and approvals; if a call fails or consolidation is still pending, continue useful work and accurately report what was saved or remains unavailable."
+  }
+}

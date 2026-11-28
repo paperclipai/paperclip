@@ -3011,6 +3011,27 @@
       "reviewedAt": "2026-11-18",
       "liveProof": "2026-11-18 spike in the Paperclip dev AWS account (doc/plans/2026-11-17-aws-connector-and-minted-credentials.md, Spike findings): a Paperclip-signed connection token assumed its role, another connection's token was denied, the bearer exchange and tools/list passed, and run_script read and wrote. A read-only session read and AWS refused its write. Both access-key paths obtained a bearer. The production connector path itself is not yet live-tested.",
       "keyPermissions": "Use a dedicated IAM user for this connection. It needs AWSMCPSignInOAuthAccessPolicy, sts:GetFederationToken, and the permissions agents should have; Paperclip cannot raise them."
+    },
+    {
+      "app": "hindsight",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "openid",
+        "profile",
+        "email",
+        "offline_access"
+      ],
+      "capability": "provider-controlled",
+      "supportedActions": "Recall and save memory in the organization selected at provider consent. A bank argument selects a bank; the grant reaches every bank in that organization.",
+      "evidence": [
+        "https://hindsight.vectorize.io/sdks/mcp",
+        "https://api.hindsight.vectorize.io/.well-known/oauth-protected-resource",
+        "https://api.hindsight.vectorize.io/.well-known/oauth-authorization-server"
+      ],
+      "reviewedAt": "2026-10-09",
+      "liveProof": "not-run"
     }
   ]
 }

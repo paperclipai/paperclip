@@ -751,6 +751,12 @@
       "provider": "Tailscale",
       "catalogVisible": false,
       "localAsset": "/brands/apps/tailscale.png"
+    },
+    {
+      "slug": "hindsight",
+      "provider": "Hindsight",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/hindsight.svg"
     }
   ]
 }
