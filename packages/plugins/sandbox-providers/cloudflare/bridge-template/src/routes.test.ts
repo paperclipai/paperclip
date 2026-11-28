@@ -98,7 +98,10 @@ describe("bridge routes", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(sandbox.readFile).not.toHaveBeenCalled();
+    for (const call of sandbox.readFile.mock.calls) {
+      expect(String(call[0])).toMatch(/^\/tmp\/\.paperclip-bridge-(out|err)-/);
+      expect(call[1]).toMatchObject({ encoding: "base64", sessionId: "paperclip" });
+    }
     const [commandArg, optionsArg] = sessionExec.mock.calls[0] ?? [];
     expect(typeof commandArg).toBe("string");
     expect(commandArg).toMatch(/^sh -lc /);
@@ -139,5 +142,61 @@ describe("bridge routes", () => {
     const body = await response.text();
     expect(body).toContain("event: stdout");
     expect(body).toContain("event: complete");
+    expect(vi.mocked(resolveSandbox)).toHaveBeenCalledWith(expect.anything(), "pc-run-1-abcd1234", { normalizeId: true });
+  });
+
+  it("release and destroy return 502 when teardown keeps failing", async () => {
+    const destroy = vi.fn().mockRejectedValue(new Error("Durable Object is overloaded. Requests queued for too long."));
+    vi.mocked(resolveSandbox).mockResolvedValue({ destroy } as never);
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const env = { BRIDGE_AUTH_TOKEN: "secret-token", Sandbox: {} as never };
+      const releasing = handleBridgeRequest(
+        bridgeRequest("/api/paperclip-sandbox/v1/leases/release", { providerLeaseId: "pc-run-1-abcd1234" }),
+        env,
+      );
+      const release = await releasing;
+      expect(release.status).toBe(502);
+      await expect(release.json()).resolves.toMatchObject({
+        error: "sandbox_destroy_failed",
+        details: { providerLeaseId: "pc-run-1-abcd1234", attempts: 3 },
+      });
+
+      const destroying = handleBridgeRequest(
+        new Request("https://bridge.example.test/api/paperclip-sandbox/v1/leases/pc-run-1-abcd1234", {
+          method: "DELETE",
+          headers: { Authorization: "Bearer secret-token" },
+        }),
+        env,
+      );
+      expect((await destroying).status).toBe(502);
+      expect(destroy).toHaveBeenCalledTimes(6);
+    } finally {
+      log.mockRestore();
+    }
+  }, 15_000);
+
+  it("release and destroy resolve the sandbox without lease-config overrides", async () => {
+    const destroy = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(resolveSandbox).mockResolvedValue({ destroy } as never);
+    const env = { BRIDGE_AUTH_TOKEN: "secret-token", Sandbox: {} as never };
+
+    const release = await handleBridgeRequest(
+      bridgeRequest("/api/paperclip-sandbox/v1/leases/release", { providerLeaseId: "pc-run-1-abcd1234", keepAlive: true }),
+      env,
+    );
+    expect(release.status).toBe(200);
+    expect(vi.mocked(resolveSandbox)).toHaveBeenLastCalledWith(expect.anything(), "pc-run-1-abcd1234", { normalizeId: true });
+
+    const destroyed = await handleBridgeRequest(
+      new Request("https://bridge.example.test/api/paperclip-sandbox/v1/leases/pc-run-1-abcd1234", {
+        method: "DELETE",
+        headers: { Authorization: "Bearer secret-token" },
+      }),
+      env,
+    );
+    expect(destroyed.status).toBe(200);
+    expect(vi.mocked(resolveSandbox)).toHaveBeenLastCalledWith(expect.anything(), "pc-run-1-abcd1234", { normalizeId: true });
+    expect(destroy).toHaveBeenCalledTimes(2);
   });
 });
