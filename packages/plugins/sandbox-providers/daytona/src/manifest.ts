@@ -15,7 +15,8 @@ export const DEFAULT_DAYTONA_OPERATION_TIMEOUT_MS = 300_000;
 // 0.1.6 adds private authenticated WebSocket ingress for paperclip_runner.
 // 0.1.7 exposes host-owned warm/cold runner lifecycle controls.
 // 0.1.8 declares the default provider acquisition budget to the host.
-const PLUGIN_VERSION = "0.1.9";
+// 0.1.11 raises the default sandbox disk allocation from 10 GiB to 20 GiB.
+const PLUGIN_VERSION = "0.1.11";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
@@ -39,6 +40,7 @@ const manifest: PaperclipPluginManifestV1 = {
       description:
         "Provisions Daytona sandboxes with configurable image or snapshot selection, startup timeouts, and lease reuse.",
       supportsReusableLeases: true,
+      creationOperationVersion: 1,
       // Daytona keeps a persistent session and tails its callback log form, so it
       // emits incremental session output while the command runs. Declare the
       // opt-in capability so the host selects the session-output streaming path.
@@ -133,7 +135,7 @@ const manifest: PaperclipPluginManifestV1 = {
             type: "integer",
             description: "Optional disk allocation in GiB.",
             minimum: 1,
-            default: 10,
+            default: 20,
           },
           gpu: {
             type: "integer",
@@ -159,7 +161,7 @@ const manifest: PaperclipPluginManifestV1 = {
           autoStopInterval: {
             type: "number",
             description:
-              "Daytona auto-stop interval in minutes. `0` disables auto-stop. Defaults to 15 when unset.",
+              "Daytona auto-stop interval in minutes. `0` disables auto-stop. Defaults to 15 when unset. A reusable sandbox that keeps a warm runner never auto-stops before the warm idle window plus 5 minutes, and a sandbox running a Paperclip runner never auto-stops before the host's runner reconnect grace plus 5 minutes.",
             default: 15,
           },
           autoArchiveInterval: {

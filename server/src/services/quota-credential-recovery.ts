@@ -28,7 +28,9 @@ export const quotaCredentialHash = (value: string) => createHash("sha256").updat
 export const quotaCredentialRecoveryPath = (companyId: string, grantId: string) =>
   path.join(idleQuotaRecoveryPath(), companyId, `${grantId}.json`);
 
-/** Called only while holding the company credential mutation lock. The local
+/** Legacy settlement and local-only Google retirement. Server quota refresh
+ * must never create a new record here. Called only while holding the company
+ * credential mutation lock. The local
  * encrypted provider uses the instance secrets master key, including when the
  * destination vault is remote. No plaintext token enters this journal. */
 export function quotaCredentialRecovery(companyId: string, grantId: string) {

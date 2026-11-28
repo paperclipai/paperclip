@@ -1,4 +1,5 @@
 import pino from "pino";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Logger } from "pino";
 import { pinoHttp } from "pino-http";
 import { HTTP_LOG_REDACT_PATHS } from "./http-log-redaction.js";
@@ -8,6 +9,8 @@ import {
   isPrivateAgentCommentaryHttpRequest,
   isPrivateAgentObservabilityHttpRequest,
   isPrivateMuseHttpRequest,
+  isPrivateDotPrincipalHttpRequest,
+  isPrivateToolCallHttpRequest,
   shouldSilenceHttpSuccessLog,
 } from "./http-log-policy.js";
 import {
@@ -22,6 +25,49 @@ const sharedOpts = {
 };
 
 const isProduction = process.env.NODE_ENV === "production";
+
+// One pretty-print transport per process, even when this module is evaluated
+// more than once.
+//
+// `pino.transport` spawns a worker thread (thread-stream) and hands back no
+// handle this module could close, so every extra evaluation leaks one worker
+// thread, one MessagePort and that worker's whole V8 isolate for the life of
+// the process. A server process evaluates this module once, so the cache is
+// inert in production. The server test suites do not: 46 files under
+// `server/src/__tests__` call `vi.resetModules()` in `beforeEach` and then
+// re-import a module that reaches this one, so the module is evaluated once
+// per test and a 50-test suite ends holding 50 live worker threads.
+//
+// Measured cost of the leak: 400 transports in one process reach 407 threads
+// and 1.68 GB RSS, so a 50-test suite carries roughly 280 MB of dead workers.
+// `server/vitest.config.ts` pins `maxWorkers: 1`, so those suites run one at a
+// time on one runner and each pays the whole cost.
+//
+// The cache lives on `globalThis` on purpose: a module-scoped variable is
+// discarded by the very module-registry reset this guards against.
+const PRETTY_TRANSPORT_KEY = "__paperclipPinoPrettyTransport";
+type PrettyTransportCache = {
+  [PRETTY_TRANSPORT_KEY]?: ReturnType<typeof pino.transport>;
+};
+
+/**
+ * The process's one pretty-print transport, created on first use. See the note
+ * above for why it is cached rather than built per module evaluation.
+ */
+function prettyTransport() {
+  const cache = globalThis as typeof globalThis & PrettyTransportCache;
+  cache[PRETTY_TRANSPORT_KEY] ??= pino.transport({
+    target: "pino-pretty",
+    options: {
+      ...sharedOpts,
+      ignore: "pid,hostname,req,res,responseTime",
+      colorize: true,
+      destination: 1,
+    },
+  });
+  return cache[PRETTY_TRANSPORT_KEY];
+}
+
 export const logger = isProduction
   ? pino({
       level: process.env.PAPERCLIP_LOG_LEVEL?.trim() || "info",
@@ -32,15 +78,7 @@ export const logger = isProduction
         level: process.env.PAPERCLIP_LOG_LEVEL?.trim() || "debug",
         redact: [...HTTP_LOG_REDACT_PATHS],
       },
-      pino.transport({
-        target: "pino-pretty",
-        options: {
-          ...sharedOpts,
-          ignore: "pid,hostname,req,res,responseTime",
-          colorize: true,
-          destination: 1,
-        },
-      }),
+      prettyTransport(),
     );
 
 function requestClassificationUrl(req: {
@@ -76,11 +114,17 @@ function requestLogUrl(req: {
   originalUrl?: unknown;
   url?: unknown;
 }) {
+  if(isPrivateDotPrincipalHttpRequest(requestClassificationUrl(req)))return "/mcp/runner/oauth/cloud-principal";
   if(isPrivateMuseHttpRequest(requestClassificationUrl(req)))return "/api/muse/:protocol";
   if (isPrivateAgentObservabilityHttpRequest(requestClassificationUrl(req))) return "/api/companies/:companyId/observability";
   return isPrivateWebhook(req)
     ? privateWebhookLogUrl(requestClassificationUrl(req))
     : stripSecretBearingUrlParts(typeof req.url === "string" ? req.url : "");
+}
+
+function abortedRequestMessage(req: IncomingMessage, res: ServerResponse) {
+  if (!req.readableAborted && res.writableFinished) return null;
+  return `${req.method} ${requestLogUrl(req)} — request aborted${res.headersSent ? " during response" : " before response"}`;
 }
 
 export function createHttpLogger(baseLogger: Logger) {
@@ -91,6 +135,7 @@ export function createHttpLogger(baseLogger: Logger) {
         if (isPrivateAgentObservabilityHttpRequest(typeof req.url === "string" ? req.url : undefined)) {
           return { id: req.id, method: req.method, url: "/api/companies/:companyId/observability" };
         }
+        if(isPrivateDotPrincipalHttpRequest(typeof req.url === "string" ? req.url : undefined))return {id:req.id,method:req.method,url:"/mcp/runner/oauth/cloud-principal"};
         if(isPrivateMuseHttpRequest(typeof req.url === "string" ? req.url : undefined))return {id:req.id,method:req.method,url:"/api/muse/:protocol"};
         if (isPrivateAgentCommentaryHttpRequest(typeof req.url === "string" ? req.url : undefined)) {
           return { id: req.id, method: req.method, url: stripSecretBearingUrlParts(req.url as string) };
@@ -110,8 +155,14 @@ export function createHttpLogger(baseLogger: Logger) {
             url: privateWebhookLogUrl(req.url),
           };
         }
+        const headers = req.headers as Record<string, unknown> | undefined;
         return {
           ...req,
+          ...(headers ? { headers: {
+            ...headers,
+            ...Object.fromEntries(["referer", "referrer"].filter(key => typeof headers[key] === "string")
+              .map(key => [key, stripSecretBearingUrlParts(headers[key] as string)])),
+          } } : {}),
           url:
             typeof req.url === "string"
               ? stripSecretBearingUrlParts(req.url)
@@ -131,23 +182,26 @@ export function createHttpLogger(baseLogger: Logger) {
       ) {
         // A provider error may also be reflected in response headers. Keep the
         // same content-free contract on both sides of a webhook request.
-        return res.raw?.req && (isPrivateWebhook(res.raw.req) || isPrivateMuseHttpRequest(requestClassificationUrl(res.raw.req)) || isPrivateAgentCommentaryHttpRequest(requestClassificationUrl(res.raw.req)) || isPrivateAgentObservabilityHttpRequest(requestClassificationUrl(res.raw.req)))
+        return res.raw?.req && (isPrivateWebhook(res.raw.req) || isPrivateMuseHttpRequest(requestClassificationUrl(res.raw.req)) || isPrivateDotPrincipalHttpRequest(requestClassificationUrl(res.raw.req)) || isPrivateAgentCommentaryHttpRequest(requestClassificationUrl(res.raw.req)) || isPrivateAgentObservabilityHttpRequest(requestClassificationUrl(res.raw.req)))
           ? { statusCode: res.statusCode }
           : res;
       },
     },
     customLogLevel(_req, res, err) {
+      if (err || (res as ServerResponse & { err?: unknown }).err || res.statusCode >= 500) return "error";
+      if (_req.readableAborted || !res.writableFinished) return "warn";
       if (shouldSilenceHttpSuccessLog(_req.method, _req.url, res.statusCode)) {
         return "silent";
       }
-      if (err || res.statusCode >= 500) return "error";
       if (res.statusCode >= 400) return "warn";
       return "info";
     },
     customSuccessMessage(req, res) {
-      return `${req.method} ${requestLogUrl(req)} ${res.statusCode}`;
+      return abortedRequestMessage(req, res) ?? `${req.method} ${requestLogUrl(req)} ${res.statusCode}`;
     },
     customErrorMessage(req, res, err) {
+      const abortedMessage = abortedRequestMessage(req, res);
+      if (abortedMessage) return abortedMessage;
       if (
         isSecretSensitiveHttpRequest(req.method, requestClassificationUrl(req))
       ) {
@@ -165,6 +219,7 @@ export function createHttpLogger(baseLogger: Logger) {
       if (isPrivateAgentObservabilityHttpRequest(requestClassificationUrl(req))) {
         return { ...value, err: { type: "Error", message: "Agent observability request failed" } };
       }
+      if(isPrivateDotPrincipalHttpRequest(requestClassificationUrl(req)))return {...value,err:{type:"Error",message:"Dot principal request failed"}};
       if (isPrivateMuseHttpRequest(requestClassificationUrl(req)))return {...value,err:{type:"Error",message:"External agent request failed"}};
       if (isPrivateAgentCommentaryHttpRequest(requestClassificationUrl(req))) {
         return { ...value, err: { type: "Error", message: "Feedback request failed" } };
@@ -184,7 +239,7 @@ export function createHttpLogger(baseLogger: Logger) {
         if (/^\/mcp\/(?:oauth|paperclip)(?:\/|$)/.test(requestClassificationUrl(req) ?? "")) {
           return { reqBody: "[REDACTED]", ...(ctx ? { errorContext: { name: "Error" } } : {}) };
         }
-        if (isPrivateWebhook(req) || isPrivateMuseHttpRequest(requestClassificationUrl(req)) || isPrivateAgentCommentaryHttpRequest(requestClassificationUrl(req)) || isPrivateAgentObservabilityHttpRequest(requestClassificationUrl(req))) {
+        if (isPrivateWebhook(req) || isPrivateMuseHttpRequest(requestClassificationUrl(req)) || isPrivateDotPrincipalHttpRequest(requestClassificationUrl(req)) || isPrivateAgentCommentaryHttpRequest(requestClassificationUrl(req)) || isPrivateAgentObservabilityHttpRequest(requestClassificationUrl(req))) {
           // Omit, rather than recursively redact, the entire provider payload.
           // This applies equally before/after parsing and with/without context.
           return {
@@ -194,6 +249,7 @@ export function createHttpLogger(baseLogger: Logger) {
               : {}),
           };
         }
+        const toolCall = isPrivateToolCallHttpRequest(requestClassificationUrl(req));
         if (ctx) {
           const secretSensitiveRoute = isSecretSensitiveHttpRequest(
             req.method,
@@ -206,13 +262,16 @@ export function createHttpLogger(baseLogger: Logger) {
             errorContext: secretSensitiveRoute
               ? { name: "Error" }
               : redactSensitive(ctx.error),
-            reqBody: redactSensitive(ctx.reqBody),
+            reqBody: toolCall ? "[REDACTED]" : redactSensitive(ctx.reqBody),
             reqParams: redactSensitive(ctx.reqParams),
+            ...(toolCall && (req as any).route?.path ? { routePath: (req as any).route.path } : {}),
           };
         }
         const props: Record<string, unknown> = {};
         const { body, params } = req as any;
-        if (body && typeof body === "object" && Object.keys(body).length > 0) {
+        if (toolCall) {
+          props.reqBody = "[REDACTED]";
+        } else if (body && typeof body === "object" && Object.keys(body).length > 0) {
           props.reqBody = redactSensitive(body);
         }
         if (

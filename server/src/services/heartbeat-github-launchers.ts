@@ -46,7 +46,7 @@ export async function prepareHeartbeatGitHubLaunchers(
   });
   try {
     return {
-      env: await prepareLaunchers({ ...location, cwd: input.cwd, env }),
+      env: await prepareLaunchers({ ...location, cwd: input.cwd, env, ...(anonymous ? { anonymous: true } : {}) }),
       cleanupLocation: anonymous ? null : location,
     };
   } catch (error) {

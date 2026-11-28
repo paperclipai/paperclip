@@ -3,7 +3,7 @@ import { chatEndpoints, type Db } from "@paperclipai/db";
 import { githubConnectionEventService } from "./github-connection-events.js";
 import type { PaperclipCloudConnector } from "./paperclip-cloud-connector.js";
 
-function fixture() {
+function fixture(push = false, forcePolling = false) {
   let time = Date.parse("2026-09-04T12:00:00Z");
   const bindings = [{
     grant: { id: "grant", companyId: "company", kind: "user", subjectUserId: "owner", status: "active",
@@ -13,13 +13,14 @@ function fixture() {
   const bots: Array<{ companyId: string }> = [];
   // Only SQL is stubbed. Backoff, lease admission and concurrent execution use
   // the real service; relational persistence has its own Postgres suite.
+  const result = <T>(rows: T[]) => Object.assign(Promise.resolve(rows), { limit: async () => rows.slice(0, 1) });
   const select = vi.fn(() => ({ from: (table: unknown) => table === chatEndpoints
-    ? { where: async () => bots }
-    : { innerJoin: () => ({ where: async () => bindings }) } }));
+    ? { where: () => result(bots) }
+    : { innerJoin: () => ({ where: () => result(bindings) }) } }));
   const leaseEvents = vi.fn<PaperclipCloudConnector["leaseEvents"]>().mockResolvedValue(null);
-  const connector = { leaseEvents } as unknown as PaperclipCloudConnector;
-  const service = githubConnectionEventService({ select } as unknown as Db, { connector, now: () => new Date(time) });
-  return { service, leaseEvents, select, bots, advance: (ms: number) => { time += ms; } };
+  const connector = { leaseEvents, eventWakeVersion: () => push ? 1 : null } as unknown as PaperclipCloudConnector;
+  const service = githubConnectionEventService({ select } as unknown as Db, { connector, env: forcePolling ? { PAPERCLIP_GITHUB_EVENT_POLLING: "1" } : {}, now: () => new Date(time) });
+  return { service, leaseEvents, select, bots, bindings, advance: (ms: number) => { time += ms; } };
 }
 
 describe("GitHub event polling during active App setup", () => {
@@ -70,5 +71,38 @@ describe("GitHub event polling during active App setup", () => {
     f.advance(5_000);
     await f.service.pollOnce({ forSetup: true });
     expect(f.leaseEvents).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("GitHub external delivery activation", () => {
+  it("does no SQL/network with no connector configuration after startup or cadence windows", async () => {
+    const select = vi.fn(() => { throw new Error("unconfigured worker touched SQL"); });
+    const service = githubConnectionEventService({ select } as unknown as Db, { env: {} });
+    for (let i = 0; i < 4; i++) await service.pollOnce({ forDelivery: true });
+    expect(service.nextPollAt()).toBeNull(); expect(select).not.toHaveBeenCalled();
+  });
+  it("settles configured-idle after enrollment and wakes only on explicit delivery hints", async () => {
+    const f = fixture(true);
+    await f.service.pollOnce(); expect(f.service.nextPollAt()).toBeNull();
+    const reads = f.select.mock.calls.length;
+    for (let i = 0; i < 4; i++) { f.advance(300_000); await f.service.pollOnce(); }
+    expect(f.select).toHaveBeenCalledTimes(reads); expect(f.leaseEvents).toHaveBeenCalledTimes(1);
+    await f.service.pollOnce({ forDelivery: true }); expect(f.leaseEvents).toHaveBeenCalledTimes(2);
+    expect(f.service.nextPollAt()).toBeNull();
+  });
+  it("arms forced fallback before a failed Cloud enrollment revocation", async () => {
+    const f = fixture(true, true);
+    f.leaseEvents.mockRejectedValueOnce(new Error("handoff unavailable"));
+    await expect(f.service.pollOnce()).rejects.toThrow("handoff unavailable");
+    expect(f.service.nextPollAt()).not.toBeNull();
+    expect(f.leaseEvents.mock.calls[0]![0].eventWakeVersion).toBe(0);
+    f.advance(5_000); await f.service.pollOnce();
+    expect(f.leaseEvents).toHaveBeenCalledTimes(2); expect(f.service.nextPollAt()).not.toBeNull();
+  });
+  it("retains old-Cloud fallback and settles once all bindings are disabled", async () => {
+    const f = fixture(); await f.service.pollOnce(); expect(f.service.nextPollAt()).not.toBeNull();
+    f.bindings.length = 0; f.advance(10_000); await f.service.pollOnce();
+    expect(f.service.nextPollAt()).toBeNull(); const reads = f.select.mock.calls.length;
+    f.advance(3600_000); await f.service.pollOnce(); expect(f.select).toHaveBeenCalledTimes(reads);
   });
 });

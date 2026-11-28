@@ -13,8 +13,8 @@ This is separate from Paperclip's first-party Telemetry and its content-free
 
 ## Capture and supported runtimes
 
-The qualified versions are Codex 0.160.0 and Claude Code through ACP bridge
-0.73.0 with Agent SDK 0.3.286. Both logs and traces use HTTP/protobuf. Prompts,
+The qualified versions are Codex 0.170.0 and Claude Code through ACP bridge
+0.73.0 with Agent SDK 0.3.328. Both logs and traces use HTTP/protobuf. Prompts,
 assistant responses and tool content default on. Additional tool details are a
 Claude Code and native OpenCode control; Codex has no equivalent switch. Codex requests up to 64 KiB
 of tool output (or zero when disabled); native event availability, truncation
@@ -23,13 +23,45 @@ Metrics, raw API bodies and Codex Guardian assessments are disabled.
 
 Native OpenCode 1.18.34 uses a runner-owned HTTP/JSON exporter. Each completed,
 failed or cancelled turn produces a trace with Paperclip company, agent, run and
-turn IDs. Tool outcomes and message-level token/cost receipts are child spans;
+turn IDs. Authenticated Paperclip tool dispatch outcomes, native tool outcomes and
+message-level token/cost receipts are child spans;
 repeated usage updates replace the same message receipt. Missing prices remain
 unknown. This projection excludes hidden reasoning, raw provider payloads and
 system instructions. Prompt, response, tool-detail and tool-content switches
 apply before export. Content is bounded to 8 KiB per field and 64 tools plus 64
-usage records per turn; truncation is marked. Tool inputs and full model request
-bodies are not captured. OpenCode's performance-only OTLP sink stays separate.
+usage records per turn; truncation is marked. With both tool-detail and tool-content
+capture enabled, Paperclip tool spans include `braintrust.input` diagnostics
+(`paperclip.opencode.tool-diagnostics.v1`): the upstream `tools/call` method,
+argument JSON type and types for a fixed list of envelope fields. These are
+shape diagnostics, not a copy of the arguments. Arbitrary field names, argument
+values, nested payloads and full model request bodies are not captured.
+Authenticated schema rejections also produce failed tool spans without invoking
+the controller handler. Conflicting request IDs produce separate failed items,
+so a rejection cannot overwrite a previous dispatch outcome.
+Paperclip tool spans use authenticated dispatch IDs and the name `tool <name>`.
+Provider SSE records for those declared tools use `opencode tool <name>` and
+remain available when failure occurs before dispatch, such as an oversized
+request. These are separate observations, not correlated calls. The
+`paperclip.tool.source` attribute distinguishes dispatch and provider records.
+Native tools retain their provider spans without submitted-argument diagnostics. OpenCode's performance-only OTLP sink stays separate.
+
+For known native task envelopes, OpenCode selects the task identifier, title and
+prompt before the 8 KiB limit. A valid leading fresh-session handoff packet is
+omitted from this excerpt so earlier history cannot hide the current request.
+Continuation excerpts put pending user messages before recovery guidance.
+Plain text and unknown envelope formats retain their existing text projection.
+History omission also sets the turn's truncation flag; the flag can also mean a
+text or row limit was reached.
+
+When prompt capture is enabled, `paperclip.observability.input.events` gives a
+relative URL on the originating Paperclip instance:
+`/api/heartbeat-runs/<run-id>/events`. Sign in to that instance, read pages using
+`afterSeq` and `limit`, and find the `turn.submitted` event for the trace's
+`paperclip.turn.id`. Its `payload.prpEvent.payload.text` holds the retained
+submission, including history, subject to existing redaction and retention.
+The URL does not grant access. Run telemetry permission, company membership and
+task privacy checks still apply. The reference is absent when prompt capture is
+disabled. Tool argument values remain excluded from company traces.
 
 The exporter sends once at turn completion with a three-second deadline, at most
 four requests in flight and no idle polling or persistent queue. Closing drains

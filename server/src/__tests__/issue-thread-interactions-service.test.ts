@@ -27,15 +27,24 @@ import {
   projectWorkspaces,
   projects,
   workspaceOperations,
+  toolApplications,
+  toolConnections,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
+  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
 } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
-import { ONBOARDING_FIRST_TASK_ORIGIN_KIND } from "@paperclipai/shared";
+import {
+  ONBOARDING_FIRST_TASK_ORIGIN_KIND,
+  type IssueThreadInteractionPayload,
+  type RequestCheckboxConfirmationPayload,
+  type RequestItemVerdictsPayload,
+} from "@paperclipai/shared";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { issueService } from "../services/issues.js";
+import * as productTelemetry from "../services/product-telemetry.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { agentService } from "../services/agents.js";
 
@@ -55,7 +64,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     db = createDb(externalUrl ?? tempDb!.connectionString);
     issuesSvc = issueService(db);
     interactionsSvc = issueThreadInteractionService(db);
-  }, 20_000);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterEach(async () => {
     vi.unstubAllEnvs();
@@ -77,6 +86,8 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     await db.delete(instanceSettings);
     await db.delete(companyMemberships);
     await db.delete(instanceUserRoles);
+    await db.delete(toolConnections);
+    await db.delete(toolApplications);
     await db.delete(companies);
     await db.delete(authUsers);
   });
@@ -147,6 +158,60 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
 
     return { companyId, goalId, issueId };
   }
+
+  it.each([
+    ["tool_error", "GitHub", "config"], ["tool_execution_failed", "GitHub", "config"],
+    ["tool_error", "GitHub (2)", "config"], ["tool_execution_failed", "Prototype code", "config"],
+    ["tool_error", "Transport GitHub", "transport"],
+    ["tool_error", "Imported GitHub", "application"], ["tool_execution_failed", "Legacy GitHub", "legacy_application"],
+  ])("projects a saved GitHub %s permission error for %s without rewriting its diagnostic record", async (errorCode, appName, source) => {
+    const { companyId, issueId } = await seedConfirmationIssue("GitHub access repair");
+    const [application] = await db.insert(toolApplications).values({ companyId, applicationKey: `github-${randomUUID()}`,
+      name: appName, type: "mcp_http", metadata: source === "application" ? { sourceTemplateKey: "github" }
+        : source === "legacy_application" ? { source: "github" } : {} }).returning();
+    const [connection] = await db.insert(toolConnections).values({ companyId, applicationId: application!.id,
+      name: appName, uid: `github-${randomUUID()}`, transport: "mcp_remote",
+      config: source === "config" ? { sourceTemplateKey: "github" } : {},
+      transportConfig: source === "transport" ? { sourceTemplateKey: "github" } : {} }).returning();
+    const errorMessage = "failed to create repository: POST https://api.github.com/user/repos: 403 Resource not accessible by integration []";
+    const [row] = await db.insert(issueThreadInteractions).values({ companyId, issueId,
+      kind: "request_confirmation", status: "accepted", payload: { version: 1, prompt: "Create repository?",
+        toolAction: { version: 1, actionRequestId: randomUUID(), invocationId: randomUUID(), toolName: "github.create_repository",
+          toolDisplayName: "Create repository", appDisplayName: appName, connectionId: connection!.id, applicationId: application!.id,
+          risk: "write", previewMarkdown: "Create a private prototype repository", argumentsSummaryJson: "{}",
+          argumentsHash: "hash", expiresAt: new Date().toISOString() } },
+      result: { version: 1, outcome: "accepted", toolAction: { version: 1, status: "failed",
+        errorCode, errorMessage, updatedAt: new Date().toISOString() } },
+    }).returning();
+    expect(await interactionsSvc.getById(row!.id)).toMatchObject({ result: { toolAction: {
+      errorCode: "github_access_denied", errorMessage,
+    } } });
+    expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, row!.id)))[0]?.result)
+      .toMatchObject({ toolAction: { errorCode, errorMessage } });
+  });
+
+  it.each(["other_company", "other_provider", "other_application"])("does not infer GitHub identity from a card name with %s metadata", async variant => {
+    const { companyId, issueId } = await seedConfirmationIssue("Connection identity boundary");
+    const connectionCompanyId = variant === "other_company" ? randomUUID() : companyId;
+    if (connectionCompanyId !== companyId) await db.insert(companies).values(interactionCompanyRow(connectionCompanyId));
+    const [application] = await db.insert(toolApplications).values({ companyId: connectionCompanyId,
+      applicationKey: `provider-${randomUUID()}`, name: "GitHub", type: "mcp_http",
+      metadata: { sourceTemplateKey: "github" } }).returning();
+    const [connection] = await db.insert(toolConnections).values({ companyId: connectionCompanyId, applicationId: application!.id,
+      name: "GitHub", uid: `provider-${randomUUID()}`, transport: "mcp_remote",
+      config: { sourceTemplateKey: variant === "other_provider" ? "notion" : "github" } }).returning();
+    const [row] = await db.insert(issueThreadInteractions).values({ companyId, issueId,
+      kind: "request_confirmation", status: "accepted", payload: { version: 1, prompt: "Run action?",
+        toolAction: { version: 1, actionRequestId: randomUUID(), invocationId: randomUUID(), toolName: "provider.action",
+          toolDisplayName: "Run action", appDisplayName: "GitHub", connectionId: connection!.id,
+          applicationId: variant === "other_application" ? randomUUID() : application!.id,
+          risk: "write", previewMarkdown: "Run action", argumentsSummaryJson: "{}", argumentsHash: "hash",
+          expiresAt: new Date().toISOString() } },
+      result: { version: 1, outcome: "accepted", toolAction: { version: 1, status: "failed",
+        errorCode: "tool_error", errorMessage: "403 Resource not accessible by integration", updatedAt: new Date().toISOString() } },
+    }).returning();
+    expect(await interactionsSvc.getById(row!.id)).toMatchObject({ result: { toolAction: { errorCode: "tool_error" } } });
+  });
 
   async function attachPlanDocument(companyId: string, issueId: string) {
     const documentId = randomUUID();
@@ -529,7 +594,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         commentIds: [commentId],
       }),
     });
-    expect(await interactionsSvc.listForIssue(fixture.companyId, fixture.issueId)).toEqual([]);
+    expect(await interactionsSvc.listForIssue(fixture.issueId)).toEqual([]);
   });
 
   it("allows a source-run question when the newer human comment is explicitly delivered", async () => {
@@ -1270,14 +1335,18 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       ]),
     );
 
+    // Agent-authored suggestions nest one level: the nested suggestion would be
+    // a grandchild, so it lands beside its suggested parent and records it as origin.
     const children = await issuesSvc.list(companyId, { parentId: issueId });
-    expect(children).toHaveLength(1);
-    expect(children[0]?.title).toBe("Create the root follow-up");
-
-    const nestedChildren = await issuesSvc.list(companyId, { parentId: children[0]!.id });
-    expect(nestedChildren).toHaveLength(1);
-    expect(nestedChildren[0]?.title).toBe("Create the nested follow-up");
-    expect(nestedChildren[0]?.requestDepth).toBe(4);
+    expect(children.map((child) => child.title).sort()).toEqual([
+      "Create the nested follow-up",
+      "Create the root follow-up",
+    ]);
+    const rootFollowUp = children.find((child) => child.title === "Create the root follow-up")!;
+    const nestedFollowUp = children.find((child) => child.title === "Create the nested follow-up")!;
+    expect(nestedFollowUp.originIssueId).toBe(rootFollowUp.id);
+    expect(nestedFollowUp.requestDepth).toBe(4);
+    expect(await issuesSvc.list(companyId, { parentId: rootFollowUp.id })).toHaveLength(0);
 
     const listed = await interactionsSvc.listForIssue(issueId);
     expect(listed).toHaveLength(1);
@@ -1288,7 +1357,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     })).rejects.toThrow("Interaction has already been resolved");
 
     const childrenAfterDuplicateAccept = await issuesSvc.list(companyId, { parentId: issueId });
-    expect(childrenAfterDuplicateAccept).toHaveLength(1);
+    expect(childrenAfterDuplicateAccept).toHaveLength(2);
   });
 
   it("accepts a selected subset of suggested tasks and records the skipped drafts", async () => {
@@ -2553,7 +2622,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     const actor = {
       agentId: resolverAgentId,
       runId: resolverRunId,
-      resolverPolicyRestriction: "not_creator",
+      resolverPolicyRestriction: "not_creator" as const,
     };
     await expect(interactionsSvc.acceptInteraction(issue, createdByResolver.id, {}, actor))
       .rejects.toThrow("requires a resolver other than its creator or creating run");
@@ -2718,7 +2787,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         options: [{ id: "file-a", label: "a.txt" }],
       },
     }, { userId: "local-board" });
-    expect(created.payload.supersedeOnUserComment).toBe(false);
+    expect((created.payload as RequestCheckboxConfirmationPayload).supersedeOnUserComment).toBe(false);
 
     const expired = await interactionsSvc.expireRequestConfirmationsSupersededByComment(
       { id: issueId, companyId },
@@ -2732,8 +2801,8 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
   it.each(["verdicts", "suggestions", "dismiss"] as const)(
     "rolls back %s when external action authorization or receipt ownership changes",
     async (kind) => {
-      const { companyId, issueId } = await seedConfirmationIssue("External form transaction");
-      const issue = { id: issueId, companyId };
+      const { companyId, goalId, issueId } = await seedConfirmationIssue("External form transaction");
+      const issue = { id: issueId, companyId, projectId: null, goalId };
       const interaction = await interactionsSvc.create(issue, kind === "verdicts"
         ? { kind: "request_item_verdicts", payload: { version: 1, prompt: "Review", items: [{ id: "api", label: "API" }] } }
         : { kind: "suggest_tasks", payload: { version: 1, tasks: [{ clientKey: "check", title: "Check the result" }] } },
@@ -3004,7 +3073,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         items: [{ id: "file-a", label: "a.txt" }],
       },
     }, { userId: "local-board" });
-    expect(created.payload.supersedeOnUserComment).toBe(false);
+    expect((created.payload as RequestItemVerdictsPayload).supersedeOnUserComment).toBe(false);
 
     const expired = await interactionsSvc.expireRequestConfirmationsSupersededByComment(
       { id: issueId, companyId },
@@ -3167,8 +3236,16 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       payload: { version: 1, prompt: "Accept this plan?", target },
     }, { agentId });
 
+    const planApproved = vi.spyOn(productTelemetry, "emitPlanApprovedAfterCommit");
     const accepted = await interactionsSvc.acceptInteraction(acceptIssueScope(issueId, companyId, goalId), created.id, {}, { userId: "local-board" });
 
+    expect(planApproved).toHaveBeenCalledExactlyOnceWith({
+      companyId,
+      actor: { userId: "local-board" },
+      startsExecution: true,
+      task: { createdByUserId: null, responsibleUserId: null },
+    });
+    planApproved.mockRestore();
     expect(accepted.interaction).toMatchObject({
       id: created.id,
       status: "accepted",
@@ -3199,6 +3276,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       assigneeAgentId: agentId,
     }).where(eq(issues.id, issueId));
 
+    const planApproved = vi.spyOn(productTelemetry, "emitPlanApprovedAfterCommit");
     const nonPlan = await interactionsSvc.create({ id: issueId, companyId }, {
       kind: "request_confirmation",
       payload: { version: 1, prompt: "Accept this unrelated decision?" },
@@ -3206,6 +3284,8 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     await interactionsSvc.acceptInteraction(acceptIssueScope(issueId, companyId, goalId), nonPlan.id, {}, {
       userId: "local-board",
     });
+    expect(planApproved).not.toHaveBeenCalled();
+    planApproved.mockRestore();
     await expect(db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]?.workMode))
       .resolves.toBe("planning");
 
@@ -3355,7 +3435,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       issueId,
       kind: "request_confirmation",
       status: "pending",
-      continuationPolicy: { kind: "none" },
+      continuationPolicy: "none",
       payload: {
         version: 1,
         prompt: "Proceed with the current draft?",
@@ -3393,15 +3473,12 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       issueId,
       kind: "request_confirmation",
       status: "cancelled",
-      continuationPolicy: { kind: "none" },
+      continuationPolicy: "none",
       payload: {
         version: 1,
         prompt: "Proceed with the current draft?",
       },
-      result: {
-        version: 1,
-        outcome: "withdrawn_by_creator",
-      },
+      result: sql`'{"version":1,"outcome":"withdrawn_by_creator"}'::jsonb`,
       createdByUserId: "local-board",
     });
 
@@ -3412,6 +3489,88 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(listed[0]?.result).toBeNull();
     expect(listed[0]?.status).toBe("cancelled");
   });
+
+  it("reads an old authorization target and saves follow-up comments without resolving the request", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Saved authorization target");
+    const key = `connection:https://mcp.example.test/${"connection/".repeat(25)}:user:local-board`;
+    const [card] = await db.insert(issueThreadInteractions).values({
+      companyId, issueId, kind: "request_confirmation", status: "pending",
+      continuationPolicy: "wake_assignee", requestedResolverPolicy: "human_only",
+      effectiveResolverPolicy: "human_only", createdByUserId: "local-board",
+      payload: { version: 1, prompt: "Connect your account to continue",
+        target: { type: "custom", key, label: "Personal connection ".repeat(10), href: "/apps/example/permissions" } },
+    }).returning();
+
+    expect((await interactionsSvc.listForIssue(issueId))[0]).toMatchObject({
+      id: card.id, status: "pending", effectiveResolverPolicy: "human_only",
+      payload: { target: { key } },
+    });
+    for (const body of ["How do I connect it?", "Please explain the next step."]) {
+      const saved = await issuesSvc.addComment(issueId, body, { userId: "local-board" }, {
+        clientRequestId: randomUUID(),
+      });
+      expect(await db.select().from(issueComments).where(eq(issueComments.id, saved.id)))
+        .toMatchObject([{ body }]);
+    }
+    // Reconstruct the reader as a reload would. A comment never supplies consent.
+    expect((await issueThreadInteractionService(db).listForIssue(issueId))[0]).toMatchObject({
+      id: card.id, status: "pending", result: null, payload: { target: { key } },
+    });
+    await expect(interactionsSvc.create({ id: issueId, companyId }, {
+      kind: "request_confirmation", payload: { version: 1, prompt: "New request",
+        target: { type: "custom", key } },
+    }, { userId: "local-board" })).rejects.toThrow();
+    await expect(interactionsSvc.acceptInteraction({ id: issueId, companyId: randomUUID(), projectId: null, goalId: null }, card.id, {}, { userId: "local-board" }))
+      .rejects.toMatchObject({ status: 404 });
+  });
+
+  it.each([
+    { type: "custom", key: "" },
+    { type: "custom", key: "authorization", href: "javascript:alert(1)" },
+    { type: "issue_document", key: "plan", revisionId: "invalid" },
+  ] as const)("keeps invalid stored target structure protected: %j", async target => {
+    const { companyId, issueId } = await seedConfirmationIssue("Invalid target structure");
+    const [card] = await db.insert(issueThreadInteractions).values({
+      companyId, issueId, kind: "request_confirmation", status: "pending",
+      continuationPolicy: "none", createdByUserId: "local-board",
+      payload: { version: 1, prompt: "Review this request", target },
+    }).returning();
+    await expect(interactionsSvc.listForIssue(issueId)).rejects.toThrow();
+    await expect(interactionsSvc.acceptInteraction({ id: issueId, companyId, projectId: null, goalId: null }, card.id, {}, { userId: "local-board" }))
+      .rejects.toThrow();
+    await expect(issuesSvc.addComment(issueId, "This request needs repair", { userId: "local-board" }))
+      .resolves.toMatchObject({ body: "This request needs repair" });
+    expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, card.id)))[0])
+      .toMatchObject({ status: "pending", result: null });
+  });
+
+  it.each(["request_confirmation", "ask_user_questions"] as const)(
+    "keeps a malformed %s pending while saving a comment and superseding a valid sibling", async kind => {
+      const { companyId, issueId } = await seedConfirmationIssue("Malformed saved request");
+      const [malformed] = await db.insert(issueThreadInteractions).values({
+        companyId, issueId, kind, status: "pending", continuationPolicy: "wake_assignee",
+        createdByUserId: "local-board",
+        payload: sql`${JSON.stringify({ version: 1, prompt: null, supersedeOnUserComment: true })}::jsonb`,
+      }).returning();
+      const [valid] = await db.insert(issueThreadInteractions).values({
+        companyId, issueId, kind: "request_confirmation", status: "pending",
+        continuationPolicy: "none", createdByUserId: "local-board",
+        payload: { version: 1, prompt: "An optional question", supersedeOnUserComment: true },
+        createdAt: new Date(Date.now() - 1000),
+      }).returning();
+      const saved = await issuesSvc.addComment(issueId, "I need help with this request", { userId: "local-board" });
+      expect((await db.select().from(issueComments).where(eq(issueComments.id, saved.id)))[0].body)
+        .toBe("I need help with this request");
+      expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, malformed.id)))[0])
+        .toMatchObject({ status: "pending", result: null });
+      expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, valid.id)))[0])
+        .toMatchObject({ status: "expired", result: { outcome: "superseded_by_comment", commentId: saved.id } });
+      await expect(interactionsSvc.expireRequestConfirmationsSupersededByHistoricalComments({ id: issueId, companyId }))
+        .resolves.toEqual([]);
+      await expect(interactionsSvc.acceptInteraction({ id: issueId, companyId, projectId: null, goalId: null }, malformed.id, {}, { userId: "local-board" }))
+        .rejects.toThrow();
+    },
+  );
 
   it("derives legacy pending interactions as expired on closed issues without mutating the GET", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Legacy pending interaction on closed issue");
@@ -3445,7 +3604,8 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     }, created.id, {}, { userId: "local-board" })).rejects.toThrow(
       "Interaction is no longer actionable because the issue is closed",
     );
-    await expect(interactionsSvc.withdrawInteraction({ id: issueId, companyId, status: "done" }, created.id, {}, {
+    const closedIssue = { id: issueId, companyId, status: "done" };
+    await expect(interactionsSvc.withdrawInteraction(closedIssue, created.id, {}, {
       userId: "local-board",
     })).rejects.toThrow("Interaction is no longer actionable because the issue is closed");
   });
@@ -4132,30 +4292,35 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         executionWorkspaceId,
       });
 
-      const payload = kind === "request_checkbox_confirmation"
+      const request = kind === "request_checkbox_confirmation"
         ? {
-            version: 1 as const,
-            prompt: "Which files should be accepted?",
-            options: [
-              { id: "file-a", label: "a.txt" },
-              { id: "file-b", label: "b.txt" },
-            ],
-            minSelected: 0,
-            maxSelected: 2,
+            kind,
+            payload: {
+              version: 1 as const,
+              prompt: "Which files should be accepted?",
+              options: [
+                { id: "file-a", label: "a.txt" },
+                { id: "file-b", label: "b.txt" },
+              ],
+              minSelected: 0,
+              maxSelected: 2,
+            },
           }
         : {
-            version: 1 as const,
-            prompt: "Mark this issue done?",
+            kind,
+            payload: {
+              version: 1 as const,
+              prompt: "Mark this issue done?",
+            },
           };
 
       const created = await interactionsSvc.create({
         id: issueId,
         companyId,
       }, {
-        kind,
+        ...request,
         continuationPolicy: "wake_assignee",
         sourceRunId,
-        payload,
       }, {
         userId: "local-board",
       });
@@ -4239,7 +4404,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       expect(interaction.acceptanceBlocker).toBeUndefined();
     });
 
-    it.each(["toolAction", "ask_user_questions"])(
+    it.each(["toolAction", "ask_user_questions"] as const)(
       "keeps live %s decisions available while the workspace is active",
       async (kind) => {
         const { companyId, executionWorkspaceId, issueId, interactionId, sourceRunId } =
@@ -4248,7 +4413,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
           companyId, executionWorkspaceId, heartbeatRunId: sourceRunId,
           phase: "worktree_prepare", status: "succeeded",
         });
-        const payload = kind === "ask_user_questions"
+        const payload: IssueThreadInteractionPayload = kind === "ask_user_questions"
           ? { version: 1, questions: [{ id: "question", prompt: "Which option?", selectionMode: "single", options: [{ id: "first", label: "First" }] }] }
           : { version: 1, prompt: "Allow this action?", [kind]: { version: 1, actionRequestId: randomUUID(), invocationId: randomUUID(), toolName: "example.write",
                 toolDisplayName: "Write", connectionId: randomUUID(), applicationId: randomUUID(),

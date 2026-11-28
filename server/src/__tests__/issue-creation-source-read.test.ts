@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { activityLog, agents, companies, createDb, heartbeatRuns, issues } from "@paperclipai/db";
-import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "./helpers/full-database-response-capture.js";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -55,7 +55,7 @@ describe.skipIf(!support.supported)("creation source run projections", () => {
     expect(run.issueId).toBe(binding === "scoped" ? sourceId : null);
     expect(run.nativeIssueId).toBeNull();
     const observed = createDb(database.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(observed, { heartbeatRuns, issues }, capture);
     try {
       const result = await resolveIssueCreationSource(observed, child);
@@ -64,7 +64,7 @@ describe.skipIf(!support.supported)("creation source run projections", () => {
       expect(reads.reduce((count, event) => count + Number(event.calls), 0)).toBe(1);
       expect(reads.reduce((bytes, event) => bytes + Number(event.responseValueBytes), 0)).toBeLessThan(8192);
       expect(result).toMatchObject({ run: { id: run.id, companyId, agentId }, sourceIssue: { id: sourceId } });
-      expect(runBoundIssueReference(result!.run)).toBe(binding === "scoped" ? sourceId : "CSR-1");
+      expect(runBoundIssueReference(result!.run!)).toBe(binding === "scoped" ? sourceId : "CSR-1");
       for (const key of ["runnerProfileJson", "stdoutExcerpt", "stderrExcerpt", "resultJson"]) expect(result!.run).not.toHaveProperty(key);
       expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]).toEqual(run);
       expect(JSON.stringify(events)).not.toContain("retained-source-context");

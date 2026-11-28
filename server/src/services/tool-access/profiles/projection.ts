@@ -83,6 +83,18 @@ export type ProfileConnection = Pick<typeof toolConnections.$inferSelect, "id" |
 export type ProfileEntryMatch = Pick<typeof toolProfileEntries.$inferSelect,
   "selectorType" | "applicationId" | "connectionId" | "catalogEntryId" | "toolName" | "riskLevel">;
 
+export const profileSummaryEntryColumns = {
+  catalogEntryId: toolProfileEntries.catalogEntryId,
+  connectionId: toolProfileEntries.connectionId,
+  applicationId: toolProfileEntries.applicationId,
+  selectorType: toolProfileEntries.selectorType,
+  effect: toolProfileEntries.effect,
+  toolName: toolProfileEntries.toolName,
+  riskLevel: toolProfileEntries.riskLevel,
+};
+
+type ProfileSummaryEntry = ProfileEntryMatch & Pick<typeof toolProfileEntries.$inferSelect, "effect">;
+
 export type ProfileCatalogMatch = Pick<typeof toolCatalogEntries.$inferSelect,
   "id" | "applicationId" | "connectionId" | "toolName" | "riskLevel">;
 
@@ -103,29 +115,43 @@ export function profileEntryMatchesCatalog(
   return false;
 }
 
+export function profileCatalogMatcher(entries: ProfileEntryMatch[]) {
+  const applications = new Set<string | null>();
+  const connections = new Set<string | null>();
+  const catalogIds = new Set<string | null>();
+  const toolNames = new Set<string | null>();
+  const risks = new Set<string | null>();
+  for (const entry of entries) {
+    if (entry.selectorType === "application") applications.add(entry.applicationId);
+    else if (entry.selectorType === "connection") connections.add(entry.connectionId);
+    else if (entry.selectorType === "catalog_entry") catalogIds.add(entry.catalogEntryId);
+    else if (entry.selectorType === "tool_name") toolNames.add(entry.toolName);
+    else if (entry.selectorType === "risk_level") risks.add(entry.riskLevel);
+  }
+  return (entry: ProfileCatalogMatch) => applications.has(entry.applicationId)
+    || connections.has(entry.connectionId) || catalogIds.has(entry.id)
+    || toolNames.has(entry.toolName) || risks.has(entry.riskLevel);
+}
+
 export function summarizeProfile(input: {
-  profile: typeof toolProfiles.$inferSelect;
-  entries: Array<typeof toolProfileEntries.$inferSelect>;
-  bindings: Array<typeof toolProfileBindings.$inferSelect>;
+  profile: Pick<typeof toolProfiles.$inferSelect, "companyId" | "defaultAction">;
+  entries: ProfileSummaryEntry[];
+  bindings: Pick<typeof toolProfileBindings.$inferSelect, "targetType" | "targetId">[];
   catalog: ProfileCatalogEntry[];
   agentIds: string[];
 }): ToolProfileSummary {
-  const includes = input.entries.filter((entry) => entry.effect === "include");
-  const excludes = input.entries.filter((entry) => entry.effect === "exclude");
+  const included = profileCatalogMatcher(input.entries.filter((entry) => entry.effect === "include"));
+  const excluded = profileCatalogMatcher(input.entries.filter((entry) => entry.effect === "exclude"));
   const allowedCatalogIds = new Set<string>();
   const allowedApplicationIds = new Set<string>();
   const excludedCatalogIds = new Set<string>();
 
   for (const catalogEntry of input.catalog) {
-    const excluded = excludes.some((entry) =>
-      profileEntryMatchesCatalog(entry, catalogEntry),
-    );
-    if (excluded) excludedCatalogIds.add(catalogEntry.id);
-    if (excluded) continue;
-    const included = includes.some((entry) =>
-      profileEntryMatchesCatalog(entry, catalogEntry),
-    );
-    if (input.profile.defaultAction === "allow" || included) {
+    if (excluded(catalogEntry)) {
+      excludedCatalogIds.add(catalogEntry.id);
+      continue;
+    }
+    if (input.profile.defaultAction === "allow" || included(catalogEntry)) {
       allowedCatalogIds.add(catalogEntry.id);
       if (catalogEntry.applicationId)
         allowedApplicationIds.add(catalogEntry.applicationId);
@@ -166,7 +192,7 @@ export function summarizeProfile(input: {
 }
 
 export function profileCoversCatalogScope(input: {
-  entry: typeof toolProfileEntries.$inferSelect;
+  entry: ProfileSummaryEntry;
   catalogEntry: ProfileCatalogEntry;
   catalogById: Map<string, ProfileCatalogEntry>;
 }): boolean {
@@ -190,8 +216,8 @@ export function profileCoversCatalogScope(input: {
 }
 
 export function pendingNewToolsForProfile(input: {
-  profile: typeof toolProfiles.$inferSelect;
-  entries: Array<typeof toolProfileEntries.$inferSelect>;
+  profile: Pick<typeof toolProfiles.$inferSelect, "status" | "defaultAction" | "newToolsReviewedAt" | "createdAt">;
+  entries: ProfileSummaryEntry[];
   catalog: ProfileCatalogEntry[];
   applicationsById?: Map<string, ProfileApplication>;
   connectionsById?: Map<string, ProfileConnection>;
@@ -203,32 +229,28 @@ export function pendingNewToolsForProfile(input: {
     return [];
   const watermark = input.profile.newToolsReviewedAt ?? input.profile.createdAt;
   const catalogById = new Map(input.catalog.map((entry) => [entry.id, entry]));
-  const scopedIncludes = input.entries.filter(
-    (entry) =>
-      entry.effect === "include" &&
-      (entry.selectorType === "application" ||
-        entry.selectorType === "connection" ||
-        entry.selectorType === "catalog_entry"),
-  );
-  if (scopedIncludes.length === 0) return [];
+  const coveredApplications = new Set<string | null>();
+  const coveredConnections = new Set<string | null>();
+  for (const entry of input.entries) {
+    if (entry.effect !== "include") continue;
+    if (entry.selectorType === "application") coveredApplications.add(entry.applicationId);
+    else if (entry.selectorType === "connection") coveredConnections.add(entry.connectionId);
+    else if (entry.selectorType === "catalog_entry" && entry.catalogEntryId) {
+      const scopedEntry = catalogById.get(entry.catalogEntryId);
+      if (!scopedEntry) continue;
+      coveredConnections.add(scopedEntry.connectionId);
+      if (scopedEntry.applicationId) coveredApplications.add(scopedEntry.applicationId);
+    }
+  }
+  if (coveredApplications.size === 0 && coveredConnections.size === 0) return [];
+  const explicitlyReviewed = profileCatalogMatcher(input.entries);
 
   return input.catalog
-    .filter(
-      (catalogEntry) =>
-        catalogEntry.status === "active" ||
-        catalogEntry.status === "quarantined",
-    )
-    .filter((catalogEntry) => catalogEntry.firstSeenAt > watermark)
     .filter((catalogEntry) =>
-      scopedIncludes.some((entry) =>
-        profileCoversCatalogScope({ entry, catalogEntry, catalogById }),
-      ),
-    )
-    .filter(
-      (catalogEntry) =>
-        !input.entries.some((entry) =>
-          profileEntryMatchesCatalog(entry, catalogEntry),
-        ),
+      (catalogEntry.status === "active" || catalogEntry.status === "quarantined")
+      && catalogEntry.firstSeenAt > watermark
+      && (coveredApplications.has(catalogEntry.applicationId) || coveredConnections.has(catalogEntry.connectionId))
+      && !explicitlyReviewed(catalogEntry),
     )
     .map((catalogEntry) => ({
       catalogEntryId: catalogEntry.id,

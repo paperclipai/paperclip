@@ -7,10 +7,22 @@ import { fileURLToPath } from "node:url";
 import { checkoutSources, fingerprintContracts, packContractDigest } from "./contract-fingerprints.mjs";
 
 const root = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
-const sources = checkoutSources(root);
+const diskSources = checkoutSources(root);
+const readCache = new Map();
+const listCache = new Map();
+const sources = {
+  read: p => {
+    if (!readCache.has(p)) readCache.set(p, diskSources.read(p));
+    return readCache.get(p);
+  },
+  list: dir => {
+    if (!listCache.has(dir)) listCache.set(dir, diskSources.list(dir));
+    return listCache.get(dir);
+  },
+};
 const R = "packages/paperclip-runner";
 const RUST = `${R}/runner/crates/runner-core/src`;
-const baseline = packContractDigest(root);
+const baseline = packContractDigest(root, sources);
 
 /** Digest of the checkout with one file's text rewritten in memory. */
 function digestWith(path, edit) {
@@ -59,6 +71,14 @@ test("contract edits change the digest", () => {
     // A nested runtime context field, which the pack's strict parser rejects.
     [`${R}/protocol/provider-schemas/runtime-context.schema.json`, s => s.replace("\"aggregateDigest\": { \"$ref\": \"#/$defs/sha256Hex\" }",
       "\"aggregateDigest\": { \"$ref\": \"#/$defs/sha256Hex\" },\n        \"newContextField\": true")],
+    // The swarm route's credential facts: channel selection and the account comparison.
+    [SIDECAR_SCHEMA, s => s.replace("\"swarmChannel\": { \"enum\": [\"provider_default\", \"stable\"] }",
+      "\"swarmChannel\": { \"enum\": [\"provider_default\", \"stable\", \"daily\"] }")],
+    [SIDECAR_SCHEMA, s => s.replace("\"accountSha256\": { \"type\": \"string\", \"pattern\": \"^[a-f0-9]{64}$\" }",
+      "\"accountSha256\": { \"type\": \"string\", \"pattern\": \"^[a-f0-9]{40}$\" }")],
+    // The Antigravity swarm turn's request field: an older pack reads the request elsewhere.
+    [SIDECAR_SCHEMA, s => s.replace("\"swarmRequest\": { \"type\": \"string\", \"minLength\": 1, \"maxLength\": 16000 }",
+      "\"swarmRequest\": { \"type\": \"string\", \"minLength\": 1, \"maxLength\": 8000 }")],
     [SIDECAR_SCHEMA, s => s.replace("\"readOnly\": { \"type\": \"boolean\" }", "\"readOnly\": { \"type\": \"boolean\" },\n        \"newPolicyField\": { \"type\": \"boolean\" }")],
     [`${RUST}/configured_environment.rs`, s => s.replace("const RESERVED: &[&str] = &[", "const RESERVED: &[&str] = &[\"NEW_KEY\",")],
     [`${RUST}/acpx_provider_checkpoint.rs`, s => s.replace("pub struct AcpxSuspensionCheckpoint {",
@@ -121,6 +141,23 @@ test("a parser that reads another key changes the digest even when other code re
     "|| !value.get(\"result\").is_some_and(Value::is_object)")), baseline);
   // Renaming the function keeps its keys and the digest.
   assert.equal(digestWith(path, s => s.replaceAll("verify_open_response", "verify_session_open_response")), baseline);
+});
+
+test("the Runner's ACPX patch binds the pack for every ACPX harness; other patches do not", () => {
+  const version = JSON.parse(sources.read(`${R}/package.json`)).dependencies.acpx;
+  const runnerPatch = `patches/acpx@${version}.patch`;
+  assert.notEqual(digestWith(runnerPatch, s => `${s}\n`), baseline);
+  const others = sources.list("patches").filter(path => path.endsWith(".patch") && path !== runnerPatch);
+  for (const path of others) assert.equal(digestWith(path, s => `${s}\n`), baseline, path);
+  // A patch for another ACPX version (another package's pin) never binds the pack.
+  const otherAcpx = "patches/acpx@0.0.0-other.patch";
+  assert.equal(packContractDigest(root, {
+    read: p => p === otherAcpx ? "--- a\n+++ b\n" : sources.read(p),
+    list: dir => dir === "patches" ? [...sources.list(dir), otherAcpx] : sources.list(dir),
+  }), baseline);
+  // A build context without the Runner's patch fails instead of dropping the contract.
+  assert.throws(() => packContractDigest(root, { read: p => p === runnerPatch ? null : sources.read(p),
+    list: dir => sources.list(dir).filter(p => p !== runnerPatch) }), /Registered contract source is missing: acpx-patch/);
 });
 
 test("recursive serde types resolve", () => {

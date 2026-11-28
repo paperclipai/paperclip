@@ -1,4 +1,5 @@
 import { oauthConfig } from "./metadata.js";
+import { usesClientCredentials } from "./client-credentials.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -43,15 +44,11 @@ export function createOAuthRefreshLeases(db: Db, now: () => Date, getConnectionR
   ) {
     const latest = await getConnectionRow(connection.id, connection.companyId);
     if (oauthRefreshLeaseId(latest) !== leaseId) return latest;
-    const nextConfig = {
-      ...latest.config,
-      oauth: withoutOAuthRefreshLease(oauthConfig(latest)),
-    };
     const [updated] = await db
       .update(toolConnections)
       .set({
-        config: nextConfig,
-        transportConfig: nextConfig,
+        config: sql`${toolConnections.config} #- '{oauth,refreshLease}'`,
+        transportConfig: sql`${toolConnections.transportConfig} #- '{oauth,refreshLease}'`,
         updatedAt: now(),
       })
       .where(
@@ -165,14 +162,10 @@ export function createOAuthRefreshLeases(db: Db, now: () => Date, getConnectionR
     });
     const oauth = oauthGrantConfig(latest);
     if (asRecord(oauth.refreshLease).id !== leaseId) return latest;
-    const providerTenant = {
-      ...(latest.providerTenant ?? {}),
-      oauth: withoutOAuthGrantRefreshLease(oauth),
-    };
     const [updated] = await db
       .update(connectionGrants)
       .set({
-        providerTenant,
+        providerTenant: sql`${connectionGrants.providerTenant} #- '{oauth,refreshLease}'`,
         updatedAt: now(),
       })
       .where(
@@ -202,7 +195,7 @@ export function createOAuthRefreshLeases(db: Db, now: () => Date, getConnectionR
     leaseId: string | null;
   }> {
     const waitDeadline = Date.now() + OAUTH_REFRESH_LEASE_WAIT_MS;
-    const initialUpdatedAt = grant.updatedAt.getTime();
+    const initialOAuth = JSON.stringify(withoutOAuthGrantRefreshLease(oauthGrantConfig(grant)));
     while (true) {
       const latest = await getOAuthGrantRow({
         companyId: connection.companyId,
@@ -221,7 +214,7 @@ export function createOAuthRefreshLeases(db: Db, now: () => Date, getConnectionR
         (!forceRefresh &&
           (expiresAtMs === null || expiresAtMs > Date.now() + 60_000)) ||
         (forceRefresh &&
-          latest.updatedAt.getTime() > initialUpdatedAt &&
+          JSON.stringify(withoutOAuthGrantRefreshLease(oauthGrantConfig(latest))) !== initialOAuth &&
           !asRecord(oauthGrantConfig(latest).refreshLease).id)
       ) {
         return { grant: latest, leaseId: null };
@@ -266,11 +259,41 @@ export function createOAuthRefreshLeases(db: Db, now: () => Date, getConnectionR
               eq(connectionGrants.id, latest.id),
               eq(connectionGrants.companyId, latest.companyId),
               eq(connectionGrants.status, "active"),
+              // SQL NULL and JSON null both represent absent optional metadata.
+              // Keep object snapshots exact so concurrent metadata writes win the CAS.
+              sql`coalesce(${connectionGrants.providerTenant}, 'null'::jsonb) = ${JSON.stringify(latest.providerTenant)}::jsonb`,
               sql`${connectionGrants.providerTenant} #>> '{oauth,refreshLease,id}' is null`,
             ),
           )
           .returning();
         if (claimed) return { grant: claimed, leaseId };
+      }
+      if (currentLeaseId && !leaseIsActive && usesClientCredentials(connection)) {
+        // Machine sign-in has no refresh token that an interrupted refresh
+        // could have consumed, so an abandoned lease is safe to take over:
+        // the next request simply asks for a new token.
+        const leaseId = randomUUID();
+        const providerTenant = {
+          ...(latest.providerTenant ?? {}),
+          oauth: {
+            ...withoutOAuthGrantRefreshLease(oauth),
+            refreshLease: { id: leaseId, expiresAt: new Date(Date.now() + OAUTH_REFRESH_LEASE_MS).toISOString() },
+          },
+        };
+        const [claimed] = await db
+          .update(connectionGrants)
+          .set({ providerTenant, updatedAt: now() })
+          .where(
+            and(
+              eq(connectionGrants.id, latest.id),
+              eq(connectionGrants.companyId, latest.companyId),
+              eq(connectionGrants.status, "active"),
+              sql`${connectionGrants.providerTenant} #>> '{oauth,refreshLease,id}' = ${currentLeaseId}`,
+            ),
+          )
+          .returning();
+        if (claimed) return { grant: claimed, leaseId };
+        continue;
       }
       if (currentLeaseId && !leaseIsActive) {
         throw unprocessable(
