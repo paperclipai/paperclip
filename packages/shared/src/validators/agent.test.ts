@@ -1,5 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { resetAgentSessionSchema, updateAgentSchema } from "./agent.js";
+import { resetAgentSessionSchema, updateAgentSchema, wakeAgentSchema } from "./agent.js";
+
+describe("wake agent schema", () => {
+  it.each(["issueId", "taskId"])("preserves top-level %s", key => {
+    const id = "11111111-1111-4111-8111-111111111111";
+    expect(wakeAgentSchema.parse({ [key]: id })).toMatchObject({ [key]: id });
+  });
+
+  it.each(["issueId", "taskId"])("rejects a non-UUID top-level %s", key => {
+    expect(wakeAgentSchema.safeParse({ [key]: "issue-1" }).success).toBe(false);
+  });
+});
 
 describe("agent update schema", () => {
   it.each(["paused", "idle", "terminated"])("accepts lifecycle status request %s", status => {

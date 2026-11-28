@@ -6358,6 +6358,15 @@ export function agentRoutes(
     }
 
     let wakePayload = req.body.payload ?? null;
+    if (!asNonEmptyString(wakePayload?.issueId) && !asNonEmptyString(wakePayload?.taskId)) {
+      if (req.body.issueId || req.body.taskId) {
+        wakePayload = {
+          ...wakePayload,
+          ...(req.body.issueId ? { issueId: req.body.issueId } : {}),
+          ...(req.body.taskId ? { taskId: req.body.taskId } : {}),
+        };
+      }
+    }
     let retryConversationContext: Record<string, unknown> = {};
     let retryNativeReviewContext: NativeReviewAssignmentContext | null = null;
     if (req.body.failedRunId) {

@@ -1037,6 +1037,45 @@ describe("agent live run routes", () => {
     expect(db.select).toHaveBeenCalledTimes(2);
   });
 
+  it.each(["issueId", "taskId"])("routes top-level %s into the wake payload", async (key) => {
+    const res = await requestApp(await createApp(), (baseUrl) =>
+      request(baseUrl).post(`/api/agents/${routeAgentId}/wakeup`).send({
+        [key]: failedChatIssueId,
+        payload: { commentId: "comment-1" },
+      }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, expect.objectContaining({
+      payload: { [key]: failedChatIssueId, commentId: "comment-1" },
+    }));
+  });
+
+  it.each(["issueId", "taskId"])("preserves canonical payload %s over top-level aliases", async (key) => {
+    const payload = { [key]: failedChatIssueId };
+    const res = await requestApp(await createApp(), (baseUrl) =>
+      request(baseUrl).post(`/api/agents/${routeAgentId}/wakeup`).send({
+        issueId: routeAgentId, taskId: routeAgentId, payload,
+      }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, expect.objectContaining({ payload }));
+  });
+
+  it.each([undefined, null])("routes aliases when the wake payload is %s", async (payload) => {
+    const res = await requestApp(await createApp(), (baseUrl) =>
+      request(baseUrl).post(`/api/agents/${routeAgentId}/wakeup`).send({
+        issueId: failedChatIssueId, payload,
+      }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, expect.objectContaining({
+      payload: { issueId: failedChatIssueId },
+    }));
+  });
+
   it("passes scoped wake fields through the legacy heartbeat invoke route", async () => {
     const res = await requestApp(await createApp(), (baseUrl) =>
       request(baseUrl)
