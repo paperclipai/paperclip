@@ -9,12 +9,14 @@ import {
   companySecrets,
   companySecretVersions,
   companyMemberships,
+  connectionGrants,
   environments,
   heartbeatRuns,
   issues,
   projects,
   routines,
   secretAccessEvents,
+  toolConnections,
   userSecretDeclarations,
   userSecretDefinitions,
 } from "@paperclipai/db";
@@ -3573,39 +3575,96 @@ export function secretService(db: Db | DbTransaction) {
     return secret;
   }
 
+  async function assertNoConnectionSignsInWith(
+    companyId: string,
+    target: { definitionId: string } | { secretId: string },
+    change: "deleting" | "disabling",
+  ) {
+    const values = await db
+      .select({ id: companySecrets.id })
+      .from(companySecrets)
+      .where(and(
+        eq(companySecrets.companyId, companyId),
+        "definitionId" in target
+          ? eq(companySecrets.userSecretDefinitionId, target.definitionId)
+          : eq(companySecrets.id, target.secretId),
+        ne(companySecrets.status, "deleted"),
+      ));
+    if (values.length === 0) return;
+    const valueIds = sql.join(values.map((value) => sql`${value.id}`), sql`, `);
+    const refersToValue = (refs: typeof toolConnections.credentialSecretRefs | typeof connectionGrants.credentialSecretRefs) =>
+      sql`exists (select 1 from jsonb_array_elements(${refs}) as ref where ref->>'secretId' in (${valueIds}))`;
+    const [connection] = await db
+      .select({ name: toolConnections.name })
+      .from(toolConnections)
+      .where(and(
+        eq(toolConnections.companyId, companyId),
+        ne(toolConnections.status, "archived"),
+        or(
+          refersToValue(toolConnections.credentialSecretRefs),
+          sql`exists (select 1 from ${connectionGrants}
+            where ${connectionGrants.companyId} = ${toolConnections.companyId}
+              and ${connectionGrants.connectionId} = ${toolConnections.id}
+              and ${connectionGrants.status} <> 'revoked'
+              and ${refersToValue(connectionGrants.credentialSecretRefs)})`,
+        ),
+      ))
+      .limit(1);
+    if (connection) {
+      throw conflict(
+        `This secret is the saved sign-in for "${connection.name}". Disconnect that account instead of ${change} its secret.`,
+        { code: "secret_used_by_connection" },
+      );
+    }
+  }
+
+  function withoutConnectionSignIn<T>(
+    companyId: string,
+    target: { definitionId: string } | { secretId: string },
+    change: "deleting" | "disabling",
+    apply: () => Promise<T>,
+  ) {
+    return withAccountHomeSecretMutationLock(undefined, companyId, async () => {
+      await assertNoConnectionSignsInWith(companyId, target, change);
+      return apply();
+    });
+  }
+
   async function removeUserSecretDefinitionInternal(
     companyId: string,
     definitionId: string,
     actor?: { userId?: string | null; agentId?: string | null },
   ) {
     const existing = await resolveUserSecretDefinition(companyId, { definitionId });
-    const values = await db
-      .select({ id: companySecrets.id })
-      .from(companySecrets)
-      .where(and(
-        eq(companySecrets.companyId, companyId),
-        eq(companySecrets.scope, "user"),
-        eq(companySecrets.userSecretDefinitionId, definitionId),
-      ));
-    for (const value of values) {
-      await removeSecretInternal(value.id);
-    }
-    return db
-      .update(userSecretDefinitions)
-      .set({
-        key: `${existing.key}__deleted__${existing.id}`,
-        status: "deleted",
-        deletedAt: existing.deletedAt ?? new Date(),
-        updatedByAgentId: actor?.agentId ?? null,
-        updatedByUserId: actor?.userId ?? null,
-        updatedAt: new Date(),
-      })
-      .where(and(
-        eq(userSecretDefinitions.companyId, companyId),
-        eq(userSecretDefinitions.id, definitionId),
-      ))
-      .returning()
-      .then((rows) => rows[0] ?? null);
+    return withoutConnectionSignIn(companyId, { definitionId }, "deleting", async () => {
+      const values = await db
+        .select({ id: companySecrets.id })
+        .from(companySecrets)
+        .where(and(
+          eq(companySecrets.companyId, companyId),
+          eq(companySecrets.scope, "user"),
+          eq(companySecrets.userSecretDefinitionId, definitionId),
+        ));
+      for (const value of values) {
+        await removeSecretInternal(value.id);
+      }
+      return db
+        .update(userSecretDefinitions)
+        .set({
+          key: `${existing.key}__deleted__${existing.id}`,
+          status: "deleted",
+          deletedAt: existing.deletedAt ?? new Date(),
+          updatedByAgentId: actor?.agentId ?? null,
+          updatedByUserId: actor?.userId ?? null,
+          updatedAt: new Date(),
+        })
+        .where(and(
+          eq(userSecretDefinitions.companyId, companyId),
+          eq(userSecretDefinitions.id, definitionId),
+        ))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+    });
   }
 
   const instanceSecrets = {
@@ -4068,7 +4127,7 @@ export function secretService(db: Db | DbTransaction) {
           patch.providerConfigId,
         );
       }
-      return db
+      const update = () => db
         .update(userSecretDefinitions)
         .set({
           key: nextKey,
@@ -4092,6 +4151,10 @@ export function secretService(db: Db | DbTransaction) {
         ))
         .returning()
         .then((rows) => rows[0] ?? null);
+      if (patch.status && patch.status !== "active" && patch.status !== existing.status) {
+        return withoutConnectionSignIn(companyId, { definitionId: existing.id }, "disabling", update);
+      }
+      return update();
     },
 
     removeUserSecretDefinition: async (
@@ -4231,7 +4294,7 @@ export function secretService(db: Db | DbTransaction) {
       if (patch.status === "deleted") {
         return await secretService(db).removeCurrentUserSecretValue(companyId, ownerUserId, secret.id);
       }
-      return db
+      const update = () => db
         .update(companySecrets)
         .set({
           status: patch.status ?? secret.status,
@@ -4240,11 +4303,16 @@ export function secretService(db: Db | DbTransaction) {
         .where(eq(companySecrets.id, secret.id))
         .returning()
         .then((rows) => rows[0] ?? null);
+      if (patch.status && patch.status !== "active" && patch.status !== secret.status) {
+        return withoutConnectionSignIn(companyId, { secretId: secret.id }, "disabling", update);
+      }
+      return update();
     },
 
     removeCurrentUserSecretValue: async (companyId: string, ownerUserId: string, secretId: string) => {
       const secret = await getUserSecretValueById(companyId, ownerUserId, secretId);
-      return await secretService(db).remove(secret.id);
+      return withoutConnectionSignIn(companyId, { secretId: secret.id }, "deleting",
+        () => secretService(db).remove(secret.id));
     },
 
     syncUserSecretDeclarationsForTarget: async (
