@@ -29,9 +29,13 @@ import { heartbeatService } from "./heartbeat.js";
 import { hasVerifiedWorkspaceRepair, readWorkspaceRecovery } from "./workspace-recovery-receipt.js";
 import { claimNativeSessionResumptions } from "./native-runtime/native-finalization-reconciler.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
+import { legacyShutdownWorkspaceResourceProtected } from "./legacy-shutdown-workspace-settlement.js";
 import { issueRoutes } from "../routes/issues.js";
 import { errorHandler } from "../middleware/index.js";
-import { useWorkspaceRecoveryFixture, action, connectionString, db, failedWarmSource, replaceFixtureState, root, run, seed, warmHandoffSource } from "./__tests__/workspace-recovery-fixture.js";
+import { useWorkspaceRecoveryFixture, acceptedRemoteExport, action, connectionString, db, failedWarmSource, receiptOnlyRecoveryApp, recoverRunHolds, replaceFixtureState, root, run, seed, warmHandoffSource } from "./__tests__/workspace-recovery-fixture.js";
+import { finalizeNativeRun } from "./native-runtime/native-run-finalizer.js";
+import { readRemoteWorkspaceAuthority } from "./remote-workspaces.js";
+import { taskInterruptionPresentation } from "./task-interruption-presentation.js";
 const targets = vi.hoisted(() => new Map<string, AdapterSandboxExecutionTarget>());
 vi.mock("./environment-execution-target.js", async importOriginal => {
   const actual = await importOriginal<typeof import("./environment-execution-target.js")>();
@@ -141,6 +145,80 @@ describe("automatic retained workspace recovery", () => {
     expect(await inspectWorkspaceSource(db, { companyId: f.companyId, issueId: f.issueId, runId: f.runId, actionId: f.actionId }))
       .toMatchObject({ status: "verified" });
   }, 30_000);
+
+  // Regression: a native run resumed a warm sandbox and was interrupted before
+  // provider work. The restore hold stopped that sandbox and changed its lease
+  // to retain_on_failure. Recovery saved the files, but nothing returned the
+  // lease to reuse, so the next run paid a new sandbox and a full realize.
+  it.each([
+    ["the hold recorded its original policy", "current", "reuse_by_environment"],
+    // Old-saved/new-resumed: a previous release wrote the marker without the
+    // original policy. The reuse scope that only a reusable acquisition writes
+    // still proves it.
+    ["an older release saved the hold over a scoped reusable lease", "legacy_scoped", "reuse_by_environment"],
+    ["an older release saved the hold without reuse proof", "legacy_unscoped", "retain_on_failure"],
+  ] as const)("returns a settled restore hold to warm reuse when %s", async (_label, marker, policy) => {
+    const f = await warmHandoffSource(1);
+    const [held] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+    expect(held).toMatchObject({ leasePolicy: "retain_on_failure", status: "released" });
+    expect(held.metadata?.workspaceRestoreRecovery).toMatchObject({ schema: "paperclip.workspace-restore-recovery.v1", runId: f.runId });
+    if (marker !== "current") {
+      const { originalLeasePolicy: _original, ...legacyMarker } = held.metadata!.workspaceRestoreRecovery as Record<string, unknown>;
+      await db.update(environmentLeases).set({ metadata: { ...held.metadata, workspaceRestoreRecovery: legacyMarker,
+        ...(marker === "legacy_scoped" ? { reusableSandboxLease: { version: 1, companyId: f.companyId } } : {}) } })
+        .where(eq(environmentLeases.id, f.lease.id));
+    }
+    expect(await legacyShutdownWorkspaceResourceProtected(db, held)).toBe(true);
+    await recoverRetainedWorkspace(f.input);
+    expect(readSystemRecovery((await action(f.actionId)).evidence)?.state).toBe("complete");
+    expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(true);
+    const [settled] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+    expect(settled).toMatchObject({ leasePolicy: policy, status: "released", cleanupStatus: "success",
+      providerLeaseId: f.providerLeaseId });
+    expect(settled.metadata?.remoteExecutionTermination).toMatchObject({ state: "stopped" });
+    if (policy === "reuse_by_environment") {
+      expect(settled.metadata?.workspaceRestoreRecovery).toBeUndefined();
+      expect(settled.metadata?.workspaceRestoreRecoverySettled).toMatchObject({ runId: f.runId, actionId: f.actionId,
+        restoredLeasePolicy: "reuse_by_environment" });
+      expect(await legacyShutdownWorkspaceResourceProtected(db, settled)).toBe(false);
+      expect(await inspectWorkspaceSource(db, { companyId: f.companyId, issueId: f.issueId, runId: f.runId, actionId: f.actionId }))
+        .toMatchObject({ status: "verified" });
+    } else {
+      expect(settled.metadata?.workspaceRestoreRecovery).toMatchObject({ runId: f.runId });
+      expect(await legacyShutdownWorkspaceResourceProtected(db, settled)).toBe(true);
+    }
+  }, 30_000);
+
+  it.each([1, 2])("recovers saved work after %s warm handoffs that began with another task in the same workspace", async hops => {
+    const f = await warmHandoffSource(hops, undefined, { firstOwnerInSharedWorkspace: true });
+    const [first] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.priorLeaseId));
+    expect(first).toMatchObject({ issueId: f.firstOwnerIssueId, executionWorkspaceId: f.executionWorkspaceId, status: "expired" });
+    expect(new Set([f.firstOwnerIssueId, f.issueId, f.executionWorkspaceId]).size).toBe(3);
+    await recoverRetainedWorkspace(f.input);
+    const state = readSystemRecovery((await action(f.actionId)).evidence)!;
+    expect(state.failure?.code ?? null).toBeNull();
+    expect(state.state).toBe("complete");
+    expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(true);
+    expect(await readFile(path.join(f.host, "after-warm-stop.txt"), "utf8")).toBe("stopped turn work\n");
+  }, 30_000);
+
+  it.each(["lease_task", "unshared_workspace", "other_workspace"])(
+    "keeps a cross-task predecessor fenced unless its own records prove the shared workspace: %s", async fault => {
+      const f = await warmHandoffSource(1, undefined, { firstOwnerInSharedWorkspace: true });
+      const [other] = await db.insert(issues).values({ companyId: f.companyId, title: "Unrelated task" }).returning();
+      if (fault === "lease_task") await db.update(environmentLeases).set({ issueId: other.id }).where(eq(environmentLeases.id, f.priorLeaseId));
+      if (fault === "unshared_workspace") await db.update(environmentLeases).set({ executionWorkspaceId: null })
+        .where(eq(environmentLeases.id, f.priorLeaseId));
+      if (fault === "other_workspace") {
+        const [otherWorkspace] = await db.insert(executionWorkspaces).values({ companyId: f.companyId, mode: "isolated_workspace",
+          strategyType: "test", name: "Other workspace" }).returning();
+        await db.update(environmentLeases).set({ issueId: f.issueId, executionWorkspaceId: otherWorkspace.id })
+          .where(eq(environmentLeases.id, f.priorLeaseId));
+      }
+      expect(await inspectWorkspaceSource(db, { companyId: f.companyId, issueId: f.issueId, runId: f.runId, actionId: f.actionId }))
+        .toMatchObject({ status: "blocked", failureCode: "allocation_ownership_ambiguous" });
+      await expect(readFile(path.join(f.host, "after-warm-stop.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+    }, 30_000);
 
   it.each(["active", "active_run", "active_control", "foreign_company", "environment", "workspace", "task", "agent", "unfinalized", "owner", "missing_proof", "conflicting_proof", "dangling_proof", "extra_history"])(
     "keeps ambiguous warm source history fenced: %s", async fault => {
@@ -471,7 +549,8 @@ describe("automatic retained workspace recovery", () => {
     const exhausted = await action(f.actionId);
     expect(readSystemRecovery(exhausted.evidence)?.state).toBe("exhausted");
     expect(exhausted).toMatchObject({ status: "active", ownerType: "board" });
-    expect(exhausted.nextAction).toMatch(/stopped after 6 attempts/);
+    expect(exhausted.nextAction).toMatch(/after 6 tries/);
+    expect(exhausted.nextAction).not.toContain("export_interrupted");
     const blocker = await getExecutionBlocker(db, f.companyId, f.issueId);
     expect(blocker?.workspaceRecovery).toMatchObject({ status: "blocked", canRetry: true });
     expect(blocker?.nextAction).toMatch(/Retry to try again/);
@@ -664,5 +743,86 @@ describe("automatic retained workspace recovery", () => {
     }
     expect(rows.every(row => row.body === base.body)).toBe(true);
   });
+
+  it("ends recovery at the first unfinished Git operation failure and applies the accepted result on Retry once resolved", async () => {
+    const gitOpError = "remote_workspace_archive_git_operation_in_progress: finish or abort the Git operation before saving the workspace";
+    const f = await acceptedRemoteExport();
+    const target = targets.get(f.lease.id)!, syncOut = target.runner!.syncOut!;
+    const gitState = { inProgress: true, saves: 0 };
+    target.runner!.syncOut = async operations => {
+      gitState.saves++;
+      if (gitState.inProgress) throw new Error(gitOpError);
+      return syncOut(operations);
+    };
+    const workspaceBefore = (await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId)))[0];
+    await recoverRetainedWorkspace(f.input);
+    await recoverRetainedWorkspace(f.input);
+    const failed = readSystemRecovery((await action(f.actionId)).evidence);
+    expect(failed).toMatchObject({
+      state: "exhausted",
+      nextAttemptAt: null,
+      attempts: 1,
+      failure: {
+        code: "export_interrupted",
+        retryClass: "user_action_required",
+        cause: { label: "git_operation_in_progress", code: null, status: null },
+      },
+    });
+    const savesAtFailure = gitState.saves;
+    expect(savesAtFailure).toBeGreaterThan(0);
+
+    // No further automatic retries while resting for user action.
+    await recoverRetainedWorkspace(f.input);
+    expect(gitState.saves).toBe(savesAtFailure);
+
+    const handedOff = await action(f.actionId);
+    expect(handedOff).toMatchObject({ status: "active", ownerType: "board" });
+    expect(handedOff.nextAction).toMatch(/Git operation/);
+    expect(handedOff.nextAction).toMatch(/Retry/);
+
+    // Saved snapshot and unsaved sandbox files remain intact.
+    const workspaceAfter = (await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId)))[0];
+    expect(readRemoteWorkspaceAuthority(workspaceAfter.metadata)?.snapshotId)
+      .toBe(readRemoteWorkspaceAuthority(workspaceBefore.metadata)?.snapshotId ?? null);
+    expect(await readFile(path.join(f.remote, "saved.txt"), "utf8")).toBe("finished work\n");
+
+    const issue = (await db.select().from(issues).where(eq(issues.id, f.issueId)))[0];
+    expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ canRetry: true, observedRunId: f.runId });
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({
+      runId: f.runId,
+      workspaceRecovery: { canRetry: true },
+    });
+
+    const retry = async () => (await request(receiptOnlyRecoveryApp()).post(`/api/issues/${f.issueId}/retry`)
+      .send({ observedRunId: f.runId, idempotencyKey: randomUUID() }).expect(202)).body as { requestId: string; accepted: boolean; observedRunId: string };
+    const runIds = async () => (await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+      .where(eq(heartbeatRuns.companyId, f.companyId))).map(row => row.id).sort();
+    const runsBefore = await runIds();
+
+    // Retry while the Git operation is still open rests again immediately without starting a new run.
+    const stillOpen = await retry();
+    await recoverRunHolds(f.input);
+    await heartbeatService(db).resumeTaskRetry(f.companyId, stillOpen.requestId);
+    expect(readSystemRecovery((await action(f.actionId)).evidence)).toMatchObject({
+      state: "exhausted",
+      attempts: 1,
+      failure: { retryClass: "user_action_required", cause: { label: "git_operation_in_progress", code: null, status: null } },
+    });
+    expect(await runIds()).toEqual(runsBefore);
+
+    // Once the Git operation is resolved, Retry saves the workspace and applies the accepted result without a new turn.
+    gitState.inProgress = false;
+    const resolved = await retry();
+    await recoverRunHolds(f.input);
+    expect(readWorkspaceRecovery((await action(f.actionId)).evidence)?.status).toBe("recovered");
+    await heartbeatService(db).resumeTaskRetry(f.companyId, resolved.requestId);
+    expect(await runIds()).toEqual(runsBefore);
+    const [finalizer] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    expect(finalizer).toMatchObject({ phase: "workspace_finalizing", resultId: f.resultId });
+    await finalizeNativeRun({ db, runId: f.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0])
+      .toMatchObject({ status: "done", executionRunId: null, checkoutRunId: null });
+    expect((await run(f.runId)).status).toBe("succeeded");
+  }, 60_000);
 
 });

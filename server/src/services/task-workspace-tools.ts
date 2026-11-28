@@ -31,6 +31,47 @@ function repositoryView(repo: Record<string, unknown>) {
     state: repo.state, pinnedCommit: repo.pinnedCommit, branchName: repo.branchName };
 }
 
+/** The workspace detail page exists only while isolated workspaces are enabled,
+ * so callers pass the company prefix only then; a missing href means no page. */
+function workspaceHref(prefix: string | null | undefined, id: unknown) {
+  return prefix && typeof id === "string" ? { href: `/${encodeURIComponent(prefix)}/execution-workspaces/${encodeURIComponent(id)}` } : {};
+}
+
+function objectOrNull(value: unknown) {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+/** The API reads that return a workspace, and the field that holds it ("" is the response itself). */
+const WORKSPACE_READ_FIELDS: Readonly<Record<string, string>> = {
+  "GET /api/issues/{id}": "currentExecutionWorkspace",
+  "GET /api/issues/{id}/workspace": "workspace",
+  "GET /api/execution-workspaces/{id}": "",
+};
+
+/** True when an agent API result may hold a workspace, so the page prefix is read only then. */
+export function apiResultMayHaveWorkspace(result: unknown) {
+  const operationId = objectOrNull(result)?.operationId;
+  return typeof operationId === "string" && Object.hasOwn(WORKSPACE_READ_FIELDS, operationId);
+}
+
+/**
+ * Adds the workspace page href to an agent's API read of a task or workspace,
+ * as get_workspace does. Without it the agent reads the missing href as "this
+ * workspace has no page" and names the workspace instead of linking it.
+ */
+export function withWorkspacePageHref<T>(result: T, prefix: string | null | undefined, companyId: string): T {
+  const response = objectOrNull(result);
+  const operationId = response?.operationId;
+  const data = objectOrNull(response?.data);
+  if (!prefix || !response || response.ok !== true || !data || typeof operationId !== "string"
+    || !Object.hasOwn(WORKSPACE_READ_FIELDS, operationId)) return result;
+  const field = WORKSPACE_READ_FIELDS[operationId]!;
+  const workspace = field ? objectOrNull(data[field]) : data;
+  if (!workspace || workspace.companyId !== companyId || typeof workspace.id !== "string") return result;
+  const linked = { ...workspace, ...workspaceHref(prefix, workspace.id) };
+  return { ...response, data: field ? { ...data, [field]: linked } : linked } as T;
+}
+
 function workspacePage(rows: Array<Record<string, unknown>>, limit: number) {
   const workspaces: Array<Record<string, unknown>> = [];
   const result = () => ({ workspaces, limit, returnedCount: workspaces.length,
@@ -57,7 +98,7 @@ function workspacePage(rows: Array<Record<string, unknown>>, limit: number) {
   return result();
 }
 
-export async function callTaskWorkspaceTool(input: { name: string; arguments: Record<string, unknown>; apiUrl: string; token: string; companyId: string; issueId: string; workspaceRoot?: string }) {
+export async function callTaskWorkspaceTool(input: { name: string; arguments: Record<string, unknown>; apiUrl: string; token: string; companyId: string; issueId: string; workspaceRoot?: string; workspacePagePrefix?: string | null }) {
   let route = `/issues/${input.issueId}/workspace`;
   let method = "GET";
   let body: unknown;
@@ -78,7 +119,7 @@ export async function callTaskWorkspaceTool(input: { name: string; arguments: Re
   const result = await response.json();
   if (!response.ok) throw new Error(typeof result.error === "string" ? result.error : `Workspace tool failed (${response.status})`);
   if (page) {
-    return workspacePage(result, page.limit);
+    return workspacePage(result.map((row: Record<string, unknown>) => ({ ...row, ...workspaceHref(input.workspacePagePrefix, row.id) })), page.limit);
   }
   if (input.name === "prepare_repository") {
     const { operationId, ...rest } = result;
@@ -90,7 +131,8 @@ export async function callTaskWorkspaceTool(input: { name: string; arguments: Re
     const workspace = result.workspace;
     return { issueId: result.issueId, bindingRevision: result.bindingRevision, selection: result.selection,
       pendingSelection: result.pendingSelection, cwd: input.workspaceRoot ?? null,
-      workspace: workspace ? { id: workspace.id, projectId: workspace.projectId, mode: workspace.mode, status: workspace.status } : null,
+      workspace: workspace ? { id: workspace.id, projectId: workspace.projectId, mode: workspace.mode, status: workspace.status,
+        ...workspaceHref(input.workspacePagePrefix, workspace.id) } : null,
       repositories: (result.repositories ?? []).map(repositoryView),
       capabilities: result.capabilities, fileLocations: result.fileLocations };
   }

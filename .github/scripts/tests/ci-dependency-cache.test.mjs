@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFileSync } from "node:fs";
-import { cachePlan } from "../../../scripts/ci-dependency-cache.mjs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { DEPENDENCY_SCRIPT_INPUTS, cachePlan } from "../../../scripts/ci-dependency-cache.mjs";
+import { findWorkspacePostinstallScripts, replayWorkspacePostinstalls } from "../../../scripts/replay-workspace-postinstall.mjs";
 
 const entries = {
   "package.json": '{"scripts":{"postinstall":"node scripts/link-plugin-dev-sdk.mjs"}}',
@@ -66,9 +69,41 @@ test('unmodelled workspace lifecycle scripts disable materialized reuse', () => 
     assert.equal(plan({ ...entries, 'server/package.json': JSON.stringify({ scripts: { [hook]: 'node custom.mjs' } }) }).cacheable, false);
   }
   assert.equal(plan({ ...entries, 'package.json': '{"scripts":{"postinstall":"node other.mjs"}}' }).cacheable, false);
-  for (const file of ['scripts/ensure-plugin-build-deps.mjs', 'scripts/new-install-helper.mjs', '.pnpmfile.cjs']) {
-    assert.notEqual(plan({ ...entries, [file]: 'changed' }).dependencyKey, plan().dependencyKey);
+  assert.notEqual(plan({ ...entries, '.pnpmfile.cjs': 'changed' }).dependencyKey, plan().dependencyKey);
+
+  const buildOnly = plan({ ...entries, 'scripts/ensure-plugin-build-deps.mjs': 'changed' });
+  assert.equal(buildOnly.dependencyKey, plan().dependencyKey);
+  assert.notEqual(buildOnly.buildKey, plan().buildKey);
+
+  for (const file of [
+    'scripts/general-server-shard-durations.json',
+    'scripts/ci-typecheck-lane.mjs',
+    'server/scripts/typecheck-layers.mjs',
+    'packages/paperclip-runner/scripts/run-check-static.mjs',
+  ]) {
+    assert.deepEqual(plan({ ...entries, [file]: 'changed' }), plan(), file);
   }
+});
+
+test('DEPENDENCY_SCRIPT_INPUTS covers the full local import closure of install/postinstall scripts', () => {
+  const repoRoot = path.resolve(new URL('../../..', import.meta.url).pathname);
+  const visited = new Set();
+  const queue = [...DEPENDENCY_SCRIPT_INPUTS];
+  const importPattern = /(?:from\s+|import\s*\(\s*|require\s*\(\s*)["'](\.[^"']+)["']/g;
+  while (queue.length > 0) {
+    const rel = queue.shift();
+    if (visited.has(rel)) continue;
+    visited.add(rel);
+    assert.ok(DEPENDENCY_SCRIPT_INPUTS.has(rel), `missing transitive install helper from DEPENDENCY_SCRIPT_INPUTS: ${rel}`);
+    const abs = path.join(repoRoot, rel);
+    const source = readFileSync(abs, 'utf8');
+    for (const match of source.matchAll(importPattern)) {
+      const target = path.relative(repoRoot, path.resolve(path.dirname(abs), match[1])).split(path.sep).join('/');
+      if (!visited.has(target)) queue.push(target);
+    }
+  }
+  const action = readFileSync(new URL('../../actions/setup-ci-dependencies/action.yml', import.meta.url), 'utf8');
+  assert.equal((action.match(/pnpm install --frozen-lockfile --prefer-offline/g) ?? []).length, 2);
 });
 
 test('known Copilot hooks permit caching, track their helpers, and still run on restore', () => {
@@ -97,8 +132,52 @@ test('known Copilot hooks permit caching, track their helpers, and still run on 
   const action = readFileSync(new URL('../../actions/setup-ci-dependencies/action.yml', import.meta.url), 'utf8');
   const replay = action.split('    - name: Replay workspace install hooks after restore')[1].split('    - name:')[0];
   assert.match(replay, /if: steps\.installed\.outputs\.cache-hit == 'true'/);
+  assert.match(replay, /node scripts\/replay-workspace-postinstall\.mjs/);
   assert.match(replay, /pnpm -r --if-present run postinstall\s+pnpm run postinstall/);
   assert.ok(action.indexOf('Replay workspace install hooks') < action.indexOf('Validate workspace links'));
+});
+
+test('replay-workspace-postinstall discovers repo hooks, runs workspace hooks before root, and fails closed', async () => {
+  const discovered = findWorkspacePostinstallScripts();
+  assert.deepEqual(
+    discovered.workspaceHooks.map((hook) => hook.relDir),
+    ['packages/paperclip-runner', 'server'],
+  );
+  assert.equal(discovered.rootHook?.relDir, '.');
+
+  const tmp = mkdtempSync(path.join(os.tmpdir(), 'replay-postinstall-'));
+  try {
+    const orderFile = path.join(tmp, 'order.log');
+    mkdirSync(path.join(tmp, 'packages/alpha'), { recursive: true });
+    mkdirSync(path.join(tmp, 'server'), { recursive: true });
+    writeFileSync(path.join(tmp, 'package.json'), JSON.stringify({
+      name: 'root',
+      scripts: { postinstall: "node -e \"require('node:fs').appendFileSync(process.env.ORDER_FILE, 'root\\n')\"" },
+    }));
+    writeFileSync(path.join(tmp, 'packages/alpha/package.json'), JSON.stringify({
+      name: '@test/alpha',
+      scripts: { postinstall: "node -e \"require('node:fs').appendFileSync(process.env.ORDER_FILE, 'alpha\\n')\"" },
+    }));
+    writeFileSync(path.join(tmp, 'server/package.json'), JSON.stringify({
+      name: '@test/server',
+      scripts: { postinstall: "node -e \"require('node:fs').appendFileSync(process.env.ORDER_FILE, 'server\\n')\"" },
+    }));
+
+    const result = await replayWorkspacePostinstalls(tmp, { ...process.env, ORDER_FILE: orderFile });
+    assert.deepEqual(result, { workspaceCount: 2, ranRoot: true });
+    const lines = readFileSync(orderFile, 'utf8').trim().split('\n');
+    assert.equal(lines.length, 3);
+    assert.equal(lines[2], 'root', 'root postinstall must run after workspace postinstall hooks');
+    assert.deepEqual(lines.slice(0, 2).sort(), ['alpha', 'server']);
+
+    writeFileSync(path.join(tmp, 'server/package.json'), JSON.stringify({
+      name: '@test/server',
+      scripts: { postinstall: 'node -e "process.exit(3)"' },
+    }));
+    await assert.rejects(() => replayWorkspacePostinstalls(tmp, { ...process.env, ORDER_FILE: orderFile }), /postinstall in server exited with 3/);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test('cache restores are exact and only a frozen canonical master push can publish entries', () => {

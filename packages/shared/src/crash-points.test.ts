@@ -11,6 +11,7 @@ import {
   armCrashPointForTest,
   armedCrashPoint,
   crashPoint,
+  parseCrashPointControl,
   parseCrashPointSpec,
   type CrashPointName,
 } from "./crash-points.js";
@@ -47,6 +48,21 @@ describe("parseCrashPointSpec", () => {
     expect(() => parseCrashPointSpec("sandbox.create.after_typo")).toThrow(/unknown crash point/);
     expect(() => parseCrashPointSpec(`${first}:0`)).toThrow(/positive integer/);
     expect(() => parseCrashPointSpec(`${first}:x`)).toThrow(/positive integer/);
+  });
+});
+
+describe("parseCrashPointControl", () => {
+  it("reads a token and a spec, and treats anything else as disarmed", () => {
+    expect(parseCrashPointControl(`t1 ${first}:3\n`)).toEqual({ token: "t1", spec: { name: first, nth: 3 }, mode: "kill" });
+    expect(parseCrashPointControl(`t1 ${first}:2 fail\n`)).toEqual({ token: "t1", spec: { name: first, nth: 2 }, mode: "fail" });
+    expect(parseCrashPointControl(`t1 ${first}:2 fail pid=42`)).toEqual({ token: "t1", spec: { name: first, nth: 2 }, mode: "fail", pid: 42 });
+    expect(parseCrashPointControl(`t1 ${first} pid=42`)).toEqual({ token: "t1", spec: { name: first, nth: 1 }, mode: "kill", pid: 42 });
+    expect(parseCrashPointControl(`t1 ${first} fail fail`)).toBeNull();
+    expect(parseCrashPointControl(`t1 ${first}:2 explode`)).toBeNull();
+    expect(parseCrashPointControl(`t1 ${first}:2 fail extra`)).toBeNull();
+    expect(parseCrashPointControl("")).toBeNull();
+    expect(parseCrashPointControl(first)).toBeNull();
+    expect(parseCrashPointControl("t1 sandbox.create.after_typo")).toBeNull();
   });
 });
 
@@ -145,6 +161,60 @@ describe("crashPoint armed by the environment", { timeout: 60_000 }, () => {
       expect(result.signal).toBe("SIGKILL");
       expect(result.stdout).toBe("closed\none\n");
       expect(JSON.parse(readFileSync(receipt, "utf8").trim())).toMatchObject({ point: first, hit: 2 });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("arms at runtime from the control file and resets the count on a new token", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "crash-point-control-"));
+    try {
+      const control = path.join(dir, "control");
+      const receipt = path.join(dir, "receipt.jsonl");
+      const hit = `crashPoint(${JSON.stringify(first)});`;
+      const source = [
+        `const { crashPoint } = await import(${JSON.stringify(path.join(import.meta.dirname, "crash-points.ts"))});`,
+        `const { writeFileSync } = await import("node:fs");`,
+        `${hit} process.stdout.write("absent\\n");`,
+        `writeFileSync(${JSON.stringify(control)}, "t1 ${first}:2\\n");`,
+        `${hit} process.stdout.write("t1-one\\n");`,
+        `writeFileSync(${JSON.stringify(control)}, "t2 ${first}:2\\n");`,
+        `${hit} process.stdout.write("t2-one\\n");`,
+        `${hit} process.stdout.write("t2-two\\n");`,
+      ].join("\n");
+      const result = runChild({ PAPERCLIP_CRASH_POINT_CONTROL: control, PAPERCLIP_CRASH_POINT_RECEIPT: receipt }, source);
+      expect(result.signal).toBe("SIGKILL");
+      expect(result.stdout).toBe("absent\nt1-one\nt2-one\n");
+      expect(JSON.parse(readFileSync(receipt, "utf8").trim())).toMatchObject({ point: first, hit: 2, token: "t2" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails the nth hit once in fail mode, with the call site's own error, and never kills", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "crash-point-fail-"));
+    try {
+      const control = path.join(dir, "control");
+      const receipt = path.join(dir, "receipt.jsonl");
+      const hit = (label: string) => `try { crashPoint(${JSON.stringify(first)}, { fail: () => new Error("lock held") }); process.stdout.write("${label}-ok\\n"); }`
+        + ` catch (error) { process.stdout.write("${label}-" + error.message + "\\n"); }`;
+      const source = [
+        `const { crashPoint } = await import(${JSON.stringify(path.join(import.meta.dirname, "crash-points.ts"))});`,
+        `const { writeFileSync } = await import("node:fs");`,
+        `writeFileSync(${JSON.stringify(control)}, "t1 ${first}:2 fail\\n");`,
+        hit("one"), hit("two"), hit("three"),
+        `try { crashPoint(${JSON.stringify(second)}); crashPoint(${JSON.stringify(first)}); process.stdout.write("plain-ok\\n"); } catch (error) { process.stdout.write("plain-" + error.name + "\\n"); }`,
+        `writeFileSync(${JSON.stringify(control)}, "t3 ${first} fail pid=1\\n");`,
+        `try { crashPoint(${JSON.stringify(first)}); process.stdout.write("other-pid-ok\\n"); } catch (error) { process.stdout.write("other-pid-" + error.name + "\\n"); }`,
+        `writeFileSync(${JSON.stringify(control)}, "t2 ${first} fail pid=" + process.pid + "\\n");`,
+        `try { crashPoint(${JSON.stringify(first)}); } catch (error) { process.stdout.write("default-" + error.name + "\\n"); }`,
+      ].join("\n");
+      const result = runChild({ PAPERCLIP_CRASH_POINT_CONTROL: control, PAPERCLIP_CRASH_POINT_RECEIPT: receipt }, source);
+      expect(result.signal).toBeNull();
+      expect(result.stdout).toBe("one-ok\ntwo-lock held\nthree-ok\nplain-ok\nother-pid-ok\ndefault-CrashPointInjectedFailure\n");
+      const receipts = readFileSync(receipt, "utf8").trim().split("\n").map(line => JSON.parse(line));
+      expect(receipts).toEqual([expect.objectContaining({ point: first, hit: 2, token: "t1", mode: "fail" }),
+        expect.objectContaining({ point: first, hit: 1, token: "t2", mode: "fail" })]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

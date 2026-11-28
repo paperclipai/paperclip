@@ -2,6 +2,7 @@ import { and, asc, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
 import { heartbeatRunEvents, issueComments, issueThreadInteractions, type Db } from "@paperclipai/db";
 import { unreadSteeredMessageIds } from "../../vendor/paperclip-runner/index.js";
 import { queuedInteractionSteeringBody } from "../queued-interaction-response.js";
+import { filterRunMessageInteractionDelivery } from "../agent-interaction-delivery.js";
 
 const kind = sql<string | null>`${heartbeatRunEvents.payload}->'prpEvent'->'payload'->>'kind'`;
 
@@ -38,6 +39,7 @@ export async function readUnreadSteeredMessages(
   if (ids.length === 0) return [];
   const uuids = ids.filter((id) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id));
   if (uuids.length === 0) return [];
+  const allowedIds = await filterRunMessageInteractionDelivery(db, { ...input, commentIds: uuids });
   const texts = new Map<string, string>();
   const comments = await db
     .select({ id: issueComments.id, body: issueComments.body })
@@ -62,6 +64,7 @@ export async function readUnreadSteeredMessages(
     for (const interaction of interactions) texts.set(interaction.id, queuedInteractionSteeringBody(interaction));
   }
   return ids.flatMap((id) => {
+    if (!allowedIds.has(id)) return [];
     const text = texts.get(id);
     return text === undefined ? [] : [{ id, text }];
   });

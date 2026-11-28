@@ -102,6 +102,26 @@ impl VerifiedProcessArtifact {
         #[cfg(not(target_os = "macos"))]
         Self::snapshot_verified(display_path, file, expected_sha256)
     }
+
+    /// Hold a launch artifact open in place instead of snapshotting it.
+    ///
+    /// Only `qualified_launch` calls this, and only after the trusted launch
+    /// root proved that this open descriptor itself lies on an immutable
+    /// mount under that root. The process then executes this descriptor
+    /// through `/proc/self/fd/N`, so a later path swap cannot change what
+    /// runs and nested launches reopen the same file.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn in_place_on_trusted_root(display_path: PathBuf, file: File) -> Self {
+        Self {
+            display_path,
+            file: Arc::new(file),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn held_file(&self) -> &File {
+        &self.file
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1058,6 +1078,15 @@ impl SupervisedProcess {
             "TEMP",
             "TMP",
             "TZ",
+            // Certificate-trust names flow to every supervised process so
+            // execution-side injected values survive the cleared environment.
+            "SSL_CERT_FILE",
+            "SSL_CERT_DIR",
+            "GIT_SSL_CAINFO",
+            "NODE_EXTRA_CA_CERTS",
+            "DENO_CERT",
+            "REQUESTS_CA_BUNDLE",
+            "CURL_CA_BUNDLE",
         ]
         .into_iter()
         .chain(additional_environment_keys.iter().copied())
@@ -1282,7 +1311,7 @@ impl SupervisedProcess {
     /// never treats the provider as stopped while its tools still run.
     fn terminate_lineage(&mut self, grace: Duration) -> Result<(), LocalRunnerError> {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if let Some(lineage) = self.lineage.as_ref() {
+        if let Some(lineage) = self.lineage.as_mut() {
             lineage
                 .terminate(grace, grace + LINEAGE_KILL_PROOF_WINDOW)
                 .map_err(|reason| {
@@ -1482,13 +1511,16 @@ mod tests {
     /// Plays a provider whose tool runs `nohup job &` in a new session, the
     /// way Claude Code runs a Bash tool command. The wrapper reports the job's
     /// PID and exits, so the job is re-parented and outside the owned group.
+    /// The orphaned job is held apart from a reap that must verify.
     fn spawn_provider_with_escaped_tool_job(
         name: &str,
     ) -> (
         SupervisedProcess,
         PathBuf,
         paperclip_process_table::ProcessEntry,
+        crate::process_lineage::host_orphans::MayOrphan,
     ) {
+        let orphans = crate::process_lineage::host_orphans::may_orphan();
         let directory = std::env::temp_dir().join(format!(
             "paperclip-escaped-tool-{name}-{}-{}",
             std::process::id(),
@@ -1538,10 +1570,14 @@ mod tests {
             thread::sleep(Duration::from_millis(20));
         };
         assert_ne!(job.pgid, i32::try_from(process.process_group_id()).unwrap());
-        (process, directory, job)
+        (process, directory, job, orphans)
     }
 
-    fn assert_stopped_and_clean_up(job: paperclip_process_table::ProcessEntry, directory: &Path) {
+    fn assert_stopped_and_clean_up(
+        job: paperclip_process_table::ProcessEntry,
+        directory: &Path,
+        orphans: crate::process_lineage::host_orphans::MayOrphan,
+    ) {
         let alive = paperclip_process_table::read(job.pid)
             .entry()
             .is_some_and(|current| current.started == job.started && !current.zombie);
@@ -1550,30 +1586,34 @@ mod tests {
             if let Some(group) = rustix::process::Pid::from_raw(job.pgid) {
                 let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
             }
+            crate::process_lineage::host_orphans::wait_until_group_gone(job.pgid);
         }
+        drop(orphans);
         let _ = fs::remove_dir_all(directory);
         assert!(!alive, "tool job {} outlived its provider", job.pid);
     }
 
     #[test]
     fn terminating_the_group_stops_a_tool_job_that_left_its_session() {
-        let (mut process, directory, job) = spawn_provider_with_escaped_tool_job("terminate");
+        let (mut process, directory, job, orphans) =
+            spawn_provider_with_escaped_tool_job("terminate");
         process.terminate_group().unwrap();
-        assert_stopped_and_clean_up(job, &directory);
+        assert_stopped_and_clean_up(job, &directory, orphans);
     }
 
     #[test]
     fn immediate_fence_stops_a_tool_job_that_left_its_session() {
-        let (mut process, directory, job) = spawn_provider_with_escaped_tool_job("immediate");
+        let (mut process, directory, job, orphans) =
+            spawn_provider_with_escaped_tool_job("immediate");
         process.terminate_group_immediately().unwrap();
-        assert_stopped_and_clean_up(job, &directory);
+        assert_stopped_and_clean_up(job, &directory, orphans);
     }
 
     #[test]
     fn dropping_the_provider_stops_a_tool_job_that_left_its_session() {
-        let (process, directory, job) = spawn_provider_with_escaped_tool_job("drop");
+        let (process, directory, job, orphans) = spawn_provider_with_escaped_tool_job("drop");
         drop(process);
-        assert_stopped_and_clean_up(job, &directory);
+        assert_stopped_and_clean_up(job, &directory, orphans);
     }
 
     #[test]
@@ -2010,6 +2050,52 @@ mod tests {
         assert!(inherited.args[2].starts_with("/proc/self/fd/"));
         #[cfg(target_os = "macos")]
         assert!(inherited.args[2].starts_with("/dev/fd/"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn trusted_root_artifacts_execute_the_held_file_and_reopen_it_for_nested_launches() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-trusted-root-launch-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let shell = fs::canonicalize(directory.join(".")).unwrap().join("sh");
+        fs::copy(fs::canonicalize("/bin/sh").unwrap(), &shell).unwrap();
+        let program = VerifiedProcessArtifact::in_place_on_trusted_root(
+            shell.clone(),
+            File::open(&shell).unwrap(),
+        );
+        let launch = VerifiedProcessLaunch::new(
+            program,
+            vec![
+                VerifiedProcessArgument::Literal("-c".to_owned()),
+                VerifiedProcessArgument::Literal(format!(
+                    "readlink /proc/$$/exe; \"${VERIFIED_RUNTIME_EXECUTABLE_ENV}\" -c 'readlink /proc/$$/exe'"
+                )),
+            ],
+        );
+
+        let inherited = launch.inherited_command().unwrap();
+        assert!(inherited.program.starts_with("/proc/self/fd/"));
+        let output = Command::new(&inherited.program)
+            .args(&inherited.args)
+            .env(VERIFIED_RUNTIME_EXECUTABLE_ENV, &inherited.program)
+            .output()
+            .unwrap();
+        drop(inherited);
+
+        assert!(output.status.success(), "{output:?}");
+        let expected = format!("{}\n", shell.display());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            expected.repeat(2)
+        );
         fs::remove_dir_all(directory).unwrap();
     }
 

@@ -22,6 +22,17 @@ export function openCodeProxyCompletionContract(value: unknown): { revision: str
     : undefined;
 }
 
+/** Whether two per-turn contracts name the same revision and criterion ids, in order. */
+export function sameOpenCodeProxyCompletionContract(
+  left: { revision: string; criterionIds: readonly string[] } | undefined,
+  right: { revision: string; criterionIds: readonly string[] } | undefined,
+): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  return left.revision === right.revision
+    && left.criterionIds.length === right.criterionIds.length
+    && left.criterionIds.every((id, index) => id === right.criterionIds[index]);
+}
+
 export function openCodeProxyTaskEnvelope(params: Record<string, unknown>) {
   const completionContract = record(params.completionContract);
   const revision = text(completionContract.revision).trim();

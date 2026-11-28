@@ -162,6 +162,8 @@ export type {
   PluginPerformActionActorContext,
   PluginPerformActionContext,
   ExecuteToolParams,
+  ListConnectorToolsParams,
+  ListConnectorToolsResult,
   PluginExternalObjectUrlCandidate,
   PluginExternalObjectSourceContext,
   DetectExternalObjectsParams,
@@ -214,6 +216,15 @@ export type {
   PluginEnvironmentCancelInteractiveSetupResult,
   PluginEnvironmentDeleteTemplateParams,
   PluginEnvironmentDeleteTemplateResult,
+  PluginLoginCommandKey,
+  PluginLoginPtyOpenParams,
+  PluginLoginPtyOpenResult,
+  PluginLoginPtyInputParams,
+  PluginLoginPtyReadCredentialParams,
+  PluginLoginPtyReadCredentialResult,
+  PluginLoginPtyStopParams,
+  PluginLoginPtyCloseParams,
+  PluginLoginPtyCloseResult,
   PluginModalBoundsRequest,
   PluginRenderCloseEvent,
   PluginLauncherRenderContextSnapshot,
@@ -297,6 +308,12 @@ export type {
   PluginActionsClient,
   PluginStreamsClient,
   PluginToolsClient,
+  PluginConnectorsClient,
+  ConnectionCredential,
+  ToolRunConnection,
+  ConnectorToolListConnection,
+  ConnectorToolDescriptor,
+  ConnectorToolRunContext,
   PluginMetricsClient,
   PluginTelemetryClient,
   PluginLogger,
@@ -320,6 +337,7 @@ export type {
   PluginEntityRecord,
   PluginEntityQuery,
   PluginWorkspace,
+  PluginProjectSnapshot,
   PluginExecutionWorkspaceMetadata,
   Company,
   Project,
@@ -458,7 +476,7 @@ export {
   PRINCIPAL_TYPES,
 } from "@paperclipai/shared";
 
-export { PluginEnvironmentCreationCleanupError, environmentCreationCleanupErrorData, readEnvironmentCreationCleanupError, readEnvironmentAcquisitionDiagnostic, ENVIRONMENT_ACQUISITION_PROVIDER_STATES } from "./environment-creation-cleanup.js";
+export { PluginEnvironmentAcquisitionError, PluginEnvironmentCreationCleanupError, environmentCreationCleanupErrorData, readEnvironmentCreationCleanupError, readEnvironmentAcquisitionDiagnostic, ENVIRONMENT_ACQUISITION_PROVIDER_STATES } from "./environment-creation-cleanup.js";
 export type { PluginEnvironmentCreationCleanup, PluginEnvironmentAcquisitionDiagnostic, PluginEnvironmentAcquisitionProviderState } from "./environment-creation-cleanup.js";
 export { preserveEnvironmentSyncErrorDiagnostic, environmentSyncErrorData, readEnvironmentSyncErrorDiagnostic, withEnvironmentSyncErrorCapture, withEnvironmentSyncTransferStep, recordEnvironmentSyncError } from "./environment-sync-error.js";
 export type { PluginEnvironmentSyncErrorDiagnostic } from "./environment-sync-error.js";
@@ -470,7 +488,8 @@ export { WORKSPACE_OPERATION_FAILURE_REASONS, PluginWorkspaceOperationError, wor
 export type { PluginWorkspaceOperationFailureReason } from "./workspace-operation-error.js";
 export { PluginEnvironmentStopError, environmentStopErrorData, readEnvironmentStopFailure } from "./environment-stop-error.js";
 export type { PluginEnvironmentStopFailure, PluginEnvironmentStopFailureReason } from "./environment-stop-error.js";
-export { environmentResumeErrorData, readEnvironmentResumeErrorDiagnostic } from "./environment-resume-error.js";
+export { environmentResumeErrorData, isRetryableEnvironmentErrorCode, isRetryableEnvironmentHttpStatus, readEnvironmentResumeErrorDiagnostic } from "./environment-resume-error.js";
+export type { EnvironmentRetryScope } from "./environment-resume-error.js";
 export type { PluginEnvironmentResumeErrorDiagnostic } from "./environment-resume-error.js";
 export { environmentAcquireErrorData, readEnvironmentAcquireErrorDiagnostic } from "./environment-acquire-error.js";
 export type { PluginEnvironmentAcquireErrorDiagnostic } from "./environment-acquire-error.js";
@@ -479,8 +498,8 @@ export type { PluginEnvironmentTaskErrorDiagnostic } from "./environment-task-er
 
 export type { AiConnectionPool, AiConnectionPoolConfig, AiConnectionPoolMember, AiConnectionRouterRequest, AiConnectionRouterResult, AiConnectionRouterSelection } from "@paperclipai/shared";
 
-export { MAX_ENVIRONMENT_TASK_FILE_BYTES, environmentRunnerLaunchRequirementsSchema, environmentTaskOperationSchema, environmentTaskResultSchema, environmentTaskCredentialSchema, parseEnvironmentTaskResult } from "./environment-tasks.js";
-export type { PluginEnvironmentTaskOperation, PluginEnvironmentTaskParams, PluginEnvironmentTaskResult, PluginEnvironmentTaskCredential, PluginEnvironmentTaskExecutionContext } from "./environment-tasks.js";
+export { MAX_ENVIRONMENT_TASK_FILE_BYTES, ENVIRONMENT_TASK_PROVIDER_CREDENTIAL_KEY_SETS, environmentRunnerLaunchRequirementsSchema, environmentTaskOperationSchema, environmentTaskResultSchema, environmentTaskCredentialSchema, environmentTaskConfiguredEnvironmentSchema, MAX_CONFIGURED_ENVIRONMENT_KEYS, MAX_CONFIGURED_ENVIRONMENT_ENTRY_BYTES, MAX_CONFIGURED_ENVIRONMENT_BYTES, parseEnvironmentTaskResult } from "./environment-tasks.js";
+export type { PluginEnvironmentTaskOperation, PluginEnvironmentTaskParams, PluginEnvironmentTaskResult, PluginEnvironmentTaskCredential, PluginEnvironmentTaskCredentialProvider, PluginEnvironmentTaskConfiguredEnvironment, PluginEnvironmentTaskExecutionContext } from "./environment-tasks.js";
 export type { AgentLifecycleRequest, AgentLifecycleResult } from "@paperclipai/shared";
 
 export type { PluginEnvironmentRunnerLaunchRequirements, PluginEnvironmentPreparedLaunch } from "./environment-tasks.js";

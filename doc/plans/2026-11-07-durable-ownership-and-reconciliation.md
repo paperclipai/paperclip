@@ -37,7 +37,7 @@ These become reconciler checks and crash-suite assertions. They should also be a
 5. **Work-based budgets:** a restart consumes run budget only when the resumed attempt started provider work and made no progress.
 6. **Generation fencing:** every runner and provider event carries its generation and turn. Events from an earlier generation are recorded as history and never fail the current turn.
 7. **Visible next action:** every non-terminal task has a next action, either automatic or a working control. "Waiting" with no owner is a violation.
-8. **Fast turns:** TTFT and agent boot stay within their measured budgets. Restart safety work never adds waiting or file transfer before `turn.start` (see "Performance constraint" below).
+8. **Fast turns:** time to first visible agent activity and agent boot stay within their measured budgets (TTFT, time to first text, is reported; since 2026-11-08 the budget judges first activity, because tool-first adapters call tools before writing text). Restart safety work never adds waiting or file transfer before `turn.start` (see "Performance constraint" below).
 
 ## Performance constraint: a turn must start as fast as possible
 
@@ -98,6 +98,12 @@ Restart recovery latency, from `ready` to the recovered run's next provider even
 | claude | 15.0 / 22.5 |
 | codex | 6.5 / 8.0 |
 | opencode | 25.5 / 38.5 |
+
+Since 2026-11-09 this full latency is reported, not judged: the provider's saved-session load (`provider.session.load`) grows with session size and with how many sessions resume at once (Codex at concurrency 6: 3.0–6.3 s of a 5.5–8.5 s recovery). The judged row is Paperclip's own share, `restart_recovery_control_plane`: from `ready` to the start of the provider's session load, or to the next provider event when nothing reloads. It covers claim, prepare, runtime stage and runner launch, which measured 1.2–2.0 s per run with six Codex runs resuming at once (wave `w-20261109T045320-s9807`).
+
+| Adapter | Paperclip share budget (s, p50 / p95) |
+|---|---|
+| claude, codex, opencode | 2.5 / 4.0 |
 
 These budgets measure the product default `lifecycleMode: per_turn`. Phase 1's TTFT work (runner and provider-session reuse, baseline finding 1) should lower them. Lower budgets go in the same table.
 
@@ -212,6 +218,14 @@ Charge an attempt only on a recorded outcome that proves provider work started. 
 
 The rules from #19720 and #19747 then become one rule over these outcome records, instead of watermark heuristics. The on-demand crash-point suite asserts this at the pre-spawn and pre-accept crash points.
 
+**Crash-loop bound past the generation limit (2026-11-10, approved by Dotta).** Uncharged restarts used to stop at controller generation 12: from then on every restart charged, before the work rule was checked. In a concurrency-3 restart chaos wave one long task saw 12–15 restarts, most caused by other tasks. A restart that hit before the provider accepted any turn was charged, the budget ran out, and a person had to click Retry (wave `w-20261110T183431-s9106`, t03). The rule is now:
+
+- Each restart claim records `noProgressRestarts` in its `recovery_history` entry: 0 when the interrupted attempt is proven to have made provider progress, otherwise one more than the previous claim's count. A clean-drain claim carries the previous count unchanged.
+- Before generation 12 nothing changes.
+- From generation 12 on, a restart is not charged only when a durable record proves the interrupted attempt never started provider work (the same `provider_not_started` proof as above, or a resume that never reached execution) and the count is still below `NATIVE_NO_PROGRESS_RESTART_LIMIT` (12). Provider work (progress, or an accepted turn without progress) and unprovable cases still charge, as before.
+- When the count reaches the limit, every further restart charges, so the attempt budget runs out and recovery stops with `execution_recovery_budget_exhausted`, which offers Retry. The limit equals the generation limit, so a run that never makes progress is bounded exactly as before; only proven progress resets the count.
+- Claims saved by earlier releases have no count and are read as zero. A mid-run deploy therefore gives at most 12 more proven-unstarted restarts before the bound applies, and never charges a restart that the old rule would have credited.
+
 ### G. Generation stamping
 
 The runner stamps `generation` and `turnId` on every event. Driver and session code treat an older generation as history. #19718, #19722, #19772 and #19783 each special-cased one variant of this.
@@ -222,6 +236,15 @@ The runner stamps `generation` and `turnId` on every event. Driver and session c
 - An on-demand suite boots the stack once per crash point, runs one task per workload, restarts, and asserts invariants I1–I7. It runs locally or by manual CI dispatch, filtered to the crash points a change touches. It is not a required PR check.
 - Keep the chaos harness as a soak test for timing interactions the enumeration misses. Its R1–R6 graders should map onto I1–I7.
 - The random waves found 20 ms–1 s windows by luck. Enumeration finds them on purpose, and it finds the windows we haven't hit yet.
+
+**Built (Phase 5).**
+- `crashPoint(name)` in `packages/shared/src/crash-points.ts`, with the named points in `crash-point-registry.ts`. `PAPERCLIP_CRASH_POINT=<name>[:<nth>]` arms one point; `NODE_ENV=production` ignores it. Disarmed, a call costs about 4 ns. In-process tests use `armCrashPointForTest`.
+- 20 points at the boundaries in the inventory's write-ahead table, from `sandbox.create.after_provider_before_lease` to `accounting.closure.after_commit_before_spool_unlink`. `server/src/__tests__/crash-point-call-sites.test.ts` requires a call site for each one.
+- `node scripts/crash-points.mjs [--points <glob>] [--kinds <id>] [--adapters …]` boots one instance and arms each point in turn at runtime (`PAPERCLIP_CRASH_POINT_CONTROL`). It asserts R1–R6 plus I1–I4 and I7 per point, from the Phase 1 reconciler. I6 and I8 come from the run log: a run failed by a stale-generation event, and speed-budget breaches. I5 is a known gap until restart claims record their charge decision; R3 bounds it. The manual CI run is `.github/workflows/crash-points.yml`.
+- First full local run (2026-11-08, 14 local points, codex A1, 11.8 min): 11 pass. Work list:
+  - `workspace.finalize.after_start_before_copyback` and `…after_copyback_before_done` leave a `workspace_finalize` operation running after the run succeeded (I2 and R6, kind `native_workspace_finalize_attempt`).
+  - `wake.claim.after_run_running_before_wakeup_claimed` reports I4 on a wake whose retry delivered the work: the known refusal-regex false positive, which section E removes.
+- How to add a point and how to read the results: `tests/restart-chaos/README.md`, "Crash-point suite".
 
 ## Phases
 

@@ -62,20 +62,30 @@ export function voiceCallReports(db: Db, fetchReport: (session: VoiceSessionRow)
     return { rows: result, complete };
   }
   async function projectTranscript(session: VoiceSessionRow) {
-    // Keep both actual spoken sides on this public call's own task. This
-    // does not publish a document or grant access to any other task.
-    if (session.callerAuthority !== "guest_intake") return;
+    // Keep both actual spoken sides on the call's bound task for all phone calls
+    // (outbound callbacks and inbound calls). Never publish to another task.
+    if (session.callerAuthority !== "guest_intake" && session.mode !== "outbound_phone" && session.mode !== "inbound_phone") return;
     await db.transaction(async tx => {
       await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`voice-transcript:${session.id}`}, 0))`);
       const [retained] = await tx.select().from(chatVoiceReports).where(and(eq(chatVoiceReports.companyId, session.companyId), eq(chatVoiceReports.sessionId, session.id)));
       if (!retained?.transcript.length) return;
-      const [task] = await tx.select({sourceTrust: issues.sourceTrust}).from(issues).where(and(eq(issues.companyId, session.companyId), eq(issues.id, session.issueId)));
-      if (task?.sourceTrust?.preset !== "low_trust_review" || task.sourceTrust.disposition !== "quarantined") return;
+      const [task] = await tx.select({id: issues.id, sourceTrust: issues.sourceTrust}).from(issues).where(and(eq(issues.companyId, session.companyId), eq(issues.id, session.issueId)));
+      if (!task) return;
+      if (session.callerAuthority === "guest_intake" && (task.sourceTrust?.preset !== "low_trust_review" || task.sourceTrust.disposition !== "quarantined")) return;
       const key = `voice-transcript-${session.id}`;
       const body = retained.transcript.map(turn => `**${turn.speaker === "caller" ? "Caller" : "Agent"}** · ${turn.startedAt}${turn.interrupted ? " · interrupted" : ""}\n\n${turn.text}`).join("\n\n---\n\n");
       const docs = documentService(tx as unknown as Db), previous = await docs.getIssueDocumentByKey(session.issueId, key);
       if (previous?.body === body) return;
-      await docs.upsertIssueDocument({issueId: session.issueId, key, baseRevisionId: previous?.latestRevisionId, title: "Phone conversation transcript", format: "markdown", body, sourceTrust: task.sourceTrust, changeSummary: "Speko spoken conversation, including caller and agent turns"});
+      await docs.upsertIssueDocument({
+        issueId: session.issueId,
+        key,
+        baseRevisionId: previous?.latestRevisionId,
+        title: session.mode === "outbound_phone" ? "Outbound phone call transcript" : "Phone conversation transcript",
+        format: "markdown",
+        body,
+        ...(task.sourceTrust ? { sourceTrust: task.sourceTrust } : {}),
+        changeSummary: "Speko spoken conversation, including caller and agent turns",
+      });
       await tx.insert(activityLog).values({companyId: session.companyId, actorType: "system", actorId: "speko-report", action: "voice.transcript.updated", entityType: "issue", entityId: session.issueId, details: {sessionId: session.id}});
     });
   }

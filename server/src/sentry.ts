@@ -76,6 +76,7 @@ import { AdapterStopTimeoutError } from "./services/adapter-stop-timeout.js";
 import { CloudPortfolioError } from "./services/cloud-portfolio-error.js";
 import { SecretSensitiveRequestError } from "./middleware/secret-sensitive-request-error.js";
 import { storageFailureDiagnosticsFor } from "./storage/failure-diagnostics.js";
+import { oauthProviderFailureDiagnosticsFor } from "./services/tool-access/oauth/provider-failure-diagnostics.js";
 import { directoryMergeLockTimeoutDiagnosticsFor } from "@paperclipai/adapter-utils/directory-merge-lock-diagnostics";
 import type { RunFailureDiagnostics } from "./services/run-failure-diagnostics.js";
 import { readBuildCommit } from "./build-commit.js";
@@ -137,6 +138,7 @@ export function captureException(error: unknown, reference?: SentryRunReference)
     } : {};
     const storageFailure = storageFailureDiagnosticsFor(error);
     const lockTimeout = directoryMergeLockTimeoutDiagnosticsFor(error);
+    const oauthProviderFailure = oauthProviderFailureDiagnosticsFor(error);
     if (error instanceof AdapterStopTimeoutError) {
       // Event-local, fixed-shape context: no ambient scope or raw error fields.
       const exception = new Error(error.message);
@@ -185,6 +187,17 @@ export function captureException(error: unknown, reference?: SentryRunReference)
       sentryHandle.captureException(error, {
         tags: { ...tags, error_code: "workspace_restore_lock_timeout" },
         contexts: { directory_merge_lock: { ...lockTimeout } },
+        fingerprint: ["{{ default }}"],
+      });
+    } else if (oauthProviderFailure) {
+      sentryHandle.captureException(error, {
+        tags: {
+          ...tags,
+          oauth_operation: oauthProviderFailure.operation,
+          oauth_provider_status: String(oauthProviderFailure.httpStatus),
+          ...(oauthProviderFailure.providerError ? { oauth_provider_error: oauthProviderFailure.providerError } : {}),
+        },
+        contexts: { oauth_provider_failure: { ...oauthProviderFailure } },
         fingerprint: ["{{ default }}"],
       });
     } else if (reference) {
@@ -288,6 +301,11 @@ function captureRunFailureEvent(event: RunFailureEvent): string | null {
         rootFallback.push(`code:${rootException.code}`);
       }
     }
+    // A native turn failure's runner-issued code is closed vocabulary. Without
+    // it, every unclassified native turn failure shares one group.
+    const runnerCodeCandidate = diagnostics?.provider.runnerFailureCode;
+    const runnerFailureCode = typeof runnerCodeCandidate === "string" && runnerCodeCandidate !== "unrecognized" &&
+      /^[a-z][a-z0-9_]{1,99}$/.test(runnerCodeCandidate) ? runnerCodeCandidate : undefined;
     const phase = diagnostics?.execution.failurePhase;
     const failurePhase = phase === "setup" || phase === "execute" ? phase : undefined;
     const contexts: Record<string, Record<string, unknown>> = {};
@@ -363,7 +381,8 @@ function captureRunFailureEvent(event: RunFailureEvent): string | null {
           signal: normalizeRunSignal(event.signal),
         },
       },
-      fingerprint: [errorCode, event.agentAdapter, ...(failurePhase ? [failurePhase] : []), ...(rootErrorCode ? [rootErrorCode] : rootFallback)],
+      fingerprint: [errorCode, event.agentAdapter, ...(failurePhase ? [failurePhase] : []), ...(rootErrorCode ? [rootErrorCode] : rootFallback),
+        ...(runnerFailureCode ? [`runner:${runnerFailureCode}`] : [])],
     });
   } catch (err) {
     // eslint-disable-next-line no-console

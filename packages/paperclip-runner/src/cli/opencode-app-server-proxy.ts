@@ -11,7 +11,11 @@ import type {
 } from "../contracts/harness-driver.js";
 import { OpenCodeServerDriver } from "../drivers/opencode/opencode-server-driver.js";
 import { parseNativeRuntimeContext } from "../contracts/runtime-context.js";
-import { openCodeProxyCompletionContract, openCodeProxyTaskEnvelope } from "./opencode-proxy-task-envelope.js";
+import {
+  openCodeProxyCompletionContract,
+  openCodeProxyTaskEnvelope,
+  sameOpenCodeProxyCompletionContract,
+} from "./opencode-proxy-task-envelope.js";
 import {
   openCodeProxyItemNotification,
   openCodeProxyToolNotification,
@@ -20,6 +24,7 @@ import {
   shouldForwardOpenCodeProxyItem,
 } from "./opencode-proxy-events.js";
 import { enqueueOpenCodeProxyInput, openCodeProxyCompletionFeedback } from "./opencode-proxy-input.js";
+import { createOpenCodeFinishDiagnosticForwarder } from "./opencode-proxy-finish-diagnostics.js";
 import { createBackpressuredFrameWriter, createOpenCodeProxyOutput } from "./opencode-proxy-output.js";
 import { createOpenCodeProxyControllerRequests } from "./opencode-proxy-controller.js";
 import {
@@ -31,7 +36,7 @@ import {
   trustedOpenCodeLaunchBinding,
   withoutAmbientOpenCodeCommand,
 } from "./opencode-proxy-command.js";
-import { OpenCodeProxyUsageLedger } from "./opencode-proxy-usage.js";
+import { OpenCodeProxyUsageLedger, openCodeProxyUpstreamUsage } from "./opencode-proxy-usage.js";
 import { parseProviderPerformanceSpans, PROVIDER_PERFORMANCE_DIAGNOSTIC } from "../contracts/provider-performance.js";
 
 type RpcMessage = {
@@ -50,6 +55,11 @@ let cwd = "";
 let activeModel = "";
 let activeTurnId: string | null = null;
 let activeRunId = process.env.PAPERCLIP_RUN_ID ?? "runnerd-run";
+// The contract the open session checks finish claims against. The launch
+// environment and the launch parameters can belong to different runs: runnerd
+// restores a saved session with its saved contract while its environment
+// already names the run being attached.
+let activeCompletionContract: ReturnType<typeof openCodeProxyCompletionContract> = undefined;
 const announcedTurnIds = new Set<string>();
 const launchBinding = trustedOpenCodeLaunchBinding(process.argv.slice(2));
 const usageLedger = new OpenCodeProxyUsageLedger();
@@ -104,6 +114,7 @@ async function open(
         JSON.parse(readFileSync(runtimeContextPath, "utf8")),
       )
     : null;
+  const finishDiagnostics = createOpenCodeFinishDiagnosticForwarder(send);
   driver = new OpenCodeServerDriver({
     model,
     permissionMode: parseOpenCodeProxyPermissionMode(
@@ -137,7 +148,10 @@ async function open(
         tool: call.tool,
         arguments: call.arguments,
       }, false, call.signal),
-    onDiagnostic: (message) => process.stderr.write(`[opencode] ${message}\n`),
+    onDiagnostic: (message) => {
+      process.stderr.write(`[opencode] ${message}\n`);
+      finishDiagnostics.diagnostic(message);
+    },
     // runnerd gives this proxy its own process group. Keep `opencode serve` in
     // that same group so runnerd's TERM/KILL fallback cannot orphan it.
     isolateProcessGroup: false,
@@ -166,6 +180,8 @@ async function open(
       workingDirectory: cwd,
     });
   }
+  finishDiagnostics.bind(session.ids().driverSessionId);
+  activeCompletionContract = openCodeProxyCompletionContract(params.completionContract);
   eventPump = pumpEvents(session);
   void eventPump.catch((error) => failProxy(error));
   return threadResponse(
@@ -210,8 +226,9 @@ async function pumpEvents(opened: HarnessSession): Promise<void> {
       // correctly trip the facade's strict turn-binding validator.
       if (
         !shouldForwardOpenCodeProxyItem({
+          eventType: event.eventType,
           turnId: event.turnId,
-          kind: payload.kind,
+          payload,
         })
       )
         continue;
@@ -225,11 +242,14 @@ async function pumpEvents(opened: HarnessSession): Promise<void> {
         }),
       );
       if (payload.kind === "usage") {
-        const usage = usageLedger.update({
-          turnId: text(event.turnId),
-          messageId: text(payload.usageMessageId),
-          usage: payload.usage,
-        });
+        const usage = {
+          ...usageLedger.update({
+            turnId: text(event.turnId),
+            messageId: text(payload.usageMessageId),
+            usage: payload.usage,
+          }),
+          ...openCodeProxyUpstreamUsage(payload.usage),
+        };
         send({
           method: "thread/tokenUsage/updated",
           params: {
@@ -354,13 +374,16 @@ async function handle(message: RpcMessage): Promise<void> {
         const runId = params.paperclipRunId;
         if (typeof runId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(runId))
           throw new Error("Invalid Paperclip run identity");
-        if (runId !== activeRunId) {
+        // Runnerd sends the attached run's contract with its run identity;
+        // the launch parameters may still name an earlier run's contract,
+        // even when the launch environment already names this run.
+        const contract = openCodeProxyCompletionContract(params.paperclipCompletionContract);
+        if (runId !== activeRunId
+          || (contract !== undefined && !sameOpenCodeProxyCompletionContract(contract, activeCompletionContract))) {
           if (!session.attachRun) throw new Error("OpenCode run attachment unavailable");
-          // Runnerd sends the attached run's contract with its run identity;
-          // the launch parameters still name the first run's contract.
-          const contract = openCodeProxyCompletionContract(params.paperclipCompletionContract);
           await session.attachRun({ runId, ...(contract ? { completionContract: contract } : {}) });
           activeRunId = runId;
+          if (contract !== undefined) activeCompletionContract = contract;
         }
       }
       const inputItems = Array.isArray(params.input)

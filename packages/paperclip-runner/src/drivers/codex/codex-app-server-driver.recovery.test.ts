@@ -42,7 +42,7 @@ import {
   type PrpEvent,
   type PrpStructuredRunResult,
 } from "./codex-app-server-driver.test-support.js";
-import { NativeSessionProtocolIntegrityError, nativeRestartInterruptedTurnId } from "../../contracts/native-session-backend.js";
+import { NativeProviderRecoveryDeadlineError, NativeSessionProtocolIntegrityError, nativeRestartInterruptedTurnId } from "../../contracts/native-session-backend.js";
 import { canonicalJson } from "./codex-driver-values.js";
 
 function cursorProviderIdentity(mode: unknown) {
@@ -250,6 +250,95 @@ describe("Codex app-server Codex driver", () => {
     });
     expect(second.calls.some((call) => call.method === "turn/start" || call.method === "thread/goal/set")).toBe(false);
   });
+  // Staging: a server replacement left the remote Runner alive mid-turn. The
+  // new controller reattached, verified the same process, and its recovery
+  // read failed with "PRP command session.snapshot timed out". The failure
+  // cleanup then killed the live Runner, so the same-run reattachment found
+  // the process gone and the in-flight turn was lost.
+  describe("a recovery that fails on its way to a live remote Runner", () => {
+    async function recoverWith(fail: (method: string) => Promise<never> | null, signal?: AbortSignal) {
+      const originalTransport = new FakeCodexTransport();
+      const recoveryTransport = new FakeCodexTransport();
+      const request = recoveryTransport.request.bind(recoveryTransport);
+      vi.spyOn(recoveryTransport, "request").mockImplementation(async (method, params) =>
+        fail(method) ?? request(method, params));
+      const close = vi.spyOn(recoveryTransport, "close");
+      // The runnerd transport's restart detach: no turn stop, no suspend, no signal.
+      const detach = vi.fn(async () => {});
+      Object.assign(recoveryTransport, { detachControllerForRestart: detach });
+      const driver = makeDriver([originalTransport, recoveryTransport]);
+      const original = await driver.openSession({
+        runId: "run-runner-kept", normalizedSessionId: "session-runner-kept", workingDirectory: WORKSPACE,
+      });
+      await original.startTurn({ message: { role: "user", text: "Work." } });
+      const checkpoint = await original.snapshot();
+      await original.close({ reason: "controller detached for restart" });
+      const recovery = driver.recoverSession!(checkpoint, { signal: signal ?? new AbortController().signal });
+      return { recovery, close, detach, recoveryTransport };
+    }
+    const rejectRead = (error: Error) => (method: string) => method === "thread/read" ? Promise.reject(error) : null;
+
+    it.each([
+      ["the runner snapshot timed out", new Error("provider_transport_failed: PRP command session.snapshot timed out")],
+      ["the history read failed behind a snapshot timeout (the staging message)", new HarnessReconciliationError(
+        "codex_history_read_failed: thread/turns/list requires supported paginated history; Error: provider_transport_failed: PRP command session.snapshot timed out")],
+    ])("detaches and keeps the Runner and its turn when %s", async (_title, error) => {
+      const { recovery, close, detach, recoveryTransport } = await recoverWith(rejectRead(error));
+      expect(await recovery).toMatchObject({ recovered: false, reason: expect.stringContaining("session.snapshot timed out") });
+      expect(detach).toHaveBeenCalledTimes(1);
+      expect(close).not.toHaveBeenCalled();
+      expect(recoveryTransport.calls.some(call => ["turn/start", "thread/start", "turn/interrupt"].includes(call.method))).toBe(false);
+    });
+
+    async function abortHungRead(reason: Error, recoversForStop = false) {
+      const controller = new AbortController();
+      const { recovery, close, detach, recoveryTransport } = await recoverWith(method => {
+        if (method !== "thread/read") return null;
+        setTimeout(() => controller.abort(reason), 0);
+        return new Promise<never>(() => {});
+      }, controller.signal);
+      Object.assign(recoveryTransport, { recoversForStop: () => recoversForStop });
+      return { outcome: await recovery.then(() => null, (error: unknown) => error), close, detach };
+    }
+
+    it("still stops the Runner when a Stop ends a hung read", async () => {
+      const { outcome, close, detach } = await abortHungRead(new Error("Stop requested"));
+      expect(outcome).toEqual(new Error("Stop requested"));
+      expect(detach).not.toHaveBeenCalled();
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(close.mock.calls[0]).toEqual([]);
+    });
+
+    it("detaches and keeps the Runner when the provider recovery deadline ends a hung read", async () => {
+      const { outcome, close, detach } = await abortHungRead(new NativeProviderRecoveryDeadlineError(900_000));
+      expect(outcome).toBeInstanceOf(NativeProviderRecoveryDeadlineError);
+      expect(String(outcome)).toContain("native session provider recovery timed out after 900000ms");
+      expect(detach).toHaveBeenCalledTimes(1);
+      expect(close).not.toHaveBeenCalled();
+    });
+
+    it("still stops the Runner when the provider recovery deadline ends a Stop's cleanup recovery", async () => {
+      const { outcome, close, detach } = await abortHungRead(new NativeProviderRecoveryDeadlineError(900_000), true);
+      expect(outcome).toBeInstanceOf(NativeProviderRecoveryDeadlineError);
+      expect(detach).not.toHaveBeenCalled();
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(close.mock.calls[0]).toEqual([]);
+    });
+
+    it.each([
+      ["a thrown different-session refusal", new HarnessReconciliationError("thread/read returned a different driver session")],
+      ["an adopted provider identity mismatch", new Error("native_adopted_provider_identity_mismatch")],
+      ["an identity refusal that also timed out", new Error("provider_transport_failed: PRP command session.snapshot timed out; native_adopted_provider_identity_mismatch")],
+      ["an unclassified failure", new Error("codex_history_incomplete: thread/turns/list omitted data")],
+    ])("still stops the Runner after %s", async (_title, error) => {
+      const { recovery, close, detach } = await recoverWith(rejectRead(error));
+      expect(await recovery).toMatchObject({ recovered: false });
+      expect(detach).not.toHaveBeenCalled();
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(close.mock.calls[0]).toEqual([]);
+    });
+  });
+
   it.each([
     "initial-read",
     "reconcile-read",
@@ -302,6 +391,8 @@ describe("Codex app-server Codex driver", () => {
         }),
       ).rejects.toBe(fault);
       expect(close).toHaveBeenCalledTimes(1);
+      // An integrity fault still stops the Runner.
+      expect(close.mock.calls[0]).toEqual([]);
       expect(
         recoveryTransport.calls.some((call) => call.method === "thread/start"),
       ).toBe(false);
@@ -483,6 +574,42 @@ describe("Codex app-server Codex driver", () => {
     });
   });
 
+  describe("a Codex turn that completed while no controller was attached", () => {
+    async function recoverCompleted(status: string) {
+      const first = new FakeCodexTransport();
+      const second = Object.assign(new FakeCodexTransport(), {
+        controllerAcceptedTurnId: () => null,
+        controllerAcceptedCompletedTurnId: () => "turn-1",
+      });
+      second.readResponse = { thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE,
+        turns: [{ id: "turn-1", status, items: [] }] } };
+      const driver = makeDriver([first, second]);
+      const original = await driver.openSession({ runId: "run-completed", normalizedSessionId: "normalized-completed", workingDirectory: WORKSPACE });
+      const snapshot = await original.snapshot();
+      await original.close({ reason: "controller restarted" });
+      const recovery = await driver.recoverSession!(snapshot);
+      expect(recovery).toMatchObject({ recovered: true });
+      second.push("turn/started", { threadId: "thread-1", turn: { id: "turn-1", status: "inProgress", items: [] } });
+      second.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "completed", items: [] } });
+      return recovery.session!;
+    }
+
+    it("adopts the accepted turn when provider history shows it completed", async () => {
+      const recovered = await recoverCompleted("completed");
+      const events = await collectUntilTerminal(recovered.events());
+      expect(events.filter(event => event.eventType.startsWith("turn.")).map(event => [event.eventType, event.turnId]))
+        .toEqual(expect.arrayContaining([["turn.accepted", "turn-1"], ["turn.completed", "turn-1"]]));
+      expect(events.find(event => event.eventType === "session.failed")).toBeUndefined();
+      await recovered.close({ reason: "test complete" });
+    });
+
+    it("leaves a turn the runner reports lost to the restart continuation", async () => {
+      const recovered = await recoverCompleted("failed");
+      expect((await recovered.snapshot()).activeTurnId ?? null).toBeNull();
+      await recovered.close({ reason: "test complete" });
+    });
+  });
+
   it("rejects a recovered provider thread outside the assigned workspace", async () => {
     const first = new FakeCodexTransport();
     const second = new FakeCodexTransport();
@@ -514,7 +641,7 @@ describe("Codex app-server Codex driver", () => {
     await expect(driver.recoverSession?.(snapshot)).resolves.toEqual({
       recovered: false,
       reason: expect.stringContaining(
-        "Codex working directory is outside the assigned workspace",
+        "Agent working directory is outside the assigned workspace",
       ),
     });
   });

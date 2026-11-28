@@ -880,6 +880,70 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(await db.select().from(activityLog).where(eq(activityLog.companyId, companyId))).toHaveLength(variants.length);
   });
 
+  it("excludes responsibility repair audits from Mine without hiding ordinary user updates", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const userId = "board-user";
+    const variants = [
+      { id: randomUUID(), action: "issue.updated", details: { source: "needs_you_responsibility_repair" }, counts: false },
+      { id: randomUUID(), action: "issue.thread_interaction_created", details: { source: "needs_you_responsibility_repair" }, counts: false },
+      { id: randomUUID(), action: "issue.inbox_touched", details: { source: "needs_you_responsibility_repair" }, counts: false },
+      { id: randomUUID(), action: "issue.updated", details: null, counts: true },
+      { id: randomUUID(), action: "issue.updated", details: {}, counts: true },
+      { id: randomUUID(), action: "issue.updated", details: { source: "manual_edit" }, counts: true },
+    ];
+    await db.insert(issues).values(variants.map(({ id }) => ({
+      id, companyId, title: "Repaired routine task", status: "blocked", originKind: "routine_execution",
+      responsibleUserId: "other-user",
+    })));
+    await db.insert(activityLog).values(variants.map(({ id, action, details }) => ({
+      companyId, actorType: "user", actorId: userId, action, entityType: "issue", entityId: id, details,
+    })));
+    await db.insert(issueThreadInteractions).values({
+      companyId, issueId: variants[0]!.id, kind: "request_confirmation", status: "expired",
+      addresseeUserId: userId, payload: { version: 1, prompt: "Obsolete request" },
+    });
+    await db.insert(issueComments).values(variants.map(({ id }) => ({
+      companyId, issueId: id, authorType: "system" as const, body: "Routine update",
+    })));
+
+    const expectedIds = variants.filter(v => v.counts).map(v => v.id).sort();
+    const filters = { touchedByUserId: userId, inboxArchivedByUserId: userId, includeRoutineExecutions: true };
+    expect((await svc.list(companyId, filters)).map(v => v.id).sort()).toEqual(expectedIds);
+    expect((await svc.list(companyId, { ...filters, touchedCandidates: "participation" })).map(v => v.id).sort()).toEqual(expectedIds);
+    expect(await svc.countUnreadTouchedByUser(companyId, userId)).toBe(expectedIds.length);
+    expect((await svc.unreadInboxIssueIds(companyId, userId, sql<boolean>`true`)).sort()).toEqual(expectedIds);
+    expect(await db.select().from(activityLog).where(eq(activityLog.companyId, companyId))).toHaveLength(variants.length);
+  });
+
+  it("keeps repaired tasks in Mine when the viewer has independent participation", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const userId = "board-user";
+    const ids = { creator: randomUUID(), assignee: randomUUID(), commenter: randomUUID(), editor: randomUUID(), addressee: randomUUID() };
+    await db.insert(issues).values(Object.entries(ids).map(([kind, id]) => ({
+      id, companyId, title: "Participated repaired task", status: "blocked",
+      originKind: kind === "creator" ? "manual" : "routine_execution",
+      createdByUserId: kind === "creator" ? userId : null,
+      assigneeUserId: kind === "assignee" ? userId : null,
+    })));
+    await db.insert(activityLog).values(Object.values(ids).map(id => ({
+      companyId, actorType: "user", actorId: userId, action: "issue.updated", entityType: "issue", entityId: id,
+      details: { source: "needs_you_responsibility_repair" },
+    })));
+    await db.insert(activityLog).values({
+      companyId, actorType: "user", actorId: userId, action: "issue.updated", entityType: "issue", entityId: ids.editor,
+    });
+    await db.insert(issueComments).values({ companyId, issueId: ids.commenter, authorUserId: userId, body: "Following this task" });
+    await db.insert(issueThreadInteractions).values({
+      companyId, issueId: ids.addressee, kind: "request_confirmation", addresseeUserId: userId,
+      payload: { version: 1, prompt: "Please confirm" },
+    });
+
+    const expectedIds = Object.values(ids).sort();
+    const filters = { touchedByUserId: userId, includeRoutineExecutions: true };
+    expect((await svc.list(companyId, filters)).map(v => v.id).sort()).toEqual(expectedIds);
+    expect((await svc.list(companyId, { ...filters, touchedCandidates: "participation" })).map(v => v.id).sort()).toEqual(expectedIds);
+  });
+
   function agentRow(companyId: string, input: {
     id: string;
     name: string;
@@ -4514,6 +4578,55 @@ const dependencyTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ISSU
     ).rejects.toMatchObject({ status: 422 });
   });
 
+  it("names the existing order in a blocking-cycle denial and keeps it", async () => {
+    const companyId = randomUUID();
+    await seedIssueCompany(db, companyId);
+
+    const website = randomUUID();
+    const design = randomUUID();
+    const copy = randomUUID();
+    await db.insert(issues).values([
+      { id: website, companyId, identifier: "COM-1", title: "Website", status: "backlog", priority: "medium" },
+      { id: design, companyId, identifier: "COM-2", title: "Design", status: "backlog", priority: "medium" },
+      // The intermediate issue's title must not appear: the caller may not be able to read it.
+      { id: copy, companyId, identifier: "COM-3", title: "Private launch copy", status: "backlog", priority: "medium" },
+    ]);
+    await svc.update(design, { blockedByIssueIds: [website] });
+
+    const direct = await svc
+      .update(website, { blockedByIssueIds: [design] })
+      .catch((error: unknown) => error);
+    expect(direct).toMatchObject({
+      status: 422,
+      message:
+        "Blocking relations cannot contain cycles: COM-2 waits for COM-1, so COM-1 cannot also wait for COM-2. " +
+        "No dependencies were changed and the existing ones are kept. " +
+        "Do not remove or reverse an existing dependency to make this fit; ask whoever requested the change which order they want and change dependencies only after they choose.",
+      details: {
+        code: "blocking_cycle",
+        issueId: website,
+        requestedBlockerIssueId: design,
+        existingChain: [
+          { id: website, identifier: "COM-1" },
+          { id: design, identifier: "COM-2" },
+        ],
+      },
+    });
+
+    await svc.update(copy, { blockedByIssueIds: [design] });
+    const transitive = await svc
+      .update(website, { blockedByIssueIds: [copy] })
+      .catch((error: unknown) => error);
+    expect((transitive as Error).message).toContain(
+      "COM-2 waits for COM-1, and COM-3 waits for COM-2, so COM-1 cannot also wait for COM-3.",
+    );
+    expect(JSON.stringify({ message: (transitive as Error).message, details: (transitive as { details?: unknown }).details }))
+      .not.toMatch(/Website|Design|Private launch copy/);
+
+    expect((await svc.getRelationSummaries(design)).blockedBy.map((relation) => relation.id)).toEqual([website]);
+    expect((await svc.getRelationSummaries(website)).blockedBy).toEqual([]);
+  });
+
   it("only returns dependents once every blocker is done", async () => {
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();
@@ -4724,13 +4837,23 @@ const dependencyTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ISSU
     });
   });
 
-  it.each(["covered", "foreign-run", "unfinished", "failed-finalize", "late-finish", "later-operation"])(
-    "requires a successful owning finalize to cover a nested snapshot: %s", async kind => {
+  it.each([
+    ["covered", "succeeded", true],
+    ["foreign-run", "succeeded", false],
+    ["unfinished", "succeeded", false],
+    ["failed-finalize", "succeeded", false],
+    ["late-finish", "running", false],
+    ["later-operation", "running", false],
+    ["late-finish", "succeeded", true],
+    ["later-operation", "succeeded", true],
+  ] as const)(
+    "requires a successful owning finalize to cover a nested snapshot: %s (run %s)", async (kind, runStatus, ready) => {
       const f = await seedSharedWorkspaceDependency();
       const runId = randomUUID(), foreignRunId = randomUUID();
-      await db.insert(heartbeatRuns).values([runId, foreignRunId].map(id => ({
-        id, companyId: f.companyId, agentId: f.assigneeAgentId, status: "succeeded",
-      })));
+      await db.insert(heartbeatRuns).values([
+        { id: runId, companyId: f.companyId, agentId: f.assigneeAgentId, status: runStatus },
+        { id: foreignRunId, companyId: f.companyId, agentId: f.assigneeAgentId, status: "succeeded" },
+      ]);
       const started = new Date("2026-05-23T22:00:00.000Z");
       const finished = new Date("2026-05-23T22:00:02.000Z");
       await db.insert(workspaceOperations).values([
@@ -4748,7 +4871,6 @@ const dependencyTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ISSU
           startedAt: new Date(finished.getTime() + 100), finishedAt: new Date(finished.getTime() + 200),
         }] : []),
       ]);
-      const ready = kind === "covered";
       expect((await svc.listWakeableBlockedDependents(f.blockerId)).map(issue => issue.id))
         .toEqual(ready ? [f.dependentId] : []);
       await expect(svc.getDependencyReadiness(f.dependentId)).resolves.toMatchObject({
@@ -6996,5 +7118,14 @@ describeEmbeddedPostgres("issueService.addComment createdByRunId", () => {
       .from(issueComments)
       .where(eq(issueComments.createdByRunId, runId));
     expect(duplicates).toHaveLength(1);
+  });
+
+  it("stores an agent's made-up-host board link as a relative route, and a person's as written", async () => {
+    const [{ issuePrefix }] = await db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, companyId));
+    const written = `I updated [Morgan](https://paperclip.local/${issuePrefix}/agents/${agentId}); see [docs](https://docs.github.com/a).`;
+    const agentComment = await svc.addComment(issueId, written, { agentId });
+    expect(agentComment.body).toBe(`I updated [Morgan](/${issuePrefix}/agents/${agentId}); see [docs](https://docs.github.com/a).`);
+    const userComment = await svc.addComment(issueId, written, { userId: "board-user" });
+    expect(userComment.body).toBe(written);
   });
 });

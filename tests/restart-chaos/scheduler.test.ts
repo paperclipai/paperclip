@@ -1,5 +1,9 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
-import { parseCommand, parseReplayRef, waveIdFor } from "./config.js";
+import { parseCommand, parseReplayRef, waveIdFor, publicGitHubUrl } from "./config.js";
 import { chaosLifecycleOverrides } from "./seed.js";
 import { K4_HOLD_RANGE_MS, STORM_GAP_RANGE_MS, createRng, observedFaultSchedule, planStorm, planTasks, planWave, replayWave,
   StormRun, stormActive, stormFaultDue, taskFaultSchedule, type StormState } from "./scheduler.js";
@@ -32,6 +36,28 @@ describe("scheduler determinism", () => {
     }
   });
 
+  it("fires every planned fault at --fault-after-seconds without changing the rest of the seeded plan", () => {
+    const base = parseCommand(["--faults", "K1,K2", "--tasks", "6", "--seed", "77"]);
+    const pinned = parseCommand(["--faults", "K1,K2", "--tasks", "6", "--seed", "77", "--fault-after-seconds", "150"]);
+    if (base.mode !== "wave" || pinned.mode !== "wave") throw new Error("expected a wave");
+    expect(pinned.options.faultAfterMs).toBe(150_000);
+    const planned = planTasks(pinned.options);
+    expect(planned.map(task => task.fireAfterMs)).toEqual(Array(6).fill(150_000));
+    expect(planned.map(({ fireAfterMs: _fire, ...rest }) => rest)).toEqual(planTasks(base.options).map(({ fireAfterMs: _fire, ...rest }) => rest));
+    expect(() => parseCommand(["--fault-after-seconds", "2"])).toThrow(/fault-after-seconds/);
+    expect(() => parseCommand(["--storm-minutes", "10", "--fault-after-seconds", "60"])).toThrow(/storm/);
+    expect(() => parseCommand(["--triggers", "time,comment", "--fault-after-seconds", "60"])).toThrow(/--triggers time/);
+  });
+
+  it("keeps the plans existing seeds produce for triggered and storm waves", () => {
+    const triggered = planTasks({ seed: 4242, tasks: 4, workloads: ["A1", "C1"], adapters: ["codex", "claude"], faults: ["K1", "K2"],
+      triggers: ["time", "comment", "result"] } as never);
+    expect(triggered.map(task => [task.trigger ?? "time", task.triggerDelayMs ?? null, task.fireAfterMs, task.nonce])).toEqual([
+      ["time", null, 36292, "d3a12313"], ["time", null, 14380, "37697e51"], ["comment", 4272, 23204, "a5d0f179"], ["time", null, 51015, "b9f3ef15"]]);
+    const storm = planTasks({ seed: 4242, tasks: 3, workloads: ["A1"], adapters: ["codex"], faults: ["K1"], triggers: ["time"], stormMinutes: 10 } as never);
+    expect(storm.map(task => [task.fault, task.fireAfterMs, task.nonce])).toEqual([["K13", 0, "84e8a446"], ["K13", 0, "59bc9f5c"], ["K13", 0, "d3a12313"]]);
+  });
+
   it("raises the K4 hold upper end with --k4-hold-max-seconds, up to the 600 s outage cap", () => {
     const command = parseCommand(["--faults", "K4", "--k4-hold-max-seconds", "600", "--seed", "5"]);
     if (command.mode !== "wave") throw new Error("expected a wave");
@@ -42,8 +68,73 @@ describe("scheduler determinism", () => {
     expect(Math.max(...holds)).toBeGreaterThan(K4_HOLD_RANGE_MS[1]);
     const storm = planStorm(5, 120, ["K4"], 600_000);
     expect(Math.max(...storm.faults.map(fault => fault.holdMs))).toBeGreaterThan(K4_HOLD_RANGE_MS[1]);
+    const single = parseCommand(["--adapters", "codex", "--seed", "5"]), both = parseCommand(["--seed", "5"]);
+    if (single.mode !== "wave" || both.mode !== "wave") throw new Error("expected a wave");
+    expect(single.options.workloads).not.toContain("M1");
+    expect(both.options.workloads).toContain("M1");
+    expect(() => parseCommand(["--adapters", "codex", "--workloads", "M1"])).toThrow(/two agents/);
+    const stored = parseCommand(["--storage", "s3", "--seed", "5"]);
+    if (stored.mode !== "wave") throw new Error("expected a wave");
+    expect(stored.options.storage).toBe("s3");
+    expect(both.options.storage).toBeUndefined();
+    expect(() => parseCommand(["--storage", "gcs"])).toThrow(/local or s3/);
+    const faulted = parseCommand(["--storage", "s3", "--storage-faults", "ST1,ST3", "--seed", "5"]);
+    if (faulted.mode !== "wave") throw new Error("expected a wave");
+    expect(faulted.options.storageFaults).toEqual(["ST1", "ST3"]);
+    expect(() => parseCommand(["--storage-faults", "ST1"])).toThrow(/needs --storage s3/);
+    const short = parseCommand(["--storage", "s3", "--storage-faults", "ST1", "--storage-fault-seconds", "15-45", "--seed", "5"]);
+    if (short.mode !== "wave") throw new Error("expected a wave");
+    expect(short.options.storageFaultMs).toEqual([15_000, 45_000]);
+    expect(() => parseCommand(["--storage", "s3", "--storage-faults", "ST1", "--storage-fault-seconds", "45-15"])).toThrow(/storage-fault-seconds/);
+    expect(() => parseCommand(["--storage", "s3", "--storage-fault-seconds", "15-45"])).toThrow(/needs --storage-faults/);
+    const repo = mkdtempSync(path.join(os.tmpdir(), "restart-chaos-origin-"));
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, stdio: "pipe", encoding: "utf8" }).trim();
+    git("init", "-q"); git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base");
+    git("remote", "add", "origin", "git@github.com:acme/widget.git");
+    git("update-ref", "refs/remotes/origin/master", "HEAD");
+    const masterCommit = git("rev-parse", "HEAD");
+    expect(() => parseCommand(["--env", "daytona", "--daytona-image", "ghcr.io/x/y@sha256:" + "a".repeat(64), "--workloads", "R1", "--workspace-repo", repo]))
+      .toThrow(/needs --storage s3/);
+    const daytonaR1 = parseCommand(["--env", "daytona", "--daytona-image", "ghcr.io/x/y@sha256:" + "a".repeat(64), "--workloads", "R1",
+      "--workspace-repo", repo, "--storage", "s3", "--seed", "5"]);
+    if (daytonaR1.mode !== "wave") throw new Error("expected a wave");
+    expect(daytonaR1.options).toMatchObject({ env: "daytona", storage: "s3", workloads: ["R1"] });
+    expect(daytonaR1.options).toMatchObject({ workspaceGitUrl: "https://github.com/acme/widget.git", workspaceCommit: masterCommit });
+    rmSync(repo, { recursive: true, force: true });
+    expect(publicGitHubUrl("git@github.com:paperclipai/paperclip.git")).toBe("https://github.com/paperclipai/paperclip.git");
+    expect(publicGitHubUrl("https://github.com/paperclipai/paperclip")).toBe("https://github.com/paperclipai/paperclip.git");
+    expect(() => publicGitHubUrl("/Users/me/repo")).toThrow(/GitHub origin/);
     expect(() => parseCommand(["--k4-hold-max-seconds", "601"])).toThrow(/between 120 and 600/);
     expect(() => parseCommand(["--replay", "w-20261106T101112-s42/t03", "--k4-hold-max-seconds", "400"])).toThrow(/do not combine/);
+  });
+
+  it("pairs R1 with --workspace-repo, locally, without the chaoscli fixture workloads", () => {
+    const command = parseCommand(["--workloads", "R1,C1", "--workspace-repo", "."]);
+    if (command.mode !== "wave") throw new Error("expected a wave");
+    expect(command.options.workspaceRepo).toBe(process.cwd());
+    expect(command.options.workspaceCommit).toMatch(/^[0-9a-f]{40}$/);
+    expect(() => parseCommand(["--workloads", "R1"])).toThrow(/go together/);
+    expect(() => parseCommand(["--workloads", "A1", "--workspace-repo", "x"])).toThrow(/go together/);
+    expect(() => parseCommand(["--workloads", "R1,B1", "--workspace-repo", "x"])).toThrow(/chaoscli fixture/);
+    const defaults = parseCommand([]);
+    if (defaults.mode !== "wave") throw new Error("expected a wave");
+    expect(defaults.options.workloads).not.toContain("R1");
+  });
+
+  it("pairs K14 (upgrade mid-run) with --upgrade-from, locally, with no hold and outside storm defaults", () => {
+    const command = parseCommand(["--faults", "K14", "--upgrade-from", "../older-checkout", "--seed", "5"]);
+    if (command.mode !== "wave") throw new Error("expected a wave");
+    expect(command.options.upgradeFrom).toMatch(/older-checkout$/);
+    expect(command.options.upgradeFrom!.startsWith("/")).toBe(true);
+    expect(planTasks(command.options).every(task => task.fault === "K14" && task.holdMs === 0)).toBe(true);
+    expect(() => parseCommand(["--faults", "K14"])).toThrow(/go together/);
+    expect(() => parseCommand(["--faults", "K1", "--upgrade-from", "../older-checkout"])).toThrow(/go together/);
+    expect(() => parseCommand(["--faults", "K14", "--upgrade-from", "x", "--env", "daytona",
+      "--daytona-image", `ghcr.io/x/y@sha256:${"a".repeat(64)}`])).toThrow(/only with --env local/);
+    const storm = parseCommand(["--storm-minutes", "30"]);
+    if (storm.mode !== "wave") throw new Error("expected a wave");
+    expect(storm.options.faults).not.toContain("K14");
+    expect(() => parseCommand(["--replay", "w-20261106T101112-s42/t03", "--upgrade-from", "x"])).toThrow(/do not combine/);
   });
 
   it("covers every workload × adapter × fault cell once per cycle", () => {
@@ -168,6 +259,34 @@ describe("Daytona options", () => {
     expect(() => parseCommand(["--env", "daytona", "--daytona-image", image, "--concurrency", "11"])).toThrow(/exceeds the Daytona vCPU budget of 40/);
     expect(() => parseCommand(["--env", "daytona", "--daytona-image", "ghcr.io/x/y:latest"])).toThrow(/immutable runner image/);
     expect(() => parseCommand(["--env", "local", "--daytona-cpu", "2"])).toThrow(/only to --env daytona/);
+    expect(() => parseCommand(["--env", "local", "--daytona-reuse-lease"])).toThrow(/only to --env daytona/);
+  });
+  it("starts sandboxes from a pack-mismatched image while the controller keeps the matched pack", () => {
+    const older = `ghcr.io/paperclipai/paperclip-daytona-runner@sha256:${"b".repeat(64)}`;
+    expect(parseCommand(["--env", "daytona", "--daytona-image", image, "--daytona-pack-mismatch", older]))
+      .toMatchObject({ mode: "wave", options: { daytonaImage: image, daytonaSandboxImage: older } });
+    expect(() => parseCommand(["--env", "daytona", "--daytona-image", image, "--daytona-pack-mismatch", image])).toThrow(/different image/);
+    expect(() => parseCommand(["--env", "daytona", "--daytona-image", image, "--daytona-pack-mismatch", "ghcr.io/x/y:old"])).toThrow(/immutable image/);
+    expect(() => parseCommand(["--env", "local", "--daytona-pack-mismatch", older])).toThrow(/only to --env daytona/);
+  });
+  it("counts every task's sandbox against the budget when warm sandboxes outlive their task", () => {
+    const wave = (...extra: string[]) => parseCommand(["--env", "daytona", "--daytona-image", image, "--tasks", "20", "--concurrency", "4", ...extra]);
+    expect(() => wave("--daytona-warm")).toThrow(/--daytona-warm keeps each task's sandbox.*20 tasks/);
+    expect(() => wave("--daytona-inherit", "--lifecycle", "warm")).toThrow(/--daytona-inherit with --lifecycle warm keeps each task's sandbox/);
+    // --lifecycle default leaves the lifecycle unset everywhere; Daytona keeps reusable leases, so the run defaults to warm.
+    expect(() => wave("--daytona-inherit", "--lifecycle", "default")).toThrow(/--daytona-inherit with --lifecycle default keeps each task's sandbox/);
+    // The catalog agents pin per-turn, so an inheriting environment alone releases each sandbox after its turn.
+    expect(wave("--daytona-inherit")).toMatchObject({ mode: "wave", options: { daytonaInherit: true, tasks: 20 } });
+    expect(wave("--daytona-inherit", "--lifecycle", "per_turn")).toMatchObject({ mode: "wave" });
+    expect(() => wave("--daytona-warm", "--daytona-inherit")).toThrow(/cannot be combined/);
+    expect(() => parseCommand(["--env", "local", "--daytona-warm"])).toThrow(/only to --env daytona/);
+    expect(() => parseCommand(["--env", "local", "--daytona-inherit"])).toThrow(/only to --env daytona/);
+  });
+  it("keeps reusable Daytona leases only when asked", () => {
+    const reuse = parseCommand(["--env", "daytona", "--daytona-image", image, "--daytona-reuse-lease"]);
+    expect(reuse).toMatchObject({ mode: "wave", options: { daytonaReuseLease: true } });
+    const plain = parseCommand(["--env", "daytona", "--daytona-image", image]);
+    if (plain.mode === "wave") expect(plain.options.daytonaReuseLease).toBeUndefined();
   });
 });
 

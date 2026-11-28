@@ -87,7 +87,7 @@ test("candidate startup and sidecar admission share one strict identity-bound JS
   for (const command of ["initialize", "session.open"]) {
     const request = { protocolVersion, id: 1, command, params: { agent: "antigravity", model: candidateAdmission.model, candidateAdmission } };
     assert.equal(validate(request), true, JSON.stringify(validate.errors));
-    for (const change of [{ unknown: true }, { runId: undefined }, { normalizedSessionId: "wrong session" }, { platform: "linux" }, { expiresAt: "1800000060000" }]) {
+    for (const change of [{ unknown: true }, { runId: undefined }, { normalizedSessionId: "wrong session" }, { platform: "win32" }, { architecture: "ia32" }, { expiresAt: "1800000060000" }]) {
       const altered = JSON.parse(JSON.stringify({ ...request, params: { ...request.params, candidateAdmission: { ...candidateAdmission, ...change } } }));
       assert.equal(validate(altered), false);
       assert.equal(startup(altered.params.candidateAdmission), false);
@@ -95,6 +95,8 @@ test("candidate startup and sidecar admission share one strict identity-bound JS
     assert.equal(validate({ ...request, params: { ...request.params, agent: "codex" } }), false);
   }
   assert.equal(validate({ protocolVersion, id: 1, command: "turn.start", params: { candidateAdmission } }), false);
+  // The schema admits each verified-closure platform; compiled pins decide the exact pairs.
+  for (const [platform, architecture] of [["linux", "x64"], ["linux", "arm64"]]) assert.equal(startup({ ...candidateAdmission, platform, architecture }), true);
 });
 
 test("Pi session admission requires an explicit supported thinking level including recovery", () => {
@@ -162,7 +164,7 @@ test("public Pi descriptors preserve effective thinking levels without invalidat
   const validateDescriptor = new Ajv2020({ allErrors: true, strict: true, strictRequired: false }).compile(descriptorSchema);
   const historical = {
     provider: "acpx", driver: "acpx_runtime", model: "model", executionKind: "local_process",
-    providerVersion: "0.13.1", agent: "pi", requestedModel: "model", acpProtocolVersion: 1,
+    providerVersion: "0.22.0", agent: "pi", requestedModel: "model", acpProtocolVersion: 1,
     agentServerPackage: "pi-acp", agentServerVersion: "0.0.33", acpxRecordId: null, agentProcessId: null,
   };
   assert.equal(validateDescriptor(historical), true, JSON.stringify(validateDescriptor.errors));
@@ -276,4 +278,47 @@ test("Pi native empty message boundaries and replay history fit the strict sidec
     assert.equal(validate({ ...messages[2], payload }), true, JSON.stringify(validate.errors));
     assert.equal(validate({ ...messages[2], payload, piMessageBoundary: { phase: "start" } }), false);
   }
+});
+
+test("a terminal's background task report matches the shared accepted and rejected vectors", async () => {
+  const vectors = JSON.parse(await readFile(new URL("../protocol/fixtures/provider-boundary/acpx-background-tasks.json", import.meta.url), "utf8"));
+  const terminal = (payload) => ({ ...messages[2], eventType: "runtime.turn_terminal", payload });
+  assert.equal(validate(terminal({ status: "completed" })), true, JSON.stringify(validate.errors));
+  for (const { value } of vectors.accepted) {
+    assert.equal(validate(terminal({ status: "completed", backgroundTasks: value })), true, JSON.stringify(value));
+  }
+  for (const { value, case: name } of vectors.rejected) {
+    assert.equal(validate(terminal({ status: "completed", backgroundTasks: value })), false, name);
+  }
+});
+
+test("provider-started turn frames are closed and the provider-lost diagnostic is enforced only for its code", () => {
+  const event = (eventType, payload, extra = {}) => ({ ...messages[2], eventType, payload, ...extra });
+  assert.equal(validate(event("runtime.turn_started", { origin: "provider" }, { turnId: "provider-1" })), true, JSON.stringify(validate.errors));
+  assert.equal(validate(event("runtime.turn_started", { origin: "controller" })), false);
+  assert.equal(validate(event("runtime.turn_started", { origin: "provider", extra: true })), false);
+  assert.equal(validate(event("runtime.turn_started", { origin: "provider" }, { turnId: null })), false);
+  const diagnostic = (payload) => event("runtime.diagnostic", payload, { turnId: null });
+  assert.equal(validate(diagnostic({ code: "ACPX_PROVIDER_PROCESS_LOST", message: "The provider exited." })), true, JSON.stringify(validate.errors));
+  assert.equal(validate(diagnostic({ code: "ACPX_PROVIDER_PROCESS_LOST", message: "x".repeat(8_192) })), true, JSON.stringify(validate.errors));
+  for (const payload of [
+    { code: "ACPX_PROVIDER_PROCESS_LOST" },
+    { code: "ACPX_PROVIDER_PROCESS_LOST", message: "x".repeat(8_193) },
+    { code: "ACPX_PROVIDER_PROCESS_LOST", message: 7 },
+    { code: "ACPX_PROVIDER_PROCESS_LOST", message: "The provider exited.", detail: "extra" },
+  ]) {
+    assert.equal(validate(diagnostic(payload)), false, JSON.stringify(payload));
+  }
+  for (const payload of [
+    { code: "sidecar_input_failed", message: "Bad input." },
+    { code: "sidecar_shutdown_requested", message: "x".repeat(9_000) },
+    { code: "malformed_frame" },
+    { code: "acpx_terminal_usage_unavailable", message: "Unavailable.", detail: "extra" },
+  ]) {
+    assert.equal(validate(diagnostic(payload)), true, JSON.stringify(payload));
+  }
+  const command = (params) => ({ ...messages[0], command: "session.provider_turn", params });
+  assert.equal(validate(command({ turnId: "turn-1", armed: true })), true, JSON.stringify(validate.errors));
+  assert.equal(validate(command({ turnId: "turn-1" })), false);
+  assert.equal(validate(command({ turnId: "turn-1", armed: true, extra: 1 })), false);
 });

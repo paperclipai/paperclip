@@ -112,7 +112,7 @@ export function nativeRestartFixture(options: { dedicatedDatabaseUrl?: string } 
       throw new Error("Expected restart recovery TCP listener");
     }
     apiUrl = `http://127.0.0.1:${address.port}`;
-    setupRunnerPrpWebSocketServer(server, { apiUrl });
+    setupRunnerPrpWebSocketServer(server);
 
     const db = createDb(temporary.connectionString);
     try {
@@ -157,8 +157,10 @@ export function nativeRestartFixture(options: { dedicatedDatabaseUrl?: string } 
   async function seedRun(
     label: string,
     existingDb?: ReturnType<typeof createDb>,
+    seedOptions: { agentId?: string } = {},
   ) {
     const db = existingDb ?? createDb(temporary.connectionString);
+    const runAgentId = seedOptions.agentId ?? agentId;
     const issueId = randomUUID();
     const runId = randomUUID();
     await db.insert(issues).values({
@@ -169,14 +171,14 @@ export function nativeRestartFixture(options: { dedicatedDatabaseUrl?: string } 
       status: "in_progress",
       priority: "medium",
       workMode: "standard",
-      assigneeAgentId: agentId,
+      assigneeAgentId: runAgentId,
     });
     const [run] = await db
       .insert(heartbeatRuns)
       .values({
         id: runId,
         companyId,
-        agentId,
+        agentId: runAgentId,
         status: "running",
         runtimeMode: "native",
         nativeIssueId: issueId,

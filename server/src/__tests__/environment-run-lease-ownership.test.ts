@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -117,6 +117,7 @@ suite("environment_run_lease_active on the shared ownership path", () => {
     expect(report.kinds.find(kind => kind.kind === "environment_run_lease_active")).toMatchObject({
       settled: 1, reasons: { pid_dead: 1 } });
     expect(await row(leaseId)).toMatchObject({ status: "pending_cleanup", failureReason: "orphaned_active_lease_recovered" });
+    expect(typeof (await row(leaseId)).metadata?.pendingCleanupRecoveredAtMs).toBe("number");
   });
 
   it("stops and keeps a dead holder's sandbox instead of destroying it", async () => {
@@ -256,6 +257,17 @@ suite("environment_run_lease_active on the shared ownership path", () => {
   });
 
   describe("leases saved before holders were stamped", () => {
+    it("dates the first cleanup attempt as a top-level key even for a scalar metadata root", async () => {
+      const runId = await run("failed");
+      const id = randomUUID();
+      await db.insert(environmentLeases).values({ id, companyId, heartbeatRunId: runId, status: "active",
+        metadata: sql`'["provider-wrote-an-array"]'::jsonb` });
+      await runOwnershipReconciliationPass(db, { state: createOwnershipReportState() });
+      const settled = await row(id);
+      expect(settled.status).toBe("pending_cleanup");
+      expect(typeof settled.metadata?.pendingCleanupRecoveredAtMs).toBe("number");
+    });
+
     it("keeps the run fact alone for one release on a single-host server", async () => {
       const runId = await run("failed");
       const leaseId = await lease(runId, null);

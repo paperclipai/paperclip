@@ -29,6 +29,7 @@ import type {
   CompanySkillVersionSummary,
 } from "@paperclipai/shared";
 import { companySkillsApi } from "../api/companySkills";
+import { ConnectedAppSkills } from "../components/skills/ConnectedAppSkills";
 import { foldersApi } from "../api/folders";
 import { agentsApi } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
@@ -180,6 +181,7 @@ import {
 import { GithubIcon } from "../components/icons/github-icon";
 import type { FolderListItem, FolderListResult } from "@paperclipai/shared";
 import { describeError } from "@/api/errors";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 type SkillTreeNode = {
   name: string;
@@ -1936,7 +1938,7 @@ function CatalogDetailPane({
         ) : fileQuery.data.markdown ? (
           <MarkdownBody softBreaks={false} linkIssueReferences={false}>{body}</MarkdownBody>
         ) : (
-          <pre className="overflow-x-auto whitespace-pre-wrap wrap-break-word border-0 bg-transparent p-0 font-mono text-sm text-foreground">
+          <pre className={cn("overflow-x-auto whitespace-pre-wrap wrap-break-word border-0 bg-transparent p-0 font-mono text-sm text-foreground", ANALYTICS_MASK_CLASS)}>
             <code>{fileQuery.data.content}</code>
           </pre>
         )}
@@ -2587,12 +2589,12 @@ function SkillVersionDiffDialog({
             {(leftQuery.isLoading || rightQuery.isLoading) && <p className="text-sm text-muted-foreground">Loading selected versions…</p>}
           </DialogHeader>
           <div className="flex flex-wrap items-center gap-3 text-xs">
-            <label className="flex items-center gap-2">
+            <label className="flex min-w-0 items-center gap-2">
               <Badge variant="outline" className="border-red-500/30 bg-red-500/10 uppercase tracking-wider text-red-400">Old</Badge>
               <select
                 value={leftVersionId ?? ""}
                 onChange={(event) => onLeftVersionChange(event.target.value || null)}
-                className="h-8 w-44 rounded-md border border-border bg-background px-2 text-xs"
+                className="h-8 w-full max-w-44 rounded-md border border-border bg-background px-2 text-xs sm:w-44"
               >
                 <option value="">Initial</option>
                 {sorted.map((version) => (
@@ -2600,12 +2602,12 @@ function SkillVersionDiffDialog({
                 ))}
               </select>
             </label>
-            <label className="flex items-center gap-2">
+            <label className="flex min-w-0 items-center gap-2">
               <Badge variant="outline" className="border-green-500/30 bg-green-500/10 uppercase tracking-wider text-green-400">New</Badge>
               <select
                 value={right?.id ?? ""}
                 onChange={(event) => onRightVersionChange(event.target.value || null)}
-                className="h-8 w-44 rounded-md border border-border bg-background px-2 text-xs"
+                className="h-8 w-full max-w-44 rounded-md border border-border bg-background px-2 text-xs sm:w-44"
               >
                 {sorted.map((version) => (
                   <option key={version.id} value={version.id}>{versionLabel(version)}</option>
@@ -2614,6 +2616,23 @@ function SkillVersionDiffDialog({
             </label>
           </div>
         </div>
+        {allPaths.length > 0 ? (
+          <div className="md:hidden">
+            <label className="flex items-center gap-2 text-xs">
+              <span className="shrink-0 text-muted-foreground">File</span>
+              <select
+                aria-label="Diff file"
+                value={effectivePath}
+                onChange={(event) => setSelectedPath(event.target.value)}
+                className="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 font-mono text-xs text-foreground"
+              >
+                {allPaths.map((path) => (
+                  <option key={path} value={path}>{path}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+        ) : null}
         <div className="flex min-h-0 flex-1 gap-3">
           <aside className="hidden w-56 shrink-0 overflow-auto border-r border-border pr-3 md:block">
             {allPaths.map((path) => (
@@ -2652,7 +2671,7 @@ function SkillVersionDiffDialog({
                     <span className="select-none border-r border-border/30 pr-3 text-right text-muted-foreground">{row.oldLineNumber ?? ""}</span>
                     <span className="select-none border-r border-border/30 px-3 text-right text-muted-foreground">{row.newLineNumber ?? ""}</span>
                     <span className="select-none px-3 text-center text-muted-foreground">{markerByKind[row.kind]}</span>
-                    <pre className="overflow-x-auto whitespace-pre-wrap break-words px-3 py-0 text-inherit">{row.text.length > 0 ? row.text : " "}</pre>
+                    <pre className={cn("overflow-x-auto whitespace-pre-wrap break-words px-3 py-0 text-inherit", ANALYTICS_MASK_CLASS)}>{row.text.length > 0 ? row.text : " "}</pre>
                   </div>
                 ))}
               </div>
@@ -3048,7 +3067,7 @@ export function SkillDetailPage({
               {body}
             </MarkdownBody>
           ) : (
-            <pre className="overflow-x-auto whitespace-pre-wrap wrap-break-word border-0 bg-transparent p-0 font-mono text-sm text-foreground">
+            <pre className={cn("overflow-x-auto whitespace-pre-wrap wrap-break-word border-0 bg-transparent p-0 font-mono text-sm text-foreground", ANALYTICS_MASK_CLASS)}>
               <code>{file.content}</code>
             </pre>
           )}
@@ -3526,7 +3545,7 @@ export function SkillDetailPage({
       {/* Floating save bar: stays visible while a file edit is dirty so the
           unsaved state is obvious (PAP-10907 J). */}
       {isDirty ? (
-        <div className="fixed bottom-6 left-1/2 z-40 flex -translate-x-1/2 items-center gap-3 rounded-full border border-border bg-background/95 px-4 py-2 shadow-lg backdrop-blur">
+        <div className="fixed bottom-(--sz-calc-14) left-1/2 z-40 flex max-w-(--sz-calc-4) -translate-x-1/2 flex-wrap items-center justify-center gap-3 rounded-2xl border border-border bg-background/95 px-4 py-2 shadow-lg backdrop-blur sm:rounded-full md:bottom-6">
           <span className="text-sm text-muted-foreground">Unsaved changes</span>
           <Button
             variant="ghost"
@@ -3935,7 +3954,7 @@ function SkillPane({
         ) : file.markdown && viewMode === "preview" ? (
           <MarkdownBody softBreaks={false} linkIssueReferences={false}>{body}</MarkdownBody>
         ) : (
-          <pre className="overflow-x-auto whitespace-pre-wrap wrap-break-word border-0 bg-transparent p-0 font-mono text-sm text-foreground">
+          <pre className={cn("overflow-x-auto whitespace-pre-wrap wrap-break-word border-0 bg-transparent p-0 font-mono text-sm text-foreground", ANALYTICS_MASK_CLASS)}>
             <code>{file.content}</code>
           </pre>
         )}
@@ -3958,7 +3977,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
   // Route a failed skill mutation to the persistent policy banner when it is an
   // explicit-policy (State B) or platform-safety (State C) denial; otherwise keep
   // the existing transient error toast. This is the core "actionable denial only
-  // for real restrictions" behavior from §9.10 (PAP-13865).
+  // for real restrictions" behavior from `doc/company-skill-policy.md` (PAP-13865).
   const reportSkillError = (error: unknown, title: string, fallbackBody: string, actionLabel?: string) => {
     if (policyDenial.capture(error, actionLabel)) return;
     pushToast({
@@ -5419,6 +5438,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
             </Tabs>
           </div>
         ) : null}
+        {collectionView !== "authored" ? <ConnectedAppSkills companyId={selectedCompanyId} /> : null}
         <DiscoveryGrid
           collectionView={collectionView}
           navigation={streamlinedUiEnabled ? <SkillsNavigationTabs activeView={collectionView ?? effectiveDiscoveryTab} /> : undefined}

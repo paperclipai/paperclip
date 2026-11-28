@@ -286,7 +286,7 @@ export function CompanyAccess() {
   const assignedIssues = assignedIssuesQuery.data ?? [];
 
   return (
-    <div className="max-w-6xl space-y-8">
+    <div className="min-w-0 max-w-6xl space-y-8">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <ShieldCheck className="h-5 w-5 text-muted-foreground" />
@@ -299,7 +299,7 @@ export function CompanyAccess() {
         )}
       </div>
 
-      <Tabs value={activeTab} onValueChange={handleTabChange} className="flex flex-col gap-4">
+      <Tabs value={activeTab} onValueChange={handleTabChange} className="flex min-w-0 max-w-full flex-col gap-4">
         {!hideInvitesTab && (
           <PageTabBar
             items={[
@@ -311,7 +311,7 @@ export function CompanyAccess() {
             onValueChange={handleTabChange}
           />
         )}
-        <TabsContent value="members" className="space-y-8">
+        <TabsContent value="members" className="min-w-0 max-w-full space-y-8">
 
       {access && !access.currentUserRole && (
         <div className="rounded-xl bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
@@ -319,7 +319,7 @@ export function CompanyAccess() {
         </div>
       )}
 
-      <section className="space-y-4">
+      <section className="min-w-0 max-w-full space-y-4">
         {access?.canApproveJoinRequests && pendingHumanJoinRequests.length > 0 ? (
           <div className="space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -364,7 +364,7 @@ export function CompanyAccess() {
           </div>
         ) : null}
 
-        <div className="overflow-x-auto">
+        <div className="max-w-full overflow-x-auto">
           <table className="w-full min-w-(--sz-44rem) text-left text-sm">
             <thead>
               <tr className="border-b border-border text-muted-foreground">
@@ -593,7 +593,7 @@ export function CompanyAccess() {
       </Dialog>
         </TabsContent>
         {!hideInvitesTab && (
-          <TabsContent value="invites">
+          <TabsContent value="invites" className="min-w-0 max-w-full">
             <InvitesSection />
           </TabsContent>
         )}

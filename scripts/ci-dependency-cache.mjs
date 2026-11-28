@@ -1,9 +1,12 @@
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { readPluginsUnder } from "./link-plugin-dev-sdk.mjs";
+
+const execFileAsync = promisify(execFile);
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -13,13 +16,22 @@ const postinstallHooks = new Map([
   ["packages/paperclip-runner", "node scripts/install-copilot-assets.mjs"],
 ]);
 
+export const DEPENDENCY_SCRIPT_INPUTS = new Set([
+  "scripts/ci-dependency-cache.mjs",
+  "scripts/link-plugin-dev-sdk.mjs",
+  "scripts/ensure-workspace-package-links.mjs",
+  "scripts/replay-workspace-postinstall.mjs",
+  "server/scripts/install-copilot-assets.mjs",
+  "packages/paperclip-runner/scripts/install-copilot-assets.mjs",
+  "packages/paperclip-runner/scripts/materialize-copilot-binary.mjs",
+  "packages/paperclip-runner/scripts/copilot-inner-distribution.mjs",
+]);
+
 export function cachePlan({ files, read, scope, packageDirs }) {
   const dependencyInputs = files.filter((file) =>
     /(^|\/)package\.json$/.test(file)
     || ["pnpm-lock.yaml", "pnpm-workspace.yaml", ".npmrc", ".pnpmfile.cjs", "pnpmfile.cjs"].includes(file)
-    || file.startsWith("scripts/")
-    || file.startsWith("server/scripts/")
-    || file.startsWith("packages/paperclip-runner/scripts/")
+    || DEPENDENCY_SCRIPT_INPUTS.has(file)
     || file.startsWith("patches/"));
   const digest = (inputs, salt) => {
     const hash = createHash("sha256").update(JSON.stringify(salt));
@@ -55,9 +67,16 @@ export function cachePlan({ files, read, scope, packageDirs }) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const files = execFileSync("git", ["ls-files", "-z"], { cwd: root }).toString().split("\0").filter(Boolean);
-  const command = (args) => execFileSync("pnpm", args, { cwd: root, encoding: "utf8" }).trim();
-  const workspaces = JSON.parse(command(['-r', 'list', '--depth=-1', '--json']));
+  const command = (bin, args) =>
+    execFileAsync(bin, args, { cwd: root, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }).then(({ stdout }) => stdout);
+  const [gitFilesRaw, workspacesRaw, pnpmVersionRaw, pnpmStoreRaw] = await Promise.all([
+    command("git", ["ls-files", "-z"]),
+    command("pnpm", ["-r", "list", "--depth=-1", "--json"]),
+    command("pnpm", ["--version"]),
+    command("pnpm", ["store", "path", "--silent"]),
+  ]);
+  const files = gitFilesRaw.split("\0").filter(Boolean);
+  const workspaces = JSON.parse(workspacesRaw.trim());
   const packageDirs = ['.',
     ...workspaces.map((workspace) => path.relative(root, workspace.path).split(path.sep).join('/') || '.'),
     ...readPluginsUnder(path.join(root, 'packages/plugins/sandbox-providers')).map((directory) => path.relative(root, directory).split(path.sep).join('/')),
@@ -71,7 +90,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       root: realpathSync(root), node: process.version, abi: process.versions.modules,
       platform: process.platform, arch: process.arch,
       libc: process.report.getReport().header.glibcVersionRuntime ?? null,
-      pnpm: command(["--version"]), store: command(["store", "path", "--silent"]),
+      pnpm: pnpmVersionRaw.trim(), store: pnpmStoreRaw.trim(),
     },
   });
   const output = [

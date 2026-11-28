@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import type { ContinuationCheckpoint } from "./continuation-scoring.js";
 import { isSingleClaudeQuestion } from "./runtime-question-readiness.js";
+import { includesSubmittedReference } from "./submitted-reference.js";
 
 type Row = Record<string, any>;
 export type QuestionPath = "provider" | "semantic" | "api";
@@ -156,7 +157,7 @@ export function gradeQuestionResume(checkpoints: ContinuationCheckpoint[], marke
         r.issueId === final.issue.id && r.agentId === final.issue.assigneeAgentId &&
         typeof r.runnerProfileJson?.nativeExecutionInput?.task?.prompt === "string") &&
       final.documents.length === 1 && !!final.documents[0].latestRevisionId &&
-      final.documents[0].body.includes(`Use ${marker}.`) && /\bafternoon\b/i.test(final.documents[0].body),
+      includesSubmittedReference(final.documents[0].body, marker) && /\bafternoon\b/i.test(final.documents[0].body),
     detail: "Retain all three checkpoints, every native input and exactly one saved document containing the choice and the complete submitted reference.",
   });
   return checks.map(c => ({ ...c, passed: Boolean(c.passed) }));

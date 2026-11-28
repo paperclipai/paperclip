@@ -38,6 +38,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "./EmptyState";
 import { MarkdownBody } from "./MarkdownBody";
 import { Badge } from "@/components/ui/badge";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 type AgentLookup = Map<string, { id: string; name: string }>;
 type ProjectLookup = Map<string, { id: string; name: string }>;
@@ -845,28 +847,30 @@ function RoutineRevisionDiffModal({
             {fieldChanges.length === 0 ? (
               <p className="text-sm text-muted-foreground">No structural field changes.</p>
             ) : (
-              <table className="w-full text-sm border border-border rounded-md overflow-hidden">
-                <thead>
-                  <tr className="text-xs uppercase tracking-wide bg-muted/30 text-muted-foreground">
-                    <th className="px-3 py-2 text-left">Field</th>
-                    <th className="px-3 py-2 text-left">Old value</th>
-                    <th className="px-3 py-2 text-left">New value</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {fieldChanges.map((change) => (
-                    <tr key={change.field} className="border-t border-border/60">
-                      <td className="px-3 py-2 align-top text-xs font-medium">{change.field}</td>
-                      <td className="px-3 py-2 align-top text-xs text-red-700 dark:text-red-300">
-                        {change.oldValue ?? "—"}
-                      </td>
-                      <td className="px-3 py-2 align-top text-xs text-emerald-700 dark:text-emerald-300">
-                        {change.newValue ?? "—"}
-                      </td>
+              <div className="max-w-full overflow-x-auto rounded-md border border-border">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-xs uppercase tracking-wide bg-muted/30 text-muted-foreground">
+                      <th className="px-3 py-2 text-left">Field</th>
+                      <th className="px-3 py-2 text-left">Old value</th>
+                      <th className="px-3 py-2 text-left">New value</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {fieldChanges.map((change) => (
+                      <tr key={change.field} className="border-t border-border/60">
+                        <td className="px-3 py-2 align-top text-xs font-medium">{change.field}</td>
+                        <td className="px-3 py-2 align-top text-xs text-red-700 dark:text-red-300">
+                          {change.oldValue ?? "—"}
+                        </td>
+                        <td className="px-3 py-2 align-top text-xs text-emerald-700 dark:text-emerald-300">
+                          {change.newValue ?? "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </section>
           <section className="space-y-2">
@@ -949,7 +953,7 @@ function DiffTable({ rows }: { rows: DiffRow[] }) {
     added: "+",
   };
   return (
-    <div className="rounded-md border border-border text-xs font-mono leading-6 overflow-hidden">
+    <div className="max-w-full overflow-x-auto rounded-md border border-border text-xs font-mono leading-6">
       <div className="grid grid-cols-(--gtc-1) border-b border-border/60 bg-muted/30 px-3 py-2 text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">
         <span>Old</span>
         <span>New</span>
@@ -970,7 +974,7 @@ function DiffTable({ rows }: { rows: DiffRow[] }) {
           <span className="select-none px-3 text-center text-muted-foreground">
             {markerByKind[row.kind]}
           </span>
-          <pre className="overflow-x-auto whitespace-pre-wrap break-words px-3 py-0 text-inherit">
+          <pre className={cn("overflow-x-auto whitespace-pre-wrap break-words px-3 py-0 text-inherit", ANALYTICS_MASK_CLASS)}>
             {row.text.length > 0 ? row.text : " "}
           </pre>
         </div>
@@ -1003,6 +1007,7 @@ function summarizeTriggerSnapshot(trigger: RoutineRevisionSnapshotTriggerV1): st
     const replay = trigger.replayWindowSec != null ? `replay ${trigger.replayWindowSec}s` : "";
     return [trigger.signingMode, replay].filter(Boolean).join(" · ");
   }
+  if (trigger.kind === "heartbeat") return "Standing check on each wake-up";
   return "API";
 }
 

@@ -233,6 +233,29 @@ describe("captureRunFailure", () => {
     expect(JSON.stringify(fingerprints)).not.toMatch(/workspace|timed out|plain failure/i);
   });
 
+  it("separates native turn failures by their runner failure code", async () => {
+    const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
+    const turnFailure = (provider: NonNullable<RunFailureEvent["diagnostics"]>["provider"]) => baseEvent({
+      errorCode: "native_run_failed", agentAdapter: "paperclip_runner",
+      diagnostics: { execution: {}, adapter: {}, provider, exceptions: [], truncatedFields: [] },
+    });
+
+    sentryModule.captureRunFailure(turnFailure({ provider: "opencode", category: "turn_failed", runnerFailureCode: "opencode_empty_response" }));
+    sentryModule.captureRunFailure(turnFailure({ provider: "opencode", category: "turn_failed", runnerFailureCode: "opencode_server_exited" }));
+    sentryModule.captureRunFailure(turnFailure({ provider: "opencode", category: "turn_failed", runnerFailureCode: "unrecognized" }));
+    sentryModule.captureRunFailure(turnFailure({ provider: "opencode", category: "turn_failed", runnerFailureCode: "not a code" }));
+    sentryModule.captureRunFailure(turnFailure({}));
+
+    const prefix = ["native_run_failed", "paperclip_runner"];
+    expect(captureException.mock.calls.map(([, context]) => context?.fingerprint)).toEqual([
+      [...prefix, "runner:opencode_empty_response"],
+      [...prefix, "runner:opencode_server_exited"],
+      prefix,
+      prefix,
+      prefix,
+    ]);
+  });
+
   it("keeps an identifier root code as the only root grouping element", async () => {
     const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
 

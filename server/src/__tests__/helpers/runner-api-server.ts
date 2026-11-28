@@ -58,7 +58,7 @@ export async function startRunnerApiTestServer(options: {
   const address = http.address();
   if (!address || typeof address === "string") throw new Error("Missing eval listener");
   const apiUrl = `http://127.0.0.1:${address.port}`;
-  setupRunnerPrpWebSocketServer(http, { apiUrl });
+  setupRunnerPrpWebSocketServer(http);
   return {
     databaseUrl: temporary.connectionString,
     db, root, apiUrl, storage,

@@ -287,7 +287,8 @@ The native first-text span ends after text is committed for the existing run-eve
 reader, including reasoning and completed responses. It exports only the bounded
 text kind and timing, with no text content or new agent access.
 This adds no agent API, credential access, run-log write, or recovery authority.
-See [the tracing contract](../../doc/observability.md#controller-preparation-phases).
+See the spans in
+[`execution-preparation-timing.ts`](../../server/src/services/execution-preparation-timing.ts).
 Live latency verification remains separate from the existing access baseline.
 
 API: `present` — representative operation IDs:

@@ -10,23 +10,30 @@ import { gotoAfterServerRestart } from "./chat-restart.js";
 import { completionDelivery, completionOutputUsesReleasedBrief, completionRestartGateSkipped, completionRestartGateTimeoutDetail, type CompletionObservation } from "./completion-updates.js";
 
 type Row = Record<string, any>;
+/** Keep the full stability window while selected catalog callers retain their original outer clock. */
+export function completionObservationBounds(startedAtMs: number, originalDeadlineAt?: number) {
+  if (originalDeadlineAt !== undefined && (!Number.isFinite(originalDeadlineAt) || originalDeadlineAt <= startedAtMs))
+    throw new Error("Original completion observation budget exhausted or invalid");
+  return { observationWindowEndsAt: startedAtMs + 120_000, deadlineAt: originalDeadlineAt ?? startedAtMs + 125_000 };
+}
 export async function observeCompletionUpdate(input: {
   page: Page; api: RunnerApi; sourceId: string; workerId: string; marker: string;
   fixtureRequest: string;
+  originalObservationDeadlineAt?: number;
   relatedWorkerIds?: string[];
   allRuns(): Promise<Row[]>;
   evidence(name: string, data: unknown): Promise<void>;
   capture(id: string, label: string, file: string): Promise<void>;
 }) {
   const startedAt = new Date().toISOString();
-  const observationWindowEndsAt = Date.now() + 120_000;
+  const { observationWindowEndsAt, deadlineAt } = completionObservationBounds(Date.now(), input.originalObservationDeadlineAt);
   let observation: CompletionObservation | undefined;
   let failure: unknown;
   try {
     await pollUntil({
       label: "unsolicited source-thread completion reply and result access",
       // Keep observing even after an early reply, so a later correction is retained.
-      deadlineAt: observationWindowEndsAt + 5_000, intervalMs: 1000,
+      deadlineAt, intervalMs: 1000,
       load: async () => {
         const worker = await input.api.get<Row>(`/api/issues/${input.workerId}`);
         const documents = await input.api.get<Row[]>(`/api/issues/${input.workerId}/documents`);
@@ -50,7 +57,9 @@ export async function observeCompletionUpdate(input: {
         }
         return completionDelivery(observation);
       },
-      accept: result => Date.now() >= observationWindowEndsAt && result.checks.every(c => c.passed),
+      accept: result => Date.now() >= observationWindowEndsAt
+        && (input.originalObservationDeadlineAt === undefined || Date.now() < input.originalObservationDeadlineAt)
+        && result.checks.every(c => c.passed),
       reject: () => observation!.runs.length > 12 ? "completion probe exceeded 12 runs" : undefined,
       timeoutDetail: result => result?.checks.filter(c => !c.passed).map(c => c.id).join(", "),
     });
