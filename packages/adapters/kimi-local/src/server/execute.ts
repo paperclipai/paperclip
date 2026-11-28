@@ -56,6 +56,7 @@ import {
   describeKimiFailure,
   detectKimiAuthRequired,
   extractKimiRuntimeEvents,
+  isKimiProviderQuotaError,
   isKimiSessionUnrecoverableError,
   isKimiTransientNetworkError,
   parseKimiJsonl,
@@ -647,6 +648,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         stderr: attempt.proc.stderr,
       });
       const networkUnavailable = isKimiTransientNetworkError(attempt.proc.stdout, attempt.proc.stderr);
+      const providerQuota = !authMeta.requiresAuth &&
+        isKimiProviderQuotaError({
+          errorMessage: attempt.parsed.errorMessage,
+          stderr: attempt.proc.stderr,
+        });
 
       if (attempt.proc.timedOut) {
         return {
@@ -730,9 +736,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           ? attempt.proc.errorCode
           : failed && authMeta.requiresAuth
           ? "kimi_auth_required"
+          : failed && providerQuota
+          ? "provider_quota"
           : failed && networkUnavailable
           ? "kimi_network_unavailable"
           : null,
+        // Kimi does not print a reset time, so retryNotBefore stays unset and the
+        // server's provider-quota recovery applies its default backoff.
+        errorFamily: !attempt.proc.errorCode && failed && providerQuota ? "provider_quota" : null,
         sessionId: resolvedSessionId,
         sessionParams: resolvedSessionParams,
         sessionDisplayId: resolvedSessionId,
