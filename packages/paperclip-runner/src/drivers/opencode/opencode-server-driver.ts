@@ -27,6 +27,7 @@ import { parseOpenCodeReasoningMode, type OpenCodeReasoningMode } from "./reason
 import { attributeUnsupportedToolMedia } from "./tool-media-attribution.js";
 import { createUpstreamServedTap, type UpstreamServed } from "./upstream-served.js";
 import { openCodeProviderFailure } from "./provider-failure.js";
+import { RUNNER_TERMINAL_FAILURE_CODES } from "./terminal-failure.js";
 import { createOpenCodeCompanyObservability } from "./company-observability.js";
 import { startOpenCodePerformanceDiagnostics } from "./performance-diagnostics.js";
 import { PROVIDER_PERFORMANCE_ENV } from "../../contracts/provider-performance.js";
@@ -838,7 +839,7 @@ class OpenCodeHarnessSession implements HarnessSession {
 
   #failEmptyResponse(turnId: string, message: string): void {
     if (this.#closed || this.#activeTurnId !== turnId || this.#interruptedTurnId === turnId || this.#result !== null || this.#pendingToolCalls > 0 || this.#runningNativeToolParts.size > 0) return;
-    const code = this.#turnHitOutputLimit(turnId) ? "opencode_output_limit_reached" : "opencode_empty_response";
+    const code = this.#turnHitOutputLimit(turnId) ? RUNNER_TERMINAL_FAILURE_CODES.outputLimit : RUNNER_TERMINAL_FAILURE_CODES.emptyResponse;
     this.#emit("turn.failed", { status: "failed", error: { code, message, retryable: false } }, { turnId });
     this.#terminalTurns.set(turnId, canonicalJson({ status: "failed" }));
     this.#activeTurnId = null;
@@ -1745,7 +1746,7 @@ class OpenCodeHarnessSession implements HarnessSession {
         status: "failed",
         providerTerminalObserved: false,
         error: {
-          code: failure.kind === "server_exited" ? "opencode_server_exited" : "opencode_event_stream_lost",
+          code: failure.kind === "server_exited" ? RUNNER_TERMINAL_FAILURE_CODES.serverExited : RUNNER_TERMINAL_FAILURE_CODES.eventStreamLost,
           message: failure.kind === "server_exited"
             ? "OpenCode stopped while the turn was running."
             : "The OpenCode event stream failed while the turn was running.",
@@ -1975,7 +1976,7 @@ class OpenCodeHarnessSession implements HarnessSession {
       if (role === "assistant" && messageId && text(info.finish) === "length" && !this.#outputLimitedMessageIds.has(messageId)) {
         this.#outputLimitedMessageIds.add(messageId);
         const limitedTurnId = this.#messageTurnIds.get(messageId) ?? turnId;
-        if (limitedTurnId) this.#emit("harness.diagnostic", { code: "opencode_output_limit_reached",
+        if (limitedTurnId) this.#emit("harness.diagnostic", { code: RUNNER_TERMINAL_FAILURE_CODES.outputLimit,
           message: "OpenCode stopped a response at the model output limit; its truncated text is not used as a final answer." }, { turnId: limitedTurnId });
       }
       const owningTurnId = messageId

@@ -1,8 +1,11 @@
 import { randomBytes } from "node:crypto";
 import type { PrpEvent } from "../../protocol/replay-contract.js";
+import { readProviderFailure } from "../../contracts/provider-failure.generated.js";
 import { redactObservabilityDiagnostic } from "../agent-observability.js";
+import { RUNNER_TERMINAL_FAILURE_CODES } from "./terminal-failure.js";
 
 type Attributes = Record<string, string | number | boolean>;
+type Outcome = "completed" | "failed" | "cancelled" | "interrupted" | "superseded" | "observer_closed";
 interface Span { id: string; name: string; start: number; end: number; failed: boolean; attributes: Attributes }
 interface Turn {
   runId: string; turnId: string; traceId: string; root: Span;
@@ -13,6 +16,13 @@ const finite = (value: unknown): value is number => typeof value === "number" &&
 const id = () => randomBytes(8).toString("hex");
 const maxRows = 64;
 const maxTextBytes = 8192;
+const terminalCodes = new Set<string>(Object.values(RUNNER_TERMINAL_FAILURE_CODES));
+function failureCode(error: unknown): string {
+  const detail = record(error);
+  const failure = readProviderFailure(detail.providerFailure);
+  if (failure) return `provider_${failure.category}`;
+  return typeof detail.code === "string" && terminalCodes.has(detail.code) ? detail.code : "unknown";
+}
 const attributes = (values: Attributes) => Object.entries(values).map(([key, value]) => ({ key, value:
   typeof value === "string" ? { stringValue: value } : typeof value === "boolean" ? { boolValue: value } : { doubleValue: value } }));
 function pairs(value: string | undefined): Record<string, string> {
@@ -106,12 +116,17 @@ export function createOpenCodeCompanyObservability(input: {
   let current: Turn | undefined;
   let closed = false;
   const makeSpan = (name: string, time: number, values: Attributes): Span => ({ id: id(), name, start: time, end: time, failed: false, attributes: values });
-  const finish = (failed: boolean, time: number) => {
+  const finish = (outcome: Outcome, time: number, error?: unknown) => {
     const turn = current;
     current = undefined;
     if (!turn) return;
     turn.root.end = Math.max(turn.root.start, time);
-    turn.root.failed = failed;
+    turn.root.failed = outcome !== "completed";
+    turn.root.attributes["paperclip.turn.outcome"] = outcome;
+    if (turn.root.failed) {
+      turn.root.attributes["paperclip.failure.code"] = outcome === "failed" ? failureCode(error) : outcome;
+      turn.root.attributes["paperclip.failure.events"] = `/api/heartbeat-runs/${encodeURIComponent(turn.runId)}/events`;
+    }
     turn.root.attributes["paperclip.observability.truncated"] = turn.truncated;
     const spans = [turn.root, ...turn.tools.values(), ...turn.usage.values()].map(span => ({
       traceId: turn.traceId, spanId: span.id, ...(span !== turn.root ? { parentSpanId: turn.root.id } : {}),
@@ -160,9 +175,10 @@ export function createOpenCodeCompanyObservability(input: {
       const time = Date.parse(event.emittedAt);
       if (!Number.isFinite(time)) return;
       if (event.eventType === "turn.submitted" && event.turnId) {
-        if (current) finish(true, time);
+        if (current) finish("superseded", time);
         current = { runId: event.runId, turnId: event.turnId, traceId: randomBytes(16).toString("hex"),
-          root: makeSpan("paperclip.opencode.turn", time, { "gen_ai.operation.name": "invoke_agent", "gen_ai.request.model": input.model }),
+          root: makeSpan("paperclip.opencode.turn", time, { "gen_ai.operation.name": "invoke_agent", "gen_ai.request.model": input.model,
+            "paperclip.turn.last_completed_stage": "submitted" }),
           tools: new Map(), usage: new Map(), truncated: false };
         if (capture("OTEL_LOG_USER_PROMPTS")) {
           const request = requestText(record(event.payload).text);
@@ -174,6 +190,13 @@ export function createOpenCodeCompanyObservability(input: {
       const turn = current;
       if (!turn || event.runId !== turn.runId || event.turnId !== turn.turnId) return;
       const payload = record(event.payload);
+      if (event.eventType === "tool.execution.completed" || (event.eventType === "item.completed" && payload.kind === "dynamicToolCall")) {
+        turn.root.attributes["paperclip.turn.last_completed_stage"] = "tool";
+      } else if (event.eventType === "item.completed" && payload.kind === "agentMessage") {
+        turn.root.attributes["paperclip.turn.last_completed_stage"] = "assistant_message";
+      } else if (event.eventType === "item.completed" && payload.kind === "usage") {
+        turn.root.attributes["paperclip.turn.last_completed_stage"] = "model_usage";
+      }
       if (event.eventType === "item.completed" && payload.kind === "agentMessage" && capture("OTEL_LOG_ASSISTANT_RESPONSES")) {
         turn.root.attributes["braintrust.output"] = clean(payload.text);
       }
@@ -214,12 +237,15 @@ export function createOpenCodeCompanyObservability(input: {
           turn.usage.set(key, { ...makeSpan("opencode.model.usage", previous?.start ?? time, values), id: previous?.id ?? id(), end: time });
         } else turn.truncated = true;
       }
-      if (["turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"].includes(event.eventType)) finish(event.eventType !== "turn.completed", time);
+      if (event.eventType === "turn.completed") finish("completed", time);
+      else if (event.eventType === "turn.failed") finish("failed", time, payload.error);
+      else if (event.eventType === "turn.cancelled") finish("cancelled", time);
+      else if (event.eventType === "turn.interrupted") finish("interrupted", time);
     },
     async close() {
       if (closed) return;
       closed = true;
-      finish(true, Date.now());
+      finish("observer_closed", Date.now());
       await Promise.all(pending);
     },
   };

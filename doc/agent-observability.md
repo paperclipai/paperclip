@@ -45,6 +45,17 @@ request. These are separate observations, not correlated calls. The
 `paperclip.tool.source` attribute distinguishes dispatch and provider records.
 Native tools retain their provider spans without submitted-argument diagnostics. OpenCode's performance-only OTLP sink stays separate.
 
+Turn roots include `paperclip.turn.outcome` and `paperclip.turn.last_completed_stage`.
+The stage is the last observed completed PRP stage (`submitted`, `tool`,
+`assistant_message`, or `model_usage`), not a provider phase or a claim of success.
+Failed roots also include `paperclip.failure.code` and `paperclip.failure.events`.
+Codes use validated provider categories or a closed set of Runner error codes;
+missing or unrecognized causes use `unknown`. Cancellation, interruption,
+replacement and observer closure have distinct codes. These bounded diagnostics
+and the authorized run-events path remain available with content capture off.
+Error messages, upstream codes and raw error bodies are not exported as diagnostics.
+The existing endpoint gate, resource routing and content capture switches still apply.
+
 For known native task envelopes, OpenCode selects the task identifier, title and
 prompt before the 8 KiB limit. A valid leading fresh-session handoff packet is
 omitted from this excerpt so earlier history cannot hide the current request.

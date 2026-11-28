@@ -16,7 +16,10 @@ async function close(server: Server) {
   server.closeAllConnections();
   await new Promise<void>(resolve => server.close(() => resolve()));
 }
-it.skipIf(!enabled).each([true, false])("exports the current request through installed OpenCode with prompt capture %s", async capture => {
+it.skipIf(!enabled).each([
+  { capture: true, fail: false }, { capture: false, fail: false },
+  { capture: true, fail: true }, { capture: false, fail: true },
+])("exports the current request and safe failure through installed OpenCode: %j", async ({ capture, fail }) => {
   const root = await mkdtemp(join(tmpdir(), "opencode-observability-real-"));
   const modelRequests: string[] = [];
   const exports: any[] = [];
@@ -24,6 +27,11 @@ it.skipIf(!enabled).each([true, false])("exports the current request through ins
     const chunks: Buffer[] = [];
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
     modelRequests.push(Buffer.concat(chunks).toString());
+    if (fail) {
+      response.writeHead(401, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: { message: "private-upstream-error-canary", type: "authentication_error" } }));
+      return;
+    }
     response.writeHead(200, { "Content-Type": "text/event-stream" });
     for (const [delta, finish_reason] of [[{ role: "assistant", content: "observability-runtime-answer" }, null], [{}, "stop"]]) {
       response.write(`data: ${JSON.stringify({ id: "chatcmpl-local", object: "chat.completion.chunk", created: 1, model: "qualification", choices: [{ index: 0, delta, finish_reason }] })}\n\n`);
@@ -56,14 +64,26 @@ it.skipIf(!enabled).each([true, false])("exports the current request through ins
       events.push(event);
       if (["turn.completed", "turn.failed", "turn.interrupted", "turn.cancelled"].includes(event.eventType)) break;
     }
-    expect(events.at(-1)?.eventType).toBe("turn.completed");
+    expect(events.at(-1)?.eventType).toBe(fail ? "turn.failed" : "turn.completed");
+    if (fail) expect((events.at(-1)?.payload.error as any)?.providerFailure?.category).toBe("authentication");
     await session.close({ reason: "test" });
     session = undefined;
     expect(modelRequests.some(body => body.includes("current-runtime-request-canary") && body.includes("old history"))).toBe(true);
     expect(events.find(event => event.eventType === "turn.submitted")?.payload.text).toBe(text);
     expect(exports).toHaveLength(1);
     const attrs = Object.fromEntries(exports[0].resourceSpans[0].scopeSpans[0].spans[0].attributes.map((a: any) => [a.key, a.value.stringValue ?? a.value.boolValue]));
-    expect(attrs["braintrust.output"]).toBe("observability-runtime-answer");
+    expect(attrs["paperclip.turn.outcome"]).toBe(fail ? "failed" : "completed");
+    if (fail) {
+      expect(attrs["paperclip.failure.code"]).toBe("provider_authentication");
+      expect(attrs["paperclip.turn.last_completed_stage"]).toBe("submitted");
+      expect(attrs["paperclip.failure.events"]).toBe("/api/heartbeat-runs/disposable-run/events");
+      expect(attrs).not.toHaveProperty("braintrust.output");
+      expect(JSON.stringify(exports)).not.toContain("private-upstream-error-canary");
+      expect(JSON.stringify(exports)).not.toContain("local-fixture-only");
+    } else {
+      expect(attrs["braintrust.output"]).toBe("observability-runtime-answer");
+      expect(attrs).not.toHaveProperty("paperclip.failure.code");
+    }
     if (capture) {
       expect(attrs["braintrust.input"]).toContain("current-runtime-request-canary");
       expect(attrs["braintrust.input"]).not.toContain("old history");

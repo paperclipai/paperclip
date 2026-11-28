@@ -22,6 +22,81 @@ function setup(env = environment, response = new Response("{}")) {
   const observer = createOpenCodeCompanyObservability({ environment: env, model: "openrouter/test-model", sensitiveValues: ["provider-secret"], fetch: transport, onDiagnostic: diagnostic });
   return { observer: observer!, bodies, transport, diagnostic };
 }
+it.each([
+  [{ providerFailure: { schema: "paperclip.provider-failure.v1", provider: "test", phase: "turn", category: "authentication", message: "provider-secret", retryability: "requires_action" } }, "provider_authentication"],
+  [{ code: "opencode_event_stream_lost" }, "opencode_event_stream_lost"],
+  [{ code: "opencode_server_exited" }, "opencode_server_exited"],
+  [{ code: "opencode_empty_response" }, "opencode_empty_response"],
+  [{ code: "opencode_output_limit_reached" }, "opencode_output_limit_reached"],
+  [{ code: "provider-secret", providerFailure: { category: "authentication" } }, "unknown"],
+  [{}, "unknown"],
+])("exports only safe terminal diagnostics for %j", async (error, code) => {
+  const { observer, bodies } = setup({ ...environment, OTEL_LOG_USER_PROMPTS: "0", OTEL_LOG_ASSISTANT_RESPONSES: "0", OTEL_LOG_TOOL_DETAILS: "0", OTEL_LOG_TOOL_CONTENT: "0" });
+  observer.observe(event("turn.submitted", { text: "private-prompt" }));
+  observer.observe(event("tool.execution.completed", { name: "private-tool", output: "provider-secret" }, "run-one", "tool"));
+  observer.observe(event("item.completed", { kind: "agentMessage", text: "private-answer" }, "other-run"));
+  observer.observe(event("turn.failed", { error: { ...error, message: "provider-secret secret-canary", raw: "private-body" } }));
+  await observer.close();
+  const root = bodies[0].resourceSpans[0].scopeSpans[0].spans[0];
+  expect(root.status.code).toBe(2);
+  expect(spanAttributes(root)).toMatchObject({
+    "paperclip.failure.code": code, "paperclip.turn.outcome": "failed",
+    "paperclip.turn.last_completed_stage": "tool", "paperclip.failure.events": "/api/heartbeat-runs/run-one/events",
+    "paperclip.company.id": "company", "paperclip.agent.id": "agent",
+  });
+  expect(bodies[0].resourceSpans[0].resource.attributes).toContainEqual({ key: "paperclip.company.id", value: { stringValue: "company" } });
+  for (const value of ["private-", "provider-secret", "secret-canary", "other-run"]) expect(JSON.stringify(bodies)).not.toContain(value);
+});
+it.each(["turn.completed", "turn.cancelled", "turn.interrupted"] as const)("keeps terminal outcome %s distinct", async outcome => {
+  const { observer, bodies } = setup();
+  observer.observe(event("turn.submitted"));
+  observer.observe(event("item.completed", { kind: "agentMessage", text: "answer" }));
+  observer.observe(event(outcome, { error: { code: "provider-secret" } }));
+  await observer.close();
+  const root = bodies[0].resourceSpans[0].scopeSpans[0].spans[0], attrs = spanAttributes(root);
+  expect(attrs["paperclip.turn.outcome"]).toBe(outcome.slice(5));
+  expect(attrs["paperclip.turn.last_completed_stage"]).toBe("assistant_message");
+  if (outcome === "turn.completed") {
+    expect(root.status.code).toBe(1);
+    expect(attrs).not.toHaveProperty("paperclip.failure.code");
+    expect(attrs).not.toHaveProperty("paperclip.failure.events");
+  } else expect(attrs["paperclip.failure.code"]).toBe(outcome.slice(5));
+});
+it("names synthetic close and replacement without guessing the provider cause", async () => {
+  const { observer, bodies } = setup();
+  observer.observe(event("turn.submitted"));
+  observer.observe(event("turn.submitted", {}, "next-run"));
+  await observer.close();
+  expect(bodies.map(body => spanAttributes(body.resourceSpans[0].scopeSpans[0].spans[0])["paperclip.failure.code"]))
+    .toEqual(["superseded", "observer_closed"]);
+});
+it.each(["0", "1"])("retains model_usage as the last completed stage with tool capture %s", async capture => {
+  const { observer, bodies } = setup({ ...environment, OTEL_LOG_TOOL_DETAILS: capture });
+  observer.observe(event("turn.submitted"));
+  observer.observe(event("tool.execution.completed", { name: "read" }, "run-one", "tool"));
+  observer.observe(event("item.completed", { kind: "usage", usageMessageId: "message", usage: { input: 3 } }));
+  observer.observe(event("turn.failed", { error: { code: "opencode_server_exited" } }));
+  await observer.close();
+  const root = bodies[0].resourceSpans[0].scopeSpans[0].spans[0];
+  expect(spanAttributes(root)).toMatchObject({
+    "paperclip.turn.last_completed_stage": "model_usage", "paperclip.failure.code": "opencode_server_exited",
+  });
+});
+it("routes failure diagnostics only to each controller's configured company receiver", async () => {
+  for (const company of ["first-company", "second-company"]) {
+    const endpoint = `https://${company}.example/v1/traces`;
+    const { observer, bodies, transport } = setup({ ...environment,
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: endpoint, OTEL_RESOURCE_ATTRIBUTES: `paperclip.company.id=${company}` });
+    observer.observe(event("turn.submitted"));
+    observer.observe(event("turn.failed"));
+    await observer.close();
+    expect(transport.mock.calls[0]?.[0]).toBe(endpoint);
+    const attrs = spanAttributes(bodies[0].resourceSpans[0].scopeSpans[0].spans[0]);
+    expect(attrs["paperclip.company.id"]).toBe(company);
+    expect(attrs["paperclip.failure.code"]).toBe("unknown");
+    expect(attrs["paperclip.turn.last_completed_stage"]).toBe("submitted");
+  }
+});
 it("requires an explicit controller opt-in even when ambient OTLP is configured", () => {
   expect(setup({ ...environment, PAPERCLIP_OBSERVABILITY_OPENCODE: "0" }).observer).toBeUndefined();
   expect(createOpenCodeCompanyObservability({ environment: undefined, model: "test", sensitiveValues: [] })).toBeUndefined();
