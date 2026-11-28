@@ -30,6 +30,7 @@ export function registerRunDispatchWork(
     next: () => suppressed ? Promise.resolve(null) : owner.nextScheduledRetryAt(),
   });
   const scopes = new Set<string>(["*"]);
+  let nextLoginHoldAt: number | null = null;
   const redrive = createQueuedRunRedriveSchedule();
   let dispatched: "all" | Set<string> = new Set();
   let unsubscribeRefresh: (() => void) | undefined;
@@ -40,6 +41,7 @@ export function registerRunDispatchWork(
     onSettled: hints => { for (const hint of hints ?? ["*"]) scopes.add(hint); },
     onStop: () => { unsubscribeRefresh?.(); unsubscribeRefresh = undefined; },
     run: async signal => {
+      if (nextLoginHoldAt !== null && nextLoginHoldAt <= Date.now()) scopes.add("*");
       const dueWakes = takeDueAutomaticRunWakes();
       if (dueWakes.all) scopes.add("*");
       for (const companyId of dueWakes.companyIds) scopes.add(JSON.stringify({ companyId }));
@@ -53,7 +55,8 @@ export function registerRunDispatchWork(
         }
         try {
           const scope = requested[index] === "*" ? undefined : JSON.parse(requested[index]) as RunDispatchScope;
-          await owner.resumeQueuedRunsAfterDrain(scope);
+          const deadline = await owner.resumeQueuedRunsAfterDrain(scope);
+          nextLoginHoldAt = typeof deadline === "number" ? deadline : null;
           if (!scope) dispatched = "all";
           else if (dispatched !== "all") dispatched.add(scope.companyId);
         } catch (error) {
@@ -63,7 +66,7 @@ export function registerRunDispatchWork(
       }
     },
     next: async () => {
-      if (!owner.listUndispatchedQueuedRuns) return null;
+      if (!owner.listUndispatchedQueuedRuns) return nextLoginHoldAt;
       const list = owner.listUndispatchedQueuedRuns;
       const refreshed = dispatched;
       dispatched = new Set();
@@ -82,8 +85,8 @@ export function registerRunDispatchWork(
         throw error;
       }
       for (const companyId of plan.companyIds) scopes.add(JSON.stringify({ companyId }));
-      const wakeAt = nextAutomaticRunWakeAt();
-      return plan.nextAt === null ? wakeAt : wakeAt === null ? plan.nextAt : Math.min(plan.nextAt, wakeAt);
+      const deadlines = [plan.nextAt, nextAutomaticRunWakeAt(), nextLoginHoldAt].filter(at => at !== null);
+      return deadlines.length ? Math.min(...deadlines) : null;
     },
   });
   const refresh = () => {
