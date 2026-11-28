@@ -1,7 +1,12 @@
 import copy
+import pathlib
+import sys
 import unittest
 
-from build import SYSTEMS, summarize
+# Ensure local build.py is imported rather than any site-packages build
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+
+from build import SYSTEMS, display_date, public_report, summarize
 
 
 class HistorySummaryTests(unittest.TestCase):
@@ -70,12 +75,53 @@ class HistorySummaryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             summarize(history, "runner")
 
+    def test_missing_totals_keys_raise_value_error(self):
+        history = self.history()
+        del history["campaigns"][0]["totals"]["passed"]
+        with self.assertRaises(ValueError):
+            summarize(history, "runner")
+
+    def test_missing_campaigns_list_raises_value_error(self):
+        history = self.history()
+        history["campaigns"] = None
+        with self.assertRaises(ValueError):
+            summarize(history, "runner")
+
     def test_external_report_urls_are_rejected(self):
         history = self.history()
         for url in ("javascript:alert(1)", "https://example.com/", "https://d1p6rlowie26tp.cloudfront.net/other/"):
             history["campaigns"][0]["publicUrl"] = url
             with self.subTest(url=url), self.assertRaises(ValueError):
                 summarize(history, "runner")
+
+    def test_public_report_rejects_path_traversal(self):
+        for path in (
+            "https://d1p6rlowie26tp.cloudfront.net/runner-protocol-evals/campaigns/../../secret.json",
+            "https://d1p6rlowie26tp.cloudfront.net/runner-protocol-evals/campaigns/run-1/..",
+            "https://d1p6rlowie26tp.cloudfront.net/runner-protocol-evals/campaigns/%2e%2e/secret.json",
+            "https://d1p6rlowie26tp.cloudfront.net/runner-protocol-evals/campaigns/%2E%2E/secret.json",
+            "https://d1p6rlowie26tp.cloudfront.net/runner-protocol-evals/campaigns/..%2fsecret.json",
+            "https://d1p6rlowie26tp.cloudfront.net/runner-protocol-evals/campaigns/..\\secret.json",
+            "https://d1p6rlowie26tp.cloudfront.net/runner-protocol-evals/campaigns/%2e%2e",
+        ):
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                public_report(path, "runner-protocol-evals")
+
+    def test_public_report_valid_escapes_properly(self):
+        url = "https://d1p6rlowie26tp.cloudfront.net/runner-protocol-evals/campaigns/run-1/"
+        escaped = public_report(url, "runner-protocol-evals")
+        self.assertEqual(escaped, url)
+
+    def test_display_date_handles_lowercase_z_and_iso_offsets(self):
+        self.assertEqual(display_date("2026-09-01T12:00:00Z"), "01 Sep 2026 · 12:00 UTC")
+        self.assertEqual(display_date("2026-09-01T12:00:00z"), "01 Sep 2026 · 12:00 UTC")
+        self.assertEqual(display_date(" 2026-09-01T14:00:00+02:00 "), "01 Sep 2026 · 12:00 UTC")
+
+    def test_display_date_rejects_naive_or_invalid_date(self):
+        with self.assertRaises(ValueError):
+            display_date("2026-09-01T12:00:00")
+        with self.assertRaises(ValueError):
+            display_date(12345)
 
 
 if __name__ == "__main__":
