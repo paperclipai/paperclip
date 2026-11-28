@@ -880,7 +880,9 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         );
       }
       const livenessRun = finalizedRun;
-      await measureRunPhase("completion.summary", () => refreshContinuationSummaryForRun(livenessRun, agent));
+      if (!isConversation(issueContext)) {
+        await measureRunPhase("completion.summary", () => refreshContinuationSummaryForRun(livenessRun, agent));
+      }
       if (await pendingCaseHandoffForRun(db, livenessRun.id, livenessRun.companyId)) {
         // The returning agent must resume its own settled session with the
         // configuration metadata used for this run. Persist before release,

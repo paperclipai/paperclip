@@ -2435,6 +2435,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
       )
       .orderBy(desc(heartbeatRunEvents.seq))
       .limit(200);
+    if (rows.length === 0) return null;
     const candidates: Array<{
       seq: number;
       text: string;
@@ -2461,6 +2462,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
       });
       if (candidate) candidates.push(candidate);
     }
+    if (candidates.length === 0) return null;
     const recoveryBoundary = await db
       .select({
         seq: heartbeatRunEvents.seq,

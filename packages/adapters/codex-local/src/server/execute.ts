@@ -1,3 +1,4 @@
+import { observeChatWait } from "./chat-wait.js";
 import { asStringArray } from "@paperclipai/adapter-utils/server-utils";
 import { applyObservabilityEnvironment } from "@paperclipai/adapter-utils/agent-observability";
 import { prepareCodexObservabilityProfile, selectedCodexProfile, replaceCodexProfileArgs, disableCodexObservabilityArgs } from "@paperclipai/adapter-utils/codex-observability-profile";
@@ -581,7 +582,6 @@ export async function ensureCodexSkillsInjected(
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const providerStop = createProviderStoppedBoundary(ctx.onProviderStopped);
   const engineSelection = await resolveCodexExecutionEngineForRun(ctx);
   if (engineSelection.unavailableReason) {
     return {
@@ -599,6 +599,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     return executeCodexAcp(ctx);
   }
 
+  if (ctx.context.conversationMode !== true || !ctx.onRuntimeProgress) {
+    return executeCodexCli(ctx);
+  }
+  const wait = observeChatWait(ctx.onRuntimeProgress);
+  try {
+    return await executeCodexCli({
+      ...ctx,
+      onLog(stream, chunk) {
+        if (stream === "stdout") wait.stdout(chunk);
+        return ctx.onLog(stream, chunk);
+      },
+    });
+  } finally {
+    wait.stop();
+  }
+}
+
+async function executeCodexCli(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  const providerStop = createProviderStoppedBoundary(ctx.onProviderStopped);
   const { runId, agent, runtime, config, context, onLog, onMeta, onEvent, onSpawn, authToken } = ctx;
 
   const promptTemplate = asString(
