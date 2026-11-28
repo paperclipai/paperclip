@@ -350,11 +350,9 @@ const plugin = definePlugin({
     const jobName = `pc-${newRunUlidDns()}`;
     const secretName = `${jobName}-env`;
 
-    // TODO: use params.runId as stand-in for agentId in labels; future
-    // versions will have a dedicated agentId on AcquireLeaseParams.
     const labels = paperclipLabels({
       runId: params.runId,
-      agentId: params.runId,
+      agentId: params.agentId ?? params.runId,
       companyId: params.companyId,
       adapterType: effectiveAdapterType,
     });

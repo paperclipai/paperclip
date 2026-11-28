@@ -60,6 +60,7 @@ describe("plugin-kubernetes end-to-end", () => {
         driverKey: "kubernetes",
         config,
         runId: "r-test-e2e-job",
+        agentId: "a-test-e2e-job",
         companyId: "11111111-1111-1111-1111-111111111111",
         environmentId: "env-test",
       });
@@ -70,6 +71,12 @@ describe("plugin-kubernetes end-to-end", () => {
       // Verify the Job exists in the tenant namespace
       const jobs = kubectl(`get jobs -n ${NAMESPACE} -o name`);
       expect(jobs).toContain(`job.batch/${lease.providerLeaseId}`);
+
+      const jobLabels = kubectl(
+        `get job ${providerLeaseId} -n ${NAMESPACE} -o jsonpath='{.metadata.labels}'`,
+      );
+      expect(jobLabels).toContain('"paperclip.io/agent-id":"a-test-e2e-job"');
+      expect(jobLabels).toContain('"paperclip.io/run-id":"r-test-e2e-job"');
 
       // Verify the tenant namespace has the expected supporting resources
       const all = kubectl(
