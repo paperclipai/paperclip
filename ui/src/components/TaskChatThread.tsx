@@ -41,7 +41,7 @@ import {
   type ComponentProps,
   type ReactNode,
 } from "react";
-import {
+import { useStableEvent,
   IssueAssigneePausedNotice,
   IssueChatThread,
 } from "@/components/IssueChatThread";
@@ -562,6 +562,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     feedbackDataSharingPreference = "prompt",
     feedbackTermsUrl = null,
     onVote,
+    onDeleteComment,
+    canDeleteAgentComments,
     draftKey,
     onInterruptQueued,
     onCancelQueued,
@@ -2960,6 +2962,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   // copy · 👍 · 👎 cluster for an agent bubble's footer line (PAP-413). Human
   // and system bubbles get nothing; copy is always available, and the feedback
   // buttons render only when the host wired a vote handler.
+  const hasDeleteHandler = Boolean(onDeleteComment);
+  const stableOnDeleteComment = useStableEvent((commentId: string) => onDeleteComment?.(commentId));
   const renderMessageActions = useCallback(
     (item: TaskChatMessageItem) => {
       if (item.author !== "agent" || item.optimistic) return null;
@@ -2967,6 +2971,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         <TaskChatBubbleActions
           copyText={item.text}
           fastResponse={item.origin === "fast_response"}
+          onDelete={
+            hasDeleteHandler && canDeleteAgentComments && item.agentAuthored
+              ? () => void Promise.resolve(stableOnDeleteComment?.(item.id)).catch(() => {})
+              : undefined
+          }
           feedback={
             onVote
               ? {
@@ -2985,6 +2994,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       feedbackVoteByTargetId,
       feedbackDataSharingPreference,
       feedbackTermsUrl,
+      stableOnDeleteComment,
+      hasDeleteHandler,
+      canDeleteAgentComments,
     ],
   );
 

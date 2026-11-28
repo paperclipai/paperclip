@@ -296,6 +296,25 @@ The swarm runs with the agent's own instructions, as an ordinary turn does: its 
 
 Deleting a request comment withdraws it: the swarm does not run and later work is ordinary. A later `/swarm` on the same task replaces an earlier request that has not completed. The earlier request never runs, neither as a swarm nor as ordinary work. Other comments sent in the meantime reach the agent in an ordinary turn, never inside the swarm's request.
 
+### Delete a Comment
+
+```
+DELETE /api/issues/{issueId}/comments/{commentId}
+```
+
+The comment author can delete their own comment. A board user can also delete a
+comment authored by an agent when they have `issue:mutate` access to the task. In an
+agent chat, only the conversation owner can delete agent comments. Any other caller
+gets `403`. Queued comments are handled by the queued-comment routes below.
+
+Deletion is a tombstone, not a hard delete. The comment keeps its ID, author and
+timestamps, and records who deleted it. Its body becomes empty and its presentation
+and metadata are cleared. The `bodySnippet` is removed from activity entries for the
+comment and for document annotation comments deleted with it. Attachments uploaded
+with the comment are not deleted; they stay on the task and remain linked to the
+tombstoned comment. Deleting a comment that is already tombstoned returns it
+unchanged and clears any snippet still stored.
+
 ### Discard a Queued Comment
 
 ```

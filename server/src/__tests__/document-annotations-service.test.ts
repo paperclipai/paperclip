@@ -251,6 +251,63 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
     expect(updatedThread?.resolvedByUserId).toBe("board-user");
   });
 
+  it("detaches rather than deletes another author's annotation linked to a deleted issue comment", async () => {
+    const { companyId, issueId, document } = await createIssueWithDocument();
+    const [issueComment] = await db
+      .insert(issueComments)
+      .values({
+        companyId,
+        issueId,
+        authorType: "user",
+        authorUserId: "board-user",
+        body: "Delete this linked comment",
+      })
+      .returning();
+
+    const thread = await annotations.createThread(
+      issueId,
+      "plan",
+      {
+        baseRevisionId: document.latestRevisionId!,
+        baseRevisionNumber: document.latestRevisionNumber,
+        selector: {
+          quote: { exact: "selected text", prefix: "Alpha ", suffix: " omega" },
+          position: { normalizedStart: 6, normalizedEnd: 19, markdownStart: 6, markdownEnd: 19 },
+        },
+        body: "Author's own linked annotation",
+        issueCommentId: issueComment.id,
+      },
+      { actorType: "user", actorId: "board-user", userId: "board-user" },
+    );
+    const otherUsersComment = await annotations.addComment(
+      issueId,
+      "plan",
+      thread.id,
+      { body: "Another user's annotation linked to the same comment", issueCommentId: issueComment.id },
+      { actorType: "user", actorId: "other-user", userId: "other-user" },
+    );
+
+    const cleanup = await annotations.cleanupForIssueCommentDeletion(
+      issueId,
+      issueComment.id,
+      { actorType: "user", actorId: "deleting-board-user", userId: "deleting-board-user" },
+    );
+
+    expect(cleanup.deletedCommentIds).toEqual([thread.comments[0]!.id]);
+    expect(cleanup.resolvedThreadIds).toEqual([]);
+    const [preserved] = await db
+      .select()
+      .from(documentAnnotationComments)
+      .where(eq(documentAnnotationComments.id, otherUsersComment.id));
+    expect(preserved?.body).toBe("Another user's annotation linked to the same comment");
+    expect(preserved?.issueCommentId).toBeNull();
+    const [updatedThread] = await db
+      .select()
+      .from(documentAnnotationThreads)
+      .where(eq(documentAnnotationThreads.id, thread.id));
+    expect(updatedThread?.status).toBe("open");
+  });
+
   it("rejects annotation comments linked to already-deleted issue comments", async () => {
     const { companyId, issueId, document } = await createIssueWithDocument();
     const [issueComment] = await db
