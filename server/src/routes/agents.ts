@@ -3066,6 +3066,13 @@ export function agentRoutes(
     requestedConfig: Record<string, unknown>,
     existingConfig: Record<string, unknown>,
   ): Record<string, unknown> {
+    const { env: requestedEnvValue, ...requestedRest } = requestedConfig;
+    const { env: _existingEnvValue, ...existingRest } = existingConfig;
+    const { env: _displayedEnvValue, ...displayedRest } = redactAgentAdapterConfig(existingConfig);
+    requestedConfig = {
+      ...(restoreAgentConfigurationRedactions(requestedRest, existingRest, displayedRest) as Record<string, unknown>),
+      ...(hasOwn(requestedConfig, "env") ? { env: requestedEnvValue } : {}),
+    };
     const requestedEnv = asRecord(requestedConfig.env);
     const existingEnv = asRecord(existingConfig.env);
     if (!requestedEnv || !existingEnv) return requestedConfig;

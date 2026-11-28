@@ -603,6 +603,130 @@ describe("agent routes adapter validation", () => {
     );
   });
 
+  it("restores a saved agent's redacted top-level adapter secrets before testing its adapter", async () => {
+    const agentId = "11111111-1111-4111-8111-111111111111";
+    mockAgentService.getById.mockResolvedValue({
+      ...(await mockAgentService.getById()),
+      id: agentId,
+      adapterType: "external_test",
+      adapterConfig: { url: "ws://gateway.example:18789/", authToken: "saved-gateway-token" },
+    });
+    const { registerServerAdapter } = await import("../adapters/index.js");
+    registerServerAdapter(externalAdapter);
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/adapters/external_test/test-environment")
+        .send({
+          agentId,
+          adapterConfig: { url: "ws://gateway.example:18789/", authToken: "***REDACTED***" },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockSecretService.normalizeAdapterConfigForPersistence).toHaveBeenCalledWith(
+      "company-1",
+      { url: "ws://gateway.example:18789/", authToken: "saved-gateway-token" },
+      expect.objectContaining({ adapterType: "external_test" }),
+    );
+  });
+
+  it("keeps a saved top-level adapter secret on an ordinary save that sends it back redacted", async () => {
+    const agentId = "11111111-1111-4111-8111-111111111111";
+    mockAgentService.getById.mockResolvedValue({
+      ...(await mockAgentService.getById()),
+      id: agentId,
+      adapterType: "external_test",
+      adapterConfig: { url: "ws://gateway.example:18789/", authToken: "saved-gateway-token" },
+    });
+    const { registerServerAdapter } = await import("../adapters/index.js");
+    registerServerAdapter(externalAdapter);
+    const app = await createApp();
+    const unchanged = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch(`/api/agents/${agentId}`)
+        .send({ adapterConfig: { url: "ws://gateway.example:18789/", authToken: "***REDACTED***" } }),
+    );
+    const replaced = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch(`/api/agents/${agentId}`)
+        .send({ adapterConfig: { url: "ws://gateway.example:18789/", authToken: "new-gateway-token" } }),
+    );
+
+    expect(unchanged.status, JSON.stringify(unchanged.body)).toBe(200);
+    expect(replaced.status, JSON.stringify(replaced.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledTimes(2);
+    const [unchangedPatch, replacedPatch] = mockAgentService.update.mock.calls.map(
+      (call) => call[1] as { adapterConfig: Record<string, unknown> },
+    );
+    expect(unchangedPatch.adapterConfig.authToken).toBe("saved-gateway-token");
+    expect(replacedPatch.adapterConfig.authToken).toBe("new-gateway-token");
+  });
+
+  it("keeps a saved top-level adapter secret when hiring from setup with it sent back redacted", async () => {
+    const setupAgentId = "22222222-2222-4222-8222-222222222222";
+    mockAgentService.getById.mockResolvedValue({
+      ...(await mockAgentService.getById()),
+      id: setupAgentId,
+      companyId: "company-1",
+      createdByUserId: "local-board",
+      status: "paused",
+      lifecycleState: "paused",
+      pauseReason: "setup",
+      lifecycleHolds: ["setup"],
+      adapterType: "external_test",
+      adapterConfig: { url: "ws://gateway.example:18789/", authToken: "saved-gateway-token" },
+    });
+    const { registerServerAdapter } = await import("../adapters/index.js");
+    registerServerAdapter(externalAdapter);
+    const app = await createApp();
+    const hire = (authToken: string) => requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agent-hires")
+        .send({
+          setupAgentId,
+          name: "Gateway",
+          adapterType: "external_test",
+          adapterConfig: { url: "ws://gateway.example:18789/", authToken },
+        }),
+    );
+    const unchanged = await hire("***REDACTED***");
+    const replaced = await hire("new-gateway-token");
+
+    expect(unchanged.status, JSON.stringify(unchanged.body)).toBe(201);
+    expect(replaced.status, JSON.stringify(replaced.body)).toBe(201);
+    expect(mockAgentService.create).toHaveBeenCalledTimes(2);
+    const [unchangedInput, replacedInput] = mockAgentService.create.mock.calls.map(
+      (call) => call[1] as { adapterConfig: Record<string, unknown> },
+    );
+    expect(unchangedInput.adapterConfig.authToken).toBe("saved-gateway-token");
+    expect(replacedInput.adapterConfig.authToken).toBe("new-gateway-token");
+  });
+
+  it("rejects a redacted adapter secret moved to another key", async () => {
+    const agentId = "11111111-1111-4111-8111-111111111111";
+    mockAgentService.getById.mockResolvedValue({
+      ...(await mockAgentService.getById()),
+      id: agentId,
+      adapterType: "external_test",
+      adapterConfig: { url: "ws://gateway.example:18789/", authToken: "saved-gateway-token" },
+    });
+    const { registerServerAdapter } = await import("../adapters/index.js");
+    registerServerAdapter(externalAdapter);
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/adapters/external_test/test-environment")
+        .send({
+          agentId,
+          adapterConfig: { url: "***REDACTED***", authToken: "***REDACTED***" },
+        }),
+    );
+
+    expect(res.status).toBe(422);
+    expect(mockSecretService.normalizeAdapterConfigForPersistence).not.toHaveBeenCalled();
+  });
+
   it("rejects redacted-value restoration from an incompatible saved agent", async () => {
     const { registerServerAdapter } = await import("../adapters/index.js");
     registerServerAdapter(externalAdapter);
