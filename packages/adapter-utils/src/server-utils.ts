@@ -836,6 +836,7 @@ type PaperclipWakePayload = {
   questionResponse: PaperclipWakeQuestionResponse | null;
   executionWorkspace: PaperclipWakeExecutionWorkspace | null;
   agentMessage: PaperclipWakeAgentMessage | null;
+  diagnosticsOnlyCapability: string | null;
   annotationDeltas: PaperclipWakeAnnotationDelta[];
   childIssueSummaries: PaperclipWakeChildIssueSummary[];
   childIssueSummaryTruncated: boolean;
@@ -1858,6 +1859,7 @@ export function normalizePaperclipWakePayload(
     payload.executionWorkspace,
   );
   const agentMessage = normalizePaperclipWakeAgentMessage(payload.agentMessage);
+  const diagnosticsOnlyCapability = asString(payload.diagnosticsOnlyCapability, "").trim() || null;
   const issue = normalizePaperclipWakeIssue(payload.issue);
   const skillTest =
     issue?.workMode === "skill_test" ||
@@ -1884,7 +1886,8 @@ export function normalizePaperclipWakePayload(
     !executionWorkspace &&
     !agentMessage &&
     !recovery &&
-    !issue
+    !issue &&
+    !diagnosticsOnlyCapability
   ) {
     return null;
   }
@@ -1943,6 +1946,7 @@ export function normalizePaperclipWakePayload(
     questionResponse,
     executionWorkspace,
     agentMessage,
+    diagnosticsOnlyCapability,
     childIssueSummaries,
     childIssueSummaryTruncated: asBoolean(
       payload.childIssueSummaryTruncated,
@@ -2494,6 +2498,16 @@ function renderPaperclipWakePromptBody(
         ]
       : [];
   const wakeSummaryLines = [
+    ...(normalized.diagnosticsOnlyCapability
+      ? [
+          "## Unassigned diagnostic smoke",
+          "",
+          normalized.diagnosticsOnlyCapability,
+          "",
+          "Checkout is not available on this run. Do not call issue checkout, and do not treat a later 403 as a missing run-id header.",
+          "",
+        ]
+      : []),
     `- reason: ${normalized.reason ?? "unknown"}`,
     ...(normalized.executionContinuation?.trigger?.retriedReason
       ? [`- retried wake: ${normalized.executionContinuation.trigger.retriedReason} (this Retry re-delivers the wake the failed run did not finish; handle it as that wake)`]
