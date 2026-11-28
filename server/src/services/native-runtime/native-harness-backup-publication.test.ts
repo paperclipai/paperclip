@@ -53,6 +53,15 @@ describe("native harness backup publication", () => {
     expect(await fs.readdir(backupRoot)).toEqual(["current"]);
     expect(changes).toEqual([{ companyId: input.companyId, scopeDigest: input.scopeDigest }]);
   });
+  it("restores the old current directory when the pending rename fails", async () => {
+    const input = await fixture(); const changes: unknown[] = [];
+    unsubscribe = onNativeHarnessBackupChange(input.db, change => changes.push(change));
+    await fs.rm(input.pendingRoot, { recursive: true });
+    await expect(publishNativeHarnessBackup(input)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await fs.readFile(path.join(input.current, "manifest.json"), "utf8")).toBe("saved");
+    expect(changes).toEqual([]);
+  });
+
   it("serves an unrelated request while a retired backup is being removed", async () => {
     const input = await fixture();
     for (let index = 0; index < 40; index++) {

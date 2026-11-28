@@ -1,5 +1,6 @@
+import { assertMcpClientMirrorEnvelope } from "./public-mcp/client-mirror-wire.js";
 import { providerRetryAt } from "./provider-retry-after.js";
-import { SLACK_MANAGER_SCOPES, ASANA_CONNECTOR_SCOPES, isAsanaConnectorProfileId, type AsanaConnectorProfileId } from "@paperclipai/shared";
+import { SLACK_MANAGER_SCOPES, ASANA_CONNECTOR_SCOPES, appDefinitionForDeployment, isAsanaConnectorProfileId, type AsanaConnectorProfileId } from "@paperclipai/shared";
 import {
   createDecipheriv,
   createHash,
@@ -19,6 +20,8 @@ import {
   isGitHubConnectorProfileId,
   isGoogleWorkspaceConnectorProfileId,
   isGoogleWorkspaceScopeGrant,
+  googleWorkspaceProfileWithinSubmittedScopes,
+  googleWorkspaceSubmittedScopesIn,
   type GitHubConnectorProfileId,
   type GoogleWorkspaceConnectorProfileId,
 } from "@paperclipai/shared";
@@ -35,9 +38,9 @@ export const GMAIL_CONNECTOR_SCOPES = [
 export { GOOGLE_WORKSPACE_CONNECTOR_PROFILES };
 
 export type PaperclipCloudConnectorEnvironment = "development" | "test" | "staging" | "production";
-export type PaperclipCloudConnectorOperation = "status" | "session" | "claim" | "refresh" | "revoke" | "webhook-bind" | "event-lease" | "event-ack" | "github-app";
-export type PaperclipCloudConnectorProfileId = GoogleWorkspaceConnectorProfileId | GitHubConnectorProfileId | AsanaConnectorProfileId | "slack.manager" | "github.bot";
-export type PaperclipCloudConnectorProvider = "google" | "github" | "asana" | "slack";
+export type PaperclipCloudConnectorOperation = "status" | "session" | "claim" | "refresh" | "revoke" | "webhook-bind" | "event-lease" | "event-ack" | "github-app" | "slack-events" | "slack-forms" | "mcp-client-mirror" | "mcp-revocation-index";
+export type PaperclipCloudConnectorProfileId = GoogleWorkspaceConnectorProfileId | GitHubConnectorProfileId | AsanaConnectorProfileId | "slack.manager" | "github.bot" | "tailscale.tailnet";
+export type PaperclipCloudConnectorProvider = "google" | "github" | "asana" | "slack" | "tailscale";
 
 export type PaperclipCloudConnectorConfig = {
   baseUrl: string;
@@ -75,7 +78,7 @@ export type SealedConnectorEvents = {
   leaseId: string;
   events: Array<{
     id: string;
-    provider: "github";
+    provider: "github" | "slack";
     event: string;
     action: string | null;
     installationId: string | null;
@@ -86,12 +89,14 @@ export type SealedConnectorEvents = {
   }>;
 };
 
+type SealedEnvelopeProfileId = PaperclipCloudConnectorProfileId | "slack.events.v1" | "slack.form-open.v1" | "slack.callbacks.v1";
+
 type SealedEnvelope = {
   v: 1;
   alg: "X25519-HKDF-SHA256-A256GCM";
   purpose: "initial" | "access" | "events";
   provider: PaperclipCloudConnectorProvider;
-  profile: PaperclipCloudConnectorProfileId;
+  profile: SealedEnvelopeProfileId;
   epk: string;
   iv: string;
   ct: string;
@@ -114,11 +119,20 @@ type ConnectorResponse = {
   leaseId?: unknown;
   events?: unknown;
   acknowledged?: unknown;
+  formReceipts?: unknown;
   githubApps?: { version: number };
+  slackEvents?: { version: number };
+  slackForm?: unknown;
+  enrollment?: unknown;
+  retirement?: unknown;
   eventWakeVersion?: unknown;
 };
 
 const ENDPOINTS: Record<PaperclipCloudConnectorOperation, string> = {
+  "mcp-client-mirror": "/v1/connector/mcp-client-mirror",
+  "mcp-revocation-index": "/v1/connector/mcp-revocation-index",
+  "slack-events": "/v1/connector/slack-events",
+  "slack-forms": "/v1/connector/slack-forms",
   "github-app": "/v1/connector/github-apps",
   status: "/v1/connector/instance-status",
   session: "/v1/connector/sessions",
@@ -146,9 +160,20 @@ const BROKER_REJECTION_REASONS = new Set([
   "REQUEST_EXPIRED", "REQUEST_REPLAYED", "SIGNATURE_REJECTED",
   "AUDIENCE_MISMATCH", "OPERATION_MISMATCH", "PAYLOAD_MISMATCH",
   "MALFORMED_REQUEST", "UNSUPPORTED_ALGORITHM", "RATE_LIMITED",
-  "PROVIDER_OPERATION_FAILED", "PROVIDER_REAUTHORIZATION_REQUIRED",
+  "PROVIDER_OPERATION_FAILED", "PROVIDER_REAUTHORIZATION_REQUIRED", "REVOCATION_NOT_AVAILABLE", "PROVIDER_CLOUD_ONLY",
+  "SLACK_ENROLLMENT_GENERATION_CHANGED", "SLACK_ENROLLMENT_IDENTITY_CHANGED",
+  "SLACK_ENROLLMENT_CHANGED", "SLACK_ENROLLMENT_UNSETTLED", "SLACK_ENROLLMENT_DISABLED",
+  "SLACK_COMPANY_MISMATCH", "SLACK_EVENTS_UNAVAILABLE",
+  "SLACK_FORM_SUBJECT_CHANGED", "SLACK_FORM_INSTANCE_CHANGED", "SLACK_FORM_ENROLLMENT_CHANGED", "SLACK_FORM_CREDENTIAL_CHANGED",
+  "SLACK_FORM_RETIREMENT_CHANGED", "SLACK_FORM_RETIREMENT_PROOF_MISSING", "SLACK_FORM_CUSTODY_CHANGED", "SLACK_FORM_RETIREMENT_SIGNER_UNAVAILABLE", "SLACK_FORM_CANONICAL_FACT_CHANGED", "SLACK_FORM_CANONICAL_FACT_BUDGET_CHANGED", "SLACK_FORM_CANONICAL_FACT_PENDING",
 ]);
 const UNKNOWN_BROKER_REASON = "UNKNOWN_BROKER_ERROR";
+
+export const PAPERCLIP_CLOUD_GRANT_REVOCATION_OUTCOMES = [
+  "revoked", "other_connections_remain", "provider_revocation_failed",
+  "binding_not_known", "provider_revocation_disabled", "revocation_in_progress",
+] as const;
+export type PaperclipCloudGrantRevocationOutcome = typeof PAPERCLIP_CLOUD_GRANT_REVOCATION_OUTCOMES[number];
 
 async function readBrokerRejectionReason(response: Response): Promise<string> {
   if (response.bodyUsed || response.body?.locked) return UNKNOWN_BROKER_REASON;
@@ -192,10 +217,36 @@ export class PaperclipCloudConnectorError extends Error {
     readonly code: string,
     readonly status?: number,
     readonly retryAt?: number,
+    readonly brokerReason?: string,
   ) {
     super(message);
     this.name = "PaperclipCloudConnectorError";
   }
+}
+
+/**
+ * True when the broker never gave a verdict: it was unreachable, rate-limited
+ * the request, or failed on its side. Such a failure says nothing about the
+ * instance's enrollment or which sign-ins it has.
+ */
+export function isTransientPaperclipCloudConnectorError(error: unknown): boolean {
+  if (!(error instanceof PaperclipCloudConnectorError)) return false;
+  if (error.code === "CONNECTOR_UNAVAILABLE" || error.brokerReason === UNREADABLE_RESPONSE) return true;
+  const status = error.status ?? 0;
+  return status === 408 || status === 429 || status >= 500;
+}
+
+const UNREADABLE_RESPONSE = "UNREADABLE_RESPONSE";
+
+// Last answers the broker confirmed, per connector identity, for this process.
+// The generation stops a request that started before an invalidation from
+// saving its older answer over the newer state.
+const lastKnownCapabilities = new Map<string, PaperclipCloudConnectorProfileId[]>();
+const lastKnownInstanceStatus = new Map<string, "active" | "suspended" | "removed">();
+let savedAnswerGeneration = 0;
+
+function connectorConfigKey(config: PaperclipCloudConnectorConfig): string {
+  return `${config.baseUrl}|${config.instanceId}|${config.environment}`;
 }
 
 export function paperclipCloudConnectorConfigFromEnv(
@@ -275,12 +326,18 @@ export function createPaperclipCloudConnector(input: {
   const now = input.now ?? Date.now;
   const signingKey = privateKey(config.signPrivateKey, "ed25519");
   const sealKey = privateKey(config.sealPrivateKey, "x25519");
+  const configKey = connectorConfigKey(config);
+  function remember<T>(store: Map<string, T>, value: T, generation: number): T {
+    if (generation === savedAnswerGeneration) store.set(configKey, value);
+    return value;
+  }
   let eventWakeVersion: 1 | null = null;
 
   async function call(
     operation: PaperclipCloudConnectorOperation,
     claims: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; scopes?: string[]; returnUri?: string; returnState?: string; claimId?: string; redemptionId?: string; eventWakeVersion?: 0 | 1 },
-    secret?: { field: "refreshToken" | "token" | "binding" | "acknowledgement"; value: string },
+    secret?: { field: "refreshToken" | "token" | "binding" | "acknowledgement" | "enrollment" | "operation"; value: string },
+    timeoutMs = 15_000,
   ): Promise<ConnectorResponse> {
     const endpoint = new URL(ENDPOINTS[operation], `${config.baseUrl}/`).toString();
     const issuedAt = Math.floor(now() / 1000);
@@ -314,13 +371,17 @@ export function createPaperclipCloudConnector(input: {
       request: signRequest(payload, signingKey),
       ...(secret ? { [secret.field]: secret.value } : {}),
     };
+    const encodedBody = JSON.stringify(body);
+    if (operation === "mcp-client-mirror" && secret?.field === "binding") {
+      assertMcpClientMirrorEnvelope(body.request, secret.value, encodedBody);
+    }
     let response: Response;
     try {
       response = await request(endpoint, {
         method: "POST",
         headers: { "content-type": "application/json", accept: "application/json" },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(15_000),
+        body: encodedBody,
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch {
       throw new PaperclipCloudConnectorError("Paperclip Cloud connector is unavailable", "CONNECTOR_UNAVAILABLE");
@@ -333,12 +394,22 @@ export function createPaperclipCloudConnector(input: {
         response.status === 409 ? "REAUTHORIZATION_REQUIRED" : "CONNECTOR_REQUEST_FAILED",
         response.status,
         providerRetryAt(response.headers.get("retry-after"), now()),
+        reason,
       );
     }
     try {
       return await response.json() as ConnectorResponse;
     } catch {
-      throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid response", "CONNECTOR_BAD_RESPONSE");
+      // A body that is not JSON (for example a gateway page during an outage)
+      // is no verdict; a readable answer with the wrong shape stays a
+      // protocol error.
+      throw new PaperclipCloudConnectorError(
+        "Paperclip Cloud connector returned an invalid response",
+        "CONNECTOR_BAD_RESPONSE",
+        response.status,
+        undefined,
+        UNREADABLE_RESPONSE,
+      );
     }
   }
 
@@ -373,14 +444,143 @@ export function createPaperclipCloudConnector(input: {
     if (credentials.profile !== profile) {
       throw new PaperclipCloudConnectorError("Paperclip Cloud connector profile binding did not match", "CONNECTOR_BINDING_MISMATCH");
     }
+    if (profile === "workspace.all") credentials.scopes = googleWorkspaceSubmittedScopesIn(credentials.scopes);
     if (!(profile === "workspace.all" ? isGoogleWorkspaceScopeGrant(credentials.scopes) : sameStringSet(credentials.scopes, definition.scopes))) {
       throw new PaperclipCloudConnectorError("Paperclip Cloud scope grant did not match", "REAUTHORIZATION_REQUIRED");
     }
     return credentials;
   }
 
+  async function readCapabilities(): Promise<{ profiles: PaperclipCloudConnectorProfileId[]; confirmed: boolean }> {
+    const generation = savedAnswerGeneration;
+    let response: ConnectorResponse;
+    try {
+      response = await call("status", {
+        subject: "instance-capabilities",
+        companyId: "instance-capabilities",
+      });
+    } catch (error) {
+      // A rate limit or outage says nothing about which sign-ins this
+      // instance has. Falling back to "none" hid managed sign-in and offered
+      // a pasted key instead, so keep the last confirmed list.
+      if (isTransientPaperclipCloudConnectorError(error)) {
+        return { profiles: lastKnownCapabilities.get(configKey) ?? [], confirmed: false };
+      }
+      // A rejection (for example a removed registration) is an answer: a
+      // later outage must not bring the old sign-ins back.
+      return { profiles: remember(lastKnownCapabilities, [], generation), confirmed: false };
+    }
+    if (response.active !== true || response.status !== "active" || !Array.isArray(response.profiles)) {
+      return { profiles: remember(lastKnownCapabilities, [], generation), confirmed: true };
+    }
+    return {
+      profiles: remember(lastKnownCapabilities, [...new Set(response.profiles.flatMap((value) =>
+        typeof value === "string" && isPaperclipCloudConnectorProfileId(value) ? [value] : []
+      ))], generation),
+      confirmed: true,
+    };
+  }
+
+  async function instanceStatus(): Promise<{ status: "active" | "suspended" | "removed"; confirmed: boolean }> {
+    const generation = savedAnswerGeneration;
+    const settle = (status: "active" | "suspended" | "removed") => {
+      remember(lastKnownInstanceStatus, status, generation);
+      // An inactive registration has no usable sign-ins either, including
+      // the gallery's cached list. Advancing both generations stops reads
+      // already in flight from saving or caching their pre-removal list.
+      // A response from before a later invalidation is stale: it must not
+      // fence out the answers of checks that started after it.
+      if (status !== "active" && generation === savedAnswerGeneration) {
+        remember(lastKnownCapabilities, [], generation);
+        savedAnswerGeneration += 1;
+        capabilityCacheGeneration += 1;
+        if (capabilityCache?.key === configKey) capabilityCache = null;
+      }
+      return status;
+    };
+    let response: ConnectorResponse;
+    try {
+      response = await call("status", {
+        subject: "instance-status",
+        companyId: "instance-status",
+      });
+    } catch (error) {
+      if (error instanceof PaperclipCloudConnectorError && error.status === 401) return { status: settle("removed"), confirmed: false };
+      // A busy or unreachable broker gave no verdict on this instance. Keep
+      // the standing it last confirmed rather than reporting it unenrolled.
+      const known = lastKnownInstanceStatus.get(configKey);
+      if (known && isTransientPaperclipCloudConnectorError(error)) return { status: known, confirmed: false };
+      throw error;
+    }
+    if (response.status === "active" && response.active === true) return { status: settle("active"), confirmed: true };
+    if (response.status === "suspended" && response.active === false) return { status: settle("suspended"), confirmed: true };
+    if (response.status === "removed" && response.active === false) return { status: settle("removed"), confirmed: true };
+    throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid instance status", "CONNECTOR_BAD_RESPONSE");
+  }
+
   return {
+    instanceIdentity: () => Object.freeze({ instanceId: config.instanceId, environment: config.environment }),
+    async syncMcpClientMirror(serialized: string): Promise<unknown> {
+      const response = await call("mcp-client-mirror", {subject:"instance-client-metadata",companyId:"instance-client-metadata"}, {field:"binding",value:serialized});
+      return (response as ConnectorResponse & {mcpClientMirror?:unknown}).mcpClientMirror;
+    },
+    async syncMcpRevocationIndex(values: { subject: string; companyId: string; serialized: string }): Promise<unknown> {
+      const response = await call("mcp-revocation-index", values, { field: "binding", value: values.serialized });
+      return (response as ConnectorResponse & { mcpRevocationIndex?: unknown }).mcpRevocationIndex;
+    },
     eventWakeVersion: () => eventWakeVersion,
+    async slackEventsAvailable() {
+      const response = await call("status", { subject: "instance-capabilities", companyId: "instance-capabilities" });
+      return response.active === true && response.slackEvents?.version === 1;
+    },
+    async slackFormOperation(values: { subject: string; companyId: string; operation: Record<string, unknown> }) {
+      const response = await call("slack-forms", values, { field: "operation", value: JSON.stringify(values.operation) });
+      if (!isRecord(response.slackForm)) throw badEnvelope();
+      if (values.operation.kind === "receipt" && values.operation.refreshAckReceipt !== undefined) {
+        if (values.operation.acceptedAckReceipt !== undefined || values.operation.releaseAckFact !== undefined
+          || Object.keys(response.slackForm).join() !== "ackReceiptJws" || typeof response.slackForm.ackReceiptJws !== "string"
+          || Buffer.byteLength(response.slackForm.ackReceiptJws, "ascii") > 12000
+          || !/^[A-Za-z0-9_-]+[.][A-Za-z0-9_-]+[.][A-Za-z0-9_-]+$/.test(response.slackForm.ackReceiptJws)) throw badEnvelope();
+        return response.slackForm;
+      }
+      if (values.operation.kind === "receipt" && values.operation.releaseAckFact !== undefined) {
+        if (values.operation.acceptedAckReceipt !== undefined || Object.keys(response.slackForm).join() !== "releasedAckDigest"
+          || typeof response.slackForm.releasedAckDigest !== "string" || !/^[a-f0-9]{64}$/.test(response.slackForm.releasedAckDigest)) throw badEnvelope();
+        return response.slackForm;
+      }
+      if (values.operation.kind === "receipt" && values.operation.acceptedAckReceipt !== undefined) {
+        if (Object.keys(response.slackForm).sort().join() !== "acceptedReceiptDigest,needsTerminalOriginal" || typeof response.slackForm.acceptedReceiptDigest !== "string"
+          || !/^[a-f0-9]{64}$/.test(response.slackForm.acceptedReceiptDigest) || typeof response.slackForm.needsTerminalOriginal !== "boolean") throw badEnvelope();
+        return response.slackForm;
+      }
+      if (!["receipt", "terminal-ack"].includes(String(values.operation.kind))) return response.slackForm;
+      const envelope = parseEnvelope(response.slackForm.sealed, "events", "slack", "slack.form-open.v1");
+      const receipt = decryptEnvelope(envelope, sealKey, config.instanceId, config.environment, "slack", "slack.form-open.v1", []);
+      if (!isRecord(receipt) || receipt.version !== 1 || receipt.instanceId !== config.instanceId || receipt.environment !== config.environment) throw badEnvelope();
+      if (!isRecord(receipt.operation)) throw badEnvelope();
+      if (receipt.operation.closed !== null) {
+        if (!isRecord(receipt.operation.closed)) throw badEnvelope();
+        const closeEnvelope = parseEnvelope(receipt.operation.closed.evidence, "events", "slack", "slack.form-open.v1");
+        const evidence = decryptEnvelope(closeEnvelope, sealKey, config.instanceId, config.environment, "slack", "slack.form-open.v1", []);
+        if (!isRecord(evidence) || evidence.version !== 1 || !["close", "submission"].includes(String(evidence.kind)) || evidence.instanceId !== config.instanceId
+          || evidence.environment !== config.environment || evidence.operationId !== receipt.operation.id) throw badEnvelope();
+        receipt.operation.closed = { ...receipt.operation.closed, evidence };
+      }
+      if (receipt.operation.rejection !== null) {
+        if (!isRecord(receipt.operation.rejection)) throw badEnvelope();
+        const rejectionEnvelope = parseEnvelope(receipt.operation.rejection.evidence, "events", "slack", "slack.form-open.v1");
+        const evidence = decryptEnvelope(rejectionEnvelope, sealKey, config.instanceId, config.environment, "slack", "slack.form-open.v1", []);
+        if (!isRecord(evidence) || evidence.version !== 1 || evidence.kind !== "rejection" || evidence.instanceId !== config.instanceId
+          || evidence.environment !== config.environment || evidence.operationId !== receipt.operation.id
+          || evidence.responseDigest !== receipt.operation.rejection.responseDigest) throw badEnvelope();
+        receipt.operation.rejection = { ...receipt.operation.rejection, evidence };
+      }
+      return receipt;
+    },
+    async slackEventEnrollment(values: { subject: string; companyId: string; enrollment: Record<string, unknown> }) {
+      const response = await call("slack-events", values, { field: "enrollment", value: JSON.stringify(values.enrollment) });
+      return values.enrollment.active === false ? response.retirement : response.enrollment;
+    },
     async githubAppsAvailable() {
       const response = await call("status", { subject: "instance-capabilities", companyId: "instance-capabilities" });
       return response.active === true && response.githubApps?.version === 2;
@@ -398,35 +598,15 @@ export function createPaperclipCloudConnector(input: {
       return opened;
     },
     async getInstanceStatus(): Promise<"active" | "suspended" | "removed"> {
-      let response: ConnectorResponse;
-      try {
-        response = await call("status", {
-          subject: "instance-status",
-          companyId: "instance-status",
-        });
-      } catch (error) {
-        if (error instanceof PaperclipCloudConnectorError && error.status === 401) return "removed";
-        throw error;
-      }
-      if (response.status === "active" && response.active === true) return "active";
-      if (response.status === "suspended" && response.active === false) return "suspended";
-      if (response.status === "removed" && response.active === false) return "removed";
-      throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid instance status", "CONNECTOR_BAD_RESPONSE");
+      return (await instanceStatus()).status;
     },
+    async getConfirmedInstanceStatus(): Promise<"active" | "suspended" | "removed" | "unknown_instance"> {
+      const { status, confirmed } = await instanceStatus();
+      return status === "removed" && !confirmed ? "unknown_instance" : status;
+    },
+    readCapabilities,
     async getCapabilities(): Promise<PaperclipCloudConnectorProfileId[]> {
-      let response: ConnectorResponse;
-      try {
-        response = await call("status", {
-          subject: "instance-capabilities",
-          companyId: "instance-capabilities",
-        });
-      } catch {
-        return [];
-      }
-      if (response.active !== true || response.status !== "active" || !Array.isArray(response.profiles)) return [];
-      return [...new Set(response.profiles.flatMap((value) =>
-        typeof value === "string" && isPaperclipCloudConnectorProfileId(value) ? [value] : []
-      ))];
+      return (await readCapabilities()).profiles;
     },
     async getSlackManagerAppId(): Promise<string | null> {
       const response = await call("status", { subject: "instance-capabilities", companyId: "instance-capabilities" });
@@ -437,6 +617,9 @@ export function createPaperclipCloudConnector(input: {
     },
     async startAuthorization(values: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; scopes?: string[]; returnUri: string; returnState: string }) {
       const profile = values.profile ?? "gmail.draft";
+      if (!paperclipCloudConnectorConsentAllowed(profile)) {
+        throw new PaperclipCloudConnectorError("This permission set is not offered through Paperclip's Google app", "CONNECTOR_CONFIG_INVALID");
+      }
       const response = await call("session", { ...values, profile });
       if (typeof response.confirmationUrl !== "string" || typeof response.expiresAt !== "string") {
         throw new PaperclipCloudConnectorError("Paperclip Cloud connector returned an invalid session", "CONNECTOR_BAD_RESPONSE");
@@ -498,8 +681,13 @@ export function createPaperclipCloudConnector(input: {
         profile,
       );
     },
-    async revoke(values: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; token: string }) {
-      await call("revoke", { ...values, profile: values.profile ?? "gmail.draft" }, { field: "token", value: values.token });
+    async revoke(values: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; token: string; timeoutMs?: number }): Promise<{ outcome?: PaperclipCloudGrantRevocationOutcome }> {
+      const { timeoutMs, ...claims } = values;
+      const response = await call("revoke", { ...claims, profile: claims.profile ?? "gmail.draft" }, { field: "token", value: claims.token }, timeoutMs);
+      const outcome = (response as ConnectorResponse & { outcome?: unknown }).outcome;
+      return typeof outcome === "string" && (PAPERCLIP_CLOUD_GRANT_REVOCATION_OUTCOMES as readonly string[]).includes(outcome)
+        ? { outcome: outcome as PaperclipCloudGrantRevocationOutcome }
+        : {};
     },
     async setWebhookBinding(values: {
       subject: string;
@@ -551,12 +739,55 @@ export function createPaperclipCloudConnector(input: {
               || delivery.registrationId !== packet.registrationId) throw badEnvelope();
             event.payload = { githubApp: delivery };
           }
+          if (event.provider === "slack") {
+            if (event.payload.slackCallback !== undefined) {
+              const packet = event.payload.slackCallback;
+              if (!isRecord(packet) || typeof packet.bindingId !== "string" || packet.sealed === undefined) throw badEnvelope();
+              const sealed = parseEnvelope(packet.sealed, "events", "slack", "slack.callbacks.v1");
+              const delivery = decryptEnvelope(sealed, sealKey, config.instanceId, config.environment, "slack", "slack.callbacks.v1", []);
+              if (!isRecord(delivery) || delivery.version !== 1 || delivery.instanceId !== config.instanceId || delivery.environment !== config.environment
+                || delivery.bindingId !== packet.bindingId || delivery.acceptedAt !== event.createdAt || delivery.lane !== event.event
+                || !["command", "action"].includes(String(delivery.lane))) throw badEnvelope();
+              event.payload = { slackCallback: delivery };
+            } else if (event.payload.slackFormOpen !== undefined) {
+              const packet = event.payload.slackFormOpen;
+              if (!isRecord(packet) || typeof packet.operationId !== "string" || packet.bindingId !== `slack-form-open:${packet.operationId}`) throw badEnvelope();
+              const sealed = parseEnvelope(packet.sealed, "events", "slack", "slack.form-open.v1");
+              const delivery = decryptEnvelope(sealed, sealKey, config.instanceId, config.environment, "slack", "slack.form-open.v1", []);
+              if (!isRecord(delivery) || delivery.version !== 1 || delivery.instanceId !== config.instanceId || delivery.environment !== config.environment
+                || !isRecord(delivery.operation) || delivery.operation.id !== packet.operationId || delivery.acceptedAt !== event.createdAt) throw badEnvelope();
+              event.payload = { slackFormOpen: delivery };
+            } else {
+            const packet = event.payload.slackEvent;
+            if (!isRecord(packet) || typeof packet.bindingId !== "string" || packet.sealed === undefined) throw badEnvelope();
+            const sealed = parseEnvelope(packet.sealed, "events", "slack", "slack.events.v1");
+            const delivery = decryptEnvelope(sealed, sealKey, config.instanceId, config.environment, "slack", "slack.events.v1", []);
+            if (!isRecord(delivery) || delivery.version !== 1 || delivery.instanceId !== config.instanceId
+              || delivery.environment !== config.environment || delivery.bindingId !== packet.bindingId
+              || delivery.acceptedAt !== event.createdAt) throw badEnvelope();
+            event.payload = { slackEvent: delivery };
+            }
+          }
           events.push(event);
         } catch {
           failedEventIds.push(event.id);
         }
       }
       return { leaseId: opened.leaseId, events, ...(failedEventIds.length ? { failedEventIds } : {}) };
+    },
+    async acknowledgeEventsWithReceipts(values: { subject: string; companyId: string; leaseId: string; deliveryIds: string[] }): Promise<{ acknowledged: number; formReceipts: { deliveryId: string; receiptJws: string }[] }> {
+      const response = await call("event-ack", values, { field: "acknowledgement", value: JSON.stringify({ leaseId: values.leaseId, deliveryIds: values.deliveryIds }) });
+      if (typeof response.acknowledged !== "number" || !Number.isSafeInteger(response.acknowledged) || response.acknowledged < 0
+        || !Array.isArray(response.formReceipts) || response.formReceipts.length > 50) throw badEnvelope();
+      const seen = new Set<string>();
+      const formReceipts = response.formReceipts.map((value: unknown) => {
+        if (!isRecord(value) || Object.keys(value).sort().join() !== "deliveryId,receiptJws" || typeof value.deliveryId !== "string"
+          || !/^slack_form_[a-f0-9]{64}$/.test(value.deliveryId) || !values.deliveryIds.includes(value.deliveryId) || seen.has(value.deliveryId)
+          || typeof value.receiptJws !== "string" || Buffer.byteLength(value.receiptJws, "ascii") > 12000) throw badEnvelope();
+        seen.add(value.deliveryId); return { deliveryId: value.deliveryId, receiptJws: value.receiptJws };
+      });
+      if (values.deliveryIds.filter(id => /^slack_form_[a-f0-9]{64}$/.test(id)).some(id => !seen.has(id))) throw badEnvelope();
+      return { acknowledged: response.acknowledged, formReceipts };
     },
     async acknowledgeEvents(values: { subject: string; companyId: string; leaseId: string; deliveryIds: string[] }): Promise<number> {
       const acknowledgement = JSON.stringify({ leaseId: values.leaseId, deliveryIds: values.deliveryIds });
@@ -589,7 +820,11 @@ function parseCloudHandoff(value: unknown): { kind: "paperclip_cloud"; session: 
   return { kind: "paperclip_cloud", session };
 }
 
-export type PaperclipCloudConnector = ReturnType<typeof createPaperclipCloudConnector>;
+export type PaperclipCloudConnector = Omit<ReturnType<typeof createPaperclipCloudConnector>, "instanceIdentity" | "slackFormOperation" | "readCapabilities"> & {
+  readCapabilities?: ReturnType<typeof createPaperclipCloudConnector>["readCapabilities"];
+  instanceIdentity?: () => Readonly<{ instanceId: string; environment: PaperclipCloudConnectorEnvironment }>;
+  slackFormOperation?: ReturnType<typeof createPaperclipCloudConnector>["slackFormOperation"];
+};
 export type PaperclipCloudGoogleWorkspaceConnector = PaperclipCloudConnector;
 
 /** Accept persisted Paperclip ID-era records while all new records use the Cloud strategy. */
@@ -601,11 +836,13 @@ export function isPaperclipCloudConnectorStrategy(value: unknown): boolean {
 export function appWithPaperclipCloudConnectorAvailability(
   app: AppDefinition,
   profiles: readonly string[],
+  cloudHosted: boolean,
 ): AppDefinition {
   const enabledProfiles = new Set(profiles);
-  const methods = app.methods.filter((method) =>
+  const methods = appDefinitionForDeployment(app, { cloudHosted }).methods.filter((method) =>
     !isPaperclipCloudConnectorStrategy(method.oauthStrategy)
-    || Boolean(method.connectorProfile && enabledProfiles.has(method.connectorProfile))
+    || Boolean(method.connectorProfile && enabledProfiles.has(method.connectorProfile)
+      && paperclipCloudConnectorConsentAllowed(method.connectorProfile))
   );
   return {
     ...app,
@@ -618,12 +855,20 @@ export function appWithPaperclipCloudConnectorAvailability(
   };
 }
 
+export function paperclipCloudConnectorConsentAllowed(profile: string): boolean {
+  return !isGoogleWorkspaceConnectorProfileId(profile) || googleWorkspaceProfileWithinSubmittedScopes(profile);
+}
+
 let capabilityCache: { key: string; expiresAt: number; profiles: PaperclipCloudConnectorProfileId[] } | null = null;
 let capabilityCacheGeneration = 0;
+const UNCONFIRMED_CAPABILITIES_TTL_MS = 5_000;
 
 export function invalidatePaperclipCloudConnectorCapabilities(): void {
   capabilityCacheGeneration += 1;
   capabilityCache = null;
+  savedAnswerGeneration += 1;
+  lastKnownCapabilities.clear();
+  lastKnownInstanceStatus.clear();
 }
 
 export async function paperclipCloudConnectorCapabilitiesFromEnv(
@@ -641,13 +886,16 @@ export async function paperclipCloudConnectorCapabilitiesFromEnv(
     throw error;
   }
   if (!config) return [];
-  const key = `${config.baseUrl}|${config.instanceId}|${config.environment}`;
+  const key = connectorConfigKey(config);
   if (capabilityCache?.key === key && capabilityCache.expiresAt > Date.now()) return capabilityCache.profiles;
   const generation = capabilityCacheGeneration;
   const connector = createPaperclipCloudConnector({ config });
-  const profiles = await connector.getCapabilities();
+  const { profiles, confirmed } = await connector.readCapabilities();
+  // An unanswered check keeps its fallback only briefly, so the next gallery
+  // read soon asks Cloud again without sending one request per read to a
+  // broker that is already failing.
   if (generation === capabilityCacheGeneration) {
-    capabilityCache = { key, expiresAt: Date.now() + 60_000, profiles };
+    capabilityCache = { key, expiresAt: Date.now() + (confirmed ? 60_000 : UNCONFIRMED_CAPABILITIES_TTL_MS), profiles };
   }
   return profiles;
 }
@@ -684,7 +932,7 @@ function parseEnvelope(
   value: unknown,
   purpose: SealedEnvelope["purpose"],
   provider: PaperclipCloudConnectorProvider,
-  profile: PaperclipCloudConnectorProfileId,
+  profile: SealedEnvelopeProfileId,
 ): SealedEnvelope {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw badEnvelope();
   const candidate = value as Partial<SealedEnvelope>;
@@ -737,7 +985,7 @@ function unsealEvents(
     if (parsed.v !== 1 || parsed.instanceId !== instanceId || parsed.environment !== environment
       || typeof parsed.leaseId !== "string" || !Array.isArray(parsed.events)) throw badEnvelope();
     for (const event of parsed.events) {
-      if (!isRecord(event) || typeof event.id !== "string" || event.provider !== "github"
+      if (!isRecord(event) || typeof event.id !== "string" || !["github", "slack"].includes(event.provider)
         || typeof event.event !== "string" || !isRecord(event.payload) || !Array.isArray(event.bindingIds)
         || !event.bindingIds.every((id) => typeof id === "string")) throw badEnvelope();
     }
@@ -754,7 +1002,7 @@ function decryptEnvelope(
   instanceId: string,
   environment: string,
   provider: PaperclipCloudConnectorProvider,
-  profile: PaperclipCloudConnectorProfileId,
+  profile: SealedEnvelopeProfileId,
   scopes: readonly string[],
 ): unknown {
   const ephemeralRaw = Buffer.from(envelope.epk, "base64url");
@@ -816,6 +1064,7 @@ function connectorProfileDefinition(profile: PaperclipCloudConnectorProfileId): 
   provider: PaperclipCloudConnectorProvider;
   scopes: readonly string[];
 } {
+  if (profile === "tailscale.tailnet") return { provider: "tailscale", scopes: ["auth_keys:create:once"] };
   if (profile === "slack.manager") return { provider: "slack", scopes: SLACK_MANAGER_SCOPES };
   if (profile === "github.bot") return { provider: "github", scopes: [] };
   if (isAsanaConnectorProfileId(profile)) {
@@ -831,6 +1080,7 @@ function isExpectedProviderAuthorizationUrl(
   profile: PaperclipCloudConnectorProfileId,
   url: URL,
 ): boolean {
+  if (profile === "tailscale.tailnet") return url.origin === "https://login.tailscale.com" && url.pathname === "/a/oauth_authorize";
   if (profile === "slack.manager") return url.origin === "https://slack.com" && url.pathname === "/oauth/v2/authorize";
   if (isAsanaConnectorProfileId(profile)) {
     return url.origin === "https://app.asana.com" && url.pathname === "/-/oauth_authorize";
@@ -842,7 +1092,7 @@ function isExpectedProviderAuthorizationUrl(
 }
 
 function isPaperclipCloudConnectorProfileId(value: string): value is PaperclipCloudConnectorProfileId {
-  return value === "slack.manager" || isGoogleWorkspaceConnectorProfileId(value) || isGitHubConnectorProfileId(value) || isAsanaConnectorProfileId(value);
+  return value === "tailscale.tailnet" || value === "slack.manager" || isGoogleWorkspaceConnectorProfileId(value) || isGitHubConnectorProfileId(value) || isAsanaConnectorProfileId(value);
 }
 
 async function sha256Base64Url(value: string): Promise<string> {

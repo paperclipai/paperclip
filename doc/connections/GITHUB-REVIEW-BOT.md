@@ -11,30 +11,13 @@ required GitHub checks, read
 
 ## Set up a bot
 
-Enable **GitHub review bots** in instance **Experimental** settings, then open
-the GitHub Code Review Bot connector. This default-off setting is independent of
-**Chat connectors**. Hiding either feature does not pause existing provider delivery.
-
-1. Choose the bot agent. Prefer a
-   [low-trust review agent](https://docs.paperclip.ing/administration/trust-and-low-trust-review/)
-   with an isolated sandbox and a scoped task boundary. Standard-trust agents
-   show a warning with **Change <agent> to a low trust agent**. This explicitly
-   saves the low-trust preset; it does not configure a sandbox or task boundary.
-2. Choose **My account** or **An organization**. Enter the organization when
-   needed and review the App name suggested from your agent. Click
-   **Continue to GitHub**. Paperclip fills permissions, events, and callbacks.
-3. Confirm creation on GitHub, then select repositories and approve installation.
-   Paperclip stores the credentials securely and imports the initial selection,
-   including an explicit All repositories choice. Organization policies may
-   require administrator approval; resume the same draft when it is granted.
-4. Paperclip reuses your verified GitHub identity when available. Otherwise,
-   authorize the dedicated App and confirm the observed account once. Bot work
-   uses installation credentials, never your personal GitHub token.
-5. Connection verification and completion happen automatically. Paperclip opens
-   the bot's Settings with a connected confirmation modal showing the actual App
-   identity, enabled repository count, and a copyable optional review mention.
-   Dismiss it with **Done**, the close button, or Escape to stay in Settings.
-   Runtime and isolation readiness remain separate prerequisites.
+The canonical step-by-step operator setup guide lives in
+[GitHub Review Bots](../../docs/guides/board-operator/github-review-bots.md).
+Open the **GitHub Code Review Bot** connector from **Connectors** (no
+experimental setting is required), then follow the Quickstart there to choose
+an agent, create and install the dedicated GitHub App, and verify your
+identity. The sections below record internal connector semantics and
+implementation invariants.
 
 Installation may return before GitHub's separately delivered signed webhook
 ping. Paperclip keeps the same draft and credentials, shows a waiting state,
@@ -192,6 +175,33 @@ responses still receive their normal fallback; uncertain writes remain held.
 Event prompts supplement the agent's instructions. Repository content and PR
 prose are untrusted input and cannot change tool authority or publication policy.
 The execution records the configuration revision and event context used.
+
+## Paperclip task completion
+
+Set the review task's completion rule in the agent's saved instructions or the
+bot's Settings. A review score controls the configured GitHub check separately;
+it does not automatically set the Paperclip task status.
+
+For a review-only assignment, you can use this instruction:
+
+> After a complete assessment of the current PR head is rated 5/5 and its
+> publication is confirmed, finish the Paperclip task with
+> reportedWorkDisposition=done. Include the publication link, reviewed commit,
+> score, coverage limits, and available check evidence. Do not wait for CI,
+> merge, or human approval to complete this review assignment. If CI results
+> are unavailable, say so; do not claim they passed.
+
+The GitHub prompts explain this rule when the configured assignment permits
+completion at 5/5. They retain explicit CI or merge requirements and configured
+below-5 tracking. A queued or uncertain publication, an incomplete assessment,
+or a changed head does not satisfy the example rule. Reuse an eligible confirmed
+assessment instead of publishing it again only to change status.
+
+A finite discussion reply can finish after confirmed publication when no assigned
+work remains. It does not need a new assessment or score. Use a response wait
+only for an authorized reply or later review that the assignment still needs.
+Timed checks require a saved monitor. An open PR or an available continuation
+alone is not a reason to wait. GitHub's merge requirements remain separate.
 
 ## Assessments, checks, and formal reviews
 

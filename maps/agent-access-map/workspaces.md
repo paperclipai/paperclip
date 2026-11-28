@@ -71,12 +71,17 @@ until an explicit import. Stored `false` disables new enrollment unless managed
 configuration overrides it. Enrolled workspaces keep remote authority when new
 enrollment is disabled, and missing persistence prerequisites fail admission
 without a controller checkout fallback. Current authorization and responsible-user
-checks still apply;
-read-only cross-project referenced folders and explicitly concurrent shared
-writers are rejected. Managed mutable same-project repositories are supported.
+checks still apply. Authorized referenced Git repositories use writable task
+copies without changing shared source folders or upstream push permissions.
+Explicitly read-only sources and explicitly concurrent shared writers are rejected.
+Managed mutable same-project repositories are supported.
 Portable capture streams validated working files while staging self-contained
 Git metadata. The smaller temporary-space requirement grants no new agent access
 or execution authority. Changed sources still fail before a save receipt.
+Daytona can stream an already captured archive when its guarded download copy
+cannot fit. The sandbox-user read rechecks confinement and refuses symlinks at
+open; it does not grant the privileged download API access to a mutable source.
+Snapshot publication and the single-writer fence keep their existing authority.
 An inherited isolated workspace or operator branch can be reserved through the
 task's current persisted binding. The original source task remains provenance.
 Reservation checks task/run, binding, trust, and retained source visibility before
@@ -88,16 +93,12 @@ writers with unfinished saves remain fenced. The wait retains the admitted
 assignment role; reassignment during preparation cancels the old assignee's retry.
 The
 [preparation tests](../../server/src/services/heartbeat/workspace-preparation.test.ts)
-and [heartbeat tests](../../server/src/__tests__/heartbeat-remote-workspace-busy.test.ts)
-cover reservation and persisted waits with PostgreSQL; live sandbox
-provider acceptance remains separate.
-The [reservation tests](../../server/src/services/remote-workspace-reservation.test.ts)
-exercise that service boundary with real PostgreSQL, including competing children,
-private sources, foreign companies, and closed records. This is automated evidence,
-not live agent qualification.
+and [remote workspace integration tests](../../server/src/services/remote-workspaces.integration.test.ts)
+cover reservation and persisted waits with PostgreSQL; live sandbox provider acceptance
+remains separate. This is automated evidence, not live agent qualification.
 Importing an existing local task folder is an operator source-checkout command,
 not an agent API or tool: see the
-[dry-run/apply runbook](../../doc/DEVELOPING.md#experimental-native-remote-workspace-storage).
+[dry-run/apply runbook](../../doc/workspace-storage.md#experimental-native-remote-workspace-storage).
 It requires deployment storage/key access and blocks unfinished writers/recovery.
 Source: [remote source admission](../../server/src/services/heartbeat/remote-workspace-source.ts)
 and [migration](../../server/src/services/remote-workspace-migration.ts).
@@ -209,9 +210,9 @@ An admitted native standard task can read a same-agent completion continuation
 for its own pending repository in its current workspace. An explicit yield may
 use that saved continuation; explicit completion remains completion. Existing
 status decisions and wake admission retain Stop and authorization gates. The
-[workspace API regression](../../server/src/__tests__/task-workspace-api.test.ts)
+[workspace session tests](../../server/src/__tests__/heartbeat-workspace-session.test.ts)
 and [driver regression](../../packages/paperclip-runner/src/drivers/completion-continuation.test.ts)
-cover this contract; live qualification remains separate.
+cover workspace continuation contracts; live qualification remains separate.
 
 Policy: Company/project/workspace visibility and runtime authority; active run, trust
 preset and task ownership where required.
@@ -278,9 +279,8 @@ issue mutation and asset-content ACLs, including responsible-user capture owners
 Publication is create-only after staging/hash checks; conflicting files and symlink
 paths fail. Retry the identical identity after an unknown outcome. Audit records
 contain identity/outcome only; contents remain untrusted and screening still applies.
-The [authority regression](../../server/src/services/native-runtime/artifact-transfer.integration.test.ts)
-and [filesystem faults](../../server/src/services/native-runtime/artifact-transfer.test.ts)
-use disposable data and real files; provider transport qualification is separate.
+The [filesystem faults](../../server/src/services/native-runtime/artifact-transfer.test.ts)
+suite uses disposable data and real files; provider transport qualification is separate.
 
 Policy: Company/project/workspace visibility and runtime authority; active run, trust
 preset and task ownership where required.

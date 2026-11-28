@@ -19,7 +19,7 @@ export type TaskListOrder = TaskListSort<TaskListColumnId | "created" | "status"
 export type TaskListSortValue = string | number | null | undefined;
 export const allTaskListColumns: readonly TaskListColumnId[] = taskListColumns.map(column => column.id);
 export const defaultTaskListColumns: readonly TaskListColumnId[] = ["task", "taskId", "lastUpdated"];
-export const defaultTaskListSort: TaskListSort = { column: "taskId", direction: "ascending" };
+export const defaultTaskListSort: TaskListSort = { column: "lastUpdated", direction: "descending" };
 
 /** Task occupies two adjacent physical tracks: status/disclosure, then title. */
 export function taskListColumnStart(columns: readonly TaskListColumnId[], id: TaskListColumnId): number {

@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { agents, toolCatalogEntries, toolProfileBindings, toolProfileEntries, toolProfiles } from "@paperclipai/db";
 import type { ToolCatalogEntry, ToolConnection, ToolProfileEffectiveSummary, ToolProfileWithDetails } from "@paperclipai/shared";
 import { effectiveToolProfileBindings, profileIdsInBindingOrder } from "../../tool-profile-binding-precedence.js";
+import { readConnectionAccessBoundaries } from "../connection-access-boundary.js";
 import { buildProfileDetails, profileCatalogColumns, profileCatalogMatcher, toProfileBinding, toProfileEntry, type ProfileCatalogEntry, type ProfileEntryMatch, type ProfileCatalogMatch } from "./projection.js";
 type ProfileAssignmentDependencies = {
   assertOptionalAgent(companyId: string, agentId: string | null | undefined, label: string): Promise<void>;
@@ -108,6 +109,35 @@ export function createToolProfileResolver(db: Db, { assertOptionalAgent, resolve
     return { bindings, activeProfiles };
   }
 
+  async function filterCatalogByConnectionInstalls<T extends { connectionId: string }>(
+    companyId: string,
+    agentId: string,
+    catalog: T[],
+    installedConnections: ToolConnection[],
+  ): Promise<T[]> {
+    if (catalog.length === 0) return catalog;
+    const installedIds = new Set(installedConnections.map((connection) => connection.id));
+    const uninstalledConnectionIds = [...new Set(
+      catalog
+        .map((entry) => entry.connectionId)
+        .filter((connectionId) => !installedIds.has(connectionId)),
+    )];
+    if (uninstalledConnectionIds.length === 0) return catalog;
+    const boundaries = await readConnectionAccessBoundaries(db, {
+      companyId,
+      agentId,
+      connectionIds: uninstalledConnectionIds,
+    });
+    const blockedConnectionIds = new Set<string>();
+    for (const [connectionId, boundary] of boundaries.entries()) {
+      if (boundary.requiresInstall && !boundary.installedForAgent) {
+        blockedConnectionIds.add(connectionId);
+      }
+    }
+    if (blockedConnectionIds.size === 0) return catalog;
+    return catalog.filter((entry) => !blockedConnectionIds.has(entry.connectionId));
+  }
+
   async function resolveEffectiveProfiles<TEntry extends ProfileCatalogEntry, TAllowedTool>(
     companyId: string,
     agentId: string,
@@ -130,7 +160,7 @@ export function createToolProfileResolver(db: Db, { assertOptionalAgent, resolve
       };
     }
     const activeProfileIds = activeProfiles.map((profile) => profile.id);
-    const [entries, catalog, companyAgents] = await Promise.all([
+    const [entries, catalog, companyAgents, installedConnections] = await Promise.all([
       db
         .select()
         .from(toolProfileEntries)
@@ -146,6 +176,10 @@ export function createToolProfileResolver(db: Db, { assertOptionalAgent, resolve
         .select({ id: agents.id })
         .from(agents)
         .where(eq(agents.companyId, companyId)),
+      resolveInstalledConnectionsForAgent(
+        companyId,
+        agentId,
+      ),
     ]);
     const entriesByProfile = new Map<
       string,
@@ -156,7 +190,8 @@ export function createToolProfileResolver(db: Db, { assertOptionalAgent, resolve
       list.push(entry);
       entriesByProfile.set(entry.profileId, list);
     }
-    const { allowedCatalogIds, allowedToolNames } = resolveCatalogAccess(activeProfiles, entries, catalog);
+    const eligibleCatalog = await filterCatalogByConnectionInstalls(companyId, agentId, catalog, installedConnections);
+    const { allowedCatalogIds, allowedToolNames } = resolveCatalogAccess(activeProfiles, entries, eligibleCatalog);
     const agentIds = companyAgents.map((agent) => agent.id);
     const details: ToolProfileWithDetails[] = activeProfiles.map((profile) =>
       buildProfileDetails({
@@ -165,11 +200,11 @@ export function createToolProfileResolver(db: Db, { assertOptionalAgent, resolve
         bindings: bindings.filter(
           (binding) => binding.profileId === profile.id,
         ),
-        catalog,
+        catalog: eligibleCatalog,
         agentIds,
       }),
     );
-    const allowedTools = catalog
+    const allowedTools = eligibleCatalog
       .filter((entry) => allowedCatalogIds.has(entry.id))
       .map(toAllowedTool);
     return {
@@ -181,10 +216,7 @@ export function createToolProfileResolver(db: Db, { assertOptionalAgent, resolve
       allowedToolNames: [...allowedToolNames].sort((a, b) =>
         a.localeCompare(b),
       ),
-      installedConnections: await resolveInstalledConnectionsForAgent(
-        companyId,
-        agentId,
-      ),
+      installedConnections,
     };
   }
   async function getConnectionAssignmentsForAgent(companyId: string, agentId: string, connectionIds: string[]) {
@@ -192,15 +224,18 @@ export function createToolProfileResolver(db: Db, { assertOptionalAgent, resolve
     if (activeProfiles.length === 0 || connectionIds.length === 0) {
       return { allowedConnectionIds: [], installedConnections: await resolveInstalledConnectionsForAgent(companyId, agentId) };
     }
-    const catalog = await db.select({
-      id: toolCatalogEntries.id,
-      applicationId: toolCatalogEntries.applicationId,
-      connectionId: toolCatalogEntries.connectionId,
-      toolName: toolCatalogEntries.toolName,
-      riskLevel: toolCatalogEntries.riskLevel,
-    }).from(toolCatalogEntries).where(and(
-      eq(toolCatalogEntries.companyId, companyId), eq(toolCatalogEntries.status, "active"), inArray(toolCatalogEntries.connectionId, connectionIds),
-    ));
+    const [catalog, installedConnections] = await Promise.all([
+      db.select({
+        id: toolCatalogEntries.id,
+        applicationId: toolCatalogEntries.applicationId,
+        connectionId: toolCatalogEntries.connectionId,
+        toolName: toolCatalogEntries.toolName,
+        riskLevel: toolCatalogEntries.riskLevel,
+      }).from(toolCatalogEntries).where(and(
+        eq(toolCatalogEntries.companyId, companyId), eq(toolCatalogEntries.status, "active"), inArray(toolCatalogEntries.connectionId, connectionIds),
+      )),
+      resolveInstalledConnectionsForAgent(companyId, agentId),
+    ]);
     const entries = catalog.length === 0 ? [] : await db.select({
       profileId: toolProfileEntries.profileId,
       effect: toolProfileEntries.effect,
@@ -220,10 +255,11 @@ export function createToolProfileResolver(db: Db, { assertOptionalAgent, resolve
         and(eq(toolProfileEntries.selectorType, "risk_level"), catalogValuesContain(toolProfileEntries.riskLevel, catalog.map(entry => entry.riskLevel))),
       ),
     ));
-    const { allowedCatalogIds } = resolveCatalogAccess(activeProfiles, entries, catalog);
+    const eligibleCatalog = await filterCatalogByConnectionInstalls(companyId, agentId, catalog, installedConnections);
+    const { allowedCatalogIds } = resolveCatalogAccess(activeProfiles, entries, eligibleCatalog);
     return {
-      allowedConnectionIds: [...new Set(catalog.filter(entry => allowedCatalogIds.has(entry.id)).map(entry => entry.connectionId))],
-      installedConnections: await resolveInstalledConnectionsForAgent(companyId, agentId),
+      allowedConnectionIds: [...new Set(eligibleCatalog.filter(entry => allowedCatalogIds.has(entry.id)).map(entry => entry.connectionId))],
+      installedConnections,
     };
   }
 

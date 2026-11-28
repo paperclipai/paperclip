@@ -1,4 +1,4 @@
-import { createReadStream, createWriteStream, promises as fs } from "node:fs";
+import { constants, createReadStream, createWriteStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { createHash, randomUUID } from "node:crypto";
@@ -7,12 +7,13 @@ import { notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { createS3StorageProvider } from "../storage/s3-provider.js";
 import type { StorageProvider } from "../storage/types.js";
+import type { ObjectJournalIOPriority } from "./object-byte-journal.js";
 import { createObjectRunLogStore } from "./object-run-log-store.js";
 import { resolveRunEvidenceStorage } from "./run-evidence-storage.js";
 
-export type RunLogStoreType = "local_file" | "s3_segments";
+export type RunLogStoreType = "local_file" | "s3_segments" | "s3_archive";
 export function isRunLogStoreType(value: unknown): value is RunLogStoreType {
-  return value === "local_file" || value === "s3_segments";
+  return value === "local_file" || value === "s3_segments" || value === "s3_archive";
 }
 
 export interface RunLogHandle {
@@ -22,6 +23,8 @@ export interface RunLogHandle {
   initialBytes?: number;
   initialSequence?: number;
   initialSourceCursor?: number;
+  /** Exact immutable prefix has a durable source-coverage proof, not just a max cursor. */
+  initialSourcePrefixVerified?: boolean;
 }
 
 export interface RunLogReadOptions {
@@ -30,6 +33,7 @@ export interface RunLogReadOptions {
   /** Include the start of the first NDJSON record when reading a log tail. */
   alignStartToRecord?: boolean;
   signal?: AbortSignal;
+  priority?: ObjectJournalIOPriority;
 }
 
 export interface RunLogReadResult {
@@ -68,15 +72,20 @@ export interface RunLogStore {
   begin(input: RunLogBeginInput): Promise<RunLogHandle>;
   append(
     handle: RunLogHandle,
-    event: { stream: "stdout" | "stderr" | "system"; chunk: string; ts: string; seq?: number; sourceCursor?: number },
+    event: { stream: "stdout" | "stderr" | "system"; chunk: string; ts: string; seq?: number; sourceCursor?: number;
+      /** Caller proved this is ordered canonical output or a non-native diagnostic. */
+      preservesSourceCoverage?: boolean },
   ): Promise<number>;
   enqueue?(
     handle: RunLogHandle,
     event: Parameters<RunLogStore["append"]>[1],
   ): Promise<{ committed: Promise<number> }>;
   flush?(handle: RunLogHandle): Promise<void>;
+  /** Record the caller's complete ordered source-prefix proof without changing log bytes. */
+  recordVerifiedSourcePrefix?(handle: RunLogHandle, sourceCursor: number): Promise<void>;
   finalize(handle: RunLogHandle, options?: { computeDigest?: boolean }): Promise<RunLogFinalizeSummary>;
   read(handle: RunLogHandle, opts?: RunLogReadOptions): Promise<RunLogReadResult>;
+  remove?(handle: RunLogHandle, signal?: AbortSignal): Promise<void>;
   // Optional so existing fakes/fixtures keep compiling: uploads every dirty
   // in-flight mirror immediately (graceful-shutdown path). No-op when the
   // in-flight mirror is not enabled.
@@ -486,6 +495,14 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
       };
     },
 
+    async remove(handle, signal) {
+      if (handle.store !== "local_file") throw new Error("Invalid local run log backend");
+      signal?.throwIfAborted();
+      await retireInflightMirror(handle.logRef);
+      await fs.rm(resolveWithin(basePath, handle.logRef), { force: true });
+      if (s3) await s3.provider.deleteObject({ objectKey: s3Key(handle.logRef), signal });
+    },
+
     async flushInflightMirrors() {
       if (!s3 || inflightMirrorMs <= 0) return;
       const flushEntry = async (logRef: string, entry: InflightMirrorEntry) => {
@@ -550,6 +567,59 @@ export function resolveRunLogS3(): DurableRunLogStoreOptions["s3"] {
   };
 }
 
+export function runLogBaseRef(handle: RunLogHandle): string {
+  const base = handle.store === "local_file" ? handle.logRef.replace(/\.ndjson$/, "") : handle.logRef.replace(/\.archive$/, "");
+  if (!/^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/.test(base)) throw new Error("Invalid run log reference");
+  return base;
+}
+
+export function composeRunLogStore(local: RunLogStore, external: RunLogStore | null): RunLogStore {
+  const writer = external ?? local;
+  function writable(handle: RunLogHandle) {
+    if (handle.store === "s3_archive") throw new Error("Historical run log archives are read-only");
+    if (handle.store === "local_file") return local;
+    if (!external) throw new Error("Object run log storage is not configured");
+    return external;
+  }
+  return {
+    begin: input => {
+      if (input.previousStore === "s3_archive") throw new Error("Historical run log archives are read-only");
+      if (input.previousStore === "local_file") return local.begin(input);
+      if (input.previousStore === "s3_segments") {
+        if (!external) throw new Error("Object run log storage is not configured");
+        return external.begin(input);
+      }
+      return writer.begin(input);
+    },
+    append: (handle, event) => writable(handle).append(handle, event),
+    enqueue: (handle, event) => {
+      const store = writable(handle);
+      return store.enqueue?.(handle, event) ?? Promise.resolve({ committed: store.append(handle, event) });
+    },
+    flush: async handle => { await writable(handle).flush?.(handle); },
+    finalize: (handle, options) => writable(handle).finalize(handle, options),
+    read: (handle, opts) => {
+      if (handle.store === "s3_segments" || handle.store === "s3_archive") {
+        if (!external) throw new Error("Object run log storage is not configured");
+        return external.read(handle, opts);
+      }
+      return local.read(handle, opts);
+    },
+    remove: async (handle, signal) => {
+      if (!local.remove) throw new Error("Run log removal is unavailable");
+      const base = runLogBaseRef(handle);
+      if (external?.remove) {
+        await external.remove({ store: "s3_segments", logRef: base }, signal);
+        await external.remove({ store: "s3_archive", logRef: `${base}.archive` }, signal);
+      } else if (handle.store !== "local_file") {
+        throw new Error("Object run log storage is not configured");
+      }
+      await local.remove({ store: "local_file", logRef: `${base}.ndjson` }, signal);
+    },
+    flushInflightMirrors: async () => { await Promise.all([local.flushInflightMirrors?.(), external?.flushInflightMirrors?.()]); },
+  };
+}
+
 let cachedStore: RunLogStore | null = null;
 
 export function getRunLogStore() {
@@ -564,31 +634,7 @@ export function getRunLogStore() {
       await input.assertWriterAuthority();
     },
   }) : null;
-  const writer = external ?? local;
-  cachedStore = {
-    begin: input => {
-      if (input.previousStore === "local_file") return local.begin(input);
-      if (input.previousStore === "s3_segments") {
-        if (!external) throw new Error("Object run log storage is not configured");
-        return external.begin(input);
-      }
-      return writer.begin(input);
-    },
-    append: (handle, event) => handle.store === "s3_segments" ? external!.append(handle, event) : local.append(handle, event),
-    enqueue: (handle, event) => handle.store === "s3_segments"
-      ? external!.enqueue!(handle, event)
-      : Promise.resolve({ committed: local.append(handle, event) }),
-    flush: async handle => { if (handle.store === "s3_segments") await external!.flush!(handle); },
-    finalize: (handle, options) => handle.store === "s3_segments" ? external!.finalize(handle, options) : local.finalize(handle),
-    read: (handle, opts) => {
-      if (handle.store === "s3_segments") {
-        if (!external) throw new Error("Object run log storage is not configured");
-        return external.read(handle, opts);
-      }
-      return local.read(handle, opts);
-    },
-    flushInflightMirrors: async () => { await Promise.all([local.flushInflightMirrors?.(), external?.flushInflightMirrors?.()]); },
-  };
+  cachedStore = composeRunLogStore(local, external);
   return cachedStore;
 }
 
@@ -601,13 +647,41 @@ export async function flushInFlightRunLogMirrors(): Promise<void> {
 }
 
 
-export async function openLegacyRunLogForMigration(logRef: string) {
+export async function openLegacyRunLogForMigration(logRef: string, options: { requireCanonicalLocalFile?: boolean } = {}) {
   const basePath = process.env.RUN_LOG_BASE_PATH ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");
-  const file = resolveWithin(basePath, logRef);
+  const base = options.requireCanonicalLocalFile ? await fs.realpath(basePath) : basePath;
+  const file = resolveWithin(base, logRef);
+  if (options.requireCanonicalLocalFile) {
+    if (await fs.realpath(file) !== file) throw new Error("native_log_archive_source_alias");
+    const descriptor = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const stat = await descriptor.stat();
+      if (!stat.isFile() || stat.nlink !== 1) throw new Error("native_log_archive_source_not_private");
+      return {
+        stream: descriptor.createReadStream({ highWaterMark: 4 * 1024 * 1024 }), bytes: stat.size, source: "local" as const,
+        async assertUnchanged() {
+          const current = await fs.lstat(file);
+          if (await fs.realpath(file) !== file || !current.isFile() || current.nlink !== 1
+            || current.dev !== stat.dev || current.ino !== stat.ino || current.size !== stat.size
+            || current.mtimeMs !== stat.mtimeMs || current.ctimeMs !== stat.ctimeMs)
+            throw new Error("legacy_log_source_changed");
+        },
+      };
+    } catch (error) { await descriptor.close(); throw error; }
+  }
   try {
     const stat = await fs.stat(file);
     if (!stat.isFile()) throw new Error("Legacy run log is not a regular file");
-    return { stream: createReadStream(file), bytes: stat.size, source: "local" as const };
+    return {
+      stream: createReadStream(file), bytes: stat.size, source: "local" as const,
+      async assertUnchanged() {
+        const current = await fs.stat(file);
+        if (current.dev !== stat.dev || current.ino !== stat.ino || current.size !== stat.size ||
+          current.mtimeMs !== stat.mtimeMs || current.ctimeMs !== stat.ctimeMs) {
+          throw new Error("legacy_log_source_changed");
+        }
+      },
+    };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }

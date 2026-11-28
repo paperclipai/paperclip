@@ -1,16 +1,18 @@
 #!/usr/bin/env node
 /**
  * check-lockfile-release-age.mjs
- * Decides whether the lockfile bot may merge a refreshed pnpm-lock.yaml without review.
- * Every package version that the refresh adds must be published on npm for at least
- * the minimum age. A version that is too new, or that cannot be verified, holds the
- * PR for a human.
+ * Decides whether the lockfile bot may merge refreshed pnpm lockfiles without review.
+ * Every added version must have a verified npm publish time. Versions outside
+ * the harness allowlist must also meet the minimum age.
  *
  * Exports: parseLockfilePackages(text), addedPackageVersions(baseText, headText),
+ *          addedPackageVersionsAcross(pairs),
  *          checkReleaseAge(entries, { fetchPublishTime, now, minAgeMs, concurrency })
  *
- * CLI: node check-lockfile-release-age.mjs --base <file> --head <file> --min-age-days <n>
- *      Writes `eligible=true|false` to GITHUB_OUTPUT and a Markdown report to --report.
+ * CLI: node check-lockfile-release-age.mjs --base <file> --head <file> [--base <file> --head <file> ...]
+ *        --min-age-days <n>
+ *      Pass one --base/--head pair per lockfile, in the same order. Writes `eligible=true|false`
+ *      to GITHUB_OUTPUT and a Markdown report to --report.
  */
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -25,6 +27,36 @@ const RESOLUTION = /^ {4}resolution: (.+?)\s*$/;
 // directory resolution names its own source and needs a human.
 const REGISTRY_RESOLUTION = /^\{integrity: [^,{}]+\}$/;
 const DAY_MS = 24 * 60 * 60 * 1000;
+const HARNESS_PACKAGES = new Set([
+  '@agentclientprotocol/claude-agent-acp',
+  '@agentclientprotocol/codex-acp',
+  '@anthropic-ai/claude-agent-sdk',
+  '@anthropic-ai/claude-agent-sdk-darwin-arm64',
+  '@anthropic-ai/claude-agent-sdk-darwin-x64',
+  '@anthropic-ai/claude-agent-sdk-linux-arm64',
+  '@anthropic-ai/claude-agent-sdk-linux-arm64-musl',
+  '@anthropic-ai/claude-agent-sdk-linux-x64',
+  '@anthropic-ai/claude-agent-sdk-linux-x64-musl',
+  '@anthropic-ai/claude-agent-sdk-win32-arm64',
+  '@anthropic-ai/claude-agent-sdk-win32-x64',
+  '@github/copilot-darwin-arm64',
+  '@github/copilot-darwin-x64',
+  '@github/copilot-linux-x64',
+  '@openai/codex',
+  'opencode-ai',
+  'opencode-darwin-arm64',
+  'opencode-darwin-x64',
+  'opencode-darwin-x64-baseline',
+  'opencode-linux-arm64',
+  'opencode-linux-arm64-musl',
+  'opencode-linux-x64',
+  'opencode-linux-x64-baseline',
+  'opencode-linux-x64-baseline-musl',
+  'opencode-linux-x64-musl',
+  'opencode-windows-arm64',
+  'opencode-windows-x64',
+  'opencode-windows-x64-baseline',
+]);
 
 /** Maps each key of the lockfile's top-level `packages:` section to its resolution. */
 export function parseLockfilePackages(text) {
@@ -63,6 +95,15 @@ export function addedPackageVersions(baseText, headText) {
     .filter(([key, resolution]) => base.get(key) !== resolution)
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([key, resolution]) => ({ key, ...splitPackageKey(key), resolution }));
+}
+
+/** Added versions across several base/head lockfile pairs, each listed once. */
+export function addedPackageVersionsAcross(pairs) {
+  const entries = new Map();
+  for (const [baseText, headText] of pairs) {
+    for (const entry of addedPackageVersions(baseText, headText)) entries.set(`${entry.key}\0${entry.resolution}`, entry);
+  }
+  return [...entries.values()].sort((a, b) => a.key.localeCompare(b.key));
 }
 
 export async function fetchNpmPublishTime(name, version, fetchImpl = fetch) {
@@ -110,7 +151,7 @@ async function holdReason({ name, version, resolution }, fetchPublishTime, now, 
   }
   if (!published || Number.isNaN(published.getTime())) return 'no publish time on npm';
   const ageMs = now.getTime() - published.getTime();
-  if (ageMs < minAgeMs) {
+  if (ageMs < minAgeMs && !HARNESS_PACKAGES.has(name)) {
     return `published ${published.toISOString()} (${(ageMs / DAY_MS).toFixed(1)} days ago)`;
   }
   return null;
@@ -119,14 +160,14 @@ async function holdReason({ name, version, resolution }, fetchPublishTime, now, 
 export function formatReport(result, minAgeDays) {
   const lines = ['<!-- lockfile-release-age -->'];
   if (result.eligible) {
-    lines.push(`All ${result.checked} added package versions are at least ${minAgeDays} days old. The lockfile bot merges this PR.`);
+    lines.push(`All ${result.checked} added package versions passed the release-age gate. The lockfile bot merges this PR.`);
   } else {
     lines.push(
       `The lockfile bot did not merge this PR. These added package versions are newer than ${minAgeDays} days or could not be verified:`,
       '',
       ...result.held.map(({ key, reason }) => `- \`${key}\`: ${reason}`),
       '',
-      'A maintainer can review and merge this PR. If no one does, the daily refresh tries again and merges it when every version is old enough.',
+      'A maintainer can review and merge this PR. If no one does, the daily refresh tries again and merges it once the refresh passes the gate.',
     );
   }
   return `${lines.join('\n')}\n`;
@@ -135,19 +176,21 @@ export function formatReport(result, minAgeDays) {
 async function main() {
   const { values } = parseArgs({
     options: {
-      base: { type: 'string' },
-      head: { type: 'string' },
+      base: { type: 'string', multiple: true },
+      head: { type: 'string', multiple: true },
       'min-age-days': { type: 'string' },
       report: { type: 'string' },
     },
   });
   const minAgeDays = Number(values['min-age-days']);
-  if (!values.base || !values.head || !Number.isFinite(minAgeDays) || minAgeDays < 0) {
-    console.error('Usage: check-lockfile-release-age.mjs --base <file> --head <file> --min-age-days <n> [--report <file>]');
+  const bases = values.base ?? [];
+  const heads = values.head ?? [];
+  if (bases.length === 0 || bases.length !== heads.length || !Number.isFinite(minAgeDays) || minAgeDays < 0) {
+    console.error('Usage: check-lockfile-release-age.mjs --base <file> --head <file> [--base <file> --head <file> ...] --min-age-days <n> [--report <file>]');
     process.exit(2);
   }
 
-  const entries = addedPackageVersions(readFileSync(values.base, 'utf8'), readFileSync(values.head, 'utf8'));
+  const entries = addedPackageVersionsAcross(bases.map((base, index) => [readFileSync(base, 'utf8'), readFileSync(heads[index], 'utf8')]));
   const result = await checkReleaseAge(entries, { minAgeMs: minAgeDays * DAY_MS });
   const report = formatReport(result, minAgeDays);
   console.log(report);

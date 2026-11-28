@@ -1,10 +1,12 @@
 import { createServer } from "node:http";
 import { createS3StorageProvider } from "../storage/s3-provider.js";
 import { skillInstallationMaintenance } from "../services/skill-installation-maintenance.js";
+import { withSkillVersionCacheLock } from "../services/skill-version-cache.js";
+import { skillPackageStore } from "../services/skill-package-store.js";
 import { removeRuntimeAssetTree } from "../services/native-runtime/runtime-asset-retention.js";
 import { eq } from "drizzle-orm";
 import { writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
-import { materializeSelectedSkills, rehydratePinnedSkillAssets } from "../services/native-runtime/runtime-context.js";
+import { materializeSelectedSkills, prepareRuntimeContextSource, rehydratePinnedSkillAssets } from "../services/native-runtime/runtime-context.js";
 import { nativeRuntimeContextFixture } from "../services/native-runtime/runtime-context.test-fixture.js";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
@@ -14,8 +16,9 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { applyPendingMigrations, agents, heartbeatRuns, companySkills, companySkillVersions, companies, createDb, instanceSettings } from "@paperclipai/db";
+import { activityLog, applyPendingMigrations, agents, heartbeatRuns, companySkills, companySkillVersions, companies, createDb, instanceSettings } from "@paperclipai/db";
 import { companySkillService } from "../services/company-skills.js";
+import { listCatalogSkills, readCatalogSkillFile } from "../services/skills-catalog.js";
 import * as storageModule from "../storage/index.js";
 import { createStorageService } from "../storage/service.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
@@ -177,13 +180,14 @@ describe.skipIf(!support.supported)("managed skills use committed versions", () 
     const local = await skillInstallationMaintenance(db).verifyVersions({ companyId, limit: 50 });
     expect(local.results).toEqual([expect.objectContaining({ versionId: skill.currentVersionId, status: "local_storage" })]);
     const key = "cloud-runtime-config:v1";
-    const run = (phase: string) => promisify(execFile)(process.execPath, [
+    const run = (phase: string, storageProvider?: "s3" | "local_disk") => promisify(execFile)(process.execPath, [
       "--import", fileURLToPath(import.meta.resolve("tsx")),
       fileURLToPath(new URL("../../scripts/migrate-skill-packages.ts", import.meta.url)),
       `--phase=${phase}`, `--company=${companyId}`, "--limit=50",
     ], { env: { ...process.env, DATABASE_URL: database.connectionString,
       PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "disposable-cloud-cli-fixture",
-      PAPERCLIP_STORAGE_LOCAL_DIR: path.join(root, "objects"), ...env },
+      PAPERCLIP_STORAGE_LOCAL_DIR: path.join(root, "objects"), ...env,
+      ...(storageProvider === undefined ? {} : { PAPERCLIP_STORAGE_PROVIDER: storageProvider }) },
       timeout: 60_000, maxBuffer: 1024 * 1024 });
     await expect(run("eligibility")).rejects.toThrow("Initialize Cloud runtime configuration");
     expect(await db.select().from(instanceSettings).where(eq(instanceSettings.singletonKey, key))).toHaveLength(0);
@@ -193,6 +197,10 @@ describe.skipIf(!support.supported)("managed skills use committed versions", () 
       expect(eligibility.results).toEqual([expect.objectContaining({ versionId: skill.currentVersionId, status: "version_backed" })]);
       const verification = JSON.parse((await run("verification")).stdout.trim().split("\n").at(-1)!);
       expect(verification.results).toEqual([expect.objectContaining({ versionId: skill.currentVersionId, status: expectedStatus })]);
+      if (env.PAPERCLIP_STORAGE_PROVIDER === "s3") {
+        const legacyVerification = JSON.parse((await run("verification", "local_disk")).stdout.trim().split("\n").at(-1)!);
+        expect(legacyVerification.results).toEqual([expect.objectContaining({ versionId: skill.currentVersionId, status: "local_storage" })]);
+      }
       expect(await db.select().from(instanceSettings).where(eq(instanceSettings.singletonKey, key))).toEqual([persisted]);
     } finally {
       await db.delete(instanceSettings).where(eq(instanceSettings.singletonKey, key));
@@ -364,6 +372,64 @@ describe.skipIf(!support.supported)("managed skills use committed versions", () 
     process.env.PAPERCLIP_HOME = originalHome;
   });
 
+  it("reconnects to a live remote Runner without rehydrating its pinned skills until a launch stages them", async () => {
+    const companyId = await company();
+    const service = companySkillService(db);
+    const skill = await service.createLocalSkill(companyId, { name: "Reconnect pinned", markdown: "# reconnect bytes" });
+    const [agent] = await db.insert(agents).values({ companyId, name: "Runner" }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent!.id, status: "running",
+      contextSnapshot: { skillVersions: { [skill.key]: skill.currentVersionId }, skillSelectionSnapshot: true } }).returning();
+    const entries = await service.withRuntimeSkillEntries(companyId, { onlyKeys: new Set([skill.key]), snapshotLatest: true,
+      versionSelections: new Map([[skill.key, skill.currentVersionId!]]) }, async entries => entries);
+    const selected = await materializeSelectedSkills(writePaperclipSkillSyncPreference({}, [{ key: skill.key, versionId: skill.currentVersionId }]), entries, false);
+    const context = { ...nativeRuntimeContextFixture(), skills: selected };
+    const binding = { companyId, agentId: agent!.id, runId: run!.id };
+    // A run saved before skill selections were recorded has no proof that preparation checked access.
+    const [older] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent!.id, status: "running", contextSnapshot: {} }).returning();
+    const originalHome = process.env.PAPERCLIP_HOME!;
+    // A newly deployed server: its skill cache is empty.
+    process.env.PAPERCLIP_HOME = path.join(root, `reconnect-${randomUUID()}`);
+    let release!: () => void;
+    let acquired!: () => void;
+    const ready = new Promise<void>(resolve => { acquired = resolve; });
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    const holder = withSkillVersionCacheLock(db, companyId, async () => { acquired(); await barrier; });
+    await ready;
+    const settledWithin = async <T>(work: Promise<T>, ms: number) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try { return await Promise.race([work.then(value => ({ value })), new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), ms); })]); }
+      finally { if (timer) clearTimeout(timer); }
+    };
+    let staging: Promise<unknown> | undefined;
+    let fresh: Promise<unknown> | undefined;
+    let unpinned: Promise<unknown> | undefined;
+    try {
+      const reconnect = await settledWithin(prepareRuntimeContextSource(db, binding, context, { deferUntilStaged: true }), 2_000);
+      expect(reconnect, "A live Runner reconnect must not wait on the skill cache").not.toBeNull();
+      expect(reconnect!.value.described).toBe(context);
+      staging = reconnect!.value.forStaging();
+      fresh = prepareRuntimeContextSource(db, binding, context, { deferUntilStaged: false });
+      // Staging a relaunch, and every other start, still rehydrate under the cache lock.
+      expect(await settledWithin(staging, 200)).toBeNull();
+      expect(await settledWithin(fresh, 200)).toBeNull();
+      unpinned = prepareRuntimeContextSource(db, { ...binding, runId: older!.id }, context, { deferUntilStaged: true });
+      expect(await settledWithin(unpinned, 200), "An older reconnect still rehydrates and checks access first").toBeNull();
+    } finally {
+      release();
+      await holder;
+    }
+    const restaged = await staging as Awaited<ReturnType<typeof rehydratePinnedSkillAssets>>;
+    expect(restaged.skills[0]!.bundle.digest).toBe(selected[0]!.bundle.digest);
+    expect(await fs.readFile(path.join(restaged.skills[0]!.bundle.rootPath, "SKILL.md"), "utf8")).toBe("# reconnect bytes");
+    const started = await fresh as Awaited<ReturnType<typeof prepareRuntimeContextSource>>;
+    expect(started.described.skills[0]!.bundle.digest).toBe(selected[0]!.bundle.digest);
+    expect((await unpinned as Awaited<ReturnType<typeof prepareRuntimeContextSource>>).described.skills[0]!.bundle.rootPath)
+      .not.toBe(selected[0]!.bundle.rootPath);
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, run!.id));
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, older!.id));
+    process.env.PAPERCLIP_HOME = originalHome;
+  });
+
   it("converts a legacy managed installation without changing its identity or identical version", async () => {
     const companyId = await company();
     const directory = path.join(root, `legacy-${randomUUID()}`);
@@ -379,13 +445,169 @@ describe.skipIf(!support.supported)("managed skills use committed versions", () 
     await db.update(companySkillVersions).set({ packageFileMap: null }).where(eq(companySkillVersions.id, version.id));
     const maintenance = skillInstallationMaintenance(db);
     expect((await maintenance.installations({ id: legacy!.id })).results[0]!.status).toBe("conversion_required");
-    await expect(maintenance.installations({ companyId, apply: true })).rejects.toMatchObject({ status: 409 });
-    expect((await maintenance.installations({ id: legacy!.id, apply: true, writersStopped: true })).results)
+    expect((await maintenance.installations({ id: legacy!.id, apply: true })).results)
       .toEqual([expect.objectContaining({ skillId: legacy!.id, versionId: version.id, status: "converted" })]);
     await fs.rm(directory, { recursive: true });
     expect(await service.getById(companyId, legacy!.id)).toMatchObject({ sourceType: "managed", sourceLocator: null, currentVersionId: version.id });
     expect(await service.readFile(companyId, legacy!.id, "support.txt")).toMatchObject({ content: "support" });
     expect((await maintenance.eligibility({ id: legacy!.id })).results[0]!.status).toBe("version_backed");
+  });
+
+  it("copies an installation online while preserving unknown old pins, old inline bytes, files, and active work", async () => {
+    const companyId = await company(), directory = path.join(root, `copy-only-${randomUUID()}`);
+    await fs.mkdir(directory);
+    await fs.writeFile(path.join(directory, "SKILL.md"), "# Preserved skill");
+    const [skill] = await db.insert(companySkills).values({ companyId, key: "copy-only", slug: "copy-only", name: "Copy only",
+      markdown: "# Preserved skill", sourceType: "local_path", sourceLocator: directory,
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }], metadata: { sourceKind: "managed_local" } }).returning();
+    const files = [{ path: "SKILL.md", kind: "skill" as const, content: "# Preserved skill" }];
+    const [version] = await db.insert(companySkillVersions).values({ companyId, companySkillId: skill.id,
+      revisionNumber: 1, fileInventory: files }).returning();
+    await db.update(companySkills).set({ currentVersionId: version.id }).where(eq(companySkills.id, skill.id));
+    const [agent] = await db.insert(agents).values({ companyId, name: "Unrelated active worker" }).returning();
+    const [active] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, runtimeMode: "native",
+      status: "running", contextSnapshot: {} }).returning();
+    const maintenance = skillInstallationMaintenance(db);
+    expect((await maintenance.installations({ id: skill.id, apply: true })).results)
+      .toEqual([expect.objectContaining({ skillId: skill.id, status: "converted" })]);
+    expect((await db.select().from(companySkillVersions).where(eq(companySkillVersions.id, version.id)))[0].fileInventory).toEqual(files);
+    expect(await fs.readFile(path.join(directory, "SKILL.md"), "utf8")).toBe("# Preserved skill");
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, active.id)))[0]).toEqual(active);
+    // Copy-only publication does not release retention or volume-removal guards.
+    expect((await maintenance.eligibility({ id: skill.id })).results[0].status).toBe("unsupported_active_run");
+  });
+
+  it.each(["files", "source_locator"])("keeps a concurrent %s change instead of publishing the earlier conversion", async change => {
+    const companyId = await company(), directory = path.join(root, `conversion-race-${randomUUID()}`);
+    await fs.mkdir(directory);
+    await fs.writeFile(path.join(directory, "SKILL.md"), "# Race");
+    await fs.writeFile(path.join(directory, "support.txt"), "old version");
+    const [skill] = await db.insert(companySkills).values({ companyId, key: "conversion-race", slug: "conversion-race", name: "Race",
+      markdown: "# Race", sourceType: "local_path", sourceLocator: directory,
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }, { path: "support.txt", kind: "other" }],
+      metadata: { sourceKind: "managed_local" } }).returning();
+    const version = await companySkillService(db).createVersion(companyId, skill.id);
+    await fs.writeFile(path.join(directory, "support.txt"), "captured unsaved edit");
+    const storage = storageModule.getStorageService(), put = storage.putFile.bind(storage);
+    let changed = false;
+    const nextDirectory = path.join(root, `new-source-${randomUUID()}`);
+    const upload = vi.spyOn(storage, "putFile").mockImplementation(async input => {
+      const saved = await put(input);
+      if (!changed) {
+        changed = true;
+        if (change === "files") await fs.writeFile(path.join(directory, "support.txt"), "newer unsaved edit");
+        else {
+          await fs.mkdir(nextDirectory);
+          await fs.writeFile(path.join(nextDirectory, "SKILL.md"), "# New source");
+          await db.transaction(async tx => {
+            await tx.select().from(companySkills).where(eq(companySkills.id, skill.id)).for("update");
+            await tx.update(companySkills).set({ sourceLocator: nextDirectory }).where(eq(companySkills.id, skill.id));
+          });
+        }
+      }
+      return saved;
+    });
+    try {
+      const result = await skillInstallationMaintenance(db, storage).installations({ id: skill.id, apply: true });
+      expect(changed).toBe(true);
+      expect(result.results).toEqual([expect.objectContaining({ status: "blocked" })]);
+      const [current] = await db.select().from(companySkills).where(eq(companySkills.id, skill.id));
+      expect(current).toMatchObject({ sourceType: "local_path", currentVersionId: version.id,
+        sourceLocator: change === "files" ? directory : nextDirectory });
+      expect(await fs.readFile(path.join(directory, "support.txt"), "utf8"))
+        .toBe(change === "files" ? "newer unsaved edit" : "captured unsaved edit");
+    } finally { upload.mockRestore(); }
+  });
+
+  it("holds a hard-linked local skill instead of adopting another file owner's mutable bytes", async () => {
+    const companyId = await company(), directory = path.join(root, `linked-conversion-${randomUUID()}`);
+    await fs.mkdir(directory);
+    const original = path.join(root, `shared-content-${randomUUID()}.md`);
+    await fs.writeFile(original, "# Shared source");
+    await fs.link(original, path.join(directory, "SKILL.md"));
+    const [skill] = await db.insert(companySkills).values({ companyId, key: "linked-conversion", slug: "linked-conversion", name: "Linked",
+      markdown: "# Shared source", sourceType: "local_path", sourceLocator: directory,
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }], metadata: { sourceKind: "managed_local" } }).returning();
+    expect((await skillInstallationMaintenance(db).installations({ id: skill.id, apply: true })).results)
+      .toEqual([expect.objectContaining({ status: "blocked" })]);
+    expect((await db.select().from(companySkills).where(eq(companySkills.id, skill.id)))[0]).toEqual(skill);
+    expect(await fs.readFile(original, "utf8")).toBe("# Shared source");
+  });
+
+  it("allows new durable skill pinning while an installation upload is blocked", async () => {
+    const companyId = await company(), directory = path.join(root, `pinning-during-copy-${randomUUID()}`);
+    await fs.mkdir(directory);
+    await fs.writeFile(path.join(directory, "SKILL.md"), "# Old selection");
+    const [skill] = await db.insert(companySkills).values({ companyId, key: "online-pinning", slug: "online-pinning", name: "Pinning",
+      markdown: "# Old selection", sourceType: "local_path", sourceLocator: directory,
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }], metadata: { sourceKind: "managed_local" } }).returning();
+    const version = await companySkillService(db).createVersion(companyId, skill.id);
+    await fs.writeFile(path.join(directory, "SKILL.md"), `# Current local files ${randomUUID()}`);
+    const [agent] = await db.insert(agents).values({ companyId, name: "New work" }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, status: "queued" }).returning();
+    const storage = storageModule.getStorageService(), put = storage.putFile.bind(storage);
+    let release!: () => void, ready!: () => void, blocked = false;
+    const barrier = new Promise<void>(resolve => { release = resolve; }), uploading = new Promise<void>(resolve => { ready = resolve; });
+    const upload = vi.spyOn(storage, "putFile").mockImplementation(async input => {
+      if (!blocked) { blocked = true; ready(); await barrier; }
+      return put(input);
+    });
+    const conversion = skillInstallationMaintenance(db, storage).installations({ id: skill.id, apply: true });
+    try {
+      await uploading;
+      // This uses the real nonblocking PostgreSQL owner, not a timing assertion.
+      await withSkillVersionCacheLock(db, companyId, async () => {
+        await db.update(heartbeatRuns).set({ status: "running", contextSnapshot: { skillVersions: { [skill.key]: version.id } } })
+          .where(eq(heartbeatRuns.id, run.id));
+      }, true);
+    } finally { release(); await conversion; upload.mockRestore(); }
+    expect((await conversion).results).toEqual([expect.objectContaining({ status: "converted" })]);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0])
+      .toMatchObject({ status: "running", contextSnapshot: { skillVersions: { [skill.key]: version.id } } });
+    expect((await db.select().from(companySkillVersions).where(eq(companySkillVersions.id, version.id)))[0]).toBeDefined();
+  });
+
+  it.each([true, false])("keeps catalog history unchanged on rejection and preserves its reset version (concurrent edit: %s)", async concurrentEdit => {
+    const companyId = await company(), directory = path.join(root, `catalog-copy-${randomUUID()}`), origin = `${directory}-original`;
+    await fs.mkdir(directory); await fs.mkdir(origin);
+    await fs.writeFile(path.join(directory, "SKILL.md"), "# Installed edit");
+    await fs.writeFile(path.join(origin, "SKILL.md"), "# Original package");
+    const [skill] = await db.insert(companySkills).values({ companyId, key: "catalog-copy", slug: "catalog-copy", name: "Catalog",
+      markdown: "# Installed edit", sourceType: "catalog", sourceLocator: directory,
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }], metadata: {
+        sourceKind: "catalog", originSnapshotLocator: origin, userModifiedAt: new Date().toISOString(),
+      } }).returning();
+    const [version] = await db.insert(companySkillVersions).values({ companyId, companySkillId: skill.id, revisionNumber: 1,
+      fileInventory: [{ path: "SKILL.md", kind: "skill", content: "# Installed edit" }] }).returning();
+    await db.update(companySkills).set({ currentVersionId: version.id }).where(eq(companySkills.id, skill.id));
+    const storage = storageModule.getStorageService(), put = storage.putFile.bind(storage);
+    let changed = false;
+    const upload = vi.spyOn(storage, "putFile").mockImplementation(async input => {
+      const saved = await put(input);
+      if (!changed) {
+        changed = true;
+        if (concurrentEdit) await fs.writeFile(path.join(origin, "SKILL.md"), "# Concurrent original edit");
+      }
+      return saved;
+    });
+    try {
+      expect((await skillInstallationMaintenance(db, storage).installations({ id: skill.id, apply: true })).results)
+        .toEqual([expect.objectContaining({ status: concurrentEdit ? "blocked" : "converted" })]);
+      expect(changed).toBe(true);
+      const history = await db.select().from(companySkillVersions).where(eq(companySkillVersions.companySkillId, skill.id));
+      expect(history).toHaveLength(concurrentEdit ? 1 : 2);
+      expect(history.find(row => row.id === version.id)).toMatchObject({ fileInventory: version.fileInventory });
+      const [current] = await db.select().from(companySkills).where(eq(companySkills.id, skill.id));
+      if (concurrentEdit) expect(current.metadata?.originVersionId).toBeUndefined();
+      else {
+        const original = history.find(row => row.id !== version.id)!;
+        expect(current.metadata?.originVersionId).toBe(original.id);
+        const store = skillPackageStore(db, storage), saved = await store.version(companyId, skill.id, original.id);
+        expect((await store.versionFiles(saved!)).find(file => file.path === "SKILL.md")?.content).toBe("# Original package");
+      }
+      expect(await fs.readFile(path.join(origin, "SKILL.md"), "utf8"))
+        .toBe(concurrentEdit ? "# Concurrent original edit" : "# Original package");
+    } finally { upload.mockRestore(); }
   });
 
   it("reports an unrecoverable legacy installation and leaves linked sources alone", async () => {
@@ -397,7 +619,7 @@ describe.skipIf(!support.supported)("managed skills use committed versions", () 
       markdown: "# Linked", sourceType: "local_path", sourceLocator: path.join(root, "linked") }).returning();
     const report = await skillInstallationMaintenance(db).installations({ companyId, apply: true, writersStopped: true });
     expect(report.results).toEqual(expect.arrayContaining([
-      expect.objectContaining({ skillId: legacy!.id, status: "blocked" }),
+      expect.objectContaining({ skillId: legacy!.id, status: "blocked", code: "source_files_unavailable" }),
       expect.objectContaining({ skillId: linked!.id, status: "linked_local" }),
     ]));
     expect(await companySkillService(db).getById(companyId, legacy!.id)).toMatchObject({ sourceType: "local_path", currentVersionId: null });
@@ -449,6 +671,116 @@ describe.skipIf(!support.supported)("managed skills use committed versions", () 
     } finally { fetchMock.mockRestore(); }
   });
 
+  it("rebuilds an unreachable remote installation from its saved instructions while moving storage", async () => {
+    const companyId = await company();
+    const commit = "b".repeat(40);
+    const [skill] = await db.insert(companySkills).values({ companyId, key: "remote-stored", slug: "remote-stored", name: "Remote stored",
+      markdown: "---\nname: Remote stored\n---\n# Stored instructions", sourceType: "github",
+      sourceLocator: `https://github.com/fixture/skills/tree/${commit}/stored`, sourceRef: commit,
+      metadata: { owner: "fixture", repo: "skills", repoSkillDir: "stored" },
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }, { path: "reference.md", kind: "reference" }] }).returning();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("unavailable", { status: 404 }));
+    try {
+      const maintenance = skillInstallationMaintenance(db);
+      expect((await maintenance.installations({ id: skill!.id, apply: true })).results[0])
+        .toMatchObject({ status: "blocked", code: "remote_source_unavailable" });
+      const [result] = (await maintenance.installations({ id: skill!.id, apply: true, settleUnavailableSources: true })).results;
+      expect(result).toMatchObject({ status: "converted", reconstructed: true });
+      const service = companySkillService(db);
+      expect(await service.readFile(companyId, skill!.id, "SKILL.md")).toMatchObject({ content: "---\nname: Remote stored\n---\n# Stored instructions" });
+      const [row] = await db.select().from(companySkills).where(eq(companySkills.id, skill!.id));
+      expect(row!.currentVersionId).toBe(result!.versionId);
+      expect(row!.metadata?.reconstructedFromStoredContent).toMatchObject({ missingFiles: ["reference.md"] });
+      const [version] = await db.select().from(companySkillVersions).where(eq(companySkillVersions.id, result!.versionId!));
+      expect(version!.label).toBe("Rebuilt from saved instructions");
+      expect(await db.select().from(activityLog).where(eq(activityLog.entityId, skill!.id))).toEqual([expect.objectContaining({
+        companyId, action: "company.skill_reconstructed_from_stored_content",
+        details: expect.objectContaining({ restoredFiles: ["SKILL.md"], missingFiles: ["reference.md"] }) })]);
+      expect((await maintenance.eligibility({ id: skill!.id })).results[0]).toMatchObject({ status: "version_backed" });
+      expect((await maintenance.verifyVersions({ id: result!.versionId! })).results[0]!.status).not.toBe("incomplete_current_version");
+    } finally { fetchMock.mockRestore(); }
+  });
+
+  it("keeps an unreachable remote installation without saved instructions present but unavailable", async () => {
+    const companyId = await company();
+    const commit = "c".repeat(40);
+    const [skill] = await db.insert(companySkills).values({ companyId, key: "remote-empty", slug: "remote-empty", name: "Remote empty",
+      markdown: "---\nname: Remote empty\n---\n", sourceType: "github",
+      sourceLocator: `https://github.com/fixture/skills/tree/${commit}/empty`, sourceRef: commit,
+      metadata: { owner: "fixture", repo: "skills", repoSkillDir: "empty" },
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }, { path: "reference.md", kind: "reference" }] }).returning();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("unavailable", { status: 404 }));
+    try {
+      const maintenance = skillInstallationMaintenance(db);
+      expect((await maintenance.eligibility({ id: skill!.id })).results[0]).toMatchObject({ status: "missing_current_version" });
+      expect((await maintenance.installations({ id: skill!.id, apply: true, settleUnavailableSources: true })).results)
+        .toEqual([expect.objectContaining({ skillId: skill!.id, status: "source_unavailable", versionId: null })]);
+      const [row] = await db.select().from(companySkills).where(eq(companySkills.id, skill!.id));
+      expect(row).toMatchObject({ currentVersionId: null, sourceType: "github", markdown: skill!.markdown,
+        metadata: expect.objectContaining({ missingSource: expect.objectContaining({ reason: "remote_source_unavailable" }) }) });
+      expect(await db.select().from(activityLog).where(eq(activityLog.entityId, skill!.id))).toEqual([expect.objectContaining({
+        companyId, action: "company.skill_source_unavailable" })]);
+      expect((await maintenance.eligibility({ id: skill!.id })).results[0]).toMatchObject({ status: "source_unavailable" });
+      const calls = fetchMock.mock.calls.length;
+      expect((await maintenance.installations({ id: skill!.id, apply: true, settleUnavailableSources: true })).results[0])
+        .toMatchObject({ status: "source_unavailable" });
+      expect(fetchMock).toHaveBeenCalledTimes(calls);
+      const entries = await companySkillService(db).listRuntimeSkillEntries(companyId, { onlyKeys: new Set([skill!.key]), materializeMissing: false });
+      expect(entries.find(entry => entry.key === skill!.key)).toMatchObject({ sourceStatus: "missing",
+        missingDetail: expect.stringContaining("Reinstall it to use it again") });
+    } finally { fetchMock.mockRestore(); }
+  });
+
+  it("keeps a remote installation blocked when its source fails for a reason other than being gone", async () => {
+    const companyId = await company();
+    const commit = "d".repeat(40);
+    const [skill] = await db.insert(companySkills).values({ companyId, key: "remote-flaky", slug: "remote-flaky", name: "Remote flaky",
+      markdown: "# Stored instructions", sourceType: "github",
+      sourceLocator: `https://github.com/fixture/skills/tree/${commit}/flaky`, sourceRef: commit,
+      metadata: { owner: "fixture", repo: "skills", repoSkillDir: "flaky" },
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }, { path: "reference.md", kind: "reference" }] }).returning();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("busy", { status: 503 }));
+    try {
+      expect((await skillInstallationMaintenance(db).installations({ id: skill!.id, apply: true, settleUnavailableSources: true })).results[0])
+        .toMatchObject({ status: "blocked", code: "remote_source_unavailable" });
+      const [row] = await db.select().from(companySkills).where(eq(companySkills.id, skill!.id));
+      expect(row).toMatchObject({ currentVersionId: null, metadata: { owner: "fixture", repo: "skills", repoSkillDir: "flaky" } });
+    } finally { fetchMock.mockRestore(); }
+  });
+
+  it("lets an offline move verify the empty saved version of a skill marked unavailable", async () => {
+    const companyId = await company();
+    const commit = "e".repeat(40);
+    const [skill] = await db.insert(companySkills).values({ companyId, key: "remote-hollow", slug: "remote-hollow", name: "Remote hollow",
+      markdown: "", sourceType: "github", sourceLocator: `https://github.com/fixture/skills/tree/${commit}/hollow`, sourceRef: commit,
+      metadata: { owner: "fixture", repo: "skills", repoSkillDir: "hollow" },
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }, { path: "reference.md", kind: "reference" }] }).returning();
+    const [version] = await db.insert(companySkillVersions).values({ companyId, companySkillId: skill!.id, revisionNumber: 1, fileInventory: [] }).returning();
+    await db.update(companySkills).set({ currentVersionId: version!.id }).where(eq(companySkills.id, skill!.id));
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("gone", { status: 404 }));
+    try {
+      const maintenance = skillInstallationMaintenance(db);
+      expect((await maintenance.installations({ id: skill!.id, apply: true, settleUnavailableSources: true })).results[0])
+        .toMatchObject({ status: "source_unavailable", versionId: version!.id });
+      expect((await maintenance.verifyVersions({ id: version!.id })).results[0]).toMatchObject({ status: "source_unavailable" });
+    } finally { fetchMock.mockRestore(); }
+  });
+
+  it("still serves an explicitly pinned saved version of a skill marked unavailable", async () => {
+    const companyId = await company();
+    const service = companySkillService(db);
+    const skill = await service.createLocalSkill(companyId, { name: "Pinned unavailable", markdown: "# pinned" });
+    await db.update(companySkills).set({ metadata: { sourceKind: "managed", missingSource: { reason: "remote_source_unavailable",
+      sourceType: "github", sourceLocator: null, sourcePath: null, detectedAt: new Date().toISOString() } } })
+      .where(eq(companySkills.id, skill.id));
+    const keys = new Set([skill.key]);
+    expect((await service.listRuntimeSkillEntries(companyId, { onlyKeys: keys, materializeMissing: false }))
+      .find(entry => entry.key === skill.key)).toMatchObject({ sourceStatus: "missing" });
+    expect((await service.listRuntimeSkillEntries(companyId, { onlyKeys: keys, admittedVersionsOnly: true,
+      versionSelections: new Map([[skill.key, skill.currentVersionId!]]) })).find(entry => entry.key === skill.key))
+      .toMatchObject({ sourceStatus: "available" });
+  });
+
   it("rejects unsafe legacy sources without publishing a partial conversion", async () => {
     const companyId = await company();
     const directory = path.join(root, `unsafe-${randomUUID()}`);
@@ -459,9 +791,104 @@ describe.skipIf(!support.supported)("managed skills use committed versions", () 
       const [legacy] = await db.insert(companySkills).values({ companyId, key: "unsafe", slug: "unsafe", name: "Unsafe", markdown: "# legacy",
         sourceType: "local_path", sourceLocator: directory, metadata: { sourceKind: "managed_local" } }).returning();
       expect((await skillInstallationMaintenance(db).installations({ id: legacy!.id, apply: true, writersStopped: true })).results)
-        .toEqual([expect.objectContaining({ status: "blocked", reason: "Legacy skill contains a symbolic link" })]);
+        .toEqual([expect.objectContaining({ status: "blocked", reason: "Legacy skill contains a symbolic link", code: "legacy_source_unsafe" })]);
       expect(await companySkillService(db).getById(companyId, legacy!.id)).toMatchObject({ sourceType: "local_path", currentVersionId: null });
     } finally { await fs.unlink(path.join(directory, "support.txt")); }
+  });
+
+  it("converts an unmodified catalog installation whose files are gone from its pinned catalog package", async () => {
+    const companyId = await company(), catalog = listCatalogSkills().find(entry => !entry.source)!;
+    const [skill] = await db.insert(companySkills).values({ companyId, key: `catalog-${randomUUID()}`, slug: `catalog-${randomUUID().slice(0, 8)}`,
+      name: "Catalog", markdown: "# stale row", sourceType: "catalog", sourceLocator: path.join(root, `catalog-missing-${randomUUID()}`),
+      sourceRef: catalog.contentHash, fileInventory: catalog.files.map(({ path, kind }) => ({ path, kind })),
+      metadata: { sourceKind: "catalog", catalogId: catalog.id, originHash: catalog.contentHash, installedHash: catalog.contentHash, userModifiedAt: null },
+    }).returning();
+    const maintenance = skillInstallationMaintenance(db);
+    expect((await maintenance.installations({ id: skill.id, apply: true })).results).toEqual([expect.objectContaining({ status: "converted" })]);
+    const [row] = await db.select().from(companySkills).where(eq(companySkills.id, skill.id));
+    expect(row.metadata?.originVersionId).toBe(row.currentVersionId);
+    expect((await maintenance.eligibility({ id: skill.id })).results[0]).toMatchObject({ status: "version_backed" });
+    const store = skillPackageStore(db), saved = await store.version(companyId, skill.id, row.currentVersionId!);
+    expect((await store.versionFiles(saved!)).find(file => file.path === "SKILL.md")?.content)
+      .toBe((await readCatalogSkillFile(catalog.id, "SKILL.md")).content);
+  });
+
+  it("keeps an unmodified catalog installation blocked when it was not proven identical to its catalog origin", async () => {
+    const companyId = await company(), catalog = listCatalogSkills().find(entry => !entry.source)!;
+    const [skill] = await db.insert(companySkills).values({ companyId, key: `catalog-${randomUUID()}`, slug: `catalog-${randomUUID().slice(0, 8)}`,
+      name: "Catalog", markdown: "# stale row", sourceType: "catalog", sourceLocator: path.join(root, `catalog-missing-${randomUUID()}`),
+      sourceRef: catalog.contentHash, fileInventory: catalog.files.map(({ path, kind }) => ({ path, kind })),
+      metadata: { sourceKind: "catalog", catalogId: catalog.id, originHash: catalog.contentHash, userModifiedAt: null },
+    }).returning();
+    expect((await skillInstallationMaintenance(db).installations({ id: skill.id, apply: true })).results)
+      .toEqual([expect.objectContaining({ status: "blocked", code: "source_files_unavailable" })]);
+    expect((await db.select().from(companySkills).where(eq(companySkills.id, skill.id)))[0].currentVersionId).toBeNull();
+  });
+
+  it("recovers a modified catalog installation's missing reset origin only from the exact pinned catalog package", async () => {
+    const companyId = await company(), service = companySkillService(db), catalog = listCatalogSkills().find(entry => !entry.source)!;
+    const skill = await service.createLocalSkill(companyId, { name: "Modified catalog", markdown: "# Locally modified catalog skill" });
+    const metadata = { sourceKind: "catalog", catalogId: catalog.id, originHash: `sha256:${"0".repeat(64)}`,
+      installedHash: `sha256:${"1".repeat(64)}`, userModifiedAt: new Date().toISOString(),
+      originSnapshotLocator: path.join(root, `catalog-origin-missing-${randomUUID()}`) };
+    await db.update(companySkills).set({ sourceType: "catalog", sourceLocator: path.join(root, `catalog-installed-missing-${randomUUID()}`),
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }], metadata }).where(eq(companySkills.id, skill.id));
+    const maintenance = skillInstallationMaintenance(db);
+    expect((await maintenance.installations({ id: skill.id, apply: true })).results)
+      .toEqual([expect.objectContaining({ status: "blocked", code: "catalog_origin_unavailable" })]);
+    await db.update(companySkills).set({ metadata: { ...metadata, originHash: catalog.contentHash } }).where(eq(companySkills.id, skill.id));
+    expect((await maintenance.installations({ id: skill.id, apply: true })).results)
+      .toEqual([expect.objectContaining({ status: "converted", versionId: skill.currentVersionId })]);
+    const [row] = await db.select().from(companySkills).where(eq(companySkills.id, skill.id));
+    const originVersionId = row.metadata?.originVersionId as string;
+    expect(originVersionId).toBeTruthy();
+    expect(originVersionId).not.toBe(row.currentVersionId);
+    const store = skillPackageStore(db);
+    const origin = await store.versionFiles((await store.version(companyId, skill.id, originVersionId))!);
+    expect(origin.find(file => file.path === "SKILL.md")?.content).toBe((await readCatalogSkillFile(catalog.id, "SKILL.md")).content);
+    const current = await store.versionFiles((await store.version(companyId, skill.id, row.currentVersionId!))!);
+    expect(current.find(file => file.path === "SKILL.md")?.content).toBe("# Locally modified catalog skill");
+    expect((await maintenance.eligibility({ id: skill.id })).results[0]).toMatchObject({ status: "version_backed" });
+  });
+
+  it("cancels a stalled pinned catalog download when the budget expires", async () => {
+    const companyId = await company(), catalog = listCatalogSkills().find(entry => entry.source)!;
+    const [skill] = await db.insert(companySkills).values({ companyId, key: `catalog-${randomUUID()}`, slug: `catalog-${randomUUID().slice(0, 8)}`,
+      name: "Remote catalog", markdown: "# stale row", sourceType: "catalog", sourceLocator: path.join(root, `catalog-missing-${randomUUID()}`),
+      sourceRef: catalog.contentHash, fileInventory: catalog.files.map(({ path, kind }) => ({ path, kind })),
+      metadata: { sourceKind: "catalog", catalogId: catalog.id, originHash: catalog.contentHash, installedHash: catalog.contentHash, userModifiedAt: null },
+    }).returning();
+    const budget = new AbortController();
+    const download = vi.spyOn(globalThis, "fetch").mockImplementation((_url, init) => new Promise((_resolve, reject) => {
+      const signal = init?.signal;
+      if (!signal) return;
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      budget.abort(new Error("budget spent"));
+    }));
+    try {
+      await expect(skillInstallationMaintenance(db).installations({ id: skill.id, apply: true, signal: budget.signal }))
+        .rejects.toThrow("budget spent");
+    } finally { download.mockRestore(); }
+    expect((await db.select().from(companySkills).where(eq(companySkills.id, skill.id)))[0].currentVersionId).toBeNull();
+  });
+
+  it("stops at an aborted budget instead of reporting the installation as blocked", async () => {
+    const companyId = await company(), directory = path.join(root, `aborted-conversion-${randomUUID()}`);
+    await fs.mkdir(directory);
+    await fs.writeFile(path.join(directory, "SKILL.md"), "# Aborted conversion");
+    const [skill] = await db.insert(companySkills).values({ companyId, key: "aborted-conversion", slug: "aborted-conversion", name: "Aborted",
+      markdown: "# Aborted conversion", sourceType: "local_path", sourceLocator: directory,
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }], metadata: { sourceKind: "managed_local" } }).returning();
+    const storage = storageModule.getStorageService(), budget = new AbortController();
+    const upload = vi.spyOn(storage, "putFile").mockImplementation(async () => {
+      budget.abort(new Error("budget spent"));
+      throw budget.signal.reason;
+    });
+    try {
+      await expect(skillInstallationMaintenance(db, storage).installations({ id: skill.id, apply: true, signal: budget.signal }))
+        .rejects.toThrow("budget spent");
+    } finally { upload.mockRestore(); }
+    expect((await db.select().from(companySkills).where(eq(companySkills.id, skill.id)))[0].currentVersionId).toBeNull();
   });
 
   it("keeps the compatibility override durable in Postgres and reports that storage accurately", async () => {

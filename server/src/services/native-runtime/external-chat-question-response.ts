@@ -1,5 +1,5 @@
 import { photonAnswersMatch } from "../photon/interactions.js";
-import { and, or, eq, lte, inArray, notExists, sql } from "drizzle-orm";
+import { and, or, eq, lte, inArray, not, notExists, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
@@ -28,6 +28,8 @@ import {
 import { questionResponseDeliveryValues } from "../question-response-delivery.js";
 import { voiceSessionStore, type VoiceTransaction, currentVoiceCredentialFingerprint } from "../voice/voice-session-store.js";
 import { nativeSha256 } from "./canonical.js";
+import { EXTERNAL_CHAT_ANSWER_ADMISSION_KEYS, resolveQuestionResponseRetryAdmission } from "./external-chat-question-response-retry.js";
+import { INTERACTION_CONTINUATION_INFRA_RETRY_REASON } from "../../modules/run-dispatch/index.js";
 
 export const EXTERNAL_CHAT_QUESTION_RESPONSE_KEY =
   "paperclipExternalChatQuestionResponse";
@@ -221,7 +223,7 @@ async function resolveQuestionResponseChain(
   if (
     context.source !== "issue.interaction.respond" ||
     context.issueId !== binding.issueId ||
-    context.wakeReason !== "issue_commented" ||
+    (context.wakeReason !== "issue_commented" && context.wakeReason !== INTERACTION_CONTINUATION_INFRA_RETRY_REASON) ||
     context.interactionKind !== "ask_user_questions" ||
     context.interactionStatus !== "answered" ||
     context.externalChatContinuation !== true ||
@@ -251,23 +253,14 @@ async function resolveQuestionResponseChain(
       : runQuery.for("update"));
   if (!run?.wakeupRequestId) return null;
   const admitted = record(run.contextSnapshot);
-  for (const key of [
-    "source",
-    "issueId",
-    "interactionId",
-    "interactionKind",
-    "interactionStatus",
-    "sourceRunId",
-    "sourceCommentId",
-    "externalChatContinuation",
-    "wakeCommentId",
-    "wakeCommentIds",
-  ]) {
+  for (const key of [...EXTERNAL_CHAT_ANSWER_ADMISSION_KEYS, "wakeReason"]) {
     if (
       nativeSha256(admitted[key] ?? null) !== nativeSha256(context[key] ?? null)
     )
       return null;
   }
+  const admission = await resolveQuestionResponseRetryAdmission(tx, run, lockMode);
+  if (!admission?.wakeupRequestId) return null;
 
   const query = tx
     .select({
@@ -308,10 +301,10 @@ async function resolveQuestionResponseChain(
     .innerJoin(
       agentWakeupRequests,
       and(
-        eq(agentWakeupRequests.id, run.wakeupRequestId),
+        eq(agentWakeupRequests.id, admission.wakeupRequestId),
         eq(agentWakeupRequests.companyId, issueThreadInteractions.companyId),
         eq(agentWakeupRequests.agentId, binding.agentId),
-        eq(agentWakeupRequests.runId, binding.runId),
+        eq(agentWakeupRequests.runId, admission.id),
       ),
     )
     .where(
@@ -420,7 +413,7 @@ async function resolveQuestionResponseChain(
     !(
       (delivery.status === "fallback_queued" &&
         delivery.deliveryMode === "wake_fallback" &&
-        delivery.targetRunId === binding.runId) ||
+        delivery.targetRunId === admission.id) ||
       (delivery.status === "delivering" &&
         delivery.targetRunId === null &&
         delivery.deliveryMode === null)
@@ -721,6 +714,10 @@ async function resolveQuestionResponseChain(
                   "question_answer",
                   "question_form_submit",
                 ]),
+                not(and(
+                  eq(chatActions.status, "expired"),
+                  sql`${chatActions.result}->>'code' = 'interaction_resolved_elsewhere'`,
+                )!),
               ),
             ),
         ),
@@ -794,13 +791,42 @@ async function resolveQuestionResponseChain(
   if (!action) {
     const card = record(record(publication.payload).card);
     const links = Array.isArray(card.actions) ? card.actions.map(record) : [];
+    const supersededActionIds = new Set(
+      provider === "slack" && links.some((link) => link.type === "callback")
+        ? (
+            await tx
+              .select({ providerActionId: chatActions.providerActionId })
+              .from(chatActions)
+              .where(
+                and(
+                  eq(chatActions.companyId, binding.companyId),
+                  eq(chatActions.endpointId, endpoint.id),
+                  eq(chatActions.conversationId, conversation.id),
+                  inArray(chatActions.kind, ["question_answer", "question_form_open"]),
+                  eq(chatActions.status, "expired"),
+                  sql`${chatActions.result}->>'code' = 'interaction_resolved_elsewhere'`,
+                  sql`${chatActions.payload}->>'interactionId' = ${interaction.id}`,
+                  sql`${chatActions.payload}->>'publicationId' = ${publication.id}::text`,
+                ),
+              )
+          ).map((row) => row.providerActionId)
+        : [],
+    );
     if (
       !boardAnswer ||
       interaction.resolvedByRunId !== null ||
       publication.payload.progressState !== "waiting_for_input" ||
       card.kind !== "question" ||
       (card.actions !== undefined && !Array.isArray(card.actions)) ||
-      links.some((link) => link.type !== "link") ||
+      links.some(
+        (link) =>
+          link.type !== "link" &&
+          !(
+            link.type === "callback" &&
+            typeof link.actionId === "string" &&
+            supersededActionIds.has(link.actionId)
+          ),
+      ) ||
       !publication.publishedAt ||
       publication.publishedAt > interaction.resolvedAt ||
       (provider === "github" && (

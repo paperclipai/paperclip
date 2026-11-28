@@ -19,11 +19,25 @@ import { createTaskThroughUi, submitTaskReply } from "../user-actions.js";
 import { agentJourneyRuns } from "./catalog.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
 
+import { isPendingNativeRecovery } from "./workspace-deferral.js";
+
 type Row = Record<string, any>;
-type AgentJourney = Exclude<keyof typeof agentJourneyRuns, "ask-question" | "question-answer-resume" | "followup-while-running" | "file-input-answer">;
+type AgentJourney = Exclude<keyof typeof agentJourneyRuns,
+  "ask-question"
+  | "question-answer-resume"
+  | "followup-while-running"
+  | "chat-continuity"
+  | "file-input-answer"
+  | "routine-scheduled-run"
+  | "agent-settings-persistence"
+  | "repository-continuation"
+  | "saved-skill-use">;
 interface TaskState { currentIssue: Row & { id: string; status: string }; taskRuns: Array<Row & { status: string }>; comments: Row[]; interactions: Array<Row & { id: string; status: string }>; attachments: StoryDelivery[] }
 interface Options { deadlineAt: number; directory: string; capture(id: string, label: string, file: string): Promise<void> }
-const active = (run: Row) => ["queued", "running"].includes(run.status);
+const ACTIVE_RUN_STATUSES = ["queued", "running"];
+const SETTLED_RUN_STATUSES = ["succeeded", "cancelled"];
+const active = (run: Row) => ACTIVE_RUN_STATUSES.includes(run.status);
+const settledRun = (run: Row) => SETTLED_RUN_STATUSES.includes(run.status);
 
 /** These fixture replies are plain text. The rich editor escapes underscores in
  * its persisted Markdown; compare the intended text while retaining exact count
@@ -33,8 +47,32 @@ export function fixtureReplyStoredOnce(before: Row[], after: Row[], userId: stri
   return added.length === 1 && typeof added[0].body === "string" && added[0].body.replaceAll("\\_", "_") === message;
 }
 
+/**
+ * A wake the control plane retired before admission, for example while completed
+ * runs await accounting. It never started provider work, so it has no runtime
+ * binding to grade. Started, unexpected or user cancellations do not qualify.
+ */
+export function retiredBeforeProviderStart(run: Row) {
+  const result = run.resultJson;
+  return run.status === "cancelled" && run.startedAt === null
+    && result?.cancellation?.source === "control_plane" && result.cancellation.expected === true
+    && result.executionRecovery?.providerWorkStarted === false;
+}
+
+/** Runs that count toward a journey's expected work; retired wakes stay in the raw state and run limit. */
+export function startedTaskRuns(state: Pick<TaskState, "taskRuns">) {
+  return state.taskRuns.filter(run => !retiredBeforeProviderStart(run));
+}
+
+/** The task is done after exactly `count` started runs, and every run finished as succeeded or cancelled:
+ * an active run, or a failed run still waiting for its scheduled same-run retry, is not settled. */
+export function agentTaskSettled(state: TaskState, count: number) {
+  return state.currentIssue.status === "done" && startedTaskRuns(state).length === count && state.taskRuns.every(settledRun)
+    && state.interactions.every(row => row.status !== "pending");
+}
+
 /** Owned-task observations only: other work in a persistent QA company cannot affect this grade. */
-export function validateAgentTaskState(context: JourneyContext, issueId: string, state: TaskState, maxRuns: number, allowedCancelled: string[] = []) {
+export function validateAgentTaskState(context: JourneyContext, issueId: string, state: TaskState, maxRuns: number, allowedCancelled: string[] = [], deadlineAt?: number) {
   const agent = context.agent!;
   if (state.currentIssue.id !== issueId || state.currentIssue.companyId !== context.company.id
     || state.currentIssue.assigneeAgentId !== agent.id || state.taskRuns.length > maxRuns) throw new JourneyError("failed", "agent_task_binding_mismatch");
@@ -42,9 +80,14 @@ export function validateAgentTaskState(context: JourneyContext, issueId: string,
     const provider = run.runnerProfileJson?.nativeExecutionInput?.provider;
     const boundIssueId = run.issueId ?? run.nativeIssueId ?? run.contextSnapshot?.issueId ?? run.contextSnapshot?.taskId;
     if (run.companyId !== context.company.id || run.agentId !== agent.id || boundIssueId !== issueId) throw new JourneyError("failed", "agent_run_binding_mismatch");
+    // The retired wake stays in the raw record and in the run limit above.
+    if (retiredBeforeProviderStart(run)) continue;
     if (!active(run) && (run.runtimeMode !== "native" || run.contextSnapshot?.paperclipEnvironment?.id !== context.environmentId
       || provider?.kind !== agent.provider || provider?.model !== agent.model)) throw new JourneyError("failed", "agent_run_binding_mismatch");
-    if (!["queued", "running", "succeeded"].includes(run.status) && !(run.status === "cancelled" && allowedCancelled.includes(run.id))) throw new JourneyError("failed", "agent_run_failed");
+    // A projected exact-session retry is still work in progress. Keep observing
+    // the same run under the original campaign deadline and run limit.
+    if (deadlineAt !== undefined && isPendingNativeRecovery(run, deadlineAt)) continue;
+    if (!active(run) && run.status !== "succeeded" && !(run.status === "cancelled" && allowedCancelled.includes(run.id))) throw new JourneyError("failed", "agent_run_failed");
   }
 }
 
@@ -80,7 +123,7 @@ export async function runAgentJourney(id: AgentJourney, context: JourneyContext,
     await session.own({ kind: "issue", name: title, id: created.issueId, journeyId: id });
     return context.api.get<Row>(`/api/issues/${created.issueId}`);
   };
-  const read = async (issue: Row): Promise<TaskState> => {
+  const read = async (issue: Row): Promise<TaskState> => waitFor(options.deadlineAt, async () => {
     const route = `/api/issues/${issue.id}`;
     const [currentIssue, summaries, comments, interactions, attachments] = await Promise.all([
       context.api.get<TaskState["currentIssue"]>(route), context.api.get<Row[]>(`${route}/runs`), context.api.get<Row[]>(`${route}/comments?order=asc`),
@@ -90,12 +133,13 @@ export async function runAgentJourney(id: AgentJourney, context: JourneyContext,
     const taskRuns = await Promise.all(summaries.map(summary => context.api.get<TaskState["taskRuns"][number]>(`/api/heartbeat-runs/${summary.runId}`)));
     const state = { currentIssue, taskRuns, comments, interactions, attachments };
     await retain(`${issue.id}-latest.json`, state);
-    validateAgentTaskState(context, issue.id, state, maxRuns, cancelled);
+    validateAgentTaskState(context, issue.id, state, maxRuns, cancelled, options.deadlineAt);
     return state;
-  };
+  // No consumer may act on a card, reply or artifact produced by an unsettled
+  // retry. Gate the shared read so Plan and protected-action waits stay safe too.
+  }, state => !state.taskRuns.some(run => isPendingNativeRecovery(run, options.deadlineAt)), "agent_recovery_not_completed");
   const settled = (issue: Row, count: number) => waitFor(options.deadlineAt, () => read(issue), state =>
-    state.currentIssue.status === "done" && state.taskRuns.length === count && state.taskRuns.every(run => !active(run))
-    && state.interactions.every(row => row.status !== "pending"), "agent_task_not_completed");
+    agentTaskSettled(state, count), "agent_task_not_completed");
   const finalReply = async (issue: Row, state: TaskState, marker?: string) => {
     const runs = state.taskRuns.filter(run => run.status === "succeeded");
     if (!runs.length || runs.some(run => !Number.isFinite(Date.parse(run.finishedAt)))) throw new JourneyError("failed", "final_run_time_missing");
@@ -186,7 +230,7 @@ export async function runAgentJourney(id: AgentJourney, context: JourneyContext,
       const fixture = everydayTasks.find(task => task.id === `service-${phase}`)!;
       const issue = await create(`-${phase}`, `${fixture.buildPrompt(nonce)}\nUse only the connected service named "${service.name}". Do not use any other service.`);
       const pending = await waitFor(options.deadlineAt, () => read(issue), state =>
-        state.taskRuns.length === 1 && !state.taskRuns.some(active) && state.interactions.some(row => row.status === "pending"), "protected_action_not_requested");
+        startedTaskRuns(state).length === 1 && !state.taskRuns.some(active) && state.interactions.some(row => row.status === "pending"), "protected_action_not_requested");
       check(`${phase}-waited-for-decision`, pending.currentIssue.status !== "done" && service.invocationCount() === callsBefore);
       await open(issue); await context.page.reload();
       const decision = await decideProtectedActionThroughUi({ page: context.page, rows: pending.interactions as any,

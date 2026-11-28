@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
-import { isBoundFreshPluginTaskDirectory, releaseProviderRecoveryTransfers, stageProviderFreshWorkspace } from "./provider-fresh-workspace.js";
+import { isBoundFreshPluginTaskDirectory, isBoundPluginTaskDirectory, releaseProviderRecoveryTransfers, stageProviderFreshWorkspace } from "./provider-fresh-workspace.js";
 import type { ExecutionWorkspace } from "@paperclipai/shared";
 const state = vi.hoisted(() => ({ getObject: vi.fn() }));
 vi.mock("../storage/index.js", () => ({ getStorageService: () => ({ getObject: state.getObject }) }));
@@ -31,6 +31,29 @@ describe("fresh provider recovery transfer staging", () => {
       if (scenario === "repository") workspace.repoUrl = "https://github.com/example/repo.git";
       if (scenario === "strategy") workspace.strategyType = "git_worktree";
       expect(isBoundFreshPluginTaskDirectory({ companyId, issueId, workspaceId, workspace, owner })).toBe(scenario === "valid");
+      expect(isBoundPluginTaskDirectory({ companyId, issueId, workspaceId, workspace, owner })).toBe(scenario === "valid");
+    });
+
+  it.each(["valid", "company", "task", "binding", "owner", "path", "projectWorkspace", "staleFresh", "closed", "repository", "strategy"])(
+    "recognizes only the bound ordinary plugin task directory: %s", scenario => {
+      const companyId = randomUUID(), issueId = randomUUID(), workspaceId = randomUUID();
+      const owner = { agentId: randomUUID(), environmentId: randomUUID(), pluginKey: "test.tasks", driverKey: "tasks" };
+      const workspace = { id: workspaceId, companyId, sourceIssueId: issueId, projectWorkspaceId: null, status: "active",
+        mode: "isolated_workspace", strategyType: "project_primary", providerType: "adapter_managed",
+        repoUrl: null, branchName: null, cwd: `/workspaces/${issueId}`,
+        metadata: { runnerTaskWorkspaceOwner: owner },
+      } as unknown as ExecutionWorkspace;
+      if (scenario === "company") workspace.companyId = randomUUID();
+      if (scenario === "task") workspace.sourceIssueId = randomUUID();
+      if (scenario === "binding") workspace.id = randomUUID();
+      if (scenario === "owner") workspace.metadata!.runnerTaskWorkspaceOwner = { ...owner, agentId: randomUUID() };
+      if (scenario === "path") workspace.cwd = "/workspaces/other";
+      if (scenario === "projectWorkspace") workspace.projectWorkspaceId = randomUUID();
+      if (scenario === "staleFresh") workspace.metadata!.runnerTaskFreshWorkspace = { attemptId: randomUUID() };
+      if (scenario === "closed") workspace.status = "archived";
+      if (scenario === "repository") workspace.repoUrl = "https://github.com/example/repo.git";
+      if (scenario === "strategy") workspace.strategyType = "git_worktree";
+      expect(isBoundPluginTaskDirectory({ companyId, issueId, workspaceId, workspace, owner })).toBe(scenario === "valid");
     });
 
   it("verifies immutable transfer files and reuses stable descriptors after interruption", async () => {

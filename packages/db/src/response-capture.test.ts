@@ -87,6 +87,14 @@ describe("bounded database response capture", () => {
       "at f (/private/fixture/customer-file.js:7:9)", "at f (/app/server/src/services/../../customer-file.ts:8:1)"].join("\n");
     expect(publicDatabaseCallers(stack)).toEqual(["services/example.ts:4:2", "routes/example.js:5:3"]);
   });
+  it("keeps one static bundled anchor and rejects dynamic paths or untrusted driver anchors", () => {
+    expect(publicDatabaseCallers("at privateName (/app/server/dist-runtime/chunk-ABCDEFGH.mjs:12:34)\nat helper (/app/server/dist-runtime/server.mjs:56:78)", true))
+      .toEqual(["dist-runtime/chunk-ABCDEFGH.mjs:12:34"]);
+    for (const path of ["customer-name.mjs", "chunk-ABCDEFGH.mjs?private=1", "chunk-ABCDEFGH.mjs#private", "../server.mjs", "nested/server.mjs", "server.mjs:0:1", "server.mjs:9999999999:1"]) {
+      expect(publicDatabaseCallers(`at privateName (/app/server/dist-runtime/${path}:12:34)`, true)).toEqual([]);
+    }
+    expect(publicDatabaseCallers("at f (/app/server/dist-runtime/server.mjs:12:34)")).toEqual([]);
+  });
   it("leaves methods and identity unchanged when disabled", () => {
     vi.stubEnv("PAPERCLIP_DB_RESPONSE_CAPTURE_WINDOW", undefined);
     const db = { select: vi.fn(), transaction: vi.fn() }, select = db.select, transaction = db.transaction;

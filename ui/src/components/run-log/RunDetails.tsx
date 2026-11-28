@@ -1,3 +1,4 @@
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { heartbeatsApi } from "../../api/heartbeats";
@@ -8,6 +9,7 @@ import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/component
 import { type HeartbeatRun, type WorkspaceOperation } from "@paperclipai/shared";
 import { redactHomePathUserSegments, redactHomePathUserSegmentsInValue } from "@paperclipai/adapter-utils";
 import { Badge } from "@/components/ui/badge";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 export const RUN_LOG_PAGE_BYTES = 256_000;
 
@@ -207,7 +209,7 @@ export function RunInvocationCard({
             {commandLine && (
               <div className="text-xs break-all">
                 <span className="text-muted-foreground">Command: </span>
-                <span className="font-mono">{commandLine}</span>
+                <span className={cn("font-mono", ANALYTICS_MASK_CLASS)}>{commandLine}</span>
               </div>
             )}
             {Array.isArray(payload.commandNotes) && payload.commandNotes.length > 0 && (
@@ -217,7 +219,7 @@ export function RunInvocationCard({
                   {payload.commandNotes
                     .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
                     .map((note, idx) => (
-                      <li key={`${idx}-${note}`} className="text-xs break-all font-mono">
+                      <li key={`${idx}-${note}`} className={cn("text-xs break-all font-mono", ANALYTICS_MASK_CLASS)}>
                         {note}
                       </li>
                     ))}
@@ -227,7 +229,7 @@ export function RunInvocationCard({
             {payload.prompt !== undefined && (
               <div>
                 <div className="text-xs text-muted-foreground mb-1">Prompt</div>
-                <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
+                <pre className={cn("bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap", ANALYTICS_MASK_CLASS)}>
                   {typeof payload.prompt === "string"
                     ? redactPathText(payload.prompt, censorUsernameInLogs)
                     : JSON.stringify(redactPathValue(payload.prompt, censorUsernameInLogs), null, 2)}
@@ -237,7 +239,7 @@ export function RunInvocationCard({
             {payload.context !== undefined && (
               <div>
                 <div className="text-xs text-muted-foreground mb-1">Context</div>
-                <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap">
+                <pre className={cn("bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap", ANALYTICS_MASK_CLASS)}>
                   {JSON.stringify(redactPathValue(payload.context, censorUsernameInLogs), null, 2)}
                 </pre>
               </div>
@@ -245,7 +247,7 @@ export function RunInvocationCard({
             {payload.env !== undefined && (
               <div>
                 <div className="text-xs text-muted-foreground mb-1">Environment</div>
-                <pre className="bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap font-mono">
+                <pre className={cn("bg-neutral-100 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap font-mono", ANALYTICS_MASK_CLASS)}>
                   {formatEnvForDisplay(payload.env, censorUsernameInLogs)}
                 </pre>
               </div>
@@ -330,13 +332,16 @@ function WorkspaceOperationLogViewer({
   censorUsernameInLogs: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const { data: logData, isLoading, error } = useQuery({
+  const logQuery = useQuery({
     queryKey: ["workspace-operation-log", operation.id],
     queryFn: () => heartbeatsApi.workspaceOperationLog(operation.id),
     enabled: open && Boolean(operation.logRef),
     refetchInterval: open && operation.status === "running" ? 2000 : false,
   });
 
+  const logView = useQueryView(logQuery);
+  const { data: logData } = logQuery;
+  const isLoading = logView.kind === "loading" || logView.kind === "reconnecting";
   const chunks = useMemo(
     () => (logData?.content ? parseStoredLogContent(logData.content) : []),
     [logData?.content],
@@ -354,12 +359,8 @@ function WorkspaceOperationLogViewer({
       {open && (
         <div className="rounded-md border border-border bg-background/70 p-2">
           {isLoading && <div className="text-xs text-muted-foreground">Loading log...</div>}
-          {error && (
-            <div className="text-xs text-destructive">
-              {error instanceof Error ? error.message : "Failed to load workspace operation log"}
-            </div>
-          )}
-          {!isLoading && !error && chunks.length === 0 && (
+          {logView.kind === "error" && <QueryErrorState size="inline" error={logView.error} onRetry={logView.retry} retrying={logView.isFetching} />}
+          {!isLoading && logView.kind !== "error" && chunks.length === 0 && (
             <div className="text-xs text-muted-foreground">No persisted log lines.</div>
           )}
           {chunks.length > 0 && (
@@ -462,7 +463,7 @@ export function WorkspaceOperationsSection({
               {operation.stderrExcerpt && operation.stderrExcerpt.trim() && (
                 <div>
                   <div className="mb-1 text-xs text-red-700 dark:text-red-300">stderr excerpt</div>
-                  <pre className="rounded-md bg-red-50 p-2 text-xs whitespace-pre-wrap break-all text-red-800 dark:bg-neutral-950 dark:text-red-100">
+                  <pre className={cn("rounded-md bg-red-50 p-2 text-xs whitespace-pre-wrap break-all text-red-800 dark:bg-neutral-950 dark:text-red-100", ANALYTICS_MASK_CLASS)}>
                     {redactPathText(operation.stderrExcerpt, censorUsernameInLogs)}
                   </pre>
                 </div>
@@ -470,7 +471,7 @@ export function WorkspaceOperationsSection({
               {operation.stdoutExcerpt && operation.stdoutExcerpt.trim() && (
                 <div>
                   <div className="mb-1 text-xs text-muted-foreground">stdout excerpt</div>
-                  <pre className="rounded-md bg-neutral-100 p-2 text-xs whitespace-pre-wrap break-all dark:bg-neutral-950">
+                  <pre className={cn("rounded-md bg-neutral-100 p-2 text-xs whitespace-pre-wrap break-all dark:bg-neutral-950", ANALYTICS_MASK_CLASS)}>
                     {redactPathText(operation.stdoutExcerpt, censorUsernameInLogs)}
                   </pre>
                 </div>
