@@ -394,6 +394,7 @@ Paperclip’s core identity is a **control plane for autonomous AI companies**, 
 - Do not build a complete Jira/GitHub replacement. The repo/docs already position Paperclip as organization orchestration, not focused on pull-request review.
 - Do not build enterprise-grade RBAC first. Paperclip now has authenticated mode, company memberships, instance roles, and permission grants, but fine-grained enterprise governance should remain secondary to the core company control plane.
 - Do not interpret agent-profile privacy flags as project/issue privacy. Work remains company-open by default, while explicitly private issues and projects use their own task ACLs.
+- A portable company export carries explicit project and issue visibility. Import must restore private access and must not widen a private record to company-open. Replacing an existing private project requires its ordinary privacy authority; imported private tasks grant the importer and assigned agent access without changing the task's responsibility or history.
 - Do not lead with raw bash logs and transcripts. Default view should be human-readable intent/progress, with raw detail beneath.
 - Do not force users to understand provider/API-key plumbing unless absolutely necessary. There are active onboarding/auth issues already; friction here is clearly real.
 

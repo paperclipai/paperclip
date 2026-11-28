@@ -86,6 +86,7 @@ export interface CompanyPortabilityProjectManifestEntry {
   slug: string;
   name: string;
   path: string;
+  visibility?: "open" | "private" | null;
   description: string | null;
   ownerAgentSlug: string | null;
   leadAgentSlug: string | null;
@@ -180,6 +181,7 @@ export interface CompanyPortabilityIssueManifestEntry {
   identifier: string | null;
   title: string;
   path: string;
+  visibility?: "open" | "private" | null;
   projectSlug: string | null;
   projectWorkspaceKey: string | null;
   assigneeAgentSlug: string | null;

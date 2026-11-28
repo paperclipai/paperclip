@@ -147,6 +147,7 @@ vi.mock("../services/access.js", () => ({
 
 vi.mock("../services/projects.js", () => ({
   projectService: () => projectSvc,
+  ensureProjectAccessMember: vi.fn(),
 }));
 
 vi.mock("../services/issues.js", () => ({
@@ -1355,6 +1356,7 @@ describe("company portability", () => {
         id: "project-1",
         name: "Launch",
         urlKey: "launch",
+        visibility: "private",
         description: "Ship it",
         leadAgentId: "agent-1",
         targetDate: "2026-03-31",
@@ -1538,6 +1540,8 @@ describe("company portability", () => {
     }));
     expect(projectSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
       icon: "rocket",
+      visibility: "private",
+      privacyOwnerUserId: "user-1",
     }));
     expect(issueSvc.importIssues).toHaveBeenCalledWith("company-imported", expect.arrayContaining([
       expect.objectContaining({
@@ -1545,7 +1549,7 @@ describe("company portability", () => {
         projectWorkspaceId: "workspace-imported",
         title: "Write launch task",
       }),
-    ]), undefined, undefined);
+    ]), undefined, undefined, "user-1");
   });
 
   it("normalizes invalid imported project icon names to null", async () => {
@@ -4017,6 +4021,7 @@ describe("company portability", () => {
       ]),
       undefined,
       undefined,
+      "user-1",
     );
   });
 
@@ -4077,6 +4082,7 @@ describe("company portability", () => {
       ]),
       undefined,
       undefined,
+      "user-1",
     );
     expect(result.warnings).toContain(
       "Existing label color was kept for bug; the imported bundle used different colors.",
@@ -4137,6 +4143,7 @@ describe("company portability", () => {
       ]),
       undefined,
       undefined,
+      "user-1",
     );
     expect(result.warnings).toContain(
       "Task kickoff dropped 2 label references because the bundle carries raw label ids that do not exist in the target company.",
@@ -4434,6 +4441,7 @@ describe("company portability", () => {
       ]),
       undefined,
       undefined,
+      "user-1",
     );
     expect(documentSvc.createIssueDocumentsForImport).not.toHaveBeenCalled();
     expect(workProductSvc.createManyForImport).not.toHaveBeenCalled();
@@ -4463,6 +4471,7 @@ describe("company portability", () => {
         id: "issue-1",
         identifier: "PAP-1",
         title: "Alpha task",
+        visibility: "private",
         status: "done",
         parentId: null,
         createdAt: new Date("2026-01-01T00:00:00.000Z"),
@@ -4514,6 +4523,7 @@ describe("company portability", () => {
     expect(extension).toContain("schemaVersion: 7");
     expect(extension).toContain('parent: "pap-1"');
     expect(extension).toContain('createdAt: "2026-01-01T00:00:00.000Z"');
+    expect(extension).toContain('visibility: "private"');
     expect(exported.warnings).toContain(
       "1 parent relation references a task outside this export and was not included.",
     );
@@ -4523,6 +4533,7 @@ describe("company portability", () => {
     const gammaEntry = exported.manifest.issues.find((issue) => issue.slug === "pap-3");
     const deltaEntry = exported.manifest.issues.find((issue) => issue.slug === "pap-4");
     expect(alphaEntry).toEqual(expect.objectContaining({
+      visibility: "private",
       parentSlug: null,
       createdAt: "2026-01-01T00:00:00.000Z",
       updatedAt: "2026-03-01T00:00:00.000Z",
@@ -4535,6 +4546,17 @@ describe("company portability", () => {
     // The unexported parent edge is dropped, not carried by raw id.
     expect(deltaEntry?.parentSlug).toBeNull();
     expect(extension).not.toContain("issue-outside");
+
+    await expect(portability.previewImport({
+      source: { type: "inline", rootPath: exported.rootPath, files: {
+        ...exported.files,
+        ".paperclip.yaml": extension.replace('visibility: "private"', 'visibility: "public"'),
+      } },
+      include: { company: true, agents: false, projects: false, issues: true },
+      target: { mode: "new_company", newCompanyName: "Invalid visibility" },
+      agents: "all",
+      collisionStrategy: "rename",
+    })).rejects.toThrow("Invalid visibility");
 
     companySvc.create.mockResolvedValue({ id: "company-imported", name: "Imported" });
     accessSvc.ensureMembership.mockResolvedValue(undefined);
@@ -4551,6 +4573,7 @@ describe("company portability", () => {
     const importedRows = issueSvc.importIssues.mock.calls[0]![1] as Array<{
       id: string;
       title: string;
+      visibility: string;
       parentId: string | null;
       createdAt: Date | null;
       updatedAt: Date | null;
@@ -4565,6 +4588,7 @@ describe("company portability", () => {
 
     // Timestamps survive the round trip as concrete dates.
     expect(alphaRow.createdAt).toEqual(new Date("2026-01-01T00:00:00.000Z"));
+    expect(alphaRow.visibility).toBe("private");
     expect(alphaRow.updatedAt).toEqual(new Date("2026-03-01T00:00:00.000Z"));
     expect(alphaRow.startedAt).toEqual(new Date("2026-01-02T00:00:00.000Z"));
     expect(alphaRow.completedAt).toEqual(new Date("2026-02-01T00:00:00.000Z"));
@@ -5295,6 +5319,7 @@ describe("company portability", () => {
       ]),
       undefined,
       undefined,
+      "user-1",
     );
     expect(result.warnings).toContain(v5Warning);
   });

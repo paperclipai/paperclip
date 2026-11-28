@@ -3,10 +3,12 @@ import {
   agents,
   assets,
   companies,
+  companyMemberships,
   createDb,
   documentRevisions,
   documents,
   issueAttachments,
+  issueAccessGrants,
   issueComments,
   issueDocuments,
   issueInboxArchives,
@@ -14,6 +16,8 @@ import {
   issueRelations,
   issueWorkProducts,
   issues,
+  projectAccessMembers,
+  projects,
 } from "@paperclipai/db";
 import { and, eq, sql } from "drizzle-orm";
 import {
@@ -401,6 +405,7 @@ describeEmbeddedPostgres("company import batches inserts", () => {
       projectId: null,
       projectWorkspaceId: null,
       title: "Carried-over work",
+      visibility: "private",
       description: null,
       assigneeAgentId: agentId,
       status: "in_progress",
@@ -411,16 +416,57 @@ describeEmbeddedPostgres("company import batches inserts", () => {
       labelIds: [],
       monitorNotes: null,
       monitorScheduledBy: null,
-    }]);
+    }], null, null, "user-carry");
 
     const [imported] = await db
-      .select({ status: issues.status, startedAt: issues.startedAt })
+      .select({ id: issues.id, status: issues.status, startedAt: issues.startedAt,
+        visibility: issues.visibility, privacyRootIssueId: issues.privacyRootIssueId,
+        responsibleUserId: issues.responsibleUserId })
       .from(issues)
       .where(eq(issues.companyId, companyId));
     expect(imported?.status).toBe("in_progress");
+    expect(imported?.visibility).toBe("private");
+    expect(imported?.privacyRootIssueId).toBe(imported?.id);
+    expect(imported?.responsibleUserId).toBeNull();
+    const grants = await db.select().from(issueAccessGrants).where(eq(issueAccessGrants.issueId, imported!.id));
+    expect(grants).toEqual(expect.arrayContaining([
+      expect.objectContaining({ subjectType: "user", subjectId: "user-carry", source: "explicit" }),
+      expect.objectContaining({ subjectType: "agent", subjectId: agentId, source: "assignment" }),
+    ]));
+    await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, imported!.id));
+    expect(await db.select().from(issueAccessGrants).where(eq(issueAccessGrants.issueId, imported!.id)))
+      .toHaveLength(2);
     // An import-time startedAt would misrepresent carried-over work
     // as a newly started active episode.
     expect(imported?.startedAt).toBeNull();
+  });
+
+  it("does not grant a non-admin access to an existing private project on replace", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Private target", issuePrefix: "PRV" });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Secret", visibility: "private", privacyOwnerUserId: "owner-user" });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "importer-user", status: "active", membershipRole: "operator" });
+    const files: Record<string, CompanyPortabilityFileEntry> = {
+      "COMPANY.md": ['---', 'schema: "agentcompanies/v1"', 'name: "Private source"', '---', '', 'Source.', ''].join("\n"),
+      "projects/secret/PROJECT.md": ['---', 'name: "Secret"', '---', '', 'Private project.', ''].join("\n"),
+      ".paperclip.yaml": renderPaperclipYaml({ schemaVersion: 7, projects: { secret: { visibility: "private" } } }),
+    };
+    const request = {
+      source: { type: "inline" as const, rootPath: "private-source", files },
+      include: { company: false, agents: false, projects: true, issues: false },
+      target: { mode: "existing_company" as const, companyId },
+      collisionStrategy: "replace" as const,
+    };
+    await expect(companyPortabilityService(db).importBundle(request, "importer-user"))
+      .rejects.toThrow("Only the project privacy owner or an administrator");
+    expect(await db.select().from(projectAccessMembers).where(eq(projectAccessMembers.projectId, projectId))).toEqual([]);
+    await db.update(companyMemberships).set({ membershipRole: "admin" }).where(and(
+      eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, "importer-user"),
+    ));
+    await companyPortabilityService(db).importBundle(request, "importer-user");
+    expect(await db.select().from(projectAccessMembers).where(eq(projectAccessMembers.projectId, projectId)))
+      .toEqual([expect.objectContaining({ subjectType: "user", subjectId: "importer-user" })]);
   });
 
   it("preserves bundle timestamps and parent hierarchy through a real import", async () => {

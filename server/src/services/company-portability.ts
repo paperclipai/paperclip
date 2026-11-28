@@ -14,6 +14,8 @@ import { promisify } from "node:util";
 import { and, eq, inArray } from "drizzle-orm";
 import {
   companies as companiesTable,
+  companyMemberships,
+  instanceUserRoles,
   builtInManagedResources,
   issueRelations,
   principalPermissionGrants,
@@ -96,7 +98,7 @@ import { validateCron } from "./cron.js";
 import { documentService } from "./documents.js";
 import { issueService } from "./issues.js";
 import { instanceSettingsService } from "./instance-settings.js";
-import { projectService } from "./projects.js";
+import { ensureProjectAccessMember, projectService } from "./projects.js";
 import { workProductService } from "./work-products.js";
 import { routineService } from "./routines.js";
 import { secretService } from "./secrets.js";
@@ -854,6 +856,12 @@ function asString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function portableVisibility(value: unknown, path: string): "open" | "private" {
+  if (value == null) return "open"; // Older bundles did not carry visibility.
+  if (value === "open" || value === "private") return value;
+  throw new Error(`Invalid visibility in ${path}: expected open or private`);
 }
 
 function asBoolean(value: unknown): boolean | null {
@@ -3421,6 +3429,7 @@ function buildManifestFromPackageFiles(
       slug,
       name: asString(frontmatter.name) ?? slug,
       path: projectPath,
+      visibility: portableVisibility(extension.visibility, projectPath),
       description: asString(frontmatter.description),
       ownerAgentSlug: asString(frontmatter.owner),
       leadAgentSlug: asString(extension.leadAgentSlug),
@@ -3469,6 +3478,7 @@ function buildManifestFromPackageFiles(
       identifier: asString(extension.identifier),
       title: asString(frontmatter.name) ?? asString(frontmatter.title) ?? slug,
       path: taskPath,
+      visibility: portableVisibility(extension.visibility, taskPath),
       projectSlug: asString(frontmatter.project),
       projectWorkspaceKey: asString(extension.projectWorkspaceKey),
       assigneeAgentSlug: asString(frontmatter.assignee),
@@ -4365,6 +4375,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       );
       const extension = stripEmptyValues({
         leadAgentSlug: project.leadAgentId ? (idToSlug.get(project.leadAgentId) ?? null) : null,
+        visibility: project.visibility,
         targetDate: project.targetDate ?? null,
         color: project.color ?? null,
         icon: project.icon ?? null,
@@ -4561,6 +4572,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       );
       const extension = stripEmptyValues({
         identifier: issue.identifier,
+        visibility: issue.visibility,
         status: issue.status,
         priority: issue.priority,
         parent: parentTaskSlug ?? undefined,
@@ -5946,6 +5958,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             : null;
           const projectPatch = {
             name: planProject.plannedName,
+            visibility: manifestProject.visibility === "private" ? "private" as const
+              : manifestProject.visibility === "open" ? "open" as const : undefined,
             description: manifestProject.description,
             leadAgentId: projectLeadAgentId,
             targetDate: manifestProject.targetDate,
@@ -5960,6 +5974,25 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
           let projectId: string | null = null;
           if (planProject.action === "update" && planProject.existingProjectId) {
+            const existing = await projects.getById(planProject.existingProjectId);
+            if (existing && (existing.visibility === "private" || manifestProject.visibility === "private")) {
+              const [adminRole, membership] = actorUserId ? await Promise.all([
+                db.select({ id: instanceUserRoles.id }).from(instanceUserRoles).where(and(
+                  eq(instanceUserRoles.userId, actorUserId), eq(instanceUserRoles.role, "instance_admin"),
+                )).limit(1),
+                db.select({ role: companyMemberships.membershipRole }).from(companyMemberships).where(and(
+                  eq(companyMemberships.companyId, targetCompany.id),
+                  eq(companyMemberships.principalType, "user"),
+                  eq(companyMemberships.principalId, actorUserId),
+                  eq(companyMemberships.status, "active"),
+                )).limit(1),
+              ]) : [[], []];
+              const canManagePrivacy = Boolean(actorUserId) && (
+                actorUserId === existing.privacyOwnerUserId || actorUserId === existing.personalOwnerUserId
+                || adminRole.length > 0 || ["owner", "admin"].includes(membership[0]?.role ?? "")
+              );
+              if (!canManagePrivacy) throw forbidden("Only the project privacy owner or an administrator can change project access");
+            }
             const updated = await projects.update(planProject.existingProjectId, projectPatch);
             if (!updated) {
               warnings.push(`Skipped update for missing project ${planProject.existingProjectId}.`);
@@ -5983,7 +6016,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               reason: planProject.reason,
             });
           } else {
-            const created = await projects.create(targetCompany.id, projectPatch);
+            const created = await projects.create(targetCompany.id, {
+              ...projectPatch,
+              privacyOwnerUserId: manifestProject.visibility === "private" ? actorUserId ?? null : null,
+            });
             projectId = created.id;
             importedSlugToProjectId.set(planProject.slug, created.id);
             existingProjectSlugToId.set(created.urlKey, created.id);
@@ -5997,6 +6033,15 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           }
 
           if (!projectId) continue;
+
+          if (manifestProject.visibility === "private" && actorUserId) {
+            await ensureProjectAccessMember(db, {
+              companyId: targetCompany.id,
+              projectId,
+              subjectType: "user",
+              subjectId: actorUserId,
+            });
+          }
 
           await secrets.syncEnvBindingsForTarget?.(
             targetCompany.id,
@@ -6409,6 +6454,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           issueRows.push({
             id: issueId,
             ref: manifestIssue.slug,
+            visibility: manifestIssue.visibility === "private" ? "private" : "open",
             projectId: projectId ?? null,
             projectWorkspaceId: projectWorkspaceId ?? null,
             title: manifestIssue.title,
@@ -6496,7 +6542,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         // statements, turning what used to be one round-trip per row into a
         // handful per table. Empty buffers are skipped so an issues-free import
         // (e.g. routines only) issues no writes at all.
-        if (issueRows.length > 0) await issues.importIssues(targetCompany.id, issueRows, actorAgentId, actorAgentCompanyId);
+        if (issueRows.length > 0) await issues.importIssues(targetCompany.id, issueRows, actorAgentId, actorAgentCompanyId, actorUserId);
         // Imported issues are historical work, not new inbox items. Seed a
         // per-user inbox archive for the importing board user so a large import
         // (a real 1,418-task company shipped every task to the inbox) does not
