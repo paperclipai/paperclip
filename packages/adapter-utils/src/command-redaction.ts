@@ -45,7 +45,15 @@ const COMMAND_GITHUB_TOKEN_SOURCE = String.raw`\b(?:gh[pousr]|github_pat)_[A-Za-
 const COMMAND_OPENAI_KEY_RE = new RegExp(COMMAND_OPENAI_KEY_SOURCE, "g");
 const COMMAND_UNDERSCORE_SECRET_KEY_RE = new RegExp(COMMAND_UNDERSCORE_SECRET_KEY_SOURCE, "g");
 const COMMAND_GITHUB_TOKEN_RE = new RegExp(COMMAND_GITHUB_TOKEN_SOURCE, "g");
-const COMMAND_SLACK_TOKEN_RE = /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g;
+// Paperclip-issued bearer credentials. Minted in server/src/services/board-auth.ts as
+// `pcp_board_<48 hex>` and `pcp_cli_auth_<48 hex>`; the prefix segment is matched
+// generically so a future `pcp_<kind>_` credential is covered without another edit.
+// These are value-shaped: they leak as bare tokens in process stdout and in HTTP
+// header dumps, where no adjacent `key=` or `--flag` gives the name-based rules a handle.
+const COMMAND_PAPERCLIP_TOKEN_RE = /\bpcp_[a-z][a-z0-9_]*_[0-9a-f]{24,}\b/gi;
+// Slack tokens: bot (xoxb), user (xoxp), app (xoxa/xoxr), refresh (xoxs), and
+// app-level (xapp).
+const COMMAND_SLACK_TOKEN_RE = /\b(?:xox[abprs]|xapp)-[A-Za-z0-9-]{10,}\b/g;
 const COMMAND_AWS_KEY_ID_RE = /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g;
 const COMMAND_GOOGLE_API_KEY_RE = /\bAIza[0-9A-Za-z\-_]{20,}\b/g;
 const COMMAND_GITLAB_PAT_RE = /\bglpat-[A-Za-z0-9_-]{16,}\b/g;
@@ -95,6 +103,12 @@ const COMMAND_SECRET_HINTS = [
   "ghu_",
   "ghs_",
   "ghr_",
+  // Value-prefix hints. Without these, a chunk carrying a bare `pcp_board_...` or
+  // `xoxb-...` and nothing else can short-circuit out of redactCommandText before
+  // the patterns above ever run.
+  "pcp_",
+  "xox",
+  "xapp-",
   "github_pat_",
   "xoxb-",
   "xoxp-",
@@ -155,6 +169,7 @@ function redactSetAsideCommandText(command: string, redactedValue: string): stri
     .replace(COMMAND_OPENAI_KEY_RE, redactedValue)
     .replace(COMMAND_UNDERSCORE_SECRET_KEY_RE, redactedValue)
     .replace(COMMAND_GITHUB_TOKEN_RE, redactedValue)
+    .replace(COMMAND_PAPERCLIP_TOKEN_RE, redactedValue)
     .replace(COMMAND_SLACK_TOKEN_RE, redactedValue)
     .replace(COMMAND_AWS_KEY_ID_RE, redactedValue)
     .replace(COMMAND_GOOGLE_API_KEY_RE, redactedValue)
