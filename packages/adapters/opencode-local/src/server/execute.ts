@@ -62,6 +62,7 @@ import {
   requireOpenCodeModelId,
 } from "./models.js";
 import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/server-utils";
+import { prepareOpenCodePerAgentDataHome } from "./agent-data-home.js";
 import { apiKeyBillingType } from "@paperclipai/adapter-utils/api-billing-type";
 import { prepareOpenCodeRuntimeConfig, prepareManagedOpenCodeRemoteHomes } from "./runtime-config.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
@@ -331,10 +332,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
+  // Give every local opencode_local agent its own data dir before the runtime
+  // config prep reads XDG_*, so concurrent runs never open the same
+  // opencode.db. Skipped for remote targets, which already get per-run homes.
+  const perAgentDataHome = await prepareOpenCodePerAgentDataHome({
+    env,
+    config,
+    agentId: agent.id,
+    targetIsRemote: executionTargetIsRemote,
+  });
   const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({
     env, config,
     sandboxToolOomPreference: executionTarget?.kind === "remote" && executionTarget.transport === "sandbox",
   });
+  // Gated on the runtime-config notes alone: this is "did the config prep install
+  // a temp XDG_CONFIG_HOME", which per-agent data-home notes must not influence.
   const localRuntimeConfigHome =
     preparedRuntimeConfig.notes.length > 0 ? preparedRuntimeConfig.env.XDG_CONFIG_HOME : "";
   try {
@@ -554,7 +566,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
 
       const commandNotes = (() => {
-        const notes = [...preparedRuntimeConfig.notes];
+        const notes = [...preparedRuntimeConfig.notes, ...perAgentDataHome.notes];
         if (!resolvedInstructionsFilePath) return notes;
         if (instructionsPrefix.length > 0) {
           notes.push(`Loaded agent instructions from ${resolvedInstructionsFilePath}`);
