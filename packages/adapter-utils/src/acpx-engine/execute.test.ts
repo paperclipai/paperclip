@@ -38,6 +38,7 @@ import {
   parseGeminiVersionParts,
   referencedSourceContentSignature,
   resolveStalledToolTimeoutMs,
+  renderApiAccessNote,
   rewriteGeminiAcpFlagForVersion,
   summarizeAcpProcessTerminal,
   summarizeAcpStopActivity,
@@ -875,9 +876,15 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(prompt).toContain("## Paperclip Wake Payload");
     expect(prompt).toContain("TEST-1");
     expect(prompt).toContain("Paperclip API access note:");
-    expect(prompt).toContain('PAPERCLIP_API_BASE="${PAPERCLIP_API_URL%/}"; PAPERCLIP_API_BASE="${PAPERCLIP_API_BASE%/api}"');
-    expect(prompt).toContain("$PAPERCLIP_API_BASE/api/agents/me");
-    expect(prompt).toContain("$PAPERCLIP_API_BASE/api/issues/$PAPERCLIP_TASK_ID");
+    if (process.platform === "win32") {
+      expect(prompt).toContain("$env:PAPERCLIP_API_KEY");
+      expect(prompt).toContain("$base/api/agents/me");
+      expect(prompt).toContain("$base/api/issues/$env:PAPERCLIP_TASK_ID");
+    } else {
+      expect(prompt).toContain('PAPERCLIP_API_BASE="${PAPERCLIP_API_URL%/}"; PAPERCLIP_API_BASE="${PAPERCLIP_API_BASE%/api}"');
+      expect(prompt).toContain("$PAPERCLIP_API_BASE/api/agents/me");
+      expect(prompt).toContain("$PAPERCLIP_API_BASE/api/issues/$PAPERCLIP_TASK_ID");
+    }
     expect(prompt).toContain("X-Paperclip-Run-Id");
     expect(prompt).not.toContain("$PAPERCLIP_API_URL/api/");
     expect(prompt).not.toContain("/api/issues/{id}");
@@ -9396,4 +9403,37 @@ describe("ACPX startup handshake guard and late-completion fence", () => {
       vi.useRealTimers();
     }
   }, 10000);
+});
+
+describe("renderApiAccessNote", () => {
+  const env = {
+    PAPERCLIP_API_URL: "http://127.0.0.1:3100/api",
+    PAPERCLIP_API_KEY: "runtime-secret-token",
+    PAPERCLIP_TASK_ID: "issue-1",
+  };
+
+  it("uses PowerShell syntax when the agent shell runs on Windows", () => {
+    const note = renderApiAccessNote(env, "win32");
+    expect(note).toContain("Your shell is PowerShell");
+    expect(note).toContain("$env:PAPERCLIP_API_KEY");
+    expect(note).toContain("Invoke-RestMethod");
+    expect(note).toContain("$base/api/issues/$env:PAPERCLIP_TASK_ID/comments");
+    expect(note).not.toContain("${PAPERCLIP_API_URL%/}");
+    expect(note).not.toContain("curl ");
+    expect(note).not.toContain("runtime-secret-token");
+  });
+
+  it("keeps the curl instructions for POSIX shells", () => {
+    for (const platform of ["linux", "darwin"] as const) {
+      const note = renderApiAccessNote(env, platform);
+      expect(note).toContain('PAPERCLIP_API_BASE="${PAPERCLIP_API_URL%/}"');
+      expect(note).toContain("curl -s");
+      expect(note).not.toContain("PowerShell");
+    }
+  });
+
+  it("omits the note without an API URL and key on every platform", () => {
+    expect(renderApiAccessNote({}, "win32")).toBe("");
+    expect(renderApiAccessNote({}, "linux")).toBe("");
+  });
 });

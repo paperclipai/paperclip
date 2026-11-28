@@ -3159,8 +3159,9 @@ function renderPaperclipEnvNote(env: Record<string, string>): string {
   ].join("\n");
 }
 
-function renderApiAccessNote(env: Record<string, string>): string {
+export function renderApiAccessNote(env: Record<string, string>, shellPlatform: NodeJS.Platform = process.platform): string {
   if (!env.PAPERCLIP_API_URL || !env.PAPERCLIP_API_KEY) return "";
+  if (shellPlatform === "win32") return renderPowerShellApiAccessNote(env);
   const lines = [
     "Paperclip API access note:",
     "Use terminal commands with curl to make Paperclip API requests.",
@@ -3180,7 +3181,27 @@ function renderApiAccessNote(env: Record<string, string>): string {
   return lines.join("\n");
 }
 
-async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean, env: Record<string, string>): Promise<{
+function renderPowerShellApiAccessNote(env: Record<string, string>): string {
+  const lines = [
+    "Paperclip API access note:",
+    "Your shell is PowerShell. Read environment variables as $env:NAME, not $NAME. Use Invoke-RestMethod for Paperclip API requests.",
+    "Normalize the base URL and build the request headers before adding API paths:",
+    `  $base = $env:PAPERCLIP_API_URL.TrimEnd('/') -replace '/api$',''; $h = @{ Authorization = "Bearer $env:PAPERCLIP_API_KEY"; 'X-Paperclip-Run-Id' = $env:PAPERCLIP_RUN_ID }`,
+    "GET example:",
+    `  Invoke-RestMethod -Headers $h -Uri "$base/api/agents/me" | ConvertTo-Json -Depth 10`,
+  ];
+  if (env.PAPERCLIP_TASK_ID) {
+    lines.push(
+      "Scoped issue comment example:",
+      `  Invoke-RestMethod -Method Post -Headers $h -ContentType 'application/json' -Body (@{ body = 'Status update from agent.' } | ConvertTo-Json) -Uri "$base/api/issues/$env:PAPERCLIP_TASK_ID/comments"`,
+    );
+  } else {
+    lines.push("Use a real issue id from the current context before making issue write requests.");
+  }
+  return lines.join("\n");
+}
+
+async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean, env: Record<string, string>, shellPlatform: NodeJS.Platform = process.platform): Promise<{
   prompt: string;
   promptMetrics: Record<string, number>;
   commandNotes: string[];
@@ -3243,7 +3264,7 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
       : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const paperclipEnvNote = externalChatTurn ? "" : renderPaperclipEnvNote(env);
-  const apiAccessNote = externalChatTurn ? "" : renderApiAccessNote(env);
+  const apiAccessNote = externalChatTurn ? "" : renderApiAccessNote(env, shellPlatform);
   const prompt = joinPromptSections([
     promptInstructionsPrefix,
     renderedBootstrapPrompt,
@@ -5111,7 +5132,8 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // boundary. A failure here returns an error result with phase
         // `prepare_turn`.
         preparePhaseStart = now();
-        const { prompt, promptMetrics, commandNotes } = await buildPrompt(ctx, resumedSession, prepared.env);
+        const { prompt, promptMetrics, commandNotes } = await buildPrompt(ctx, resumedSession, prepared.env,
+          prepared.remoteExecutionIdentity ? "linux" : process.platform);
         runPrompt = joinPromptSections([prepared.skillPromptInstructions, prompt]);
         await emitAcpxLog(ctx, {
           type: "acpx.session",
