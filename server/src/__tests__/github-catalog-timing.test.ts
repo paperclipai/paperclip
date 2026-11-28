@@ -71,7 +71,7 @@ const support = databaseUrl ? { supported: true } : await getEmbeddedPostgresTes
       credentialSecretRefs: [{ configPath: "oauth.access_token", secretId: secret.id, versionSelector: "latest" }],
     }).returning();
     await syncConnectionCredentialBindings(db, connection);
-    const webhook = vi.fn(async () => trace.getTracer("catalog-fixture").startActiveSpan("fixture.webhook", async span => {
+    const webhook = vi.fn(async (_binding: { installationId: string; active: boolean }) => trace.getTracer("catalog-fixture").startActiveSpan("fixture.webhook", async span => {
       await Promise.resolve(); span.end();
     }));
     const connector = { setWebhookBinding: webhook } as unknown as PaperclipCloudConnector;
@@ -183,6 +183,52 @@ const support = databaseUrl ? { supported: true } : await getEmbeddedPostgresTes
     const retryRead = exporter.getFinishedSpans().find(candidate => candidate.name === "connectors.github.grants"
       && candidate.parentSpanContext?.spanId === span("connectors.github.refresh").spanContext().spanId);
     expect(retryRead).toBeDefined();
+  });
+
+  it("re-registers webhook bindings from catalog reads and scheduled health only after access changes", async () => {
+    const f = await fixture();
+    const sweep = { actorType: "system" as const, actorId: "tool_health_sweep" };
+    const user = { actorType: "user" as const, actorId: f.userId };
+    await f.service.listGitHubRepositories(f.companyId, f.userId);
+    expect(f.webhook).toHaveBeenCalledTimes(1);
+    const [settled] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, f.grant.id));
+    expect(settled.providerTenant?.github?.bindingSync).toBeUndefined();
+
+    // Unchanged installations: repeated catalog reads and background health
+    // checks refresh the repository snapshot without contacting Cloud.
+    const result = await f.service.listGitHubRepositories(f.companyId, f.userId);
+    expect(result).toMatchObject({ connectionCount: 1, failedConnectionCount: 0, repositories: [{ id: "201" }] });
+    await f.service.checkHealth(f.connection.id, sweep);
+    expect(f.webhook).toHaveBeenCalledTimes(1);
+    const [refreshed] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, f.grant.id));
+    expect(refreshed.providerTenant?.github?.accessRevision).not.toBe(settled.providerTenant?.github?.accessRevision);
+    expect(refreshed.providerTenant?.github?.bindingSync).toBeUndefined();
+
+    // A person's health check still repairs every binding.
+    await f.service.checkHealth(f.connection.id, user);
+    expect(f.webhook).toHaveBeenCalledTimes(2);
+
+    // Saved binding debt is still paid by the next catalog read.
+    await db.update(connectionGrants).set({
+      providerTenant: sql`jsonb_set(${connectionGrants.providerTenant}, '{github,bindingSync}', ${JSON.stringify({ id: randomUUID(), removeInstallationIds: [] })}::jsonb)`,
+    }).where(eq(connectionGrants.id, f.grant.id));
+    await f.service.listGitHubRepositories(f.companyId, f.userId);
+    expect(f.webhook).toHaveBeenCalledTimes(3);
+
+    // A new installation registers every current installation; a removed one is deactivated.
+    const request = f.fetchMock.getMockImplementation()!;
+    f.fetchMock.mockImplementation(async (...args) => {
+      const path = new URL(String(args[0])).pathname;
+      if (path === "/user/installations") return Response.json({ installations: [{ id: 102, repository_selection: "selected", account: { login: "private-fixture-org" } }] });
+      if (path === "/user/installations/102/repositories") return Response.json({ repositories: [{ id: 202, full_name: "private-fixture-org/other", private: true }] });
+      return request(...args);
+    });
+    f.webhook.mockClear();
+    await f.service.listGitHubRepositories(f.companyId, f.userId);
+    expect(f.webhook.mock.calls.map(([binding]) => [binding.installationId, binding.active])).toEqual([["102", true], ["101", false]]);
+    const [moved] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, f.grant.id));
+    expect(moved.providerTenant?.github).toMatchObject({ installationIds: ["102"] });
+    expect(moved.providerTenant?.github?.bindingSync).toBeUndefined();
   });
 
   it("keeps the same catalog outputs with endpoint disabled and emits no owned-run spans outside an attempt", async () => {

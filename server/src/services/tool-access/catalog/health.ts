@@ -243,8 +243,12 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
           throw unprocessable("GitHub authorization must be connected", {
             code: "oauth_reauthorization_required",
           });
+        // A person's health check also repairs bindings Cloud may have lost.
+        // Background checks recur every 15 minutes, so they re-register only
+        // after the installation set changes or a binding sync is still owed.
         for (const grant of grantsToCheck)
-          await refreshManagedGitHubGrantAccess(connection, grant, actor);
+          await refreshManagedGitHubGrantAccess(connection, grant, actor, undefined,
+            actor?.actorType === "system" ? "changed" : "always");
       } else if (isBrowserUseConnection(connection) || nativeProviderCatalogFor(connection) || restConnectorFor(connection)
         || connection.transport === "plugin") {
         // A plugin-served connector is healthy when its tools can be listed
