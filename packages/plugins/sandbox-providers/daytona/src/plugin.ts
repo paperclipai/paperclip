@@ -2889,12 +2889,6 @@ const plugin = definePlugin(trackDaytonaHooks({
     const config = parseDriverConfig(params.config);
     const errors: string[] = [];
 
-    if (typeof params.config.image === "string" && params.config.image.trim().length === 0) {
-      errors.push("Daytona image cannot be empty.");
-    }
-    if (typeof params.config.snapshot === "string" && params.config.snapshot.trim().length === 0) {
-      errors.push("Daytona snapshot cannot be empty.");
-    }
     if (config.image && config.snapshot) {
       errors.push("Daytona sandbox environments must set either image or snapshot, not both.");
     }

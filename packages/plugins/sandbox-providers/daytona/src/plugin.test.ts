@@ -1007,6 +1007,29 @@ describe("Daytona sandbox provider plugin", () => {
     });
   });
 
+  it.each([
+    { image: "", snapshot: "base-snapshot", expectedImage: null, expectedSnapshot: "base-snapshot" },
+    { image: " \t\n ", snapshot: " base-snapshot ", expectedImage: null, expectedSnapshot: "base-snapshot" },
+    { image: "node:24", snapshot: "", expectedImage: "node:24", expectedSnapshot: null },
+    { image: " node:24 ", snapshot: " \t\n ", expectedImage: "node:24", expectedSnapshot: null },
+    { image: "", snapshot: "", expectedImage: null, expectedSnapshot: null },
+    { image: " \t\n ", snapshot: " \t\n ", expectedImage: null, expectedSnapshot: null },
+  ])("normalizes blank boot-source fields as unset: %j", async ({ image, snapshot, expectedImage, expectedSnapshot }) => {
+    const result = await plugin.definition.onEnvironmentValidateConfig!({
+      driverKey: "daytona",
+      config: { apiKey: "fixture-key", image, snapshot },
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      normalizedConfig: {
+        image: expectedImage,
+        snapshot: expectedSnapshot,
+      },
+    });
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
   it("normalizes config and validates the API key fallback", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
 
