@@ -7,7 +7,8 @@ import { NATIVE_ENVIRONMENT_BLOCKER_CODE, NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_A
   NATIVE_ENVIRONMENT_BLOCKER_MAX_RETRIES } from "./native-environment-blocker.js";
 import { planNotProducedDecision } from "./plan-mode-status.js";
 import { NATIVE_AGENT_BLOCKER_CONTINUATION_CODE, NATIVE_AGENT_BLOCKER_HANDOFF_CODE,
-  NATIVE_AGENT_BLOCKER_MAX_CONTINUATIONS } from "./native-agent-blocker.js";
+  NATIVE_AGENT_BLOCKER_MAX_CONTINUATIONS, NATIVE_AGENT_BLOCKER_MAX_PROGRESS_CONTINUATIONS,
+  NATIVE_AGENT_BLOCKER_SPLIT_CODE, nativeAgentBlockerSplitAction } from "./native-agent-blocker.js";
 
 export const NATIVE_STATUS_ARBITER_POLICY_VERSION = "phase6-v14";
 
@@ -61,7 +62,7 @@ export type NativeStatusEffect =
       owner: IssueUnblockDescriptor["owner"];
       action: string;
     }
-  | { kind: "schedule_retry"; cause: string; summary: string; agentId: string }
+  | { kind: "schedule_retry"; cause: string; summary: string; agentId: string; progressNextAction?: string }
   | {
       kind: "record_finalization_error";
       cause: string;
@@ -290,6 +291,12 @@ export function arbitrateNativeStatus(input: {
   /** The current owner's blocked report names a system-owned environment or tool outage. */
   environmentBlocker?: boolean;
   agentBlockerRecoverable?: boolean;
+  agentBlockerProgress?: boolean;
+  /**
+   * The agent that created this task, when it may take it back to split it:
+   * set only once its progress continuations are spent and it was not asked before.
+   */
+  agentBlockerSplitOwnerAgentId?: string | null;
   /** The task cannot change agent assignee (conversation, external chat binding, non-owner run, or unassignable owner). */
   blockerHandoffLocked?: boolean;
   /** A chat request for this task and agent is waiting as a deferred wake behind this run. */
@@ -671,10 +678,14 @@ export function arbitrateNativeStatus(input: {
   const blocker = input.assessment.blocker;
   const namedOtherAgent = Boolean(blocker?.ownerAgentId && blocker.ownerAgentId !== input.agentId);
   const retries = input.failureRetryCount ?? 0;
+  const progressNextAction = input.agentBlockerProgress && !input.hasUnresolvedIssueBlockers
+    ? blocker?.unblockAction.trim() : undefined;
+  const agentContinuationAvailable = retries < NATIVE_AGENT_BLOCKER_MAX_CONTINUATIONS
+    || (Boolean(progressNextAction) && retries < NATIVE_AGENT_BLOCKER_MAX_PROGRESS_CONTINUATIONS);
   const continuesAutomatically = Boolean(blocker) && !input.isConversation && !input.hasActivePauseHold && (
     (input.environmentBlocker === true && retries < NATIVE_ENVIRONMENT_BLOCKER_MAX_RETRIES) ||
     (input.agentBlockerRecoverable === true && blocker!.scope === "task_wide" && !blocker!.boardOwned &&
-      !namedOtherAgent && blocker!.ownerKind === "agent" && retries < NATIVE_AGENT_BLOCKER_MAX_CONTINUATIONS));
+      !namedOtherAgent && blocker!.ownerKind === "agent" && agentContinuationAvailable));
   if (input.assessment.reportedDisposition === "blocked" && input.hasQueuedChatRequest && continuesAutomatically) {
     return {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
@@ -717,13 +728,29 @@ export function arbitrateNativeStatus(input: {
     !input.isConversation
   ) {
     if (input.assessment.blocker.ownerKind === "agent" && !input.hasActivePauseHold &&
-        (input.failureRetryCount ?? 0) < NATIVE_AGENT_BLOCKER_MAX_CONTINUATIONS) {
+        agentContinuationAvailable) {
       return {
         policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
         statusAction: "preserve", toStatus: input.priorIssueStatus,
         reasonCode: NATIVE_AGENT_BLOCKER_CONTINUATION_CODE, unblockDescriptor: null,
         effects: [{ kind: "schedule_retry", cause: NATIVE_AGENT_BLOCKER_CONTINUATION_CODE,
-          summary: "Continue the task once in a fresh session.", agentId: input.agentId }],
+          summary: "Continue the task in a fresh session.", agentId: input.agentId,
+          ...(progressNextAction ? { progressNextAction } : {}) }],
+      };
+    }
+    // Every run saved work but the task still is not done: it is too large for
+    // one agent turn chain. Its creator can split it better than the board.
+    if (input.assessment.blocker.ownerKind === "agent" && !input.hasActivePauseHold &&
+        progressNextAction && input.agentBlockerSplitOwnerAgentId) {
+      const owner = { agentId: input.agentBlockerSplitOwnerAgentId };
+      const action = nativeAgentBlockerSplitAction(progressNextAction);
+      return {
+        policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+        statusAction: "blocked", toStatus: "blocked",
+        reasonCode: NATIVE_AGENT_BLOCKER_SPLIT_CODE,
+        blockerOwnerKind: input.assessment.blocker.ownerKind,
+        unblockDescriptor: { owner, action },
+        effects: [{ kind: "bind_blocker", owner, action }],
       };
     }
     const action = input.assessment.blocker.unblockAction;
