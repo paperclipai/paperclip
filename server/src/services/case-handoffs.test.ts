@@ -5,7 +5,7 @@ import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
-import { activityLog, agentApiKeys, agentWakeupRequests, agents, authSessions, authUsers, boardApiKeys, companyMemberships, principalPermissionGrants, caseAccessSources, caseEvents, caseHandoffs, caseIssueLinks, cases, companies, createDb, documentRevisions, documents, dotAgentBindings, heartbeatRuns, issueComments, issueDocuments, issues, issueWorkProducts } from "@paperclipai/db";
+import { activityLog, agentApiKeys, agentWakeupRequests, agents, authSessions, authUsers, boardApiKeys, companyMemberships, principalPermissionGrants, caseAccessSources, caseEvents, caseHandoffs, caseIssueLinks, cases, companies, createDb, documentRevisions, documents, dotAgentBindings, executionWorkspaces, heartbeatRuns, issueComments, issueDocuments, issues, issueWorkProducts, projectAccessMembers, projects } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { caseHandoffRoutes } from "../routes/case-handoffs.js";
 import { errorHandler } from "../middleware/error-handler.js";
@@ -42,6 +42,7 @@ describe("durable same-task case handoffs", () => {
     await db.delete(caseHandoffs); await db.delete(caseIssueLinks); await db.delete(cases);
     await db.delete(documentRevisions); await db.delete(documents);
     await db.delete(issues); await db.delete(heartbeatRuns); await db.delete(agentWakeupRequests);
+    await db.delete(executionWorkspaces); await db.delete(projectAccessMembers); await db.delete(projects);
     await db.delete(agentApiKeys); await db.delete(boardApiKeys); await db.delete(authSessions);
     await db.delete(principalPermissionGrants); await db.delete(companyMemberships); await db.delete(authUsers);
     await db.delete(agents); await db.delete(companies);
@@ -793,6 +794,38 @@ describe("durable same-task case handoffs", () => {
     expect((await db.select().from(issues).where(eq(issues.id, first.taskId)))[0])
       .toMatchObject({ id: first.taskId, status: "todo", assigneeAgentId: f.engineer });
     expect((await db.select().from(cases).where(eq(cases.id, first.caseId)))[0]!.phase).toBe("implementation");
+  });
+
+  it("refuses a handoff to an agent outside the task's bound private project before asking the owner to yield", async () => {
+    const f = await fixture();
+    const q = queue(() => new Date(Date.now() + 60_000));
+    const first = await f.service.handoff(f.companyId, board, f.input);
+    await q.worker.sweepPending();
+    // The project supplies no files itself; the task is bound to a workspace of it.
+    const [project] = await db.insert(projects).values({ companyId: f.companyId, name: "Restricted research",
+      visibility: "private", status: "planned" }).returning();
+    await db.insert(projectAccessMembers).values([f.triage, f.verifier].map(subjectId => ({
+      companyId: f.companyId, projectId: project!.id, subjectType: "agent" as const, subjectId })));
+    const [workspace] = await db.insert(executionWorkspaces).values({ companyId: f.companyId, projectId: project!.id,
+      name: "Retained task workspace", mode: "shared_workspace", strategyType: "project_primary", cwd: "/srv/example/retained" }).returning();
+    await db.update(issues).set({ projectId: project!.id, executionWorkspaceId: workspace!.id }).where(eq(issues.id, first.taskId));
+    const runId = await sourceRun(f.companyId, f.triage, first.taskId);
+    const actor = { type: "agent" as const, agentId: f.triage, companyId: f.companyId, runId, source: "agent_jwt" as const };
+    const [before] = await db.select().from(issues).where(eq(issues.id, first.taskId));
+    const handoffTo = (toAgentId: string) => f.service.handoff(f.companyId, actor, { case: { id: first.caseId },
+      idempotencyKey: randomUUID(), expectedHandoffVersion: 1, expectedIssueStatusVersion: before!.statusVersion,
+      toAgentId, phase: "implementation", instructions: "Continue in the bound workspace" });
+
+    await expect(handoffTo(f.engineer)).rejects.toMatchObject({ status: 422,
+      details: { code: "agent_not_assignable", reason: "assignee_lacks_project_access" } });
+    expect(await db.select().from(caseHandoffs).where(eq(caseHandoffs.caseId, first.caseId))).toHaveLength(1);
+    expect(await pendingCaseHandoffForRun(db, runId)).toBeFalsy();
+    expect((await db.select().from(issues).where(eq(issues.id, first.taskId)))[0])
+      .toMatchObject({ assigneeAgentId: f.triage, executionRunId: runId, statusVersion: before!.statusVersion });
+    expect((await db.select().from(cases).where(eq(cases.id, first.caseId)))[0]).toMatchObject({ handoffVersion: 1, phase: "triage" });
+
+    // An access member of the bound project is admitted normally.
+    await expect(handoffTo(f.verifier)).resolves.toMatchObject({ state: "awaiting_release", callerMustYield: true });
   });
 
   it("rechecks the original agent's current assignment grant on a protected task", async () => {

@@ -39,7 +39,7 @@ import { measureRunPhase } from "./execution-preparation-timing.js";
 import { automaticReadRecoveryCleanupCondition, directHumanCommentCondition, humanCreatedIssueCondition, pendingUserRequestCondition, pendingUserRequestRowCondition, touchedByUserCondition, userParticipationActivityCondition } from "./issue-participation.js";
 import { resolveProjectDefaultWorkspaceId } from "./project-default-workspace.js";
 import { type AuthorizationActor, canActorReadIssuePrivacy, executionWorkspaceReadSqlCondition, projectReadSqlCondition } from "./authorization.js";
-import { assertExecutionWorkspaceRecordAccess, assertTaskWorkspaceSourceProjectAccess } from "./task-workspace-access.js";
+import { assertAssigneeCanAccessTaskProject, assertExecutionWorkspaceRecordAccess, assertTaskWorkspaceSourceProjectAccess } from "./task-workspace-access.js";
 import { type TaskWorkspaceSelection, type TaskWorkspaceIntent } from "@paperclipai/shared";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { notifyChatPublicationWork } from "./chat-work-notifications.js";
@@ -11250,6 +11250,8 @@ export function issueService(db: Db) {
           }),
         );
 
+        // The project is final here: explicit, inherited, or a personal project.
+        await assertAssigneeCanAccessTaskProject(tx, values as Parameters<typeof assertAssigneeCanAccessTaskProject>[1]);
         if (values.parentId || values.executionWorkspaceId || values.status === "done" || values.status === "cancelled") {
           await notifyTerminalWorkspaceWork(tx, values.executionWorkspaceId ? `workspace:${values.executionWorkspaceId}`
             : values.parentId ? `issue:${values.parentId}` : undefined);
@@ -12187,6 +12189,14 @@ export function issueService(db: Db) {
           } else if (issueData.visibility === "private") {
             patch.privacyRootIssueId = receiptExisting.id;
           }
+        }
+        // The patch now holds its final project, so check the assignee before
+        // this update cancels handoffs or wakes, or writes the task.
+        const nextAssignment = { ...receiptExisting, ...patch } as typeof issues.$inferSelect;
+        if (nextAssignment.assigneeAgentId && (nextAssignment.assigneeAgentId !== receiptExisting.assigneeAgentId
+          || nextAssignment.projectId !== receiptExisting.projectId
+          || nextAssignment.workspaceSelection?.selection.kind !== receiptExisting.workspaceSelection?.selection.kind)) {
+          await assertAssigneeCanAccessTaskProject(tx, nextAssignment);
         }
         if (actorAgentId && actorRunId) {
           // Recheck under a run lock: a request admitted before Stop must not
