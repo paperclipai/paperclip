@@ -3,7 +3,7 @@ import { writeToolConnectionHealthChange } from "../../tool-connection-health-no
 import type { ActorInfo, DbTransaction } from "../types.js";
 import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
 import { createOAuthClientProtocol, storedOAuthTokenEndpointAuthMethod } from "./client.js";
-import { oauthConfig, normalizeOauthScopes, resolveGrantedOauthScopes } from "./metadata.js";
+import { connectionServerUrl, oauthConfig, normalizeOauthScopes, oauthRefreshRequestedScopes, resolveGrantedOauthScopes } from "./metadata.js";
 import { GOOGLE_SIGN_IN_CLOUD_ONLY_MESSAGE, googleWorkspaceEffectiveScopes, googleWorkspaceSubmittedScopesIn, isGoogleWorkspaceScopeGrant } from "@paperclipai/shared";
 import { emitConnectionUpdated } from "../../connector-telemetry.js";
 import { deleteGoogleContentWhenAccessEnds } from "../connections/google-content-retention.js";
@@ -354,6 +354,7 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
             );
           token = await exchangeOAuthToken({
             tokenUrl: oauthTokenUrl,
+            serverUrl: connectionServerUrl(connection.config),
             clientId: client.clientId,
             clientSecret: client.clientSecret,
             tokenEndpointAuthMethod: storedOAuthTokenEndpointAuthMethod(
@@ -361,12 +362,7 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
               client.clientSecret,
             ),
             grantType: "refresh_token",
-            scopes:
-              normalizeOauthScopes(grantOauth.scopes).length > 0
-                ? normalizeOauthScopes(grantOauth.scopes)
-                : normalizeOauthScopes(oauth.scopes).length > 0
-                  ? normalizeOauthScopes(oauth.scopes)
-                  : normalizeOauthScopes(oauth.scope),
+            scopes: oauthRefreshRequestedScopes(grantOauth, oauth),
             refreshToken: refreshSecret!.value,
             resource:
               typeof oauth.resource === "string" && oauth.resource

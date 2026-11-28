@@ -6,7 +6,7 @@ import type { ActorInfo } from "../types.js";
 import { createOAuthDiscovery } from "./discovery.js";
 import { createOAuthClientProtocol, storedOAuthTokenEndpointAuthMethod } from "./client.js";
 import { normalizeOAuthProviderError, oauthProviderErrorMessage } from "./provider-errors.js";
-import { oauthConfig, normalizeOauthScopes, resolveGrantedOauthScopes } from "./metadata.js";
+import { oauthConfig, normalizeOauthScopes, resolveGrantedOauthScopes, connectionServerUrl } from "./metadata.js";
 import { connectionMethodForConnection } from "../connection-methods.js";
 import { googleWorkspaceEffectiveScopes, googleWorkspaceSubmittedScopesIn, isGoogleWorkspaceScopeGrant } from "@paperclipai/shared";
 import { emitConnectionUpdated } from "../../connector-telemetry.js";
@@ -155,6 +155,8 @@ export function createDirectOAuthCallback(db: Db, dependencies: Dependencies) {
       codeVerifier: stateRow.codeVerifier,
       code: input.code,
       resource: endpoints.resource,
+      serverUrl: connectionServerUrl(connection.config),
+      scopes: authorizedScopes,
     });
     if (sourceTemplateKey === "google-workspace") {
       token.scope = googleWorkspaceEffectiveScopes(googleWorkspaceSubmittedScopesIn(authorizedScopes), googleWorkspaceSubmittedScopesIn(normalizeOauthScopes(token.scope))).join(" ");
