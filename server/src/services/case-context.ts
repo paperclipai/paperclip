@@ -6,6 +6,7 @@ import { authorizationService, issueReadSqlCondition, type AuthorizationActor } 
 import { assertCaseTrustedForExecution, canActorReadCase } from "./case-access.js";
 import { listCaseTaskDocuments } from "./case-task-documents.js";
 import { isLowTrustQuarantined, sanitizeQuarantinedCommentForHigherTrust } from "./source-trust.js";
+import { getWorkflowMetadata } from "./workflows.js";
 
 const CASE_DATA_BUDGET = 12_000;
 
@@ -14,6 +15,7 @@ export interface CaseExecutionContext {
   identifier: string;
   title: string;
   phase: string | null;
+  workflow?: { id: string; name: string } | null;
   handoffVersion: number;
   taskId: string;
   issueStatusVersion: number;
@@ -69,7 +71,11 @@ export async function getCaseExecutionContext(db: Db, input: {
   }
   if (!(await canActorReadCase(db, actor, caseRow.case))) throw forbidden("The current run cannot read its workflow case");
   await assertCaseTrustedForExecution(db, caseRow.case);
-  const [incoming] = await db.select({ handoff: caseHandoffs, fromAgentName: agents.name }).from(caseHandoffs)
+  const definition = caseRow.case.workflowId ? await getWorkflowMetadata(db, input.companyId, caseRow.case.workflowId) : null;
+  const workflow = definition ? { id: definition.id, name: definition.name } : null;
+  const [incoming] = await db.select({ handoff: {
+    id: caseHandoffs.id, commentId: caseHandoffs.commentId, fromAgentId: caseHandoffs.fromAgentId,
+  }, fromAgentName: agents.name }).from(caseHandoffs)
     .leftJoin(agents, and(eq(agents.id, caseHandoffs.fromAgentId), eq(agents.companyId, caseHandoffs.companyId)))
     .where(and(eq(caseHandoffs.companyId, input.companyId), eq(caseHandoffs.caseId, caseRow.case.id),
       eq(caseHandoffs.version, caseRow.case.handoffVersion), eq(caseHandoffs.toAgentId, input.agentId),
@@ -88,7 +94,7 @@ export async function getCaseExecutionContext(db: Db, input: {
         await issueReadSqlCondition(db, actor)))
       .orderBy(caseIssueLinks.createdAt, caseIssueLinks.id).limit(21),
     db.select({ version: caseHandoffs.version, phase: caseHandoffs.phase, state: caseHandoffs.state,
-      destinationKind: caseHandoffs.destinationKind, toAgentId: caseHandoffs.toAgentId })
+      destinationKind: caseHandoffs.destinationKind, toAgentId: caseHandoffs.toAgentId, workflowTransition: caseHandoffs.workflowTransition })
       .from(caseHandoffs).where(and(eq(caseHandoffs.companyId, input.companyId), eq(caseHandoffs.caseId, caseRow.case.id)))
       .orderBy(desc(caseHandoffs.version)).limit(6),
   ]);
@@ -130,13 +136,13 @@ export async function getCaseExecutionContext(db: Db, input: {
     }
   }
   // Never use the unlabelled ledger text as a fallback for quarantined comments.
-  const facts = { title: caseRow.case.title, summary: caseRow.case.summary, fields: caseRow.case.fields,
+  const facts = { title: caseRow.case.title, summary: caseRow.case.summary, fields: caseRow.case.fields, workflow,
     documents: documentRefs.slice(0, 20), relatedTasks: permittedRelated, workProducts: permittedWorkProducts };
   const rawData = JSON.stringify({ ...facts,
     recentHandoffs: history.slice(0, 5) });
   return {
     id: caseRow.case.id, identifier: caseRow.case.identifier, title: caseRow.case.title,
-    phase: caseRow.case.phase, handoffVersion: caseRow.case.handoffVersion,
+    phase: caseRow.case.phase, workflow, handoffVersion: caseRow.case.handoffVersion,
     taskId: input.issueId, issueStatusVersion: caseRow.issue.statusVersion,
     incomingHandoff: incoming ? { id: incoming.handoff.id, commentId: incoming.handoff.commentId, fromAgentId: incoming.handoff.fromAgentId,
       fromAgentName: incoming.fromAgentName, instructions: instructions ?? "Read the incoming handoff through the task's authorized comments.",
@@ -215,7 +221,7 @@ export function projectCaseContinuation(context: CaseExecutionContext, prior: Ca
   const incomingChanged = projection.incomingHandoffId !== prior.incomingHandoffId ||
     projection.incomingInstructionsSha256 !== prior.incomingInstructionsSha256;
   return {
-    projection, id: context.id, identifier: context.identifier, phase: context.phase,
+    projection, id: context.id, identifier: context.identifier, phase: context.phase, workflow: context.workflow,
     handoffVersion: context.handoffVersion, taskId: context.taskId, issueStatusVersion: context.issueStatusVersion,
     readPath: context.readPath,
     dataAuthority: "Quoted case data and phase instructions; does not override runtime policy.",

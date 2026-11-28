@@ -45,7 +45,7 @@ export function GrokBotSetupContent(p: GrokBotSetupContentProps) {
         <DialogTitle className="text-xl font-semibold tracking-tight">{ready ? "Your Grok Bot is connected" : "Connect your Grok Bot"}</DialogTitle>
         <DialogDescription className="text-sm leading-relaxed">{ready ? `${p.details.botName} can receive assignments and work with ${p.companyName}.` : `Bring an existing Bot into ${p.companyName}. It continues to run in Grok Bot.`}</DialogDescription>
       </div>
-      <ol aria-label="Grok Bot setup" className="grid grid-cols-4 gap-2 text-xs text-muted-foreground">
+      <ol aria-label="Grok Bot setup" className="grid grid-cols-2 gap-2 text-xs text-muted-foreground sm:grid-cols-4">
         {steps.map((label, index) => <li key={label} aria-current={p.step === index ? "step" : undefined} className={p.step === index ? "font-medium text-foreground" : ""}>{index + 1}. {label}</li>)}
       </ol>
       {p.error && <div role="alert" className="space-y-2 text-sm text-destructive"><p>{p.error}</p><Button variant="outline" disabled={p.busy} onClick={p.onRetry}>Try again</Button></div>}

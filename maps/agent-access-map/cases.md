@@ -186,6 +186,23 @@ with agent credentials.
 
 Capability ID: `cases/handoffs`.
 
+Reusable workflow extension (2026-10-21): `GET/POST /api/companies/{companyId}/workflows`
+and `GET/PATCH /api/workflows/{id}` expose company-scoped metadata/Markdown prompts.
+Native `list_workflows`, `read_workflow`, `create_workflow`, `update_workflow` use
+the optional Cases group, including with generic API tools disabled. Writes use
+existing run/source-trust fences and mutation receipts. Bounded prompt reads use
+the native API JSON text paging path; every page checks current company access.
+Continuation pages require the first page's content snapshot; edits return 409
+and require restarting the read, so pages cannot silently combine definitions.
+Kickoff accepts either a workflow ID or inline text. Agent handoffs omit the ID
+to preserve, explicitly name an ID to adopt/refresh, or pass null to detach.
+Acceptance snapshots the prompt; transfer checks its task-document base revision
+before atomically adopting workflow/phase/instructions. Generic case updates
+cannot alter routing. Repeated visits and captured names remain in handoff history.
+The real-database/native-tool tests prove reuse, refresh, conflict/cancel/restart,
+cross-company denial, stopped writes, flag-off execution, and inline compatibility.
+Configured-provider acceptance of the extended journey is recorded separately.
+
 Review: `baseline`.
 
 API: `present` — POST /api/companies/{companyId}/case-handoffs; GET /api/cases/{id}/handoffs; POST /api/cases/{id}/handoffs/{handoffId}/retry and /cancel.
@@ -211,7 +228,7 @@ requires the current managed feature setting. Missing membership, a viewer
 role, an unavailable lookup, or a changed configuration holds the transfer.
 No Cloud role or administrator grant is stored in the handoff context.
 
-Evidence: `verified` — 2026-10-19 working-tree implementation. The [assembled native integration](../../server/src/__tests__/case-handoff-native.integration.test.ts) passed with actual runnerd and a controlled provider; [legacy HTTP integration](../../server/src/__tests__/case-handoff-legacy.integration.test.ts) and real-database authority/recovery tests passed. The later API-key campaign `local-2026-10-19T19-14-18-642Z` completed four real native runs and terminal case closure. The earlier subscription HTTP 429 remains recorded as a failed attempt; it was not regraded. See the [verification record](../../doc/plans/2026-10-19-persistent-case-handoffs.md).
+Evidence: `verified` — 2026-10-19 working-tree implementation. The [assembled native integration](../../server/src/__tests__/case-handoff-native.integration.test.ts) passed with actual runnerd and a controlled provider, alongside [case handoffs](../../server/src/services/case-handoffs.test.ts) and real-database authority/recovery tests. The later API-key campaign `local-2026-10-19T19-14-18-642Z` completed four real native runs and terminal case closure. The earlier subscription HTTP 429 remains recorded as a failed attempt; it was not regraded. See the [verification record](../../doc/plans/2026-10-19-persistent-case-handoffs.md).
 
 Verification: `passed` — deterministic boundaries include native tool acceptance/yield, process settlement, same-task successor context, authenticated HTTP replay, denied private sources, version conflicts, review gates and restart/acknowledgment recovery. The configured-provider correction round trip passed using API credentials. The latest `local-2026-10-19T21-39-45-440Z` campaign passed 13 checks with task-owned documents, four nonoverlapping runs, same-task transfers, returning-builder session reuse and terminal case closure. The earlier `local-2026-10-19T21-32-43-612Z` campaign remains failed because the task revision API omitted stored writer-run attribution; the subsequent authorized projection fix was qualified by the new campaign. Compact context content/omission assertions retain separate deterministic evidence.
 

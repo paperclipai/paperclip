@@ -228,6 +228,41 @@ Disabling the rollout flag blocks fresh runner starts. It does not make an
 already persisted native run unreadable or prevent bounded recovery and
 finalization of that run.
 
+## OpenCode on macOS SSH hosts
+
+A Linux controller can launch native OpenCode on an Apple Silicon Mac over
+SSH. This uses the existing SSH environment and its remote account. It does
+not require a sandbox image or change an existing legacy agent.
+
+The standard image workflow builds the macOS daemon and provider pack on a
+native Apple Silicon host. It tests the pinned OpenCode 1.18.34 server, then
+ships the daemon, Node, proxy and OpenCode executable as a separate runtime.
+The runtime omits other harness distributions and their optional inventories.
+The image verifies the archive digest and source revision before installation.
+Merge-queue images use the same producer, so promotion retains these artifacts.
+Unchanged runtime inputs can reuse an artifact from a successful protected
+master image build. The input digest covers the Runner build inputs and the
+macOS build recipe. Pull request artifacts never supply this reuse authority.
+
+For a macOS SSH target, Core selects the `darwin-arm64` runtime under
+`/opt/paperclip-runner/remote-runtimes`. Operators can set
+`PAPERCLIP_RUNNER_REMOTE_RUNTIMES_PATH` to another absolute runtime parent.
+The existing default Linux provider pack remains in place for Linux targets.
+Explicit custom provider-pack or daemon overrides keep their existing meaning.
+
+Runner verifies the selected daemon and pack, then stages private launch files
+under the SSH account's home. Node and OpenCode must have Mach-O headers for
+the admitted architecture. Saved artifact and account bindings still apply to
+continuation and recovery. The agent uses the model endpoint from its own
+execution environment, such as a loopback SSH tunnel.
+
+A manual Docker build can omit the optional runtime inputs. Such an image
+continues to support its existing targets, but a macOS OpenCode SSH run fails
+with a missing-runtime diagnostic. To include the runtime, place the
+same-source producer's `darwin-arm64.json` and `darwin-arm64.tar.gz` in
+`docker/remote-runtimes/` before the image build. Keep these generated files
+out of Git. Intel Mac SSH runtime distribution is outside this release.
+
 ## Rollout
 
 The rollout has three gates:

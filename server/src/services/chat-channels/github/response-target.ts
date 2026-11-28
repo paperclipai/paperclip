@@ -4,16 +4,24 @@ import { chatActions, chatConversations, chatDeliveries, chatEndpoints, type Db 
 import { forbidden, HttpError } from "../../../errors.js";
 
 export type GitHubResponseSource = {
-  endpoint: typeof chatEndpoints.$inferSelect;
-  conversation: typeof chatConversations.$inferSelect;
-  delivery: typeof chatDeliveries.$inferSelect;
+  endpoint: Pick<typeof chatEndpoints.$inferSelect,
+    "id" | "companyId" | "assignedAgentId" | "botExternalId" | "botUsername"
+  > & { setup: unknown };
+  conversation: Pick<typeof chatConversations.$inferSelect, "id" | "issueId" | "externalThreadId">;
+  delivery: Pick<typeof chatDeliveries.$inferSelect, "id" | "principalId" | "createdAt">;
   number: number;
   replyId: string | null;
   repositoryId?: string;
 };
 
+/** A pull request's main conversation; inline review threads add `:rc:<id>`. */
+const MAIN_PULL_THREAD = "^github:[^:]+:[1-9][0-9]*$";
+export const isMainPullThread = (threadId: string) => new RegExp(MAIN_PULL_THREAD).test(threadId);
+/** The conversation thread the request's pull request or issue starts from. */
+export const baseThreadId = (threadId: string) => threadId.replace(/:rc:[1-9][0-9]*$/, "");
+
 export const isMainPullResponse = (source: GitHubResponseSource) =>
-  !source.replyId && /^github:[^:]+:[1-9][0-9]*$/.test(source.conversation.externalThreadId);
+  !source.replyId && isMainPullThread(source.conversation.externalThreadId);
 
 export const requestResponseMarker = (source: GitHubResponseSource) => `<!-- paperclip-response:${createHash("sha256")
   .update(`${source.endpoint.companyId}:${source.endpoint.id}:${source.delivery.id}`).digest("hex")} -->`;

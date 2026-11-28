@@ -90,7 +90,7 @@ For custom service wrappers, use an absolute, supported Node executable and put
 that executable's directory first on `PATH`. Keep required existing PATH entries.
 On Linux, verify the running executable with `/proc/<server-pid>/exe`; an
 interactive shell version check alone is insufficient. Use the guarded restart
-procedure in [DEVELOPING.md](DEVELOPING.md#hot-restart-deploys) when jobs are active.
+procedure in [hot-restart-deploys.md](hot-restart-deploys.md) when jobs are active.
 
 Legacy local adapters default to ACP, including configurations with no `engine`
 field or the old `auto` value. An unavailable ACP runtime fails the run and the

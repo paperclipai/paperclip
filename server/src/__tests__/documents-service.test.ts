@@ -102,6 +102,21 @@ describeEmbeddedPostgres("documentService system issue documents", () => {
     expect(payload.documentSummaries.map((doc) => doc.key)).toEqual(["plan"]);
   });
 
+  it("reads one pinned revision and never substitutes a newer or unrelated document", async () => {
+    const { issueId } = await createIssueWithDocuments();
+    const original = await svc.getIssueDocumentByKey(issueId, "plan");
+    await svc.upsertIssueDocument({ issueId, key: "plan", format: "markdown", body: "# Newer plan", baseRevisionId: original!.latestRevisionId });
+    const pinned = await svc.getIssueDocumentRevision(issueId, "plan", original!.latestRevisionId!);
+    expect(pinned?.body).toBe("# Plan");
+    expect(pinned?.id).toBe(original!.latestRevisionId);
+    const current = await svc.getIssueDocumentByKey(issueId, "plan");
+    expect(pinned).toMatchObject({ isLatest: false, latestRevisionId: current!.latestRevisionId, latestRevisionNumber: 2 });
+    expect(await svc.getIssueDocumentRevision(issueId, "plan", current!.latestRevisionId!)).toMatchObject({ isLatest: true, revisionNumber: 2, body: "# Newer plan" });
+    expect(await svc.getIssueDocumentRevision(issueId, "other-document", original!.latestRevisionId!)).toBeNull();
+    expect(await svc.getIssueDocumentRevision(randomUUID(), "plan", original!.latestRevisionId!)).toBeNull();
+    expect(await svc.getIssueDocumentRevision(issueId, "plan", randomUUID())).toBeNull();
+  });
+
   it("keeps system documents available for includeSystem and direct fetch callers", async () => {
     const { issueId } = await createIssueWithDocuments();
 
@@ -172,6 +187,31 @@ describeEmbeddedPostgres("documentService system issue documents", () => {
       body: saved.document.body,
       latestRevisionId: saved.document.latestRevisionId,
     });
+  });
+
+  it("returns the saved document from update and restore exactly as a fresh read returns it", async () => {
+    const { issueId } = await createIssueWithDocuments();
+    const original = (await svc.getIssueDocumentByKey(issueId, "plan"))!;
+
+    const updated = await svc.upsertIssueDocument({
+      issueId,
+      key: "plan",
+      title: "Plan",
+      format: "markdown",
+      body: "# Second plan",
+      baseRevisionId: original.latestRevisionId,
+    });
+    expect(updated.document).toEqual(await svc.getIssueDocumentByKey(issueId, "plan"));
+    expect(updated.document).not.toHaveProperty("latestBody");
+
+    const restored = await svc.restoreIssueDocumentRevision({
+      issueId,
+      key: "plan",
+      revisionId: original.latestRevisionId!,
+    });
+    expect(restored.document.body).toBe(original.body);
+    expect(restored.document).toEqual(await svc.getIssueDocumentByKey(issueId, "plan"));
+    expect(restored.document).not.toHaveProperty("latestBody");
   });
 
   it("locks and unlocks issue documents", async () => {

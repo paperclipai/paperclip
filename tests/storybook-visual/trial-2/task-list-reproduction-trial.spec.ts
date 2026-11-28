@@ -10,7 +10,7 @@ const clock = "2026-10-15T00:00:00.000Z";
 
 test.use({
   viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1,
-  colorScheme: "dark", reducedMotion: "reduce", locale: "en-US",
+  colorScheme: "dark", contextOptions: { reducedMotion: "reduce" }, locale: "en-US",
   timezoneId: "America/Los_Angeles",
   launchOptions: { executablePath: process.env.TRIAL_CHROMIUM_EXECUTABLE },
 });
