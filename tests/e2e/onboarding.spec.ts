@@ -113,11 +113,16 @@ test.describe("Onboarding wizard", () => {
     ).toBeFalsy();
 
     // Name submission persists an inactive record before the provider question.
+    await page.evaluate(() => {
+      Object.defineProperty(crypto, "randomUUID", { value: undefined, configurable: true });
+    });
     await page.locator("#onboarding-agent-name").fill("Ada");
     const firstSetupResponse = page.waitForResponse(response =>
       response.request().method() === "POST" && response.url().endsWith(`/api/companies/${company.id}/agents`));
     await page.getByRole("button", { name: "Next", exact: true }).click();
     const firstSetup = await (await firstSetupResponse).json();
+    await page.evaluate(() => { Reflect.deleteProperty(crypto, "randomUUID"); });
+    expect(firstSetup.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     expect(firstSetup).toMatchObject({ name: "Ada", pauseReason: "setup", metadata: { setupAdapterPending: true } });
     await expect(page.getByRole("radio").first()).toBeVisible();
     await expect(page.locator('[role="radio"][aria-checked="true"]')).toHaveCount(0);
