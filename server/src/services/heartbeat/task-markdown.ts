@@ -10,6 +10,8 @@ import { ONBOARDING_CHAT_DIRECTIVE, ONBOARDING_CHAT_GREETING_DIRECTIVE } from ".
 export const NATIVE_PLAN_REVIEW_DIRECTIVE =
   "Paperclip asks the user to approve the plan once it is saved as this task's Plan document (key \"plan\"), so do not open your own approval or confirmation card for it.";
 
+const MAX_INLINE_TASK_PLAN_CHARS = 12_000;
+
 export function buildPaperclipTaskMarkdown(input: {
   companyPrefix?: string | null;
   onboardingChat?: boolean;
@@ -375,13 +377,19 @@ export function buildPaperclipTaskMarkdown(input: {
     if (description) {
       lines.push("", "Issue description:", fenceTaskText(description));
     }
-    if (!issue.conversationAgentId && input.taskPlan?.body.trim()) {
+    const planBody = issue.conversationAgentId ? "" : input.taskPlan?.body.trim();
+    if (input.taskPlan && planBody) {
       lines.push(
         "",
         `Task plan document ${input.taskPlan.documentId}, revision ${input.taskPlan.revisionNumber} (${input.taskPlan.revisionId}):`,
         "Use this plan as assignment context, including its outcome and acceptance criteria. Follow the current work mode and any required approvals.",
-        fenceTaskText(input.taskPlan.body.trim()),
+        fenceTaskText(planBody.slice(0, MAX_INLINE_TASK_PLAN_CHARS)),
       );
+      if (planBody.length > MAX_INLINE_TASK_PLAN_CHARS) {
+        lines.push(
+          `Plan truncated at ${MAX_INLINE_TASK_PLAN_CHARS} of ${planBody.length} chars; read the full document via GET /api/issues/${issue.id}/documents/plan.`,
+        );
+      }
     }
   }
   if (ancestors.length > 0) {
