@@ -7,9 +7,12 @@ Small API contracts that integrations and agents rely on.
 The native `write_document` tool preserves the supplied Markdown body, including
 leading whitespace, hard-break spaces, line endings, and final newlines. It still
 requires a nonblank body and normalizes key/title fields. `write_task_document`
-and REST document PUT also retain surrounding whitespace. Those REST-backed
-paths keep their existing escaped-line-break normalization: a body with no real
-line breaks can have literal `\n` sequences converted to newlines.
+and REST document PUT also retain surrounding whitespace and share a maximum body
+length of 524,288 characters. These paths normalize literal `\n` sequences to
+newlines when the body contains no real line breaks. ACPX allows up to 480 KiB
+for the encoded cross-task document tool payload, including JSON escaping
+and call metadata. For larger bodies within the document limit, use the REST
+document PUT endpoint directly.
 
 ## Starting a prepared task
 

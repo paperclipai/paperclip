@@ -1077,6 +1077,35 @@ describe("qualified ACPX runtime sidecar", () => {
     expect(edit).not.toHaveProperty("content");
   });
 
+  it("forwards a large cross-task document with its Markdown intact", async () => {
+    const emitted: unknown[] = [];
+    const writer = loadActualSidecarWriter();
+    const waitForTool = loadWaitForTool({ tools: new Map(), emitted, emit: writer.emit });
+    const body = "# Synthetic design\n\n" + "A testable requirement with an example.  \n".repeat(9_300);
+    const signal = new AbortController();
+    const result = waitForTool({
+      callId: "large-document", tool: "write_task_document",
+      arguments: { taskId: "task-2", key: "design", title: "Design", body, baseRevisionId: null },
+      signal: signal.signal,
+    });
+    const settled = expect(result).rejects.toThrow("ACPX tool call was cancelled");
+    await Promise.resolve();
+    signal.abort();
+    await settled;
+    expect(Buffer.byteLength(writer.writes[0]!)).toBeGreaterThan(256 * 1024);
+    expect(JSON.parse(writer.writes[0]!)).toMatchObject({
+      eventType: "runtime.tool_called", payload: { operationId: "write_task_document", input: { body } },
+    });
+    await expect(waitForTool({
+      callId: "large-comment", tool: "comment_on_task", arguments: { body }, signal: new AbortController().signal,
+    })).rejects.toThrow("256 KiB tool-call limit");
+    await expect(waitForTool({
+      callId: "over-limit-document", tool: "write_task_document",
+      arguments: { body: "x".repeat(480 * 1024) }, signal: new AbortController().signal,
+    })).rejects.toThrow("480 KiB tool-call limit");
+    expect(writer.writes).toHaveLength(1);
+  });
+
   it.each(["paperclip_finish", "paperclip_block"])(
     "bounds pending %s calls before reserved handling and resumes admission",
     async (operationId) => {
@@ -2246,7 +2275,7 @@ function loadWaitForTool(input: {
     "boundedIdentity", "tools", "turnId", "emit", "PRP_COMPLETION_TOOL_NAME",
     "PRP_BLOCK_TOOL_NAME", "validatePrpStructuredRunResult", "boundedSidecarValue", "record", "MAX_PENDING_TOOLS", "stringifyAcpxSidecarFrame",
     "resolveCompletionContinuation", "runId", "normalizingTools", "randomUUID", "callIdNamespace", "toolUseAdmission", "MAX_EVENT_PAYLOAD_BYTES",
-    "providerCycles",
+    "providerCycles", "MAX_DOCUMENT_TOOL_PAYLOAD_BYTES",
     `return (${functionSource});`,
   );
   return factory(
@@ -2272,6 +2301,7 @@ function loadWaitForTool(input: {
     input.toolUseAdmission ?? null,
     256 * 1024,
     null,
+    480 * 1024,
   );
 }
 

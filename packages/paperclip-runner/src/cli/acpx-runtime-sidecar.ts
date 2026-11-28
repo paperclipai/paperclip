@@ -127,6 +127,8 @@ const MAX_PENDING_TOOLS = 512;
 const MAX_PENDING_INPUTS = 16;
 const MAX_BUFFERED_OUTPUT_BYTES = 4 * ACPX_SIDECAR_MAX_FRAME_BYTES;
 const MAX_EVENT_PAYLOAD_BYTES = 256 * 1024;
+// Keep the encoded document event within Runner’s encrypted tool-input budget.
+const MAX_DOCUMENT_TOOL_PAYLOAD_BYTES = 480 * 1024;
 let outputFailed = false;
 process.stdout.on("error", () => {
   outputFailed = true;
@@ -1139,8 +1141,11 @@ async function waitForTool(call: RunnerToolCall, internal = false): Promise<unkn
   try { encodedToolCall = stringifyAcpxSidecarFrame(toolCall); } catch {
     throw new Error("ACPX tool arguments cannot be encoded for the Runner");
   }
-  if (Buffer.byteLength(encodedToolCall) > MAX_EVENT_PAYLOAD_BYTES) {
-    throw new Error(`ACPX tool arguments exceed the ${MAX_EVENT_PAYLOAD_BYTES / 1024} KiB tool-call limit`);
+  const maxPayloadBytes = operationId === "write_task_document"
+    ? MAX_DOCUMENT_TOOL_PAYLOAD_BYTES
+    : MAX_EVENT_PAYLOAD_BYTES;
+  if (Buffer.byteLength(encodedToolCall) > maxPayloadBytes) {
+    throw new Error(`ACPX tool arguments exceed the ${maxPayloadBytes / 1024} KiB tool-call limit`);
   }
   if (!emit("runtime.tool_called", toolCall, activeTurnId)) {
     throw new Error("ACPX tool call exceeds the sidecar frame limit");

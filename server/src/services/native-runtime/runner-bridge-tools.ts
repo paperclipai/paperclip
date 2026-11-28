@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { constants, existsSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import path from "node:path";
+import { upsertIssueDocumentSchema } from "@paperclipai/shared";
 import { z } from "zod";
 import { resolvePaperclipSkillReference } from "@paperclipai/adapter-utils/server-utils";
 import type { NativeRuntimeContextSnapshot } from "../../vendor/paperclip-runner/index.js";
@@ -23,7 +24,18 @@ const specs = [
   ["comment_on_task", "Post an attributed comment on an authorized task, without reopening or interrupting it. Use it to give an existing task's assignee a new or changed requirement, rather than creating a duplicate task or editing that task's workspace files, and set resume: true for such a requirement. If the assignee is running on that task now, the comment does not reach the run in progress: Paperclip saves it in the task's queue and delivers it at the start of the assignee's next turn on that task. With resume: true that delivery still happens if the assignee completes the task first; without it, a comment on finished work is only a note. Report a queued requirement as saved for the next turn, not as already applied. Requires an explicit taskId UUID; use report_progress with body and idempotencyKey for the active task.", z.object({ taskId: explicitTaskId("report_progress with body and idempotencyKey"), body: z.string().trim().min(1).max(20000), resume: z.boolean().optional() }).strict(), "mutation"],
   ["list_task_documents", "List documents on an authorized task. Requires an explicit taskId UUID; use list_documents with {} for the active task.", z.object({ taskId: explicitTaskId("list_documents with {}") }).strict(), "read"],
   ["read_task_document", "Read a document on an authorized task. Requires an explicit taskId UUID; use read_document with {key} for the active task.", z.object({ taskId: explicitTaskId("read_document with {key}"), key: documentKey }).strict(), "read"],
-  ["write_task_document", "Write a document on an authorized task using its current revision. Permissions and document locks apply. Requires an explicit taskId UUID; use write_document with key, title, body, baseRevisionId, and idempotencyKey for the active task.", z.object({ taskId: explicitTaskId("write_document with key, title, body, baseRevisionId, and idempotencyKey"), key: documentKey, title: z.string().min(1).max(200), body: z.string().max(20000), baseRevisionId: z.uuid().nullable() }).strict(), "mutation"],
+  [
+    "write_task_document",
+    "Write a document on an authorized task using its current revision. Permissions and document locks apply. Requires an explicit taskId UUID; use write_document with key, title, body, baseRevisionId, and idempotencyKey for the active task.",
+    z.object({
+      taskId: explicitTaskId("write_document with key, title, body, baseRevisionId, and idempotencyKey"),
+      key: documentKey,
+      title: z.string().min(1).max(200),
+      body: upsertIssueDocumentSchema.shape.body.out,
+      baseRevisionId: z.uuid().nullable(),
+    }).strict(),
+    "mutation",
+  ],
   ["save_api_response", "Save one authorized, non-sensitive GET response from search_api as an immutable artifact for lossless local helper input, even when it is small. Reads only: it has no request body and never changes data; use call_api for writes. Returns artifactId, byteSize and sha256 for download_artifact (up to 10 MiB; larger text artifacts need GET /api/assets/{assetId}/content with responseText). A zero-byte success returns empty:true and no artifact. Denied, sensitive and partial responses are not saved.", z.object({
     operationId: z.string().min(1).max(500).regex(/^GET /, "Use a GET operationId from search_api").describe("Exact GET operationId returned by search_api, for example GET /api/projects/{id}."),
     pathParams: z.record(z.string().max(200), z.string().max(1000)).optional(),
