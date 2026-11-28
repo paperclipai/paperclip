@@ -1901,6 +1901,10 @@ function uniqueNameBySlug(baseName: string, existingSlugs: Set<string>) {
   }
 }
 
+function projectNameMatchKey(name: string | null | undefined): string {
+  return (name ?? "").trim().toLocaleLowerCase();
+}
+
 function uniqueProjectName(baseName: string, existingProjectSlugs: Set<string>) {
   const baseSlug = deriveProjectUrlKey(baseName, baseName);
   if (!existingProjectSlugs.has(baseSlug)) return baseName;
@@ -5046,6 +5050,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const projectPlans: CompanyPortabilityPreviewResult["plan"]["projectPlans"] = [];
     const issuePlans: CompanyPortabilityPreviewResult["plan"]["issuePlans"] = [];
     const existingProjectSlugToProject = new Map<string, { id: string; name: string }>();
+    const existingProjectNameToProject = new Map<string, { id: string; name: string } | null>();
     const existingProjectSlugs = new Set<string>();
 
     if (input.target.mode === "existing_company") {
@@ -5060,6 +5065,13 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       for (const existing of existingProjects) {
         if (!existingProjectSlugToProject.has(existing.urlKey)) {
           existingProjectSlugToProject.set(existing.urlKey, { id: existing.id, name: existing.name });
+        }
+        const nameKey = projectNameMatchKey(existing.name);
+        if (nameKey) {
+          existingProjectNameToProject.set(
+            nameKey,
+            existingProjectNameToProject.has(nameKey) ? null : { id: existing.id, name: existing.name },
+          );
         }
         existingProjectSlugs.add(existing.urlKey);
       }
@@ -5142,8 +5154,16 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     }
 
     if (include.projects) {
+      const matchedExistingProjectIds = new Set<string>();
       for (const manifestProject of manifest.projects) {
-        const existing = existingProjectSlugToProject.get(manifestProject.slug) ?? null;
+        const bySlug = existingProjectSlugToProject.get(manifestProject.slug);
+        if (bySlug) matchedExistingProjectIds.add(bySlug.id);
+      }
+      for (const manifestProject of manifest.projects) {
+        const bySlug = existingProjectSlugToProject.get(manifestProject.slug) ?? null;
+        const byName = bySlug ? null : existingProjectNameToProject.get(projectNameMatchKey(manifestProject.name)) ?? null;
+        const existing = bySlug ?? (byName && !matchedExistingProjectIds.has(byName.id) ? byName : null);
+        if (byName && existing) matchedExistingProjectIds.add(byName.id);
         if (!existing) {
           projectPlans.push({
             slug: manifestProject.slug,
@@ -6004,19 +6024,52 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             normalizedProjectEnv ?? {},
           );
 
+          const unclaimedWorkspaces = planProject.action === "update"
+            ? [...await projects.listWorkspaces(projectId)]
+            : [];
+          type ManifestWorkspace = (typeof manifestProject.workspaces)[number];
+          const reusedWorkspaceByEntry = new Map<ManifestWorkspace, (typeof unclaimedWorkspaces)[number]>();
+          const claimWorkspace = (entry: ManifestWorkspace, matches: (existing: (typeof unclaimedWorkspaces)[number]) => boolean) => {
+            const index = unclaimedWorkspaces.findIndex(matches);
+            if (index >= 0) reusedWorkspaceByEntry.set(entry, unclaimedWorkspaces.splice(index, 1)[0]!);
+          };
           for (const workspace of manifestProject.workspaces) {
-            const createdWorkspace = await projects.createWorkspace(projectId, {
-              name: workspace.name,
-              sourceType: workspace.sourceType ?? undefined,
-              repoUrl: workspace.repoUrl ?? undefined,
-              repoRef: workspace.repoRef ?? undefined,
-              defaultRef: workspace.defaultRef ?? undefined,
-              visibility: workspace.visibility ?? undefined,
-              setupCommand: workspace.setupCommand ?? undefined,
-              cleanupCommand: workspace.cleanupCommand ?? undefined,
-              metadata: workspace.metadata ?? undefined,
-              isPrimary: workspace.isPrimary,
-            });
+            claimWorkspace(workspace, (existing) => existing.name === workspace.name);
+          }
+          for (const workspace of manifestProject.workspaces) {
+            if (reusedWorkspaceByEntry.has(workspace) || !workspace.repoUrl) continue;
+            claimWorkspace(workspace, (existing) => existing.repoUrl === workspace.repoUrl);
+          }
+          for (const workspace of manifestProject.workspaces) {
+            const reused = reusedWorkspaceByEntry.get(workspace) ?? null;
+            const workspaceInput = reused
+              ? {
+                name: workspace.name,
+                sourceType: workspace.sourceType ?? undefined,
+                repoUrl: workspace.repoUrl ?? null,
+                repoRef: workspace.repoRef ?? null,
+                defaultRef: workspace.defaultRef ?? workspace.repoRef ?? null,
+                visibility: workspace.visibility ?? "default",
+                setupCommand: workspace.setupCommand ?? null,
+                cleanupCommand: workspace.cleanupCommand ?? null,
+                metadata: workspace.metadata ?? null,
+                isPrimary: workspace.isPrimary,
+              }
+              : {
+                name: workspace.name,
+                sourceType: workspace.sourceType ?? undefined,
+                repoUrl: workspace.repoUrl ?? undefined,
+                repoRef: workspace.repoRef ?? undefined,
+                defaultRef: workspace.defaultRef ?? undefined,
+                visibility: workspace.visibility ?? undefined,
+                setupCommand: workspace.setupCommand ?? undefined,
+                cleanupCommand: workspace.cleanupCommand ?? undefined,
+                metadata: workspace.metadata ?? undefined,
+                isPrimary: workspace.isPrimary,
+              };
+            const createdWorkspace = reused
+              ? await projects.updateWorkspace(projectId, reused.id, workspaceInput)
+              : await projects.createWorkspace(projectId, workspaceInput);
             if (!createdWorkspace) {
               warnings.push(`Project ${planProject.slug} workspace ${workspace.key} could not be created during import.`);
               continue;
