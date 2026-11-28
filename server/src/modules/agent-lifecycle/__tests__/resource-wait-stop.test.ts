@@ -139,4 +139,63 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(await canRetryStoppedRun(db, changed)).toBe(false);
     expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
   });
+
+  describe("stale continuation cancelled before dispatch", () => {
+    async function staleFixture() {
+      const { agent, run } = await fixture("continuation_task_ownership_changed", "settled");
+      const [stale] = await db.update(heartbeatRuns).set({
+        resultJson: { cancellation: { source: "control_plane", expected: true, initiator: { type: "system" },
+          reason: "continuation_task_ownership_changed", recordedAt: "2000-01-01T00:00:01Z" } },
+        controllerLeaseExpiresAt: null,
+      }).where(eq(heartbeatRuns.id, run.id)).returning();
+      return { agent, run: stale };
+    }
+
+    it("lets a pause finish past a conversation-adapter run cancelled by a stale continuation", async () => {
+      const { agent, run } = await staleFixture();
+      expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(true);
+      const work = configureAgentLifecycle(db, {
+        requiredPluginIds: async () => [], runPlugin: async () => "complete",
+        runHost: createLifecycleDriver(db, {} as never).runHost,
+      });
+      try {
+        await createAgentLifecycle(db).pauseAgent(agent.id);
+        await work.process(agent.id);
+        const [paused] = await db.select().from(agents).where(eq(agents.id, agent.id));
+        expect(paused).toMatchObject({ status: "paused", lifecycleState: "paused" });
+        expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0].status).toBe("cancelled");
+      } finally { await work.stop(); }
+    });
+
+    it.each([
+      { errorCode: "cancelled" }, { errorCode: null }, { executionStage: "preparing" }, { executionStage: "dispatching" },
+      { executionStage: null }, { runtimeMode: "native" }, { runtimeModeResolvedAt: new Date("2000-01-01T00:00:00Z") },
+      { processPid: process.pid }, { processStartedAt: new Date("2000-01-01T00:00:00Z") },
+      { nativeSessionId: randomUUID() }, { nativeIssueId: randomUUID() }, { sessionIdAfter: "provider-session" },
+      { controllerLeaseExpiresAt: new Date("2099-01-01T00:00:00Z") }, { status: "running" },
+      { runnerProfileJson: { adapterDispatch: { adapterType: "claude_local" }, nativeExecutionInput: {} } },
+      { runnerProfileJson: { adapterDispatch: { adapterType: "claude_local" }, remoteWorkspace: {} } },
+      { resultJson: { workspaceRestoreFailure: "restore_lock_timeout" } },
+      { resultJson: { workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1" } } },
+    ])("keeps blocking when the evidence contradicts the stale continuation: %j", async patch => {
+      const { agent, run } = await staleFixture();
+      await db.update(heartbeatRuns).set(patch).where(eq(heartbeatRuns.id, run.id));
+      expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
+    });
+
+    it.each(["adapter.invoke", PROCESS_START_REQUESTED, "session.started", "provider.event", "tool.execution.started", "source_event"])(
+      "keeps blocking when a %s event was recorded", async eventType => {
+        const { agent, run } = await staleFixture();
+        await db.insert(heartbeatRunEvents).values({ companyId: run.companyId, agentId: agent.id, runId: run.id,
+          seq: 1, eventType, ...(eventType === "source_event" ? { sourceEventId: "provider-event" } : {}) });
+        expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
+      },
+    );
+
+    it("keeps blocking while an environment lease is unreleased", async () => {
+      const { agent, run } = await staleFixture();
+      await db.insert(environmentLeases).values({ companyId: run.companyId, heartbeatRunId: run.id, provider: "local", status: "active" });
+      expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
+    });
+  });
 });
