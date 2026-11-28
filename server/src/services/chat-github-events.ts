@@ -33,12 +33,142 @@ const person = z.object({
   type: z.string().optional(),
 });
 
+function stripInlineCodeSpans(text: string): string {
+  let out = "";
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] !== "`") {
+      out += text[i];
+      i += 1;
+      continue;
+    }
+    let open = 0;
+    while (text[i + open] === "`") open += 1;
+    let close = -1;
+    for (let j = i + open; j < text.length; j += 1) {
+      if (text[j] !== "`") continue;
+      let run = 0;
+      while (text[j + run] === "`") run += 1;
+      if (run === open) {
+        close = j;
+        break;
+      }
+      j += run - 1;
+    }
+    if (close === -1) {
+      out += text.slice(i, i + open);
+      i += open;
+    } else {
+      out += " ";
+      i = close + open;
+    }
+  }
+  return out;
+}
+
+function leadingWhitespaceColumns(leading: string): number {
+  let columns = 0;
+  for (const char of leading) columns = char === "\t" ? columns + (4 - (columns % 4)) : columns + 1;
+  return columns;
+}
+
+function stripGitHubCommentCodeSpans(body: string): string {
+  const kept: string[] = [];
+  let fenceChar: string | null = null;
+  let fenceLen = 0;
+  let fenceListIndent: number | null = null;
+  let indentedCode = false;
+  let blankContext = true;
+  let listIndent: number | null = null;
+  for (const line of body.split(/\r\n|\r|\n/)) {
+    const leading = (line.match(/^[ \t]*/) ?? [""])[0];
+    const indent = leadingWhitespaceColumns(leading);
+    if (fenceChar !== null) {
+      if (fenceListIndent !== null && line.trim() !== "" && indent < fenceListIndent) {
+        fenceChar = null;
+        fenceListIndent = null;
+      } else {
+        const run = line.match(/^[ \t]*(`{3,}|~{3,})/);
+        if (run && run[1][0] === fenceChar && run[1].length >= fenceLen && /^[ \t]*(`+|~+)[ \t]*$/.test(line)) {
+          fenceChar = null;
+          fenceListIndent = null;
+        }
+        continue;
+      }
+    }
+    const indented = indent >= 4;
+    if (indentedCode) {
+      if (line.trim() === "" || indented) continue;
+      indentedCode = false;
+    }
+    if (line.trim() === "") {
+      blankContext = true;
+      continue;
+    }
+    // A non-empty line after a break that is less indented than the list's
+    // content column leaves the list; re-evaluate it at top level, where it
+    // may be indented code. A paragraph continuation line can be lazily
+    // indented and keeps the list open.
+    if (blankContext && listIndent !== null && indent < listIndent) listIndent = null;
+    const run = line.match(/^[ \t]*(`{3,}|~{3,})/);
+    if (indented && blankContext && indent >= (listIndent ?? 0) + 4) {
+      indentedCode = true;
+      continue;
+    }
+    if (run && (!indented || (listIndent !== null && indent >= listIndent && indent < listIndent + 4))) {
+      fenceChar = run[1][0];
+      fenceLen = run[1].length;
+      fenceListIndent = listIndent !== null && indent >= listIndent ? listIndent : null;
+      if (listIndent !== null && indent < listIndent) listIndent = null;
+      continue;
+    }
+    kept.push(line);
+    blankContext = false;
+    if (!indented) {
+      const marker = line.match(/^( {0,3})([-*+]|\d{1,9}[.)])([ \t])/);
+      if (marker) {
+        const contentColumn = marker[1].length + marker[2].length;
+        listIndent = marker[3] === "\t" ? contentColumn + (4 - (contentColumn % 4)) : contentColumn + 1;
+      } else {
+        listIndent = null;
+      }
+    }
+  }
+  return stripInlineCodeSpans(kept.join("\n"));
+}
+
+export function githubCommentMarkdownBody(message: { raw?: unknown; text?: string }): string {
+  const raw = message?.raw;
+  if (raw && typeof raw === "object") {
+    const comment = (raw as { comment?: unknown }).comment;
+    if (comment && typeof comment === "object" && typeof (comment as { body?: unknown }).body === "string")
+      return (comment as { body: string }).body;
+  }
+  return message?.text ?? "";
+}
+
+function githubMentionPattern(username: string): RegExp | null {
+  const name = username.replace(/\[bot\]$/i, "");
+  if (!name) return null;
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![\\w-])@${escaped}(?:\\[bot\\])?(?![\\w-])`, "i");
+}
+
 export function githubBodyMentionsBot(body: string, username: string | null): boolean {
   if (!username) return false;
-  const name = username.replace(/\[bot\]$/i, "");
-  if (!name) return false;
-  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?<![\\w-])@${escaped}(?:\\[bot\\])?(?![\\w-])`, "i").test(body);
+  const mention = githubMentionPattern(username);
+  return mention !== null && mention.test(stripGitHubCommentCodeSpans(body));
+}
+
+export function githubCommentMentionsOnlyInCode(
+  message: { raw?: unknown; text?: string },
+  username: string | null,
+): boolean {
+  if (!username) return false;
+  const mention = githubMentionPattern(username);
+  if (!mention) return false;
+  const body = githubCommentMarkdownBody(message);
+  return mention.test(body) && !mention.test(stripGitHubCommentCodeSpans(body));
 }
 
 /**
