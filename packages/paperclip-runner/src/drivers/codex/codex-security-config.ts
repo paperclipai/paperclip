@@ -4,6 +4,7 @@ import { resolve, isAbsolute, join, dirname, delimiter, relative, sep } from "no
 import { closeSync, constants, existsSync, fstatSync, openSync, realpathSync, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { QUALIFIED_ACPX_PROFILES } from "../acpx/qualified-profiles.js";
+import { codexNodeReadOnlyRoots } from "./codex-node-resources.js";
 
 import {
   githubCredentialEnvironmentKeys,
@@ -39,6 +40,7 @@ export function codexExecutableReadOnlyRoots(source: NodeJS.ProcessEnv, command 
     } catch { /* Missing resources remain a normal executable-resolution error. */ }
   };
   add(process.execPath);
+  for (const root of codexNodeReadOnlyRoots()) roots.add(root);
   const candidates = isAbsolute(command) ? [command]
     : (source.PATH ?? "").split(delimiter).filter(isAbsolute).map(root => resolve(root, command));
   const executable = candidates.find(path => {
