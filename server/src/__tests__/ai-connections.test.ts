@@ -7,10 +7,12 @@ import { localAiLoginService } from "../services/local-ai-login.js";
 // auth tests must not send the selected fixture credentials to a real provider.
 vi.mock("../services/subscription-refresh.js", () => ({ refreshSubscriptionConnection: vi.fn().mockResolvedValue(undefined) }));
 import * as localCredentials from "../services/local-ai-credentials.js";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { monitorQuotaCredentialProcess } from "./helpers/quota-credential-process-lifecycle.js";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import { promises as fs } from "node:fs";
 import { mkdtemp, realpath, rm, access, readFile, writeFile, stat } from "node:fs/promises";
@@ -890,74 +892,95 @@ describe("managed AI connections", () => {
     } finally { request.mockRestore(); await oldRun.cleanup(); await nextRun?.cleanup(); await journal.clear(); }
   });
 
-  it("requires sign-in after the receiver process dies with an exchanged but unsaved token", async () => {
-    const owner = `quota-receiver-process-loss-${randomUUID()}`;
-    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
-    const original = JSON.stringify({ tokens: { access_token: "expired-process", refresh_token: "single-use-process" } });
-    await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, original);
-    const [row] = await service.quotaAccounts(companyId, owner);
-    const ref = row.grant.credentialSecretRefs.find(ref => ref.configPath === "ai.credential")!;
-    const held = deferredSignal(), release = deferredSignal();
-    const lockKey = 7192031;
-    const holder = db.transaction(async tx => {
-      await tx.execute(sql`select pg_advisory_xact_lock(${lockKey})`);
-      held.resolve(); await release.promise;
-    });
-    await held.promise;
-    await db.execute(sql.raw(`create function hold_receiver_save() returns trigger language plpgsql as $$ begin
-      if new.secret_id = '${ref.secretId}'::uuid then perform pg_advisory_xact_lock(${lockKey}); end if; return new; end $$;
-      create trigger hold_receiver_save before insert on company_secret_versions for each row execute function hold_receiver_save();`));
-    let exchanges = 0;
-    const provider = createServer((req, res) => {
-      exchanges++; req.resume();
-      res.setHeader("Content-Type", "application/json");
-      res.end(JSON.stringify({ access_token: "unsaved-process", refresh_token: "replacement-process" }));
-    });
-    provider.listen(0, "127.0.0.1"); await once(provider, "listening");
-    const address = provider.address() as { port: number };
-    const child = spawn(process.execPath, ["--import", createRequire(import.meta.url).resolve("tsx"), new URL("./helpers/quota-credential-process.ts", import.meta.url).pathname], {
-      env: { ...process.env, CREDENTIAL_TEST_DATABASE_URL: database.connectionString,
-        CREDENTIAL_TEST_PROVIDER_URL: `http://127.0.0.1:${address.port}`, CREDENTIAL_TEST_COMPANY_ID: companyId, CREDENTIAL_TEST_OWNER: owner },
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    const exited = once(child, "exit");
-    let ready = false, output = "";
-    child.stdout!.setEncoding("utf8").on("data", (chunk: string) => { output += chunk; ready ||= output.includes("ready\n"); });
-    try {
-      const startup = Date.now() + 150_000;
-      while (!ready && Date.now() < startup && child.exitCode === null) await new Promise(resolve => setTimeout(resolve, 25));
-      expect(ready).toBe(true);
-      let blocked = false;
-      const deadline = Date.now() + 25_000;
-      while (!blocked && Date.now() < deadline && child.exitCode === null) {
-        const rows = await db.execute(sql`select pid from pg_stat_activity where datname = current_database()
-          and wait_event_type = 'Lock' and wait_event = 'advisory'`);
-        blocked = exchanges === 1 && rows.length > 0;
-        if (!blocked) await new Promise(resolve => setTimeout(resolve, 25));
+  describe("receiver process loss", () => {
+    let owner: string;
+    let child: ReturnType<typeof spawn>;
+    let receiverProcess: ReturnType<typeof monitorQuotaCredentialProcess>;
+
+    beforeEach(async () => {
+      owner = `quota-receiver-process-loss-${randomUUID()}`;
+      child = spawn(process.execPath, ["--import", pathToFileURL(createRequire(import.meta.url).resolve("tsx")).href, fileURLToPath(new URL("./helpers/quota-credential-process.ts", import.meta.url))], {
+        env: { ...process.env, CREDENTIAL_TEST_DATABASE_URL: database.connectionString,
+          CREDENTIAL_TEST_COMPANY_ID: companyId, CREDENTIAL_TEST_OWNER: owner },
+        stdio: ["ignore", "ignore", "ignore", "ipc"],
+      });
+      receiverProcess = monitorQuotaCredentialProcess(child);
+      // Keep cold service imports out of the 25-second exchange/save deadline.
+      await receiverProcess.waitForReady(150_000);
+    }, 155_000);
+
+    afterEach(async () => { await receiverProcess?.stop(); });
+
+    it("requires sign-in after the receiver process dies with an exchanged but unsaved token", async () => {
+      await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+      const original = JSON.stringify({ tokens: { access_token: "expired-process", refresh_token: "single-use-process" } });
+      await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, original);
+      const [row] = await service.quotaAccounts(companyId, owner);
+      const ref = row.grant.credentialSecretRefs.find(ref => ref.configPath === "ai.credential")!;
+      const held = deferredSignal(), release = deferredSignal();
+      const lockKey = 7192031;
+      let holder: Promise<unknown> | undefined;
+      let triggerCreated = false;
+      let exchanges = 0;
+      const provider = createServer((req, res) => {
+        exchanges++; req.resume();
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ access_token: "unsaved-process", refresh_token: "replacement-process" }));
+      });
+      try {
+        holder = db.transaction(async tx => {
+          await tx.execute(sql`select pg_advisory_xact_lock(${lockKey})`);
+          held.resolve(); await release.promise;
+        });
+        await Promise.race([held.promise, holder]);
+        await db.execute(sql.raw(`create function hold_receiver_save() returns trigger language plpgsql as $$ begin
+          if new.secret_id = '${ref.secretId}'::uuid then perform pg_advisory_xact_lock(${lockKey}); end if; return new; end $$;
+          create trigger hold_receiver_save before insert on company_secret_versions for each row execute function hold_receiver_save();`));
+        triggerCreated = true;
+        provider.listen(0, "127.0.0.1"); await once(provider, "listening");
+        const address = provider.address() as { port: number };
+        receiverProcess.assertRunning();
+        child.send({ type: "refresh", providerUrl: `http://127.0.0.1:${address.port}` });
+        let blocked = false;
+        const deadline = Date.now() + 25_000;
+        while (!blocked && Date.now() < deadline) {
+          receiverProcess.assertRunning();
+          const rows = await db.execute(sql`select pid from pg_stat_activity where datname = current_database()
+            and wait_event_type = 'Lock' and wait_event = 'advisory'`);
+          blocked = exchanges === 1 && rows.length > 0;
+          if (!blocked) await new Promise(resolve => setTimeout(resolve, 25));
+        }
+        expect(blocked, `Receiver did not reach the save barrier (exchanges=${exchanges})`).toBe(true);
+        await receiverProcess.stop();
+      } finally {
+        await receiverProcess.stop();
+        release.resolve();
+        try {
+          await holder;
+        } finally {
+          try {
+            if (triggerCreated) await db.execute(sql`drop trigger hold_receiver_save on company_secret_versions; drop function hold_receiver_save()`);
+          } finally {
+            if (provider.listening) await new Promise<void>(resolve => provider.close(() => resolve()));
+          }
+        }
       }
-      expect(blocked).toBe(true);
-      child.kill("SIGKILL"); await exited;
-    } finally {
-      if (child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await exited; }
-      release.resolve(); await holder;
-      await db.execute(sql`drop trigger hold_receiver_save on company_secret_versions; drop function hold_receiver_save()`);
-      await new Promise<void>(resolve => provider.close(() => resolve()));
-    }
-    expect(exchanges).toBe(1);
-    expect(await service.credential(row)).toBe(original);
-    await expect(access(quotaCredentialRecoveryPath(companyId, row.grant.id))).rejects.toMatchObject({ code: "ENOENT" });
-    const receiver = aiConnectionService(db);
-    const generation = createHash("sha256").update(original).digest("hex").slice(0, 16);
-    await receiver.markAuthenticationFailed({ companyId, runStartedAt: new Date(), attribution: {
-      provider: "openai", method: "subscription", connectionId: row.connection.id, grantId: row.grant.id,
-      mode: "responsible_user", responsibleUserId: owner, identity: `${row.grant.id}:${owner}:${generation}`,
-    } });
-    expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, row.grant.id)))[0].status).toBe("needs_reauthorization");
-    const signedIn = JSON.stringify({ tokens: { access_token: "process-sign-in", refresh_token: "process-new-login" } });
-    await receiver.save(companyId, owner, { connectionId: row.connection.id, provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, signedIn);
-    const [current] = await receiver.quotaAccounts(companyId, owner);
-    expect(await receiver.runtimeCredential(current)).toBe(signedIn);
-  }, 200_000);
+      expect(exchanges).toBe(1);
+      expect(await service.credential(row)).toBe(original);
+      await expect(access(quotaCredentialRecoveryPath(companyId, row.grant.id))).rejects.toMatchObject({ code: "ENOENT" });
+      const receiver = aiConnectionService(db);
+      const generation = createHash("sha256").update(original).digest("hex").slice(0, 16);
+      await receiver.markAuthenticationFailed({ companyId, runStartedAt: new Date(), attribution: {
+        provider: "openai", method: "subscription", connectionId: row.connection.id, grantId: row.grant.id,
+        mode: "responsible_user", responsibleUserId: owner, identity: `${row.grant.id}:${owner}:${generation}`,
+      } });
+      expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, row.grant.id)))[0].status).toBe("needs_reauthorization");
+      const signedIn = JSON.stringify({ tokens: { access_token: "process-sign-in", refresh_token: "process-new-login" } });
+      await receiver.save(companyId, owner, { connectionId: row.connection.id, provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, signedIn);
+      const [current] = await receiver.quotaAccounts(companyId, owner);
+      expect(await receiver.runtimeCredential(current)).toBe(signedIn);
+    }, 40_000);
+  });
 
   it("does not exchange a token when a required database transaction fails", async () => {
     const owner = "quota-db-prerequisite";
