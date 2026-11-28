@@ -177,7 +177,8 @@ describe("cross-issue influence limit rollout", () => {
       kind: "comment",
     })).rejects.toMatchObject({
       status: 403,
-      details: { code: "cross_issue_influence_run_context_required" },
+      // A run id was supplied, so the copy must not tell the agent to resend it.
+      details: { code: "cross_issue_influence_run_context_rejected" },
     });
     expect(fake.inserted).toEqual([]);
   });
@@ -193,7 +194,7 @@ describe("cross-issue influence limit rollout", () => {
       kind: "comment",
     })).rejects.toMatchObject({
       status: 403,
-      details: { code: "cross_issue_influence_run_context_required" },
+      details: { code: "cross_issue_influence_run_context_rejected" },
     });
     expect(fake.inserted).toEqual([]);
   });
