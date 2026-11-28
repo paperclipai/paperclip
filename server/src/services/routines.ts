@@ -539,6 +539,16 @@ function createRoutineEnvFingerprint(env: unknown) {
   return crypto.createHash("sha256").update(canonical).digest("hex");
 }
 
+function createRoutineIssueIdempotencyKey(input: {
+  routineId: string;
+  triggerId: string | null;
+  source: "schedule" | "manual" | "api" | "webhook";
+  idempotencyKey: string;
+}) {
+  const canonical = JSON.stringify(normalizeRoutineDispatchFingerprintValue(input));
+  return `routine-run:${crypto.createHash("sha256").update(canonical).digest("hex")}`;
+}
+
 // UUIDv5 gives routine-wide receipts a stable primary key without scanning run
 // history or depending on a trigger that can be deleted. This is an identity,
 // never a secret or an authentication proof (RFC 9562, section 5.5).
@@ -1863,6 +1873,14 @@ export function routineService(
       title,
       description,
     });
+    const issueCreateIdempotencyKey = input.idempotencyKey
+      ? createRoutineIssueIdempotencyKey({
+          routineId: input.routine.id,
+          triggerId: input.trigger?.id ?? null,
+          source: input.source,
+          idempotencyKey: input.idempotencyKey,
+        })
+      : null;
     const idempotentRunId = input.routineIdempotency && input.idempotencyKey
       ? routineScopedRunId(input.routine.id, input.source, input.idempotencyKey) : null;
     let reusedExistingRun = false;
@@ -1985,6 +2003,7 @@ export function routineService(
           : undefined;
 
       let createdIssue: Awaited<ReturnType<typeof issueSvc.create>> | null = null;
+      let reusedIssue = false;
       try {
         const activeIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
           kind: issueOriginKind,
@@ -2032,11 +2051,27 @@ export function routineService(
             originId: issueOriginId,
             originRunId: createdRun.id,
             originFingerprint: dispatchFingerprint,
+            idempotencyKey: issueCreateIdempotencyKey,
+            onDeduplicated: (reason) => {
+              reusedIssue = reason === "idempotency_key";
+            },
             billingCode: issueBillingCode,
             executionWorkspaceId: input.executionWorkspaceId ?? null,
             executionWorkspacePreference: input.executionWorkspacePreference ?? null,
             executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
           });
+
+          if (reusedIssue && createdIssue.originRunId !== createdRun.id) {
+            await txDb
+              .update(issues)
+              .set({ originRunId: createdRun.id, updatedAt: new Date() })
+              .where(
+                and(
+                  eq(issues.companyId, input.routine.companyId),
+                  eq(issues.id, createdIssue.id),
+                ),
+              );
+          }
         } catch (error) {
           const isOpenExecutionConflict =
             !!error &&
@@ -2100,7 +2135,7 @@ export function routineService(
         }, txDb);
         return updated ?? createdRun;
       } catch (error) {
-        if (createdIssue) {
+        if (createdIssue && !reusedIssue) {
           await notifyApprovalWork(txDb, createdIssue.companyId);
           await notifyDecisionTargetIssueRemoval(txDb, createdIssue.id);
           await notifyStatusCardIssueChange(txDb, createdIssue.companyId);
