@@ -25,6 +25,8 @@ import {
 import type { LucideIcon } from "lucide-react";
 import { GithubIcon } from "@/components/icons/github-icon";
 import { cn, formatDateTime } from "@/lib/utils";
+import { workProductPullRequestDetails, type PullRequestDetails } from "@/lib/pull-request-display";
+import { PullRequestDetailsLine } from "@/components/PullRequestDetailsLine";
 
 type StateChip = {
   label: string;
@@ -143,6 +145,7 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
   const isVideo = isVideoLikeOutput(contentType, stringMeta(metadata, "originalFilename") ?? workProduct.title);
   let Icon: LucideIcon = File;
   let meta: Array<string | null> = [];
+  let pullRequestDetails: PullRequestDetails | null = null;
   let action = "Open preview";
 
   switch (workProduct.type) {
@@ -152,6 +155,7 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
       const number = stringMeta(metadata, "number", "pullRequestNumber");
       const base = stringMeta(metadata, "baseRef", "base", "baseBranch");
       const head = stringMeta(metadata, "headRef", "head", "headBranch", "branch");
+      pullRequestDetails = workProductPullRequestDetails(workProduct);
       meta = [repository, number ? `#${number.replace(/^#/, "")}` : null, base && head ? `${base} ← ${head}` : null, urlLabel(workProduct.url)];
       action = "Open on GitHub";
       break;
@@ -279,6 +283,7 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
       <div className="min-w-0 flex-1">
         <strong className={cn("block text-sm font-medium text-foreground", expandable ? detailsOpen ? "break-words" : "line-clamp-2 break-words" : "truncate")}>{workProduct.title}</strong>
         {visibleMeta.length > 0 ? <p className="mt-1 truncate text-xs text-muted-foreground">{visibleMeta.join(" · ")}</p> : null}
+        <PullRequestDetailsLine details={pullRequestDetails} className="mt-1" />
         {statsLabel || workProduct.type === "pull_request" ? (
           // Provider refresh can supply these counts after first paint. Keep
           // the line's geometry while the saved PR card is already readable.

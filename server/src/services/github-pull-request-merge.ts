@@ -1,5 +1,5 @@
 import type { Db } from "@paperclipai/db";
-import { createGitHubExternalObjectProvider, type GitHubExternalObjectProviderOptions } from "./github-external-object-provider.js";
+import { createGitHubExternalObjectProvider, readGitHubPullRequestMergeableState, type GitHubExternalObjectProviderOptions } from "./github-external-object-provider.js";
 
 export type GitHubPullRequestReference = {
   host: "github.com";
@@ -14,6 +14,7 @@ export type PullRequestMergeDetails = {
   state: PullRequestMergeState;
   headRef: string | null;
   headSha: string | null;
+  mergeableState?: ReturnType<typeof readGitHubPullRequestMergeableState>;
   workProductState?: "open" | "draft" | "merged" | "closed";
   draft?: boolean;
   baseRef?: string | null;
@@ -116,6 +117,7 @@ export function createPullRequestMergeDetailsResolver(db: Db, options?: GitHubEx
           : "unknown",
       headRef: typeof data?.headRef === "string" ? data.headRef : null,
       headSha: typeof data?.headSha === "string" ? data.headSha : null,
+      mergeableState: readGitHubPullRequestMergeableState(data?.mergeableState),
       ...(workProductState ? { workProductState } : {}),
       draft: data?.draft === true,
       baseRef: typeof data?.baseRef === "string" ? data.baseRef : null,

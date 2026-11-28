@@ -1,5 +1,6 @@
 import { Archive, CodeXml, File, FileText, Film, Globe, Image, Music, Presentation, Table2, type LucideIcon } from "lucide-react";
 import type { CompanyArtifact } from "@paperclipai/shared";
+import type { PullRequestDetails } from "@/lib/pull-request-display";
 
 /**
  * What the V1 artwork knows about an artifact. Each surface adapts its own
@@ -27,6 +28,7 @@ export interface ArtifactSubject {
   /** ISO timestamp; a thread attachment has none of its own. */
   updatedAt?: string | null;
   taskIdentifier?: string | null;
+  pullRequestDetails?: PullRequestDetails | null;
 }
 
 /**

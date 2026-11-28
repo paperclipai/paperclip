@@ -279,11 +279,20 @@ async function probeRepoVisibility(
   }
 }
 
+const githubPullRequestMergeableStates = ["clean", "blocked", "behind", "dirty", "unstable", "has_hooks", "draft"] as const;
+
+export function readGitHubPullRequestMergeableState(value: unknown) {
+  return githubPullRequestMergeableStates.find(state => state === value) ?? null;
+}
+
 function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string, unknown>, etag: string | null): ExternalObjectResolverSnapshot {
   const title = asString(body.title);
   const state = asString(body.state) ?? "unknown";
   const draft = asBoolean(body.draft) ?? false;
   const merged = (asBoolean(body.merged) ?? false) || Boolean(asString(body.merged_at));
+  const mergeableState = state === "open" && !merged
+    ? readGitHubPullRequestMergeableState(body.mergeable_state)
+    : null;
   const authorLogin = asNestedString(body, "user", "login");
   const headRef = asNestedString(body, "head", "ref");
   const headSha = asNestedString(body, "head", "sha");
@@ -347,6 +356,7 @@ function pullRequestSnapshot(identity: GitHubObjectIdentity, body: Record<string
       draft,
       title,
       mergeable: asBoolean(body.mergeable),
+      ...(mergeableState ? { mergeableState } : {}),
       ...(authorLogin ? { authorLogin } : {}),
       ...(headRef ? { headRef } : {}),
       ...(headSha ? { headSha } : {}),

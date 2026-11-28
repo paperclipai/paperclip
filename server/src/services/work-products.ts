@@ -127,6 +127,10 @@ export async function refreshPullRequestWorkProductMetadata(
           number: number ?? reference.number,
           ...(details.baseRef ? { baseRef: details.baseRef } : {}),
           ...(details.headRef ? { headRef: details.headRef } : {}),
+          headSha: details.headSha,
+          mergeableState: details.workProductState === "open" || details.workProductState === "draft"
+            ? details.mergeableState ?? null
+            : null,
           ...(nonNegativeInteger(details.additions) === null ? {} : { additions: details.additions }),
           ...(nonNegativeInteger(details.deletions) === null ? {} : { deletions: details.deletions }),
           ...(nonNegativeInteger(details.changedFiles) === null ? {} : { changedFiles: details.changedFiles }),
