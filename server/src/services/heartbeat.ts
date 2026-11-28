@@ -2795,6 +2795,7 @@ export function heartbeatService(
       const requestedAiBinding = preconfiguredHome || sshAuthentication === "host" ? undefined : persistedRouterPoolId ? { mode: "router" as const, connectionId: persistedRouterPoolId } : agent.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(agent.runtimeConfig.aiConnection) : undefined;
       let aiBinding = requestedAiBinding?.mode === "router" ? undefined : requestedAiBinding;
       const originalAiIssueOverrides = issueAssigneeOverrides;
+      const configuredAdapterConfig = config;
       if (requestedAiBinding?.mode === "router") {
         try {
           const routerTaskKey = readNonEmptyString(context.aiRouterTaskKey) ?? taskKey ?? run.id;
@@ -2978,7 +2979,7 @@ export function heartbeatService(
         task: { context, issueRef, issueContext, taskProjectContext, workspaceProjectContext, wakeCommentId, acceptedPlanContinuationWake, acceptedPlanWakeRoutingDecision },
         session: { taskSession, taskSessionDecodedParams, explicitResumeSessionParams, explicitResumeSessionDisplayId, sessionCodec },
         config: {
-          runtimeConfig, agentIdentity, issueAssigneeOverrides, originalAiIssueOverrides,
+          runtimeConfig, configuredAdapterConfig, agentIdentity, issueAssigneeOverrides, originalAiIssueOverrides,
           managedAiRuntime, aiBinding, requestedAiBinding, secretManifest, runtimeSkillEntries, routineEnvContext,
         },
         workspace: {

@@ -34,6 +34,25 @@ export function aiConnectionOnlyConfigRevision(revision: ConfigRevision): boolea
     && isDeepStrictEqual(withoutBinding(revision.beforeConfig), withoutBinding(revision.afterConfig));
 }
 
+/** Adapter settings a pool member may set for a routed task. */
+export const aiConnectionRoutedRuntimeKeys = ["provider", "acpxAgent", "model", "modelReasoningEffort", "reasoningEffort", "effort", "variant"] as const;
+// These adapters choose their harness from the adapter type alone and never
+// read the runner profile keys that every pool member carries.
+const adaptersIgnoringRunnerProfile = new Set(["claude_local", "codex_local", "grok_local"]);
+
+/** The routed configuration as the agent's own settings would have produced it,
+ * or null when routing changed anything this adapter actually uses. */
+function preRoutingAdapterConfig(effective: Record<string, unknown>, configured: Record<string, unknown>, adapterType: string) {
+  const ignored = adaptersIgnoringRunnerProfile.has(adapterType) ? ["provider", "acpxAgent"] : [];
+  const config = { ...effective };
+  for (const key of aiConnectionRoutedRuntimeKeys) {
+    if (!ignored.includes(key) && !isDeepStrictEqual(effective[key], configured[key])) return null;
+    if (configured[key] === undefined) delete config[key];
+    else config[key] = configured[key];
+  }
+  return isDeepStrictEqual(config, effective) ? null : config;
+}
+
 export function aiConnectionRevisionMetadata(revision: ConfigRevision | undefined) {
   return revision ? { id: revision.id, changedKeys: revision.changedKeys, configRevisionAt: revision.createdAt.toISOString() } : null;
 }
@@ -41,7 +60,10 @@ export function aiConnectionRevisionMetadata(revision: ConfigRevision | undefine
 /** Exact alternative fingerprints, never a category-level exemption. The caller
  * has already authorized the selected account and prepared its credential. */
 export function aiConnectionSessionCompatibilityInputs(input: {
+  adapterType: string;
   effectiveAdapterConfig: Record<string, unknown>;
+  /** Agent adapter settings before the routed member was applied. */
+  configuredAdapterConfig?: Record<string, unknown>;
   agentRuntimeConfig: unknown;
   agentConfigRevision: unknown;
   issueOverrides: unknown;
@@ -60,6 +82,16 @@ export function aiConnectionSessionCompatibilityInputs(input: {
     delete managed.sessionIdentity;
     managed.identity = input.credentialIdentity;
     configs.push({ ...input.effectiveAdapterConfig, managedAiConnection: managed });
+  }
+  if (input.router && input.configuredAdapterConfig) {
+    // A session saved under a direct binding to this account used the agent's
+    // own model and effort. If the member supplies the same values, only keys
+    // this adapter ignores can differ, so the exact earlier settings still apply.
+    const configured = { ...input.configuredAdapterConfig, ...record(record(input.originalIssueOverrides).adapterConfig) };
+    for (const config of [...configs]) {
+      const previous = preRoutingAdapterConfig(config, configured, input.adapterType);
+      if (previous) configs.push(previous);
+    }
   }
   const variants = [{ agentRuntimeConfig: input.agentRuntimeConfig, agentConfigRevision: input.agentConfigRevision }];
   if (input.router) {
