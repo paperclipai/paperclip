@@ -127,6 +127,8 @@ removed. Paperclip automatically uses an authorized connection for the chosen
 repository. Pasted URLs also use your authorized connections when available,
 including public repositories outside the list. Public repositories can use
 anonymous access when no connection succeeds; private repositories require access.
+A company without a GitHub connection installed reads with its `GITHUB_TOKEN`,
+`GH_TOKEN` or `PAPERCLIP_GITHUB_TOKEN` company secret instead of anonymously.
 
 A repository URL uses the default branch. Paste a branch URL such as
 `https://github.com/owner/repo/tree/feature/new-skills` to track another branch,
