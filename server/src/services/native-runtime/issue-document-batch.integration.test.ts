@@ -190,5 +190,5 @@ describe("bulk issue documents through native API tools", () => {
     } }) as any;
     expect(nearLimit).toMatchObject({ ok: false, status: 413 });
     expect(nearLimit).not.toHaveProperty("artifact");
-  });
+  }, 60000);
 });

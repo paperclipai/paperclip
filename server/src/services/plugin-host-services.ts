@@ -83,6 +83,7 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
 import { logger } from "../middleware/logger.js";
+import { stripSecretBearingUrlParts } from "../middleware/redact-sensitive.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { accessService } from "./access.js";
 import {
@@ -150,6 +151,19 @@ function isPrivateIP(ip: string): boolean {
   return false;
 }
 
+function isLinkLocalOrUnspecifiedIP(ip: string): boolean {
+  const lower = ip.toLowerCase();
+
+  const v4MappedMatch = lower.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (v4MappedMatch && v4MappedMatch[1]) return isLinkLocalOrUnspecifiedIP(v4MappedMatch[1]);
+
+  if (ip.startsWith("169.254.")) return true;
+  if (lower.startsWith("fe80")) return true;
+  if (ip === "0.0.0.0" || lower === "::") return true;
+
+  return false;
+}
+
 /**
  * Validate a URL for plugin fetch: protocol whitelist + private IP blocking.
  *
@@ -172,9 +186,20 @@ interface ValidatedFetchTarget {
   hostHeader: string;
   tlsServername?: string;
   useTls: boolean;
+  landsOnPrivateAddress?: boolean;
 }
 
-async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedFetchTarget> {
+export function pluginAllowsPrivateNetworkFetch(
+  manifest?: import("@paperclipai/shared").PaperclipPluginManifestV1 | null,
+): boolean {
+  return Array.isArray(manifest?.capabilities) &&
+    manifest.capabilities.includes("http.private-network");
+}
+
+export async function validateAndResolveFetchUrl(
+  urlString: string,
+  options?: { allowPrivateNetwork?: boolean },
+): Promise<ValidatedFetchTarget> {
   let parsed: URL;
   try {
     parsed = new URL(urlString);
@@ -213,7 +238,9 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
     // Filter to only non-private IPs instead of rejecting the entire request
     // when some IPs are private. This handles multi-homed hosts that resolve
     // to both private and public addresses.
-    const safeResults = results.filter((entry) => !isPrivateIP(entry.address));
+    const safeResults = options?.allowPrivateNetwork
+      ? results.filter((entry) => !isLinkLocalOrUnspecifiedIP(entry.address))
+      : results.filter((entry) => !isPrivateIP(entry.address));
     if (safeResults.length === 0) {
       throw new Error(
         `All resolved IPs for ${originalHostname} are in private/reserved ranges`,
@@ -229,6 +256,7 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
         ? originalHostname
         : undefined,
       useTls: parsed.protocol === "https:",
+      landsOnPrivateAddress: isPrivateIP(resolved.address),
     };
   } catch (err) {
     // Re-throw our own errors; wrap DNS failures
@@ -1789,7 +1817,14 @@ export function buildHostServices(
       async fetch(params) {
         // SSRF protection: validate protocol whitelist + block private IPs.
         // Resolve once, then connect directly to that IP to prevent DNS rebinding.
-        const target = await validateAndResolveFetchUrl(params.url);
+        const allowPrivateNetwork = pluginAllowsPrivateNetworkFetch(options.manifest);
+        const target = await validateAndResolveFetchUrl(params.url, { allowPrivateNetwork });
+        if (target.landsOnPrivateAddress) {
+          logger.info(
+            { pluginId, pluginKey, url: stripSecretBearingUrlParts(params.url) },
+            "plugin http.fetch allowed to private/reserved address via http.private-network capability",
+          );
+        }
 
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), PLUGIN_FETCH_TIMEOUT_MS);
