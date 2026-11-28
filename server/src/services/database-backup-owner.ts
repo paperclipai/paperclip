@@ -12,7 +12,9 @@ type BackupLogger = {
 };
 
 export function createDatabaseBackupOwner(options: {
-  connectionString: string;
+  /** Static connection string, or a resolver that produces the current one per
+   * run (e.g. copying a rotated file-backed password in, target-checked). */
+  connectionString: string | (() => Promise<string>);
   backupDir: string;
   getRetention: () => Promise<BackupRetentionPolicy>;
   logger: BackupLogger;
@@ -40,9 +42,12 @@ export function createDatabaseBackupOwner(options: {
       options.logger.info({ backupDir: options.backupDir, trigger }, `${label} database backup starting`);
       const retention = await options.getRetention();
       const verifyCheckpoint = trigger === "idle" || existsSync(idleBackupWakeMarker(options.backupDir));
+      const connectionString = typeof options.connectionString === "function"
+        ? await options.connectionString()
+        : options.connectionString;
 
       const result = await runDatabaseBackup({
-        connectionString: options.connectionString,
+        connectionString,
         backupDir: options.backupDir,
         retention,
         filenamePrefix: "paperclip",

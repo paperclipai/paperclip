@@ -1,5 +1,9 @@
 export {
   createDb,
+  reloadDatabaseCredential,
+  resolveCurrentDatabaseCredential,
+  mergeDatabaseCredentialPassword,
+  type CredentialReloadResult,
   databaseClientOptionsFromEnv,
   type DatabaseClientOptions,
   withDedicatedDbConnection,
@@ -36,6 +40,7 @@ export {
   migratePostgresIfEmpty,
   type MigrationBootstrapResult,
   type Db,
+  type CredentialSource,
   afterTransactionCommit,
 } from "./client.js";
 export {
