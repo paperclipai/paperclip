@@ -124,7 +124,19 @@ export async function listFailedRunsWithNewerRun(db: Db, companyId: string, fail
       eq(heartbeatRuns.companyId, companyId),
       inArray(heartbeatRuns.agentId, agentIds.slice(start, start + FAILED_RUN_PROBE_BATCH_SIZE)),
       gt(heartbeatRuns.createdAt, oldestCreatedAt),
-      sql`coalesce(${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId', '') = ''`,
+      // Same rows as coalesce(issueId, taskId, '') = '', but each arm is an
+      // index condition on heartbeat_runs_company_ctx_issue_created_idx.
+      // coalesce() around the extraction is opaque to that index, so the
+      // planner fell back to a sequential scan and detoasted context_snapshot
+      // for every run of these agents in the window. context_snapshot is the
+      // TOASTed bulk of the table, and this runs on every feed build.
+      sql`(
+        ${heartbeatRuns.contextSnapshot} ->> 'issueId' = ''
+        or (
+          ${heartbeatRuns.contextSnapshot} ->> 'issueId' is null
+          and coalesce(${heartbeatRuns.contextSnapshot} ->> 'taskId', '') = ''
+        )
+      )`,
     )).groupBy(heartbeatRuns.agentId);
     for (const row of rows) latestByAgent.set(row.agentId, row.createdAt);
   }
