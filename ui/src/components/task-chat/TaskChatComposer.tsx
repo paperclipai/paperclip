@@ -1,4 +1,3 @@
-import { createUuid } from "@/lib/uuid";
 import { useCurrentAccountGuard } from "@/hooks/useAccountBoundMutation";
 import { ComposerFileDropTarget } from "./ComposerFileDropTarget";
 import { AgentAvatar } from "../AgentAvatar";
@@ -31,6 +30,7 @@ import {
   type ComposerDraftSubmission,
   type ComposerSendRequest,
 } from "@/lib/composer-draft";
+import { randomUuid } from "@/lib/random-uuid";
 import { classifySendFailure, type SendOutcome } from "@/lib/pending-send";
 import { describeError, errorStatus } from "@/api/errors";
 import { useAutoResend } from "@/hooks/useDurableSubmit";
@@ -681,7 +681,7 @@ export function TaskChatComposer({
   }
 
   async function uploadImage(file: File): Promise<string> {
-    const id = createUuid();
+    const id = randomUuid();
     setAttachments((prev) => [
       ...prev,
       {
@@ -1085,7 +1085,7 @@ export function TaskChatComposer({
         setBody(submittedBody);
         return;
       }
-      attemptId = createUuid();
+      attemptId = randomUuid();
       if (requestOwner === undefined) markRequestUnbound(attemptId);
       // IDs come only from this composer's upload receipts, never from parsing
       // arbitrary Markdown. A removed inline image no longer selects its receipt.

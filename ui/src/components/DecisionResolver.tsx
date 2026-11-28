@@ -5,6 +5,7 @@ import { decisionEffectTargetIssueIds, type Agent, type AttentionSubject, type D
 import { decisionsApi, type DecisionOutcome } from "../api/decisions";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
+import { randomUuid } from "../lib/random-uuid";
 import { cn } from "../lib/utils";
 import { useCompany } from "../context/CompanyContext";
 import { DecisionCard, type DecisionIssueRef } from "./DecisionCard";
@@ -280,7 +281,7 @@ export function DecisionResolver({ companyId, decisionId, originIssue, agentMap,
 
   const busy = decideMutation.isPending;
   const errorMessage = (decideMutation.error instanceof Error && decideMutation.error.message) || null;
-  const decide = (optionId: string, inputValues: Record<string, string>) => decideMutation.mutate({ optionId, inputValues, idempotencyKey: crypto.randomUUID() });
+  const decide = (optionId: string, inputValues: Record<string, string>) => decideMutation.mutate({ optionId, inputValues, idempotencyKey: randomUuid() });
 
   if (compact && decision.status === "open" && !decision.options.some((option) => option.effects.some((effect) => effect.type === "cancel_issue_tree"))) {
     return <CompactDecision decision={decision} resolveIssue={resolveIssue} targetChanged={targetChanged} busy={busy} errorMessage={errorMessage} leading={leading} onDecide={decide} />;

@@ -1,7 +1,7 @@
 import type { IssueExecutionPolicy, IssueExecutionStageParticipant, IssueExecutionStagePrincipal } from "@paperclipai/shared";
 import { issueExecutionPolicySchema } from "@paperclipai/shared";
 import { parseAssigneeValue } from "./assignees.js";
-import { createUuid as newId } from "./uuid.js";
+import { randomUuid } from "./random-uuid.js";
 
 type StageType = "review" | "approval";
 const nullablePolicySchema = issueExecutionPolicySchema.nullable();
@@ -49,7 +49,7 @@ function mergeParticipants(
     const key = principalKey(principal);
     const previous = existingByKey.get(key);
     participants.push({
-      id: previous?.id ?? newId(),
+      id: previous?.id ?? randomUuid(),
       type: principal.type,
       agentId: principal.type === "agent" ? principal.agentId ?? null : null,
       userId: principal.type === "user" ? principal.userId ?? null : null,
@@ -74,7 +74,7 @@ export function buildExecutionPolicy(input: {
   const reviewParticipants = mergeParticipants(existingReviewStage?.participants, input.reviewerValues);
   if (reviewParticipants.length > 0) {
     stages.push({
-      id: existingReviewStage?.id ?? newId(),
+      id: existingReviewStage?.id ?? randomUuid(),
       type: "review" as const,
       approvalsNeeded: 1 as const,
       participants: reviewParticipants,
@@ -85,7 +85,7 @@ export function buildExecutionPolicy(input: {
   const approvalParticipants = mergeParticipants(existingApprovalStage?.participants, input.approverValues);
   if (approvalParticipants.length > 0) {
     stages.push({
-      id: existingApprovalStage?.id ?? newId(),
+      id: existingApprovalStage?.id ?? randomUuid(),
       type: "approval" as const,
       approvalsNeeded: 1 as const,
       participants: approvalParticipants,

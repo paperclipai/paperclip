@@ -1,4 +1,3 @@
-import { createUuid } from "@/lib/uuid";
 import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 import { useCurrentAccountGuard } from "../hooks/useAccountBoundMutation";
 import { resolveIssueChatHumanAuthor } from "@/lib/issue-chat-human-author";
@@ -88,6 +87,7 @@ import {
   type ComposerSendRequest,
 } from "../lib/composer-draft";
 import { CommentSubmissionUnknownError } from "../lib/comment-submit-result";
+import { randomUuid } from "../lib/random-uuid";
 import { classifySendFailure, type SendOutcome } from "../lib/pending-send";
 import { useAutoResend } from "../hooks/useDurableSubmit";
 import { useDraftOwner } from "../hooks/useDraftOwner";
@@ -5182,7 +5182,7 @@ const IssueChatComposer = forwardRef<
         setBody(trimmed);
         return;
       }
-      attemptId = createUuid();
+      attemptId = randomUuid();
       if (requestOwner === undefined) markRequestUnbound(attemptId);
       // The exact request is stored before it is sent, so a lost response or
       // an outage can resend it with the same ID instead of losing it.
@@ -6229,7 +6229,7 @@ export function IssueChatThread({
   const sendComposerComment = useCallback<IssueChatThreadProps["onAdd"]>(
     async (body, reopen, reassignment, attachmentIds, clientRequestId, runSettings, nativeCommand) => {
       pendingSubmitScrollRef.current = true;
-      clientRequestId ??= createUuid();
+      clientRequestId ??= randomUuid();
       const attempt = beginSubmission(clientRequestId, undefined, reopen);
       try {
         await (nativeCommand
