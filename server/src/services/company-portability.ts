@@ -6557,7 +6557,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             const relationCompanyId = targetCompany.id;
             await db.transaction(async tx => {
               await notifyAttentionRetentionWork(tx, { companyId: relationCompanyId });
-              await notifyIssueRecovery(tx, { companyId: relationCompanyId });
+              await notifyIssueRecovery(tx, { companyId: relationCompanyId, everyTask: true });
               await tx
               .insert(issueRelations)
               .values(relationRows.map((row) => ({

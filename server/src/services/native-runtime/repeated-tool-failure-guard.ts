@@ -3,6 +3,16 @@ import { nativeSha256 } from "./canonical.js";
 
 /** Identical failures after which the exact call is no longer run. */
 export const REPEATED_TOOL_FAILURE_LIMIT = 2;
+export const TOOL_CALL_LOOP_REFUSAL_LIMIT = 6;
+export const TOOL_CALL_LOOP_RUN_REFUSAL_LIMIT = 20;
+export const AGENT_TOOL_CALL_LOOP = "agent_tool_call_loop";
+export function toolCallLoopContinuationKey(runId: string): string {
+  return `${AGENT_TOOL_CALL_LOOP}:${runId}`;
+}
+
+export const TOOL_CALL_LOOP_HINT = "The previous turn kept sending one tool call that Paperclip had already refused. "
+  + "Do not send it again unchanged. Prefer a dedicated Paperclip tool, such as set_task_title, report_progress or write_document, over call_api. "
+  + "If call_api is the only way, send every required argument, including body, as a top-level argument.";
 const MAX_TRACKED_FAILURES = 64;
 const MAX_RESPONSE_EXCERPT = 2_000;
 
@@ -14,7 +24,17 @@ type Failure = {
   details?: unknown;
   /** Returned by the route as an `ok: false` response rather than refused before sending. */
   returned: boolean;
+  refusals?: number;
 };
+
+export class ToolCallLoopError extends HttpError {
+  readonly code = AGENT_TOOL_CALL_LOOP;
+  constructor(readonly tool: string, readonly refusals: number, readonly runRefusals: number,
+    readonly argumentNames: string[], status: number, message: string, details?: unknown) {
+    super(status, message, details);
+    this.name = "ToolCallLoopError";
+  }
+}
 
 /**
  * Stops a model from resending the same rejected tool call. Some model hosts
@@ -36,6 +56,7 @@ export class RepeatedToolFailureGuard {
   // Identical calls a model sends in parallel run one after another, so each
   // sees the failures before it. Different calls never wait on each other.
   readonly #inFlight = new Map<string, Promise<unknown>>();
+  #runRefusals = 0;
 
   run<T>(call: ToolCall, execute: () => Promise<T>): Promise<T> {
     const key = callKey(call);
@@ -50,6 +71,14 @@ export class RepeatedToolFailureGuard {
   async #run<T>(key: string, call: ToolCall, execute: () => Promise<T>): Promise<T> {
     const prior = this.#failures.get(key);
     if (prior && prior.count >= REPEATED_TOOL_FAILURE_LIMIT) {
+      prior.refusals = (prior.refusals ?? 0) + 1;
+      this.#runRefusals += 1;
+      if (prior.refusals >= TOOL_CALL_LOOP_REFUSAL_LIMIT || this.#runRefusals >= TOOL_CALL_LOOP_RUN_REFUSAL_LIMIT) {
+        throw new ToolCallLoopError(call.tool, prior.refusals, this.#runRefusals, argumentNames(call.arguments), prior.status,
+          `This call was not run, and Paperclip stopped this turn: ${call.tool} was refused ${prior.refusals} times in this run with these exact arguments. `
+          + `${receivedArguments(call.arguments)} The task continues in a fresh session. ${TOOL_CALL_LOOP_HINT}`,
+          prior.details);
+      }
       throw new HttpError(prior.status, `This call was not run: ${call.tool} already failed ${prior.count} times in this run with these exact arguments. `
         + `${receivedArguments(call.arguments)} ${prior.returned ? `The response each time was HTTP ${prior.status}: ` : "The error each time was: "}${prior.message} `
         + "Repeating it unchanged cannot succeed. Send it again only with the change that error asks for, or stop calling it and tell the user what blocked you.", prior.details);
@@ -131,7 +160,11 @@ function repeatedNote(count: number, call: ToolCall): string {
     + "Paperclip will not run this exact call again in this run. Change the arguments, or stop and tell the user what blocked you.";
 }
 
+function argumentNames(value: unknown): string[] {
+  return value && typeof value === "object" && !Array.isArray(value) ? Object.keys(value).sort() : [];
+}
+
 function receivedArguments(value: unknown): string {
-  const names = value && typeof value === "object" && !Array.isArray(value) ? Object.keys(value).sort() : [];
+  const names = argumentNames(value);
   return `Arguments received each time: ${names.length ? names.join(", ") : "none"}.`;
 }

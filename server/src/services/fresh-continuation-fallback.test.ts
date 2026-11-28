@@ -3,7 +3,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog, agentWakeupRequests, agents, approvals, authUsers, companies, createDb, environmentLeases, environments, executionWorkspaces, heartbeatRuns, issueApprovals, issueRecoveryActions, issueThreadInteractions,
-  heartbeatRunEvents, issueComments, issues, nativeRunFinalizations, toolInvocations,
+  heartbeatRunEvents, issueComments, issues, nativeRunFinalizations, toolInvocations, companyMemberships,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./execution-recovery-resolution.js";
@@ -16,7 +16,7 @@ import {
 } from "./fresh-continuation-fallback.js";
 import { heartbeatService } from "./heartbeat.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
-import { currentProcessSpaceHash } from "./controller-process-identity.js";
+import { currentProcessSpaceHash, observedProcessStartedAt } from "./controller-process-identity.js";
 import { executionControlSchedule } from "./execution-control-work.js";
 import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
 import { taskInterruptionPresentation } from "./task-interruption-presentation.js";
@@ -65,6 +65,8 @@ suite("fresh-continuation fallback", () => {
   afterEach(async () => {
     resetBacklogContinuationPacingForTests(db);
     await heartbeatService(db).drainActiveRunExecutions();
+    await db.delete(companyMemberships).where(and(eq(companyMemberships.companyId, companyId),
+      eq(companyMemberships.principalId, userId), eq(companyMemberships.principalType, "user")));
     // The drain covers every background run, wake and resume dispatch, so
     // nothing still holds these tables. A deadlock here is a leak to fix.
     await db.execute(sql`truncate table issue_recovery_actions, native_run_finalizations, tool_invocations,
@@ -388,6 +390,8 @@ suite("fresh-continuation fallback", () => {
   }, 60_000);
 
   it("never folds a Retry for the admitted continuation's own failure into that ended continuation", async () => {
+    await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user",
+      status: "active", membershipRole: "member" });
     const f = await unfinishedRun({ runtime: "legacy", errorCode: "controller_lease_lost", error: "Legacy controller lease lost" });
     await db.update(heartbeatRuns).set({ processPid: 4242, processHostHash: "replaced-server", processStartedAt: new Date(Date.now() - 600_000) })
       .where(eq(heartbeatRuns.id, f.runId));
@@ -748,8 +752,11 @@ suite("fresh-continuation fallback", () => {
   }, 60_000);
 
   // The recorded process identity (host, PID space, start time) of this process.
-  const liveIdentity = () => ({ processPid: process.pid, processHostHash: currentProcessSpaceHash(),
-    processStartedAt: new Date(Date.now() - process.uptime() * 1_000) });
+  const liveIdentity = async () => {
+    const startedAt = await observedProcessStartedAt(process.pid);
+    if (startedAt === null) throw new Error("This host cannot report this process's start time");
+    return { processPid: process.pid, processHostHash: currentProcessSpaceHash(), processStartedAt: new Date(startedAt) };
+  };
 
   /** Moves the recorded start of the pending wait into the past. */
   async function waitedFor(actionId: string, ms: number) {
@@ -759,7 +766,7 @@ suite("fresh-continuation fallback", () => {
 
   it("lets a previous process still running on this host settle first, for about ten minutes at most", async () => {
     const f = await unfinishedRun({ runtime: "legacy", errorCode: "process_lost" });
-    await db.update(heartbeatRuns).set(liveIdentity()).where(eq(heartbeatRuns.id, f.runId));
+    await db.update(heartbeatRuns).set(await liveIdentity()).where(eq(heartbeatRuns.id, f.runId));
     const first = await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" });
     expect(first).toMatchObject({ kind: "exact_recovery_pending", reason: "previous_process_running" });
     // Rechecks back off from one minute.
@@ -792,7 +799,7 @@ suite("fresh-continuation fallback", () => {
   it("does not mistake a recycled PID for the old writer", async () => {
     const f = await unfinishedRun({ runtime: "legacy", errorCode: "process_lost" });
     // The PID is alive now, but it belongs to a process that started after the old one was recorded.
-    await db.update(heartbeatRuns).set({ ...liveIdentity(), processStartedAt: new Date("2020-01-01T00:00:00Z") })
+    await db.update(heartbeatRuns).set({ ...(await liveIdentity()), processStartedAt: new Date("2020-01-01T00:00:00Z") })
       .where(eq(heartbeatRuns.id, f.runId));
     expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" }))
       .toMatchObject({ kind: "continued" });

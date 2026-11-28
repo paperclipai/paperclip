@@ -115,7 +115,7 @@ function createFakeTransaction(overrides: Partial<WakeQueueTransaction> = {}): W
       reason: null,
       releasePolicy: null,
     })),
-    getCommentSelfAuthorship: vi.fn(async () => ({ allSelfAuthored: false })),
+    getCommentSelfAuthorship: vi.fn(async () => ({ allSelfAuthored: false, includesPersonComment: false })),
     isWatcherCommentDuringFinishingRun: vi.fn(async () => false),
     owedInteractionAnswer: vi.fn(async (): Promise<"deliver" | "blocked" | null> => null),
     isCompletedDelegationMention: vi.fn(async () => false),
@@ -681,7 +681,7 @@ describe("releaseIssueExecution", () => {
         liveNonSelfCommentIds: scenario === "done_missing" || scenario === "done_self" ? [] : commentIds,
         containedSelfAuthoredComment: scenario === "done_self",
       })),
-      getCommentSelfAuthorship: vi.fn(async () => ({ allSelfAuthored: scenario === "done_self" })),
+      getCommentSelfAuthorship: vi.fn(async () => ({ allSelfAuthored: scenario === "done_self", includesPersonComment: false })),
       isWatcherCommentDuringFinishingRun: vi.fn(async () => scenario === "done_watcher_during_run"),
       reopenIssue: vi.fn(async () => ({ ...ISSUE, status: "todo" })),
     });

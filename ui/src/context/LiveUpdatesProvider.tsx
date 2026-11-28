@@ -4,6 +4,7 @@ import { getPageVisibility, usePageVisibility } from "../lib/page-visibility";
 import { createLiveQueryRecovery } from "../lib/live-query-recovery";
 import { isLiveReconciledQuery } from "../lib/live-reconcile";
 import { refreshPendingTaskBrowserReads, refreshTaskBrowsers } from "../lib/task-browsers-refresh";
+import { refreshRecentSubtasks, refreshRecentTaskSummaries } from "../lib/recent-subtasks-refresh";
 import {
   createContext,
   useCallback,
@@ -1489,7 +1490,11 @@ function invalidateHeartbeatQueries(
   companyId: string,
   payload: Record<string, unknown>,
 ) {
-  queryClient.invalidateQueries({ queryKey: queryKeys.issues.summaries(companyId) });
+  const parentIds = Array.isArray(payload.recentSubtaskParentIds)
+    ? payload.recentSubtaskParentIds.filter((id): id is string => typeof id === "string") : undefined;
+  const issueId = readString(payload.issueId);
+  refreshRecentTaskSummaries(queryClient, companyId, issueId, parentIds);
+  refreshRecentSubtasks(queryClient, companyId, issueId, parentIds);
   // Note: liveRuns(companyId) is intentionally NOT invalidated here — it is
   // event-sourced via applyRunLifecycleToCompanyLiveRuns in the caller.
   queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId) });
@@ -1583,6 +1588,8 @@ function invalidateActivityQueries(
   const actorType = readString(payload.actorType);
   const actorId = readString(payload.actorId);
   const details = readRecord(payload.details);
+  const subtaskParents = Array.isArray(payload.recentSubtaskParentIds)
+    ? payload.recentSubtaskParentIds.filter((id): id is string => typeof id === "string") : undefined;
   queryClient.invalidateQueries({ queryKey: queryKeys.activity(companyId) });
   if (entityType === "issue" && (action === "issue.read_marked" || action === "issue.read_unmarked")) {
     // Audit views show read receipts, while unread state belongs to one person.
@@ -1593,6 +1600,8 @@ function invalidateActivityQueries(
     }
     const readerId = readString(details?.userId) ?? (actorType === "user" ? actorId : null);
     if (readerId && readerId === currentActor.userId) {
+      refreshRecentSubtasks(queryClient, companyId, entityId, subtaskParents, currentActor.userId);
+      refreshRecentTaskSummaries(queryClient, companyId, entityId, subtaskParents);
       for (const queryKey of [
         queryKeys.issues.listMineByMe(companyId),
         queryKeys.issues.listTouchedByMe(companyId),
@@ -1625,6 +1634,8 @@ function invalidateActivityQueries(
     action?.startsWith("company_membership.") ||
     action?.startsWith("membership.") || action?.includes("privacy");
   if (decisionAudienceChanged) {
+    void queryClient.resetQueries({ queryKey: [...queryKeys.issues.list(companyId), "recent-subtasks"] });
+    void queryClient.resetQueries({ queryKey: queryKeys.issues.summaries(companyId) });
     // Drop old permission-filtered payloads immediately while the API resolves
     // the current audience. A failed refetch must not retain a revoked receipt.
     for (const queryKey of [queryKeys.attention(companyId), ["decisions", companyId, "task-record"], ["issues", "decision-receipts"], ["issues", "chat-handoffs"], ["issues", "pending-questions"]]) {
@@ -1664,6 +1675,8 @@ function invalidateActivityQueries(
   }
 
   if (entityType === "issue") {
+    refreshRecentSubtasks(queryClient, companyId, entityId, subtaskParents);
+    refreshRecentTaskSummaries(queryClient, companyId, entityId, subtaskParents);
     // Browser lists stop polling while connected; this activity refreshes them.
     if (entityId && action?.startsWith("browser.")) refreshTaskBrowsers(queryClient, entityId);
     const chatListKey = queryKeys.agentChats.list(companyId, currentActor.userId);
@@ -1679,7 +1692,8 @@ function invalidateActivityQueries(
     }
     queryClient.invalidateQueries({
       queryKey: queryKeys.issues.list(companyId),
-      predicate: excludingQueryKeys(queryKeys.issues.mentionPool(companyId), queryKeys.issues.listIndex(companyId)),
+      predicate: excludingQueryKeys(queryKeys.issues.mentionPool(companyId), queryKeys.issues.listIndex(companyId),
+        [...queryKeys.issues.list(companyId), "recent-subtasks"], queryKeys.issues.summaries(companyId)),
     });
     refreshTaskIndexForActivity(queryClient, companyId, ownActorActivity);
     refreshMentionPoolForActivity(

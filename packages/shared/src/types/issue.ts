@@ -899,6 +899,11 @@ export type IssueSummary = Pick<
   externalConversationState: "active" | "waiting" | null;
   /** Present for blocked tasks so summary views resolve the same status glyph as detail views. */
   blockerAttention?: IssueBlockerAttention;
+  /** Navigation-only projection. Counts include only readable direct children. */
+  parentId?: string | null;
+  isUnreadForMe?: boolean;
+  subtaskCount?: number;
+  unreadSubtaskCount?: number;
 };
 
 export interface Issue {

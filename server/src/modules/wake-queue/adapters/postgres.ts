@@ -474,10 +474,18 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
 
     async getCommentSelfAuthorship({ companyId, issueId, finishingRunId, commentIds }) {
       const rows = await tx
-        .select({ createdByRunId: issueComments.createdByRunId })
+        .select({
+          createdByRunId: issueComments.createdByRunId, authorType: issueComments.authorType,
+          authorUserId: issueComments.authorUserId, authorAgentId: issueComments.authorAgentId,
+          derivedAuthorAgentId: issueComments.derivedAuthorAgentId, deletedAt: issueComments.deletedAt,
+        })
         .from(issueComments)
         .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId), inArray(issueComments.id, commentIds)));
-      return { allSelfAuthored: rows.length > 0 && rows.every((row) => row.createdByRunId === finishingRunId) };
+      return {
+        allSelfAuthored: rows.length > 0 && rows.every((row) => row.createdByRunId === finishingRunId),
+        includesPersonComment: rows.some((row) => !row.deletedAt && row.authorUserId !== null && row.createdByRunId === null &&
+          row.authorAgentId === null && row.derivedAuthorAgentId === null && (row.authorType === "user" || row.authorType === null)),
+      };
     },
 
     async isWatcherCommentDuringFinishingRun({ companyId, issueId, finishingRunId, commentIds }) {

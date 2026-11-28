@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { prepareVerifiedRemoteProviderPack, useVerifiedPreinstalledRemoteProviderPack, runRemoteProviderVerification, shouldUseBundledAcpxImageAssets } from "./remote-provider-pack.js";
+import { createNativeRunTrace } from "./native-run-trace.js";
+import { prepareVerifiedRemoteProviderPack, providerPackProvenanceReuseAllowed, useVerifiedPreinstalledRemoteProviderPack, runRemoteProviderVerification, shouldUseBundledAcpxImageAssets } from "./remote-provider-pack.js";
 
 describe("remote provider verification", () => {
   const ok = { exitCode: 0, timedOut: false, stdout: "verified", stderr: "", signal: null };
@@ -96,8 +97,43 @@ describe("remote provider pack reuse", () => {
     stageAndVerify.mockResolvedValue(undefined);
     await expect(prepareVerifiedRemoteProviderPack(input)).resolves.toBe("uploaded");
   });
+
+  it("records on the selection span why the image pack was not reused", async () => {
+    const trace = createNativeRunTrace({ runId: "provider-pack-select-run", startedAtMs: Date.now() });
+    const annotate = vi.spyOn(trace, "annotate");
+    const rejected = Object.assign(new Error("runner_remote_provider_artifact_incompatible: provider pack verification failed"),
+      { failureCheck: "manifest_mismatch:runnerSourceRevision" });
+    await expect(prepareVerifiedRemoteProviderPack({
+      trace,
+      verifyStaged: async () => { throw new Error("missing"); },
+      usePreinstalled: onRejected => useVerifiedPreinstalledRemoteProviderPack({
+        candidates: ["/opt/paperclip-runner/provider-pack", "/home/operator/.local/share/paperclip-runner/provider-pack"], onRejected,
+        verifyAndLink: async root => {
+          throw root.startsWith("/opt/") ? rejected : Object.assign(new Error("missing"), { failureCheck: "manifest_unreadable" });
+        },
+      }),
+      stageAndVerify: async () => {},
+    })).resolves.toBe("uploaded");
+    expect(annotate).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      stateSource: "uploaded", reason: "cached_packs_unverified", check: "manifest_mismatch:runnerSourceRevision" }));
+    annotate.mockClear();
+    await prepareVerifiedRemoteProviderPack({ trace, verifyStaged: async () => { throw new Error("missing"); },
+      usePreinstalled: async () => false, stageAndVerify: async () => {} });
+    expect(annotate).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ check: "no_preinstalled_pack" }));
+  });
 });
 
+
+describe("same-content pack reuse across builds", () => {
+  it.each([
+    [{ retainProviderPack: false, explicitProviderPackSelection: false, authoritySelectable: true }, true],
+    [{ retainProviderPack: true, explicitProviderPackSelection: false, authoritySelectable: true }, false],
+    [{ retainProviderPack: false, explicitProviderPackSelection: true, authoritySelectable: true }, false],
+    [{ retainProviderPack: false, explicitProviderPackSelection: false, authoritySelectable: false }, false],
+  ])("allows provenance-only differences only for an unbound run: %j", (input, allowed) => {
+    expect(providerPackProvenanceReuseAllowed(input)).toBe(allowed);
+  });
+});
 
 describe("ordinary ACPX image artifacts", () => {
   const provider = (agent: string) => ({ kind: "acpx", agent, model: "selected-model" } as Parameters<typeof shouldUseBundledAcpxImageAssets>[0]["provider"]);

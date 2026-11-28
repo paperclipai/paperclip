@@ -6,6 +6,24 @@ export const PRP_COMPLETION_TOOL_DESCRIPTION =
   "Report completed work (done), work requiring review (needs_review), or an explicit wait (yielded with response_wake for a response, monitor after set_task_monitor confirms a schedule on this task, or omit continuation to use this run's authorized published-review wait or saved repository-preparation continuation). Use the current completion contract and supporting evidence. If rejected, correct the report and retry. After acceptance, read the returned outcome; do not claim completion while gated. Explain any required approval with its supplied link and action, then write the final response and end the turn without further tool calls.";
 export const PRP_BLOCK_TOOL_DESCRIPTION =
   "Report work that cannot continue because of a concrete blocker. Routine repository preparation is not a blocker: use paperclip_finish with yielded and omit continuation to resume through the saved workspace continuation. Identify the blocker, its owner, and the action needed to unblock it; use the current completion contract and supporting evidence. If rejected, correct the report and retry. After acceptance, read the returned outcome, explain the blocker and any required action in the final response, and end the turn without further tool calls.";
+export const PRP_SEMANTIC_RESULT_CONFLICT_MESSAGE = "A different semantic result was already committed";
+export const PRP_BLOCKER_ALREADY_REPORTED_MESSAGE =
+  "This turn already reported a blocker, and a turn's first accepted report is final, so this report was not recorded. Do not report again in this turn. " +
+  "In your final response, list the steps that are complete and say whether the blocker still applies, then end the turn.";
+export const PRP_ENVIRONMENT_BLOCKER_ALREADY_REPORTED_MESSAGE = PRP_BLOCKER_ALREADY_REPORTED_MESSAGE +
+  " Paperclip continues this environment or tool blocker automatically in a fresh session that checks the saved work.";
+
+const PRP_ENVIRONMENT_BLOCKER_REASON_CODES: ReadonlySet<string> = new Set(["environment_unavailable", "tool_unavailable"]);
+
+/** Feedback for a later report in a turn that already committed a different one. */
+export function prpSemanticResultConflictMessage(committed: {
+  reportedWorkDisposition: string;
+  blocker?: { owner?: { kind?: string } | null; reasonCode?: string } | null;
+} | null | undefined): string {
+  if (committed?.reportedWorkDisposition !== "blocked") return PRP_SEMANTIC_RESULT_CONFLICT_MESSAGE;
+  return committed.blocker?.owner?.kind === "system" && PRP_ENVIRONMENT_BLOCKER_REASON_CODES.has(committed.blocker.reasonCode ?? "")
+    ? PRP_ENVIRONMENT_BLOCKER_ALREADY_REPORTED_MESSAGE : PRP_BLOCKER_ALREADY_REPORTED_MESSAGE;
+}
 export const PRP_SEMANTIC_TOOL_NAMES = [
   PRP_COMPLETION_TOOL_NAME,
   PRP_BLOCK_TOOL_NAME,

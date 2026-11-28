@@ -13,6 +13,7 @@ import { settleChargedImageReceiptsInTransaction } from "./native-runtime/genera
 import type { BudgetServiceHooks } from "./budgets.js";
 import { queueBudgetEvaluation } from "./budget-evaluation-work.js";
 import { ensureRuntimeAccountingBaseline } from "./runtime-accounting-totals.js";
+import { OWN_PROCESS_START_EVENT_TYPES } from "./native-process-start-events.js";
 import { logger } from "../middleware/logger.js";
 import { promises as fs } from "node:fs";
 import { priceAnthropicReceipt } from "./anthropic-pricing.js";
@@ -141,7 +142,7 @@ const inheritedProcessIdentityOnly = sql`${heartbeatRuns.runnerProfileJson}->>'i
   and not exists (select 1 from ${heartbeatRunEvents} own_process
     where own_process.company_id = ${heartbeatRuns.companyId} and own_process.run_id = ${heartbeatRuns.id}
       and own_process.source_event_id is null
-      and own_process.event_type in ('native.process_start_requested', 'native.process_identity_recorded'))`;
+      and own_process.event_type in (${sql.join(OWN_PROCESS_START_EVENT_TYPES.map(type => sql`${type}`), sql`, `)}))`;
 
 const nativeProviderWorkNeverStarted = sql`${heartbeatRuns.runtimeMode} = 'native'
   and ${heartbeatRuns.status} in ('failed', 'cancelled', 'timed_out', 'interrupted')

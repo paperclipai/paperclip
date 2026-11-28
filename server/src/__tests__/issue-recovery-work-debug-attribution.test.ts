@@ -39,7 +39,7 @@ describeIssueRecovery("issue recovery work signal attribution", () => {
       expect(stranded).toContainEqual(["stranded-assignments", "load",
         { scope: JSON.stringify([f.companyId, null, run.id, null, null]) }]);
       expect(stranded).toContainEqual(["stranded-assignments", "check",
-        expect.objectContaining({ issueId: task.id, companyId: f.companyId, wake: "load" })]);
+        expect.objectContaining({ issueId: task.id, companyId: f.companyId, wake: expect.stringMatching(/^(hint|backstop)$/) })]);
     } finally { enabled.mockRestore(); event.mockRestore(); signal.mockRestore(); }
   });
 

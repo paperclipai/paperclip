@@ -730,7 +730,8 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
         let (mut transport, welcome) = match connection {
             Ok(Some(connection)) => connection,
             Ok(None) => {
-                next_connection_attempt = Instant::now() + config.reconnect_delay;
+                next_connection_attempt =
+                    Instant::now() + endpoint.retry_delay(config.reconnect_delay);
                 continue;
             }
             Err(error) => {
@@ -749,7 +750,7 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
                 }
                 next_connection_attempt = Instant::now()
                     + reconnect_delay(
-                        config.reconnect_delay,
+                        endpoint.retry_delay(config.reconnect_delay),
                         connect_deadline.saturating_duration_since(Instant::now()),
                         &mut reconnect_attempt,
                     );
@@ -1055,8 +1056,8 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
                     .map(|credential| credential.expires_at_unix_ms),
             );
             next_connection_attempt = Instant::now()
-                + config
-                    .reconnect_delay
+                + endpoint
+                    .retry_delay(config.reconnect_delay)
                     .min(reconnect_deadline.saturating_duration_since(Instant::now()));
             continue;
         }
@@ -1419,8 +1420,8 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
                 .map(|credential| credential.expires_at_unix_ms),
         );
         next_connection_attempt = Instant::now()
-            + config
-                .reconnect_delay
+            + endpoint
+                .retry_delay(config.reconnect_delay)
                 .min(reconnect_deadline.saturating_duration_since(Instant::now()));
     }
 }

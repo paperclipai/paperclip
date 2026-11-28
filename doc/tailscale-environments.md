@@ -74,6 +74,9 @@ tools or enter MCP discovery. Management requires an instance administrator with
 access to the company. Only the person who started a pending sign-in can retrieve
 its sign-in link. Existing SSH environment access governs which agents execute
 there. Cloud and self-hosted instances use the same Tailscale device sign-in.
+For Cloud owners, the board access summary reports the effective instance-admin
+rights computed by Cloud authentication while `enableOwnerInstanceAdmin` is
+enabled. Disabling that setting removes those rights on the next request.
 
 The instance starts a private userspace Tailscale device and returns its generated
 `https://login.tailscale.com/a/...` sign-in address. Pending device state is stored

@@ -139,6 +139,14 @@ describe("company routes", () => {
     expect(toCompanyRelativePath("/PAP/timeline")).toBe("/timeline");
   });
 
+  it.each(["cases", "status"])("keeps the active company on /%s navigation links", (root) => {
+    expect(isBoardPathWithoutPrefix(`/${root}`)).toBe(true);
+    expect(extractCompanyPrefixFromPath(`/${root}`)).toBeNull();
+    expect(applyCompanyPrefix(`/${root}`, "PAP")).toBe(`/PAP/${root}`);
+    expect(applyCompanyPrefix(`/PAP/${root}`, "REA")).toBe(`/PAP/${root}`);
+    expect(toCompanyRelativePath(`/PAP/${root}`)).toBe(`/${root}`);
+  });
+
   it("treats Skill Studio create mode as an unprefixed board route", () => {
     expect(isBoardPathWithoutPrefix("/skills/studio/new")).toBe(true);
     expect(extractCompanyPrefixFromPath("/skills/studio/new")).toBeNull();

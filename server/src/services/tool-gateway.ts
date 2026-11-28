@@ -75,6 +75,7 @@ import {
 } from "./mcp-tasks.js";
 import { logger } from "../middleware/logger.js";
 import { getAppDefinitionForApplicationKey, isConnectorFeatureEnabled } from "@paperclipai/shared";
+import { requestConfirmationPayloadSchema } from "@paperclipai/shared";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactSensitiveText } from "../redaction.js";
 import { spawn } from "node:child_process";
@@ -4797,7 +4798,7 @@ export function createToolGatewayService(
       .limit(1);
     const href = `/${company?.issuePrefix ?? ""}/apps/${connection.id}/permissions`;
     const idempotencyKey = `connection-authorization:${connection.id}:${userId}`;
-    const payload = {
+    const payload = requestConfirmationPayloadSchema.parse({
       version: 1 as const,
       prompt:
         grantKind === "organization"
@@ -4814,12 +4815,12 @@ export function createToolGatewayService(
           : "This run needs your personal authorization. Paperclip will not use another user's identity.",
       target: {
         type: "custom" as const,
-        key: `connection:${connection.uid}:user:${userId}`,
+        key: `connection-authorization:${createHash("sha256").update(idempotencyKey).digest("hex")}`,
         revisionId: connection.updatedAt.toISOString(),
-        label: `Connect ${connection.name}`,
+        label: `Connect ${connection.name}`.slice(0, 120),
         href,
       },
-    };
+    });
     const [existing] = await db
       .select({ id: issueThreadInteractions.id })
       .from(issueThreadInteractions)

@@ -17,7 +17,8 @@ workspace roots such as `~/paperclipai/paperclip`; verify the selected root
 contains `tests/runner-e2e` and `packages/paperclip-runner`. Run commands from
 that repository root. The copied skill may live outside the checkout.
 Read `doc/evals.md`, then the authoritative
-`tests/runner-e2e/README.md`, `FIXTURES.md`, `SECURITY.md`, and
+`tests/runner-e2e/README.md`, the suite's section in `SUITES.md`,
+`FIXTURES.md`, `SECURITY.md`, and
 `EVERYDAY-WORKFLOWS.md` for the selected area. Inspect the nearest existing
 catalog entry, case, harness flow, matcher, evidence writer, and report test
 before changing anything. Keep the user journey on production browser/API

@@ -176,6 +176,26 @@ describe("recent task synchronization", () => {
     expect(getIssue).not.toHaveBeenCalled();
     expect(cache.getQueryCache().findAll({ queryKey: ["issues", "detail"] })).toEqual([]);
   });
+  it("keeps loaded navigation state on a failed refresh without storing personal unread projections", async () => {
+    const parent = { ...task(10, "Parent"), parentId: null, subtaskCount: 14, unreadSubtaskCount: 12, isUnreadForMe: true };
+    recordRecentTask(parent, "user-1");
+    summaries.mockResolvedValue([parent]);
+    const cache = client();
+    let entries: ReturnType<typeof useRecentTasks>["entries"] = [];
+    function State() { entries = useRecentTasks({ companyId: "company-1", userId: "user-1" }).entries; return null; }
+    await act(async () => root.render(<QueryClientProvider client={cache}><State /></QueryClientProvider>));
+    await flush();
+    expect(entries[0]).toMatchObject({ subtaskCount: 14, unreadSubtaskCount: 12, isUnreadForMe: true });
+    expect(readRecentTasks(storageKey, "company-1")[0]).not.toHaveProperty("isUnreadForMe");
+    expect(readRecentTasks(storageKey, "company-1")[0]).not.toHaveProperty("subtaskCount");
+    const stable = entries;
+    await act(async () => root.render(<QueryClientProvider client={cache}><State /></QueryClientProvider>));
+    expect(entries).toBe(stable);
+    summaries.mockRejectedValue(new ApiError("Unavailable", 503, null));
+    await act(async () => { await cache.invalidateQueries({ queryKey: queryKeys.issues.summaries("company-1") }); });
+    await flush();
+    expect(entries[0]).toMatchObject({ subtaskCount: 14, unreadSubtaskCount: 12, isUnreadForMe: true });
+  });
 
   it("does not fetch empty history", async () => {
     await act(async () => root.render(<QueryClientProvider client={client()}><RecentTasks name="empty" /></QueryClientProvider>));

@@ -11,6 +11,7 @@ import { nextAbandonedNativeOwnerReleaseAt } from "./native-runtime/native-faile
 import { hasPendingPauseResume } from "./issue-tree-resume.js";
 import { hasPendingBudgetResume } from "./budget-resume-continuation.js";
 import { continuationDeliveryDue } from "./recovery/continuation-delivery-attempt.js";
+import { nextNativeInterruptionCheckAt } from "./native-interruption-continuation.js";
 
 export function registerExecutionControlWork(
   coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
@@ -113,13 +114,15 @@ export function executionControlSchedule(db: Db) {
     },
     async disposition() {
       const now = new Date();
-      const [conversation, execution, held, nextCheck] = await Promise.all([
+      const [conversation, execution, held, nextCheck, nextInterruptionCheck] = await Promise.all([
         db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(obsoleteExecutionConversationHold()).limit(1),
         unresolvedExecutionDispositions(db, 1),
         heldExecutionsAwaitingFreshContinuation(db, now, 1),
         nextFreshContinuationCheckAt(db),
+        nextNativeInterruptionCheckAt(db),
       ]);
-      return conversation.length || execution.length || held.length ? retry() : deadline([nextCheck ? new Date(nextCheck) : null]);
+      return conversation.length || execution.length || held.length ? retry()
+        : deadline([nextCheck ? new Date(nextCheck) : null, nextInterruptionCheck ? new Date(nextInterruptionCheck) : null]);
     },
     async localLogin() {
       const rows = await db.select({ at: adapterAuthSessions.expiresAt }).from(adapterAuthSessions).where(and(

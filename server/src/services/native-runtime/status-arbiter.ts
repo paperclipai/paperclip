@@ -1,6 +1,9 @@
 import { COMPLETION_REVIEW_STAGE_REASON, COMPLETION_REVIEW_STAGE_REJECTED_REASON, type CompletionReviewStageEntry } from "../issue-execution-policy.js";
 import type { NativeEvidenceAssessment } from "./evidence-classifier.js";
 import { NATIVE_MODEL_REJECTION_MESSAGE, NATIVE_PROVIDER_CAPACITY_MAX_RETRIES, NATIVE_PROVIDER_OVERLOADED_CODE, NATIVE_PROVIDER_OVERLOADED_MESSAGE } from "./native-provider-failure.js";
+import { NATIVE_TOOL_RECEIPT_LIMIT_CODE, NATIVE_TOOL_RECEIPT_LIMIT_MAX_CONTINUATIONS } from "./native-tool-receipt-limit.js";
+import { NATIVE_ENVIRONMENT_BLOCKER_CODE, NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_ACTION, NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_CODE,
+  NATIVE_ENVIRONMENT_BLOCKER_MAX_RETRIES } from "./native-environment-blocker.js";
 
 export const NATIVE_STATUS_ARBITER_POLICY_VERSION = "phase6-v14";
 
@@ -240,6 +243,7 @@ export function arbitrateNativeStatus(input: {
   reviewOwnerUserId?: string | null;
   /** Review decisions own task state; a reviewer's finish report cannot override them. */
   nativeReviewOutcome?: "resolved" | "pending" | "stale";
+  toolCallLoopContinuation?: boolean;
   /**
    * This run, as the configured participant, recorded the approval that
    * completed the task's final execution-policy stage. That durable decision is
@@ -255,6 +259,9 @@ export function arbitrateNativeStatus(input: {
   providerModelRejected?: boolean;
   providerOverloaded?: boolean;
   providerFailureSuperseded?: boolean;
+  toolReceiptLimitStopped?: boolean;
+  /** The current owner's blocked report names a system-owned environment or tool outage. */
+  environmentBlocker?: boolean;
   failureRetryCount?: number;
   /**
    * This run was itself the automatic continuation of an earlier failed turn.
@@ -367,6 +374,20 @@ export function arbitrateNativeStatus(input: {
       ],
     };
   }
+  if (input.toolReceiptLimitStopped && input.terminalState !== "succeeded" && !input.nativeReviewOutcome &&
+      !input.governanceGate && !input.hasUnresolvedIssueBlockers && !input.hasActivePauseHold &&
+      input.priorIssueStatus !== "blocked" &&
+      (input.failureRetryCount ?? 0) < NATIVE_TOOL_RECEIPT_LIMIT_MAX_CONTINUATIONS) {
+    return {
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      statusAction: "preserve", toStatus: input.priorIssueStatus,
+      reasonCode: NATIVE_TOOL_RECEIPT_LIMIT_CODE, unblockDescriptor: null,
+      effects: [
+        { kind: "schedule_retry", cause: NATIVE_TOOL_RECEIPT_LIMIT_CODE, summary: "Continue the task in a fresh session.", agentId: input.agentId },
+        ...(input.terminalState === "cancelled" ? [{ kind: "release_run_resources" as const }] : []),
+      ],
+    };
+  }
   if (input.nativeReviewOutcome) {
     return {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
@@ -375,7 +396,7 @@ export function arbitrateNativeStatus(input: {
       unblockDescriptor: null,
       effects: [
         { kind: "release_checkout" },
-        ...(input.nativeReviewOutcome === "pending" ? [{
+        ...(input.nativeReviewOutcome === "pending" && !input.toolCallLoopContinuation ? [{
           kind: "record_recovery" as const, cause: "native_review_unresolved",
           nextAction: "The named reviewer must resolve the pending completion review or explain the concrete blocker. Do not restart the worker's assignment or create another review request.",
           agentId: input.agentId,
@@ -605,6 +626,31 @@ export function arbitrateNativeStatus(input: {
         ownerUserId: request.ownerClass === "agent" ? null : (input.reviewOwnerUserId ?? null),
         ownerAgentId: request.ownerClass === "agent" ? request.targetAgentId : null,
       })),
+    };
+  }
+  if (
+    input.assessment.reportedDisposition === "blocked" &&
+    input.assessment.blocker &&
+    input.environmentBlocker &&
+    !input.isConversation &&
+    !input.hasActivePauseHold
+  ) {
+    if ((input.failureRetryCount ?? 0) < NATIVE_ENVIRONMENT_BLOCKER_MAX_RETRIES) {
+      return {
+        policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+        statusAction: "preserve", toStatus: input.priorIssueStatus,
+        reasonCode: NATIVE_ENVIRONMENT_BLOCKER_CODE, unblockDescriptor: null,
+        effects: [{ kind: "schedule_retry", cause: NATIVE_ENVIRONMENT_BLOCKER_CODE,
+          summary: "Continue the task in a fresh session.", agentId: input.agentId }],
+      };
+    }
+    return {
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      statusAction: "blocked", toStatus: "blocked",
+      reasonCode: NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_CODE,
+      blockerOwnerKind: input.assessment.blocker.ownerKind,
+      unblockDescriptor: { owner: "board", action: NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_ACTION },
+      effects: [{ kind: "bind_blocker", owner: "board", action: NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_ACTION }],
     };
   }
   if (

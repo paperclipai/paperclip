@@ -679,7 +679,12 @@ function issuePrivacyPrincipalCondition(actor: AuthorizationActor): SQL<boolean>
     where p.id = n.project_id and p.company_id = n.company_id and p.visibility = 'private'
       and m.subject_type = ${principal.type} and m.subject_id = ${principal.id}
   )` : sql`false`;
-  return sql<boolean>`exists (
+  // A standalone open task without a project has no restricted ancestor.
+  // Keep the recursive predicate for every other shape, including inherited
+  // privacy and delegated principals. This avoids one recursive walk per row
+  // in large readable-child aggregates.
+  return sql<boolean>`((${issues.visibility} = 'open'
+    and ${issues.privacyParentIssueId} is null and ${issues.projectId} is null) or exists (
     with recursive privacy_ancestors as (
       select p.id, p.company_id, p.privacy_parent_issue_id, p.visibility, p.project_id,
         p.responsible_user_id, p.created_by_user_id, p.assignee_user_id, p.assignee_agent_id
@@ -706,7 +711,7 @@ function issuePrivacyPrincipalCondition(actor: AuthorizationActor): SQL<boolean>
           and private_project.company_id = restricted.company_id
         where restricted.visibility = 'private' or private_project.visibility = 'private'
       )
-  )`;
+  ))`;
 }
 
 function issuePrivacyCondition(actor: AuthorizationActor): SQL<boolean> {

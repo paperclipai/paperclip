@@ -362,9 +362,12 @@ of other servers keep their records.
 
 `scripts/scale-agents-ramp.ts` runs real agents on a hosted instance through
 the product API only. It ramps concurrency in steps, holds each step, stops at
-the first failed criterion, and always cleans up. It has run only against the
-in-process fake API of its tests (`scripts/scale-ramp/scale-ramp.test.ts`).
-A run on a real instance needs the owner's go-ahead.
+the first failed criterion, and always cleans up. A run on a real instance
+needs the owner's go-ahead. Its first real run, on 2026-11-15, held a
+20-minute step with nothing running: it bound the agents to a plugin
+Runner-task environment (Paperclip Sandbox (Daytona)), which needs a managed
+AI connection, so every agent stayed in setup with that reason and every run
+stayed queued. The harness now checks this before it creates the rest.
 
 **What one run does.** It creates a company named `Scale ramp <run id>`, or
 uses `--company <id>` (a Cloud-managed instance refuses company creation, so
@@ -376,6 +379,22 @@ time. When a task ends, the agent gets a new one, so the step keeps its
 concurrency. Each task is the same small job: stream a sentence, run `pwd`
 and `ls`, write `scale-<nonce>.txt` in the workspace, read it back, post a
 `CHECKPOINT` comment, post a `DONE` comment and mark the task done.
+
+**Start checks.** A new agent cannot run until it finishes setup
+(`lifecycleState` `ready`). Before each step the harness waits for its agents
+to finish setup, at most `--agent-ready-minutes` (default 10). It stops when
+an agent reports a setup error for 60 s, and prints the agent's state and
+Paperclip's reason. Before the first step it creates one agent and one task,
+and creates the rest only after that task's run starts. If no run starts
+within `--start-timeout-minutes` (default 5) of the first task, it stops and
+prints the task status, the run status and error, and the agent's state.
+Every stop cleans up.
+
+**Environment.** Use a `sandbox`-driver environment (Paperclip Sandbox),
+which takes the provider key the harness stores. A plugin environment that
+runs Runner tasks (Paperclip Sandbox (Daytona), Paperclip Computer,
+Paperclip Sandbox (Unikraft)) runs only agents with a managed AI connection.
+The harness does not set one up, so its agents never finish setup there.
 
 **Run it.**
 
@@ -413,7 +432,12 @@ the one origin.
 above `--spend-threshold-usd` (default $5) unless `--confirm-spend <max USD>`
 is at least the estimate. It never creates more tasks than the printed cap,
 and it stops when the model spend the runs record passes the confirmed
-amount. The defaults are assumptions: $0.02 model spend per task and $0.10
+amount. It reads recorded spend from Paperclip's cost records for the run's
+agents (`/api/companies/<id>/costs/by-agent?period=all`); run rows carry no
+cost. When some cost events have no known price, it prints a warning, grades
+the run incomplete, and checks the cap against tasks created times the
+per-task assumption as well. The
+defaults are assumptions: $0.02 model spend per task and $0.10
 per sandbox-hour (`PAPERCLIP_SCALE_MODEL_USD_PER_TASK`,
 `PAPERCLIP_SCALE_SANDBOX_USD_PER_HOUR`). Correct them from the recorded spend
 of the first run.
@@ -432,7 +456,8 @@ A missing source is reported as "not measured", never as zero.
 | Criterion | Source | Target | Measured from |
 | --- | --- | --- | --- |
 | Runs that need Retry | finish line | 0, stops at once | task view offers Retry |
-| Failed or timed-out runs | harness | 0, stops at once | run list |
+| Failed runs whose task did not finish by itself | harness | 0 within `--recovery-grace-minutes` (default 15), stops then | run list and task status |
+| Failed runs, recovered ones included, as a share of ended runs | harness | at most `--max-failed-run-percent` (default 2) | run list |
 | Tasks at rest but not done | harness | 0 | task status |
 | Peak running agents | harness | at least 90% of the step | run list |
 | Board page API requests, p90 | finish line | below 500 ms | a GET mix every 10 s: dashboard, issues, agents, live runs, sidebar badges |
@@ -444,6 +469,23 @@ A missing source is reported as "not measured", never as zero.
 | Agent API time before the handler, p99 | finish line | below 100 ms | metrics endpoint |
 | Lease renewals that miss their deadline | finish line | 0 | metrics endpoint |
 | Kill one server process | finish line | runs resume, no Retry | not measured by this harness |
+
+**Failed runs.** Paperclip retries many failed runs by itself (a same-run
+bootstrap retry, a continuation run). A failed run does not stop the ramp
+while its task can still finish: the harness keeps going and counts the run as
+recovered when its task reaches `done`, and as unrecovered when the task comes
+to rest without being done, offers Retry with no automatic retry scheduled, or
+has no live run for the recovery grace after the failure. An unrecovered run
+stops the ramp at once. The share of failed runs, recovered ones included, is
+graded at the end of each step.
+
+**Cleanup.** The harness reads each agent by id (a terminated agent leaves the
+company's agent list) and deletes it only after Paperclip reports its
+termination complete (`lifecycleState` `terminated`). An agent Paperclip keeps
+for its cost history stays terminated. The result names the agents still
+terminating and the sandbox leases still active after the waits, and counts the
+leases that released while it waited; `--cleanup-only <run id>` finishes them
+later from the state file.
 
 **Server metrics.** Each server process can serve
 `GET /api/instance/server-metrics`, a JSON snapshot of that process over the

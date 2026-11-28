@@ -15,6 +15,7 @@ import { toolAccessService } from "../services/tool-access.js";
 import { createToolGatewayService } from "../services/tool-gateway.js";
 import { connectionIntentService } from "../services/connection-intents.js";
 import { aiConnectionService } from "../services/ai-connections.js";
+import { invalidateInstanceSettingsCache } from "../services/instance-settings-cache.js";
 
 vi.mock("../services/subscription-refresh.js", () => ({ refreshSubscriptionConnection: vi.fn().mockResolvedValue(undefined) }));
 
@@ -170,6 +171,7 @@ describeDatabase("connection assignment synchronization", () => {
     await pluginAgentRuntimeState(db, pluginId, companyId, agentId);
     const before = (await events()).length;
     await db.update(instanceSettings).set({ experimental: { enableChatConnectors: true } });
+    invalidateInstanceSettingsCache();
     expect(await events()).toHaveLength(before + 2);
     expect((await pluginAgentRuntimeState(db, pluginId, companyId, agentId))!.connectionAssignments.features).toEqual({ publicMcp: false, chatConnectors: true });
   });

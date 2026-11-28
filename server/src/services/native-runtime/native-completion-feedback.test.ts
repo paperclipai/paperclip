@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, documentRevisions, executionWorkspaces, executionWorkspaceRepositories, heartbeatRuns, issueExecutionDecisions, issues, issueThreadInteractions, issueTreeHolds, issueDocuments } from "@paperclipai/db";
+import { agents, approvals, companies, createDb, documentRevisions, executionWorkspaces, executionWorkspaceRepositories, heartbeatRuns, issueExecutionDecisions, issues, issueApprovals, issueThreadInteractions, issueTreeHolds, issueDocuments } from "@paperclipai/db";
 import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import type { PrpStructuredRunResult } from "../../vendor/paperclip-runner/index.js";
 import { documentService } from "../documents.js";
@@ -44,6 +44,24 @@ describe("native final-response feedback", () => {
     } }) as { downloadPath: string };
     return { ...done, evidence: [{ ref: `${receipt.downloadPath}#download` }] };
   }
+  // Cohort 15 (agents.hire-needs-approval): the agent copied "/approvals/<id>" from this feedback into its reply.
+  // Board routes live under the company prefix, so the feedback gives the canonical prefixed links.
+  it("links pending approvals and the task on their company-prefixed board routes", async () => {
+    const value = await fixture(); const prefix = `FB${value.companyId.slice(0, 8).toUpperCase()}`;
+    const [approval] = await db.insert(approvals).values({ companyId: value.companyId, type: "hire_agent", status: "pending", payload: {} }).returning();
+    await db.insert(issueApprovals).values({ companyId: value.companyId, issueId: value.issueId, approvalId: approval!.id });
+    const waiting = await nativeCompletionFeedback(db, value.runId, done);
+    expect(waiting).toContain(`[the pending approval](/${prefix}/approvals/${approval!.id})`);
+    expect(waiting).not.toContain("](/approvals/");
+    await db.update(approvals).set({ status: "approved" }).where(eq(approvals.id, approval!.id));
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values({ id: otherAgentId, companyId: value.companyId, name: "Reviewer", adapterType: "paperclip_runner", status: "active" });
+    await db.update(issues).set({ status: "in_review", executionState: { status: "pending", currentStageId: randomUUID(), currentStageIndex: 0, currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: otherAgentId }, returnAssignee: { type: "agent", agentId: value.agentId }, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null } }).where(eq(issues.id, value.issueId));
+    const review = await nativeCompletionFeedback(db, value.runId, done);
+    expect(review).toContain(`[this task](/${prefix}/issues/${prefix}-1)`);
+    expect(review).not.toContain("](/issues/");
+  });
   it("sends the active review participant to record its stage decision before reporting", async () => {
     const value = await fixture(), stageId = randomUUID(), otherAgentId = randomUUID();
     await db.insert(agents).values({ id: otherAgentId, companyId: value.companyId, name: "Implementer", adapterType: "paperclip_runner", status: "active" });

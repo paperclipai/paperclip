@@ -14,6 +14,11 @@ export interface RecentTaskEntry {
   externalConversationState?: Issue["externalConversationState"];
   /** Blocked tasks covered by active work render the "in queue" glyph everywhere. */
   blockerAttention?: Issue["blockerAttention"];
+  /** Refreshed navigation state; do not persist these personal read projections. */
+  parentId?: string | null;
+  isUnreadForMe?: boolean;
+  subtaskCount?: number;
+  unreadSubtaskCount?: number;
   recordedAt: number;
   // Server version of the title/status snapshot, independent of comment activity.
   // Legacy entries have no version until a detail query refreshes them.

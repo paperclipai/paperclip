@@ -107,6 +107,9 @@ import {
   requestCheckboxConfirmationPayloadSchema,
   requestCheckboxConfirmationResultSchema,
   requestConfirmationPayloadSchema,
+  requestConfirmationCustomTargetSchema,
+  requestConfirmationIssueAttachmentTargetSchema,
+  requestConfirmationIssueDocumentTargetSchema,
   requestConfirmationResultSchema,
   requestItemVerdictsPayloadSchema,
   requestItemVerdictsResultSchema,
@@ -117,6 +120,7 @@ import {
   withdrawIssueThreadInteractionSchema,
 } from "@paperclipai/shared";
 import { z } from "zod";
+import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { authorizationService } from "./authorization.js";
@@ -703,6 +707,21 @@ function parseStoredInteractionResult<S extends z.ZodTypeAny>(
   return null;
 }
 
+// Older internal writers persisted custom identity and display text without the
+// input length limits. Read those exact values across upgrades; never truncate
+// an identity or relax target types, URLs, revisions, or resolution authority.
+// New writes still use the strict shared payload schema.
+const storedRequestConfirmationPayloadSchema = requestConfirmationPayloadSchema.extend({
+  target: z.discriminatedUnion("type", [
+    requestConfirmationIssueDocumentTargetSchema,
+    requestConfirmationIssueAttachmentTargetSchema,
+    requestConfirmationCustomTargetSchema.extend({
+      key: z.string().trim().min(1),
+      label: z.string().trim().min(1).nullable().optional(),
+    }),
+  ]).nullable().optional(),
+});
+
 function hydrateInteraction(
   row: IssueThreadInteractionRow,
 ): IssueThreadInteraction {
@@ -774,7 +793,7 @@ function hydrateInteraction(
         ),
       } satisfies AskUserQuestionsInteraction;
     case "request_confirmation": {
-      const payload = requestConfirmationPayloadSchema.parse(row.payload);
+      const payload = storedRequestConfirmationPayloadSchema.parse(row.payload);
       return {
         ...base,
         kind: "request_confirmation",
@@ -821,6 +840,23 @@ function hydrateInteraction(
       } satisfies ConnectionIntentInteraction;
     default:
       throw unprocessable(`Unknown interaction kind: ${row.kind}`);
+  }
+}
+
+function interactionForCommentSupersession(row: IssueThreadInteractionRow) {
+  try {
+    return hydrateInteraction(row) as UserCommentSupersedableInteraction;
+  } catch (error) {
+    if (!(error instanceof z.ZodError)) throw error;
+    // The comment is useful even when a saved request cannot be decoded. Keep
+    // that gate pending, refuse its normal resolution, and report only schema
+    // locations, never payload/credential values. Valid siblings still expire.
+    logger.warn({
+      companyId: row.companyId, issueId: row.issueId, interactionId: row.id,
+      kind: row.kind,
+      validationIssues: error.issues.map(issue => ({ code: issue.code, path: issue.path })),
+    }, "Saved interaction is invalid; leaving it pending while saving a comment");
+    return null;
   }
 }
 
@@ -4962,10 +4998,9 @@ export function issueThreadInteractionService(
       const superseded = rows.filter((row) => {
         if (row.kind === "ask_user_questions" && scope?.conversationAgentId && scope.conversationUserId) return false;
         if (!isUserCommentSupersedableKind(row.kind)) return false;
-        const interaction = hydrateInteraction(
-          row,
-        ) as UserCommentSupersedableInteraction;
+        const interaction = interactionForCommentSupersession(row);
         return (
+          interaction !== null &&
           shouldSupersedeInteractionOnUserComment(interaction) &&
           isCommentAtOrAfterInteraction({
             commentCreatedAt: comment.createdAt,
@@ -5071,9 +5106,8 @@ export function issueThreadInteractionService(
       >();
       for (const row of rows) {
         if (!isUserCommentSupersedableKind(row.kind)) continue;
-        const interaction = hydrateInteraction(
-          row,
-        ) as UserCommentSupersedableInteraction;
+        const interaction = interactionForCommentSupersession(row);
+        if (!interaction) continue;
         if (!shouldSupersedeInteractionOnUserComment(interaction)) continue;
 
         const supersedingComment = comments.find((comment) =>

@@ -2,6 +2,8 @@ import { createServer } from "node:http";
 import { once } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createLinkPreviewService, type LinkPreviewProvider } from "../services/link-previews.js";
+import type { StoredLinkPreview } from "../services/link-preview-store.js";
+import { recognizeLinkPreview } from "@paperclipai/shared";
 
 const scope = { companyId: "company-a", userId: "alice" };
 const url = "https://github.com/acme/web/pull/42";
@@ -10,6 +12,51 @@ const provider = (resolve = vi.fn(async () => unavailable)): LinkPreviewProvider
 afterEach(() => vi.useRealTimers());
 
 describe("demand-driven link preview cache", () => {
+  it.each(["failure", "success", "timeout", "write"])("keeps concurrent hydration newer than a pending provider %s", async (settlement) => {
+    vi.useFakeTimers();
+    let now = 1_000;
+    const target = recognizeLinkPreview(url)!;
+    const oldPreview = { target, title: "Old status", state: "open" as const, author: null, updatedAt: null };
+    const newPreview = { ...oldPreview, title: "New status", state: "merged" as const };
+    let stored: StoredLinkPreview = { result: { preview: oldPreview, maxAgeMs: 1_000 }, expiresAt: 2_000, checkedAt: now };
+    let finish!: (value: typeof unavailable | { preview: typeof oldPreview; maxAgeMs: number }) => void;
+    let finishWrite!: () => void;
+    const write = vi.fn(async () => {
+      if (settlement === "write") await new Promise<void>(done => { finishWrite = done; });
+    });
+    const resolve = vi.fn(() => new Promise<typeof unavailable | { preview: typeof oldPreview; maxAgeMs: number }>(done => { finish = done; }));
+    const service = createLinkPreviewService([{ key: "github", resolve }], {
+      now: () => now, timeoutMs: 20,
+      store: { read: async () => new Map([[url, stored]]), write },
+    });
+    await service.cached(scope, [url]);
+    now = 3_000;
+    const pending = service.get(scope, url);
+    await vi.advanceTimersByTimeAsync(0);
+    if (settlement === "write") {
+      finish({ preview: oldPreview, maxAgeMs: 60_000 });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(write).toHaveBeenCalledTimes(1);
+    }
+    now = 4_000;
+    stored = { result: { preview: newPreview, maxAgeMs: 30_000 }, expiresAt: 34_000, checkedAt: now };
+    expect((await service.cached(scope, [url])).results[url].preview).toEqual(newPreview);
+    if (settlement === "write") finishWrite();
+    else if (settlement === "timeout") await vi.advanceTimersByTimeAsync(21);
+    else finish(settlement === "failure" ? unavailable : { preview: oldPreview, maxAgeMs: 60_000 });
+    expect(await pending).toEqual({ preview: newPreview, maxAgeMs: 30_000 });
+    expect(await service.get(scope, url)).toEqual({ preview: newPreview, maxAgeMs: 30_000 });
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(write).toHaveBeenCalledTimes(settlement === "write" ? 1 : 0);
+    if (settlement === "timeout") { finish(unavailable); await vi.advanceTimersByTimeAsync(0); }
+  });
+  it("omits absent records on repeated batch reads", async () => {
+    const service = createLinkPreviewService([provider()], {
+      store: { read: async () => new Map(), write: async () => {} },
+    });
+    expect(await service.cached(scope, [url])).toEqual({ results: {} });
+    expect(await service.cached(scope, [url])).toEqual({ results: {} });
+  });
   it("does no work until requested and coalesces equivalent URLs", async () => {
     const resolve = vi.fn(async () => unavailable);
     const service = createLinkPreviewService([provider(resolve)]);
@@ -85,6 +132,36 @@ describe("demand-driven link preview cache", () => {
     await service.get(scope, url);
     expect(resolve).toHaveBeenCalledTimes(2);
     finish(unavailable);
+  });
+  it("bounds a stalled database write and holds its concurrency slot until settlement", async () => {
+    vi.useFakeTimers();
+    let finish!: () => void;
+    const write = vi.fn(async () => {}).mockImplementationOnce(() => new Promise<void>(done => { finish = done; }));
+    const resolve = vi.fn(async (target: import("@paperclipai/shared").LinkPreviewTarget) => ({ preview: { target, title: "Known", state: "open" as const, author: null, updatedAt: null }, maxAgeMs: 60_000 }));
+    const service = createLinkPreviewService([{ key: "github", resolve }], {
+      store: { read: async () => new Map(), write }, timeoutMs: 20, maxConcurrent: 1,
+    });
+    const first = service.get(scope, url);
+    await vi.advanceTimersByTimeAsync(21);
+    expect((await first).preview?.state).toBe("open");
+    expect(await service.get(scope, url + "1")).toEqual(unavailable);
+    expect(resolve).toHaveBeenCalledTimes(1);
+    finish(); await vi.advanceTimersByTimeAsync(1);
+    await service.get(scope, url + "1");
+    expect(resolve).toHaveBeenCalledTimes(2);
+  });
+  it("keeps timeout persistence inside the concurrency budget after the provider aborts", async () => {
+    vi.useFakeTimers();
+    let finishWrite!: () => void;
+    const write = vi.fn(async () => {}).mockImplementationOnce(() => new Promise<void>(done => { finishWrite = done; }));
+    const resolve = vi.fn(async (_target: import("@paperclipai/shared").LinkPreviewTarget, _scope: import("../services/link-previews.js").LinkPreviewScope, signal: AbortSignal) => unavailable)
+      .mockImplementationOnce((_target, _scope, signal) => new Promise((_done, reject) => signal.addEventListener("abort", () => reject(new Error("timeout")))));
+    const service = createLinkPreviewService([{ key: "github", resolve }], { store: { read: async () => new Map(), write }, timeoutMs: 20, maxConcurrent: 1 });
+    const first = service.get(scope, url);
+    await vi.advanceTimersByTimeAsync(21); expect(await first).toEqual(unavailable);
+    await service.get(scope, url + "1"); expect(resolve).toHaveBeenCalledTimes(1);
+    finishWrite(); await vi.advanceTimersByTimeAsync(1);
+    await service.get(scope, url + "1"); expect(resolve).toHaveBeenCalledTimes(2);
   });
   it("aborts a real stalled HTTP read while an unrelated lookup remains responsive", async () => {
     const server = createServer((_req, res) => { res.writeHead(200, { "content-type": "application/json" }); res.write("{"); });

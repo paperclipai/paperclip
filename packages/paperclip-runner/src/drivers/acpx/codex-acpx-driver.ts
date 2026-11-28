@@ -23,6 +23,7 @@ import type {
 import {
   PRP_BLOCK_TOOL_NAME,
   PRP_COMPLETION_TOOL_NAME,
+  prpSemanticResultConflictMessage,
 } from "../../contracts/completion-result.js";
 import {
   HarnessCapabilityUnavailableError,
@@ -1199,7 +1200,7 @@ class CodexAcpxSession implements HarnessSession {
         this.#semanticFingerprint !== null &&
         this.#semanticFingerprint !== fingerprint
       ) {
-        throw new Error("A different semantic result is already committed");
+        throw new Error(prpSemanticResultConflictMessage(this.#semanticResult));
       }
       const claimsLaterTurn =
         this.#semanticFingerprint === fingerprint &&

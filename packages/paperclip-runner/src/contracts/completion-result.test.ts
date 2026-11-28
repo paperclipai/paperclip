@@ -2,6 +2,10 @@ import { normalizeLegacyPrpStructuredRunResult } from "../protocol/result-normal
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { describe, expect, it } from "vitest";
 import {
+  PRP_BLOCKER_ALREADY_REPORTED_MESSAGE,
+  PRP_ENVIRONMENT_BLOCKER_ALREADY_REPORTED_MESSAGE,
+  PRP_SEMANTIC_RESULT_CONFLICT_MESSAGE,
+  prpSemanticResultConflictMessage,
   PRP_BLOCK_RESULT_OUTPUT_SCHEMA,
   PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA,
   PRP_BLOCK_TOOL_DESCRIPTION,
@@ -289,5 +293,17 @@ describe("provider-neutral completion result schema", () => {
       ownerClass: "agent",
     } as never];
     expect(validate(result)).toBe(false);
+  });
+});
+
+describe("semantic result conflict feedback", () => {
+  it("promises an automatic continuation only for a system environment or tool blocker", () => {
+    const blocked = (kind: string, reasonCode: string) => ({ reportedWorkDisposition: "blocked", blocker: { owner: { kind }, reasonCode } });
+    expect(prpSemanticResultConflictMessage(blocked("system", "environment_unavailable"))).toBe(PRP_ENVIRONMENT_BLOCKER_ALREADY_REPORTED_MESSAGE);
+    expect(prpSemanticResultConflictMessage(blocked("system", "tool_unavailable"))).toBe(PRP_ENVIRONMENT_BLOCKER_ALREADY_REPORTED_MESSAGE);
+    expect(prpSemanticResultConflictMessage(blocked("user", "credential_missing"))).toBe(PRP_BLOCKER_ALREADY_REPORTED_MESSAGE);
+    expect(prpSemanticResultConflictMessage(blocked("system", "credential_missing"))).toBe(PRP_BLOCKER_ALREADY_REPORTED_MESSAGE);
+    expect(prpSemanticResultConflictMessage({ reportedWorkDisposition: "done" })).toBe(PRP_SEMANTIC_RESULT_CONFLICT_MESSAGE);
+    expect(PRP_BLOCKER_ALREADY_REPORTED_MESSAGE).not.toContain("automatically");
   });
 });

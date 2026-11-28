@@ -208,6 +208,8 @@ export type IssueListFilters = {
   touchedByUserId?: string;
   inboxArchivedByUserId?: string;
   unreadForUserId?: string;
+  /** Add the current board user's read state without filtering task membership. */
+  includeReadState?: boolean;
   labelId?: string;
   workspaceId?: string;
   executionWorkspaceId?: string;
@@ -252,6 +254,7 @@ function issueListSearchParams(filters?: IssueListFilters) {
     params.set("inboxArchivedByUserId", filters.inboxArchivedByUserId);
   if (filters?.unreadForUserId)
     params.set("unreadForUserId", filters.unreadForUserId);
+  if (filters?.includeReadState) params.set("includeReadState", "true");
   if (filters?.labelId) params.set("labelId", filters.labelId);
   if (filters?.workspaceId) params.set("workspaceId", filters.workspaceId);
   if (filters?.executionWorkspaceId)
@@ -291,11 +294,12 @@ export const issuesApi = {
     detachInflightGet(path);
     return api.get<InboxMineSnapshot>(path, { ...options, cache: "no-store" });
   },
-  summaries: async (companyId: string, issueIds: readonly string[], options?: RequestOptions): Promise<IssueSummary[]> => {
+  summaries: async (companyId: string, issueIds: readonly string[], options?: RequestOptions & { navigation?: boolean }): Promise<IssueSummary[]> => {
     if (issueIds.length > ISSUE_SUMMARIES_MAX_IDS) throw new Error("Too many issue summary IDs");
     const ids = [...new Set(issueIds.map((id) => id.trim().toLowerCase()))].sort();
     if (ids.length === 0) return [];
     const params = new URLSearchParams({ ids: ids.join(",") });
+    if (options?.navigation) params.set("navigation", "true");
     const path = `/companies/${companyId}/issues/summaries?${params}`;
     // React Query deduplicates within an account; URL-only HTTP coalescing must
     // never join a request sent with the previous account's cookie.

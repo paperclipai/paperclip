@@ -6,7 +6,7 @@ import { notifyMuseContactVerification } from "../modules/external-agents/index.
 import { assertEphemeralAgentInstructions } from "./agent-instructions.js";
 import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
-import { notifyRunDispatch } from "./run-dispatch-notifications.js";
+import { notifyAgentConfigurationDispatch } from "./run-dispatch-notifications.js";
 import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
 import { notifySkillVersionPinChange } from "./skill-version-retention-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
@@ -127,7 +127,7 @@ export async function prepareAgentConfiguration(db: Db, existing: AgentConfigura
     ||normalizedPatch.adapterConfig!==undefined&&!jsonEqual(normalizedPatch.adapterConfig,existing.adapterConfig))
     await notifyMuseContactVerification(db,{companyId:existing.companyId,agentId:existing.id});
   await notifyStrandedAgentStatus(db, { companyId: existing.companyId, agentId: existing.id });
-  await notifyRunDispatch(db, { companyId: existing.companyId });
+  await notifyAgentConfigurationDispatch(db, { companyId: existing.companyId });
   await notifyDeferredExecutionEligibility(db, { companyId: existing.companyId });
   if (normalizedPatch.runtimeConfig !== undefined || normalizedPatch.reportsTo !== undefined) {
     await notifyDeliveryWork(db, DELIVERY_QUEUES.agentTimers);

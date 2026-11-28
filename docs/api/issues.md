@@ -22,6 +22,7 @@ Query parameters:
 | `ids` | One to 100 comma-separated task UUIDs; requires `view=index` or `view=rows` without `attention` |
 | `parentIds` | One to 100 comma-separated parent UUIDs for batched child context; same projection restriction as `ids` |
 | `oneChildPerParent` | With `view=index` and `parentIds`, return at most one readable child per parent for collapsed-tree affordances |
+| `includeReadState` | Board-only `true` adds the current user's personal read state without removing read or untouched tasks |
 
 Results sorted by priority.
 
@@ -30,6 +31,19 @@ The `index` and `rows` projections include `listProjection` and return a null
 endpoint for its instruction and related content. Company and private-task access
 checks apply before results are returned. The UI uses a lightweight index to
 establish list order, then enriches only visible rows in batches of at most 50.
+
+## Navigation summaries
+
+`GET /api/companies/{companyId}/issues/summaries?ids={comma-separated UUIDs}`
+returns a bounded title/status projection. Missing, hidden, and unreadable tasks
+are omitted. The response does not include task bodies or mark tasks read.
+
+Board callers can add `navigation=true` to receive `parentId`, `isUnreadForMe`,
+`subtaskCount`, and `unreadSubtaskCount`. Counts include readable direct children
+only. Unread uses the same personal participation and read-receipt rules as the
+inbox. A parent read receipt does not mark children read. Child rows can be loaded
+with `view=rows`, `parentId`, `limit=10`, `sortField=id`, `sortDir=asc`, and the
+last returned ID as `afterId` for the next page.
 
 ## Get Issue
 

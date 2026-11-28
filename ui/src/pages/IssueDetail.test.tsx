@@ -5616,6 +5616,42 @@ describe("IssueDetail", () => {
     expect(props().queuedCommentQueue?.entries.map(entry => entry.comment.id)).toEqual([waiting.id]);
   });
 
+  it("keeps a message the running turn already took out of the queue after the live queue closes", async () => {
+    // Posted while the run was still starting; its first turn took it.
+    const taken = createIssueComment({ id: "first-turn-message", body: "Include the word PINEAPPLE" });
+    const run = {
+      id: "run-native", runtimeMode: "native" as const, status: "running",
+      invocationSource: "issue", triggerDetail: null,
+      contextCommentId: null, contextWakeCommentId: null,
+      startedAt: "2026-04-21T00:00:01.000Z", finishedAt: null,
+      createdAt: "2026-04-21T00:00:01.000Z", agentId: "agent-1",
+      agentName: "Runner", adapterType: "paperclip_runner", issueId: "issue-1",
+    };
+    mockIssuesApi.get.mockResolvedValue(createIssue({ status: "in_progress", assigneeAgentId: "agent-1", executionRunId: run.id }));
+    mockAgentsApi.list.mockResolvedValue([createAgent({ adapterType: "paperclip_runner" })]);
+    mockHeartbeatsApi.activeRunForIssue.mockResolvedValue(run);
+    mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([run]);
+    mockIssuesApi.listComments.mockResolvedValue([taken]);
+    // The deferred wake has retired, so the live queue no longer lists it.
+    mockIssuesApi.getQueuedComments.mockResolvedValue(createQueuedCommentQueue({
+      queueId: null, state: null, targetRunId: null, entries: [],
+    }));
+    mockActivityApi.runsForIssue.mockResolvedValue([{
+      runId: run.id, agentId: "agent-1", adapterType: "paperclip_runner",
+      status: "running", startedAt: run.startedAt, finishedAt: null,
+      createdAt: run.createdAt, wakeCommentIds: null, firstTurnCommentIds: [taken.id],
+      wakeupRequestId: "wake-start", contextIssueId: "issue-1",
+    }]);
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => {
+      const props = mockIssueChatThreadRender.mock.calls.at(-1)![0];
+      expect(props.queuedCommentQueue?.entries ?? []).toEqual([]);
+      const comment = props.comments.find((comment: IssueComment) => comment.id === taken.id);
+      expect(comment).toMatchObject({ consumedByRunId: run.id });
+      expect(comment?.queueState).toBeUndefined();
+    });
+  });
+
   it("keeps an admitted message pending until its queued run starts", async () => {
     const queued = createIssueComment({ id: "not-started" });
     mockIssuesApi.get.mockResolvedValue(createIssue({ status: "in_progress", assigneeAgentId: "agent-1", executionRunId: "run-queued" }));

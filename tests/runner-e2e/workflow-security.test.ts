@@ -704,6 +704,11 @@ describe("public repository paid workflow security", () => {
     expect(buildJob).toContain(
       "node packages/paperclip-runner/scripts/materialize-opencode-binary.mjs",
     );
+    // The source server imports the plugin SDK from generated output. Build,
+    // check and ship it once so a missing dist fails here, not in every cell.
+    expect(buildJob).toContain("node scripts/ensure-plugin-build-deps.mjs");
+    expect(buildJob).toMatch(/archive_paths=\(\n(?:\s+\S+\n)*?\s+packages\/plugins\/sdk\/dist\n/u);
+    expect(testJob).toContain("Campaign outputs lack $entry");
     expect(buildJob).toContain("runner-e2e-build-bundle.tar.gz.sha256");
     expect(buildJob).toContain("runner-e2e-provider-pack.tar.gz.sha256");
     expect(buildJob).toContain(

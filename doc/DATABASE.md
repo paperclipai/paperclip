@@ -134,14 +134,29 @@ DATABASE_POOL_MAX=25                 # connection pool size; default: 10
 DATABASE_IDLE_TIMEOUT_SECONDS=60     # close idle pooled connections; default: 60 (0 = keep open)
 DATABASE_CONNECT_TIMEOUT_SECONDS=10  # default: 30
 DATABASE_MAX_LIFETIME_SECONDS=1800   # recycle a pooled connection after this long; default: 30-60 min (random)
-DATABASE_APPLICATION_NAME=paperclip  # application_name in pg_stat_activity; default: paperclip
+DATABASE_APPLICATION_NAME=paperclip  # application_name in pg_stat_activity; default for the server's main pool: paperclip:<boot id>
 ```
+
+The server names its main pool `paperclip:<boot id>`, so after a restart the
+sessions of each server process can be told apart in `pg_stat_activity`. When a
+run's event, process identity, or event-write operation stays unfinished for
+30 seconds, the server logs one warning per stalled run ("runner event intake
+stalled"). The warning lists the pending operations of each run, the pool size,
+the database sessions per application name and state, and the sessions that
+wait for a lock or hold one (`pg_blocking_pids`, query text without literals,
+cut to 160 characters). It also logs the event-loop lag. A second line
+("runner event intake stall cleared") records when the operation finished. The
+check runs only while an operation is pending, and it reads `pg_stat_activity`
+only when it reports a stall.
 
 `withDedicatedDbConnection` gives an action exclusive use of one session outside
 the main pool (application name `paperclip-workspace-finalization-lock`). Each
-`createDb` owner keeps at most `DEDICATED_CONNECTION_IDLE_MAX` (4) of these
-single-connection clients idle for reuse; they follow the same idle timeout and
-max lifetime as the main pool. At most `DATABASE_DEDICATED_CONNECTION_MAX`
+`createDb` owner keeps released single-connection clients idle for reuse: always
+up to `DEDICATED_CONNECTION_IDLE_MAX` (4), and more while idle plus in-use
+clients stay within `DATABASE_DEDICATED_CONNECTION_MAX`, so a recurring burst
+reuses the sessions the previous burst opened instead of reconnecting. They
+follow the same idle timeout and max lifetime as the main pool, so a retained
+client closes its session after `DATABASE_IDLE_TIMEOUT_SECONDS` without use. At most `DATABASE_DEDICATED_CONNECTION_MAX`
 (default 24) dedicated clients are in use at once per owner. A caller that
 finds the limit reached waits in a first-in, first-out queue. A caller that
 already holds a dedicated client, or runs inside an open transaction of the

@@ -13,6 +13,7 @@ import { heartbeatRunEvents, heartbeatRuns, primeDatabaseWorkTransactionId } fro
 import { DATABASE_WORK_CHANNEL } from "@paperclipai/db/work-signals";
 import { nativeSha256 } from "./native-runtime/canonical.js";
 import { isUniqueViolation } from "../db-errors.js";
+import { trackRunIntake } from "./run-intake-stall-watch.js";
 
 export const RETRY_EXHAUSTION_MESSAGE_PREFIX = "Bounded retry exhausted";
 
@@ -89,6 +90,14 @@ export async function allocateHeartbeatRunEventSeq(
   runId: string,
   runUpdate: HeartbeatRunEventRunUpdate = {},
 ): Promise<number> {
+  return trackRunIntake(runId, "write", "event_sequence", () => reserveRunEventSeq(db, runId, runUpdate));
+}
+
+async function reserveRunEventSeq(
+  db: Db,
+  runId: string,
+  runUpdate: HeartbeatRunEventRunUpdate,
+): Promise<number> {
   const [updated] = await db
     .update(heartbeatRuns)
     .set({
@@ -116,6 +125,13 @@ function runEventWakes(input: AppendHeartbeatRunEventInput): RunEventWakes {
 }
 
 export async function appendHeartbeatRunEvent(
+  db: Db,
+  input: AppendHeartbeatRunEventInput,
+): Promise<AppendHeartbeatRunEventResult> {
+  return trackRunIntake(input.runId, "write", input.eventType, () => appendRunEvent(db, input));
+}
+
+async function appendRunEvent(
   db: Db,
   input: AppendHeartbeatRunEventInput,
 ): Promise<AppendHeartbeatRunEventResult> {
@@ -178,13 +194,23 @@ export async function appendHeartbeatRunEventBatch(
 ): Promise<AppendHeartbeatRunEventResult[]> {
   const first = inputs[0];
   if (!first) return [];
+  return trackRunIntake(first.runId, "write", `${first.eventType} x${inputs.length}`,
+    () => appendRunEventBatch(db, inputs, assertWritable));
+}
+
+async function appendRunEventBatch(
+  db: Db,
+  inputs: readonly AppendHeartbeatRunEventInput[],
+  assertWritable?: () => void,
+): Promise<AppendHeartbeatRunEventResult[]> {
+  const first = inputs[0]!;
   const source = first.nativeSource;
   if (!source || inputs.some(input => !input.nativeSource || input.runUpdate || input.retryExhaustion
     || input.companyId !== first.companyId || input.runId !== first.runId || input.agentId !== first.agentId
     || input.nativeSource.sourceInstanceId !== source.sourceInstanceId)) {
     throw new Error("heartbeat_run_event_batch_unsupported");
   }
-  if (inputs.length === 1) return [await appendHeartbeatRunEvent(db, assertWritable ? { ...first, assertWritable } : first)];
+  if (inputs.length === 1) return [await appendRunEvent(db, assertWritable ? { ...first, assertWritable } : first)];
   const wakes = inputs.map(runEventWakes);
   if (!wakes.some(wake => Object.values(wake).some(Boolean)) && !is(db, PgTransaction)) {
     assertWritable?.();
@@ -596,7 +622,7 @@ async function appendLockedEvent(
     await notifyNativeResponsePresentation(tx, { companyId: run.companyId, runId: input.runId });
   }
   if (wakes.retention) await notifyAttentionRetentionWork(tx, { companyId: input.companyId, sourceKind: "failed_run" });
-  const seq = await allocateHeartbeatRunEventSeq(tx, input.runId, input.runUpdate);
+  const seq = await reserveRunEventSeq(tx, input.runId, input.runUpdate ?? {});
   const [row] = await tx.insert(heartbeatRunEvents).values({
     companyId: input.companyId,
     runId: input.runId,
