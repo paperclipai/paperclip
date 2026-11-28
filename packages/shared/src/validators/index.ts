@@ -464,6 +464,7 @@ export {
   issueCommentMetadataRowSchema,
   issueCommentMetadataSectionSchema,
   issueCommentMetadataSchema,
+  issueCommentCrossAssigneeContextSchema,
   addIssueCommentSchema,
   addIssueSwarmCommentSchema,
   sendChatMessageSchema,
