@@ -1403,6 +1403,29 @@ describe("agent permission routes", () => {
       expect(mockAgentService.update).toHaveBeenCalledOnce();
     });
 
+    it("blocks an agent from changing its own Claude engine", async () => {
+      useExisting({ engine: "cli", dangerouslySkipPermissions: false });
+      const res = await patchAgent(agentActor, { adapterConfig: { engine: "acp" } });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toContain("engine");
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+    });
+
+    it("blocks an agent rollback into a revision with another engine", async () => {
+      useExisting({ engine: "cli", dangerouslySkipPermissions: false });
+      mockAgentService.getConfigRevision.mockResolvedValue({
+        id: revisionId,
+        afterConfig: { adapterType: "claude_local", adapterConfig: { engine: "acp", dangerouslySkipPermissions: false }, runtimeConfig: {} },
+      });
+      mockAgentService.rollbackConfigRevision.mockResolvedValue({ ...baseAgent });
+      const res = await rollbackAgent(agentActor);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toContain("engine");
+      expect(mockAgentService.rollbackConfigRevision).not.toHaveBeenCalled();
+    });
+
     it("asks for the profile change grant when an agent mixes a role change with other fields", async () => {
       useExisting({});
       denyChangeGrant();

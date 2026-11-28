@@ -2746,6 +2746,7 @@ export function agentRoutes(
   ] as const;
 
   const AGENT_PROTECTED_SANDBOX_KEYS = [
+    "engine",
     "networkScope",
     "networkAllowlist",
     "filesystemScope",

@@ -103,6 +103,29 @@ check `adapterConfig.env` against them:
   `protected_environment_variable`, a `field` such as `adapterConfig.env.KEY`,
   and a `message` that names those environments.
 
+### Settings an agent cannot change on its own record
+
+An agent that sends `PATCH /api/agents/{agentId}` for its own record with its
+agent key gets `403` when the request:
+
+- Changes a sandbox or permission setting in `adapterConfig`: `engine`,
+  `networkScope`, `networkAllowlist`, `filesystemScope`,
+  `filesystemExtraPaths`, `dangerouslySkipPermissions`,
+  `dangerouslyBypassApprovalsAndSandbox`, `dangerouslyBypassSandbox`,
+  `permissionMode`, `acpPermissionMode`, `acpxPermissionMode`,
+  `codexPermissionMode`, `opencodePermissionMode`,
+  `nonInteractivePermissions`, `acpNonInteractivePermissions`,
+  `alwaysApprove` or `sandbox`. Removing one of these keys, for example with
+  `replaceAdapterConfig`, is also a change. Sending a key with its current
+  value is not a change.
+- Changes `adapterType` or the runner harness.
+- Changes `name`, `role`, `title` or `capabilities` together with other
+  fields, and the agent has no profile change grant.
+
+A board user can make these changes. A peer agent needs `agents:configure`.
+The same rules apply to configuration rollback (see
+[Config Revisions](#config-revisions)).
+
 ## Pause Agent
 
 ```
@@ -223,6 +246,10 @@ POST /api/agents/{agentId}/config-revisions/{revisionId}/rollback
 ```
 
 View and roll back agent configuration changes.
+
+An agent that rolls back its own record cannot change the sandbox and permission
+settings, the adapter or the runner harness. See
+[Settings an agent cannot change on its own record](#settings-an-agent-cannot-change-on-its-own-record).
 
 ### Rename an instruction file
 
