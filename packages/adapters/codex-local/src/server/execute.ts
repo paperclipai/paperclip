@@ -790,6 +790,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let sshHostHome: Awaited<ReturnType<typeof readCodexSshHostHome>> | null = null;
   let sshHostProfilePath: string | null = null;
   let sshSessionState: Awaited<ReturnType<typeof prepareCodexSshSessionState>> | null = null;
+  let releaseRemoteWorkspaceSnapshot: (() => Promise<void>) | null = null;
   let observabilityProfile: Awaited<ReturnType<typeof prepareCodexObservabilityProfile>> | null = null;
   let observabilityPreparationFailed = false;
   const runSshHostConfigurationCommand = async (command: string) => {
@@ -971,6 +972,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const restoreRemoteWorkspace = preparedExecutionTargetRuntime
       ? () => preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line))
       : null;
+    if (preparedExecutionTargetRuntime) {
+      releaseRemoteWorkspaceSnapshot = async () => { await preparedExecutionTargetRuntime.cleanupWorkspaceSnapshot?.(); };
+    }
     let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
     let executionError: unknown = null;
     try {
@@ -1778,6 +1782,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     }
   } finally {
+    await releaseRemoteWorkspaceSnapshot?.().catch(() => {});
     // Remove the staged CODEX_HOME allowlist temp dir on every exit path
     // (teardown AND error), never only the happy path. Cleanup failure is
     // logged, not fatal — a leaked temp dir must not crash the run.

@@ -291,12 +291,17 @@ export function createSandboxRunSite(options: SandboxRunSiteOptions): SandboxRun
               // The seam threw after a possible successful stage. Dispose the fresh
               // staged runtime so the abandoned in-sandbox managed home never leaks,
               // then rethrow the seam error.
-              if (freshlyStaged) await options.disposeFreshStagedRuntime(freshlyStaged);
+              if (freshlyStaged) {
+                const fresh: PreparedAdapterExecutionTargetRuntime = freshlyStaged;
+                await options.disposeFreshStagedRuntime(fresh);
+                await fresh.cleanupWorkspaceSnapshot?.().catch(() => {});
+              }
               throw seamErr;
             }
           }
           return { stagedRuntime: await stage([]), teardown: null, dispose: null };
         });
+        if (!seam.teardown) await seam.stagedRuntime.cleanupWorkspaceSnapshot?.().catch(() => {});
         const envDelta: Record<string, string> = {};
         for (const [key, value] of Object.entries(options.env)) {
           if (envBeforeStage[key] !== value) envDelta[key] = value;
