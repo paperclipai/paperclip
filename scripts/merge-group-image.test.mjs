@@ -195,6 +195,8 @@ test("the merge-queue build has no publishing credentials or AWS release fleet a
   assert.match(workflow, /github\.event\.merge_group\.base_ref == 'refs\/heads\/master'/);
   assert.match(workflow, /github\.repository_id == '1170821064'/);
   assert.match(workflow, /push: false/);
+  assert.match(workflow, /containerd-snapshotter/);
+  assert.ok(workflow.indexOf("containerd-snapshotter") < workflow.indexOf("Set up Docker Buildx"));
   assert.match(workflow, /scripts\/assert-orphan-reaping\.sh/);
   assert.ok(workflow.indexOf("assert-orphan-reaping.sh") < workflow.indexOf("merge-group-image.mjs record"),
     "the record is written only after the probe passes");
