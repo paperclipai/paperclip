@@ -2065,6 +2065,7 @@ registry.registerPath({
                   "database_backup_last_failure",
                   "database_backup_missing",
                   "database_backup_stale",
+                  "database_backup_truncated",
                 ]),
                 message: z.string(),
               }),
