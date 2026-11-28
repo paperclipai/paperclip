@@ -9,7 +9,6 @@ import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { toolsApi } from "@/api/tools";
 import { agentsApi } from "@/api/agents";
-import { projectsApi } from "@/api/projects";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -29,6 +28,7 @@ import {
   latestTokenActivity,
 } from "./gateway-helpers";
 import { describeError } from "@/api/errors";
+import { companyProjectsQuery } from "@/lib/company-projects-query";
 
 export function GatewaysList() {
   const navigate = useNavigate();
@@ -41,7 +41,7 @@ export function GatewaysList() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Connectors", href: "/apps" },
+      { label: "Plugins", href: "/apps" },
       { label: "Gateways" },
     ]);
     return () => setBreadcrumbs([]);
@@ -73,8 +73,7 @@ export function GatewaysList() {
     enabled: !!selectedCompanyId,
   });
   const projectsQuery = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId ?? "__none__"),
-    queryFn: () => projectsApi.list(selectedCompanyId!),
+    ...companyProjectsQuery(selectedCompanyId ?? "__none__"),
     enabled: !!selectedCompanyId,
   });
   const gatewaysView = useQueryView(gatewaysQuery);

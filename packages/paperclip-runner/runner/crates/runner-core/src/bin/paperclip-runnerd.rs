@@ -460,6 +460,28 @@ fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
     } else {
         None
     };
+    let host_control = if args.iter().any(|arg| arg == "--acpx-park-relaunch") {
+        #[cfg(unix)]
+        {
+            Some(
+                host_control
+                    .ok_or_else(|| {
+                        LocalRunnerError::invalid(
+                            "ACPX park relaunch requires private host control",
+                        )
+                    })?
+                    .with_acpx_park_relaunch(),
+            )
+        }
+        #[cfg(not(unix))]
+        {
+            return Err(LocalRunnerError::invalid(
+                "ACPX park relaunch requires private host control",
+            ));
+        }
+    } else {
+        host_control
+    };
     let ticket = capture_bootstrap_ticket()
         .map_err(|error| LocalRunnerError::invalid(error.to_string()))?
         .ok_or_else(|| {
@@ -505,6 +527,7 @@ fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
         reconnect_grace: optional_u64(args, "--reconnect-grace-ms")?.map(Duration::from_millis),
         max_runtime: duration("--max-runtime-ms", 0)?,
         turn_scoped: turn_scoped(args)?,
+        controller_silence: paperclip_runner_core::durable::DEFAULT_CONTROLLER_SILENCE,
     };
     if host_control.is_some() && !config.connect_url.starts_with("listen://") {
         return Err(LocalRunnerError::invalid(
@@ -555,6 +578,23 @@ fn apply_oom_score_adj(args: &[String]) -> Result<(), LocalRunnerError> {
     // Without the privilege, Runner is only less protected than requested.
     if let Err(error) = set_own_oom_score_adj(score) {
         eprintln!("paperclip-runnerd: failed to set --oom-score-adj: {error}");
+    }
+    Ok(())
+}
+
+/// `--trusted-launch-root <dir>`: the host asserts that `<dir>` is an
+/// immutable, digest-pinned image (the agent computer's Runner ROM). Launch
+/// artifacts the root admits run in place instead of from a sealed copy. A root
+/// that fails its startup checks only loses that speedup, never protection.
+fn apply_trusted_launch_root(args: &[String]) -> Result<(), LocalRunnerError> {
+    let Some(path) = optional_value(args, "--trusted-launch-root")? else {
+        return Ok(());
+    };
+    match paperclip_runner_core::qualified_launch::TrustedLaunchRoot::open(Path::new(&path)) {
+        Ok(root) => paperclip_runner_core::qualified_launch::set_trusted_launch_root(root),
+        Err(reason) => eprintln!(
+            "paperclip-runnerd: ignoring --trusted-launch-root {path}: {reason}; launch artifacts keep sealed snapshots"
+        ),
     }
     Ok(())
 }
@@ -640,6 +680,7 @@ fn run(args: &[String]) -> Result<(), LocalRunnerError> {
     }
     apply_oom_score_adj(args)?;
     apply_task_memory_cgroup(args)?;
+    apply_trusted_launch_root(args)?;
     if args.iter().any(|argument| argument == "--connect-url")
         || args.iter().any(|argument| argument == "--listen-address")
         || args.iter().any(|argument| argument == "--listen-port")
@@ -851,7 +892,13 @@ mod tests {
     }
 
     #[test]
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    ))]
     fn candidate_startup_requires_a_complete_trusted_launch_profile() {
         let profiles: serde_json::Value =
             serde_json::from_str(include_str!("../../../../../acpx-profiles.json")).unwrap();
@@ -859,11 +906,18 @@ mod tests {
             "../../../../../antigravity-distributions.json"
         ))
         .unwrap();
+        let (platform, architecture) = if cfg!(target_os = "macos") {
+            ("darwin", "arm64")
+        } else if cfg!(target_arch = "x86_64") {
+            ("linux", "x64")
+        } else {
+            ("linux", "arm64")
+        };
         let encoded = json!({
             "schema":"paperclip.acpx-candidate-admission.v1", "companyId":"company-1", "agent":"antigravity", "model":"exact-model",
             "profileDigest":profiles["profiles"]["antigravity"]["commandDigest"],
-            "nativeClosureDigest":format!("sha256:{}",distributions["platforms"]["darwin-arm64"]["closureSha256"].as_str().unwrap()),
-            "platform":"darwin", "architecture":"arm64", "expiresAt":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64 + 60_000,
+            "nativeClosureDigest":format!("sha256:{}",distributions["platforms"][format!("{platform}-{architecture}")]["closureSha256"].as_str().unwrap()),
+            "platform":platform, "architecture":architecture, "expiresAt":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64 + 60_000,
             "runId":"run-1", "normalizedSessionId":"session-1"
         }).to_string();
         let mut args = vec!["--acpx-candidate-admission-json".to_owned(), encoded];
@@ -881,8 +935,9 @@ mod tests {
             "--acpx-sidecar-script-sha256".to_owned(),
             format!("sha256:{}", "c".repeat(64)),
         ]);
-        let parsed = acpx_launch_profile(&args).unwrap().unwrap();
-        assert_eq!(parsed.candidate_admission.unwrap().run_id, "run-1");
+        // Released Antigravity refuses any candidate startup grant even with a
+        // complete launch profile.
+        assert!(acpx_launch_profile(&args).is_err());
         assert!(acpx_launch_profile(&[]).unwrap().is_none());
     }
 

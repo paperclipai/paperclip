@@ -1,10 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
+import { runSharedStorageWork, sendThroughStorageOutage } from "../storage/storage-unavailable.js";
 import { z } from "zod";
 import { setTimeout as delay } from "node:timers/promises";
 import type { StorageProvider } from "../storage/types.js";
+import { S3_CLIENT_MAX_SOCKETS } from "../storage/s3-client-limits.js";
+import { assertActiveRunSlotBounds, slotsForActiveRuns } from "../lib/active-run-slots.js";
 
 const MAX_INDEX_LEVEL = 52;
 const MAX_OBJECT_BYTES = 4 * 1024 * 1024;
+const HEAD_VISIBILITY_WAIT_MS = 60_000;
 const offset = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const referenceSchema = z
   .object({
@@ -65,10 +69,14 @@ export function isObjectPreconditionFailure(error: unknown) {
   const e = error as { name?: string; $metadata?: { httpStatusCode?: number } };
   return e?.name === "PreconditionFailed" || e?.$metadata?.httpStatusCode === 412;
 }
+// Reads abandoned by their own attempt deadline, not by their caller. A GET is
+// safe to send again.
+const expiredReads = new WeakSet<object>();
 function isRetryable(error: unknown) {
   const e = error as { name?: string; code?: string; $metadata?: { httpStatusCode?: number } };
   const status = e?.$metadata?.httpStatusCode;
   return (
+    (typeof error === "object" && error !== null && expiredReads.has(error)) ||
     e?.name === "ConditionalRequestConflict" ||
     status === 409 ||
     status === 429 ||
@@ -83,7 +91,7 @@ async function retryObjectOperation<T>(operation: () => Promise<T>, signal?: Abo
     try {
       return await operation();
     } catch (error) {
-      if (attempt >= 2 || !isRetryable(error)) throw error;
+      if (attempt >= 2 || !isRetryable(error) || signal?.aborted) throw error;
       await delay(100 * 2 ** attempt, undefined, { signal });
     }
   }
@@ -118,7 +126,7 @@ async function qualifyConditionalWrites(
     const probeSignal = AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]);
     const current: ConditionalQualification = { controller, waiters: 0, work: Promise.resolve() };
     qualification = current;
-    current.work = (async () => {
+    current.work = runSharedStorageWork(async () => {
       const objectKey = `${prefix}/conditional-probe-${randomUUID()}`;
       const body = Buffer.from("paperclip-conditional-probe-v1");
       const put = provider.putObjectConditional!.bind(provider);
@@ -164,7 +172,7 @@ async function qualifyConditionalWrites(
       }
       probeSignal.throwIfAborted();
       qualifiedProviders.add(provider);
-    })().finally(() => {
+    }).finally(() => {
       if (qualifications.get(provider) === current) qualifications.delete(provider);
     });
     qualifications.set(provider, current);
@@ -215,20 +223,90 @@ export function isObjectJournalBusyError(error: unknown): error is ObjectJournal
 }
 
 export type ObjectJournalIOPriority = "background" | "interactive";
-const MAX_ACTIVE_IO = 8;
+export const OBJECT_JOURNAL_READ_IO_RESERVE = 4;
+export const OBJECT_JOURNAL_IO_CEILING = Math.floor(S3_CLIENT_MAX_SOCKETS / 2);
+export const OBJECT_JOURNAL_UPLOAD_SLOTS = assertActiveRunSlotBounds({
+  runsPerSlot: 10,
+  floor: 4,
+  ceiling: OBJECT_JOURNAL_IO_CEILING - OBJECT_JOURNAL_READ_IO_RESERVE,
+});
 const MAX_WAITING_INTERACTIVE_IO = 32;
+let openWriters = 0;
 let activeIO = 0;
 const waitingIO: Record<ObjectJournalIOPriority, Array<() => void>> = {
   background: [],
   interactive: [],
 };
+export function objectJournalUploadSlots() {
+  return slotsForActiveRuns(openWriters, OBJECT_JOURNAL_UPLOAD_SLOTS);
+}
+export function objectJournalIOSlots() {
+  return objectJournalUploadSlots() + OBJECT_JOURNAL_READ_IO_RESERVE;
+}
+export function trackObjectJournalWriter(): () => void {
+  openWriters++;
+  grantWaitingUploads();
+  grantWaitingIO();
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    openWriters--;
+  };
+}
+let activeUploads = 0;
+const uploadWaiters: Array<() => void> = [];
+export function objectJournalUploadActivity() {
+  return { active: activeUploads, waiting: uploadWaiters.length };
+}
+function grantWaitingUploads() {
+  while (activeUploads < objectJournalUploadSlots()) {
+    const next = uploadWaiters.shift();
+    if (!next) return;
+    activeUploads++;
+    next();
+  }
+}
+export async function acquireObjectJournalUpload(signal?: AbortSignal): Promise<() => void> {
+  signal?.throwIfAborted();
+  if (activeUploads >= objectJournalUploadSlots())
+    await new Promise<void>((resolve, reject) => {
+      const enter = () => {
+        signal?.removeEventListener("abort", abort);
+        resolve();
+      };
+      const abort = () => {
+        const index = uploadWaiters.indexOf(enter);
+        if (index !== -1) uploadWaiters.splice(index, 1);
+        reject(signal!.reason);
+      };
+      signal?.addEventListener("abort", abort, { once: true });
+      uploadWaiters.push(enter);
+    });
+  else activeUploads++;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    activeUploads--;
+    grantWaitingUploads();
+  };
+}
+function grantWaitingIO() {
+  while (activeIO < objectJournalIOSlots()) {
+    const next = waitingIO.background.shift() ?? waitingIO.interactive.shift();
+    if (!next) return;
+    activeIO++;
+    next();
+  }
+}
 async function objectIO<T>(
   operation: () => Promise<T>,
   priority: ObjectJournalIOPriority = "background",
   signal?: AbortSignal,
 ): Promise<T> {
   signal?.throwIfAborted();
-  if (activeIO >= MAX_ACTIVE_IO) {
+  if (activeIO >= objectJournalIOSlots()) {
     const queue = waitingIO[priority];
     if (priority === "interactive" && queue.length >= MAX_WAITING_INTERACTIVE_IO)
       throw new ObjectJournalBusyError();
@@ -249,9 +327,8 @@ async function objectIO<T>(
   try {
     return await operation();
   } finally {
-    const next = waitingIO.background.shift() ?? waitingIO.interactive.shift();
-    if (next) next();
-    else activeIO--;
+    activeIO--;
+    grantWaitingIO();
   }
 }
 
@@ -391,27 +468,34 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
   async function getBytes(key: string, limit: number, signal?: AbortSignal) {
     return objectIO(async () => {
       signal?.throwIfAborted();
-      signal = signal
-        ? AbortSignal.any([signal, AbortSignal.timeout(15_000)])
-        : AbortSignal.timeout(15_000);
-      const result = await retryObjectOperation(
-        () => provider.getObject({ objectKey: key, signal }),
-        signal,
-      );
-      const chunks: Buffer[] = [];
-      let size = 0;
-      try {
-        for await (const chunk of result.stream) {
-          const bytes = Buffer.from(chunk);
-          size += bytes.length;
-          if (size > limit) throw new Error("object_journal_object_too_large");
-          chunks.push(bytes);
+      const caller = signal;
+      return sendThroughStorageOutage(() => retryObjectOperation(async () => {
+        // Each attempt has its own deadline. One deadline shared by every
+        // attempt made a single hung GET final: once it expired, nothing
+        // could send the read again.
+        const deadline = AbortSignal.timeout(15_000);
+        const read = caller ? AbortSignal.any([caller, deadline]) : deadline;
+        try {
+          const result = await provider.getObject({ objectKey: key, signal: read });
+          const chunks: Buffer[] = [];
+          let size = 0;
+          try {
+            for await (const chunk of result.stream) {
+              const bytes = Buffer.from(chunk);
+              size += bytes.length;
+              if (size > limit) throw new Error("object_journal_object_too_large");
+              chunks.push(bytes);
+            }
+          } finally {
+            result.stream.destroy();
+          }
+          read.throwIfAborted();
+          return { bytes: Buffer.concat(chunks), etag: result.etag };
+        } catch (error) {
+          if (deadline.aborted && !caller?.aborted && error && typeof error === "object") expiredReads.add(error);
+          throw error;
         }
-      } finally {
-        result.stream.destroy();
-      }
-      signal?.throwIfAborted();
-      return { bytes: Buffer.concat(chunks), etag: result.etag };
+      }, caller), caller);
     }, readPriority, signal);
   }
   async function head(signal?: AbortSignal): Promise<ObjectJournalWriter | null> {
@@ -471,7 +555,8 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
     if (!Number.isSafeInteger(sourceCursor) || sourceCursor < writer.head.sourceCursor)
       throw new Error("object_journal_invalid_source_prefix_cursor");
     const current = await head(signal);
-    if (!current || current.etag !== writer.etag || current.head.closed || current.head.deleted)
+    if (!current) throw new ObjectJournalSourcePrefixProofUnavailableError(writer);
+    if (current.etag !== writer.etag || current.head.closed || current.head.deleted)
       throw new ObjectJournalConflictError();
     // One-time verification can repair legacy max-cursor metadata, never payload bytes.
     if (sourceCursor !== writer.head.sourceCursor)
@@ -522,6 +607,7 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
         });
         return { head: value, etag: result.etag };
       } catch (error) {
+        if (signal.aborted) throw error;
         const observed = await head(signal);
         if (observed && JSON.stringify(observed.head) === JSON.stringify(value)) return observed;
         if (isObjectPreconditionFailure(error) || (observed?.etag ?? null) !== etag)
@@ -531,13 +617,25 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
     }, signal);
   }
   async function claim(input: {
-    expectedOwner: string | null;
     assertAuthority: () => Promise<void>;
     signal?: AbortSignal;
   }) {
-    const current = await head(input.signal);
-    if (current?.head.deleted || (current?.head.owner ?? null) !== input.expectedOwner)
-      throw new ObjectJournalConflictError();
+    const deadline = Date.now() + HEAD_VISIBILITY_WAIT_MS;
+    for (let wait = 250; ; wait = Math.min(wait * 2, 4_000)) {
+      const current = await head(input.signal);
+      try {
+        return await claimFrom(current, input);
+      } catch (error) {
+        if (current || !(error instanceof ObjectJournalConflictError) || Date.now() + wait > deadline) throw error;
+        await delay(wait, undefined, { signal: input.signal });
+      }
+    }
+  }
+  async function claimFrom(current: ObjectJournalWriter | null, input: {
+    assertAuthority: () => Promise<void>;
+    signal?: AbortSignal;
+  }) {
+    if (current?.head.deleted) throw new ObjectJournalConflictError();
     await input.assertAuthority();
     await qualifyConditionalWrites(provider, prefix, input.signal);
     await input.assertAuthority();
@@ -573,14 +671,14 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
     let shared = readsInFlight.get(cacheKey);
     if (!shared) {
       const controller = new AbortController();
-      const work = (async () => {
+      const work = runSharedStorageWork(async () => {
         const stored = await getBytes(ref.key, MAX_OBJECT_BYTES * 2, controller.signal);
         const bytes = options.decode ? await options.decode(stored.bytes) : stored.bytes;
         if (bytes.length > MAX_OBJECT_BYTES || sha256(bytes) !== ref.sha256)
           throw new Error("object_journal_integrity_error");
         cacheObject(cacheKey, bytes);
         return bytes;
-      })();
+      });
       const entry: SharedObjectRead = { work, controller, waiters: 0 };
       const release = () => {
         if (readsInFlight.get(cacheKey) === entry) readsInFlight.delete(cacheKey);

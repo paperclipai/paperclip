@@ -1,4 +1,5 @@
 import { RetainedSandboxAbsentError } from "../services/retained-sandbox-absent-error.js";
+import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES, environmentResumeErrorData } from "@paperclipai/plugin-sdk";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import * as remoteWorkspaces from "../services/remote-workspaces.js";
@@ -32,6 +33,7 @@ vi.mock("../services/workspace-realization.js", () => ({
 }));
 
 vi.mock("../services/environments.js", () => ({
+  assertEnvironmentCompanyBinding: vi.fn(async () => {}),
   environmentService: vi.fn(() => ({
     ensureLocalEnvironment: vi.fn(),
     getById: mockGetEnvironment,
@@ -284,8 +286,17 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     );
   });
 
-  it("realizes an enrolled remote workspace in place and persists its authoritative remote root", async () => {
-    const environment = { ...makeEnvironment("sandbox"), id: randomUUID() };
+  it("enforces company bindings when a caller acquires a lease directly", async () => {
+    const runtime = makeMockRuntime();
+    await environmentRunOrchestrator(mockDb, { environmentRuntime: runtime }).acquireLease({
+      companyId: "company-1", environment: makeEnvironment(), issueId: null, agentId: "agent-1", heartbeatRunId: "run-1",
+      persistedExecutionWorkspace: null, executionWorkspaceSettings: null, adapterType: null,
+    });
+    expect(runtime.acquireRunLease).toHaveBeenCalledWith(expect.objectContaining({ assertCompanyBinding: true }));
+  });
+
+  it.each(["sandbox", "ssh"] as const)("realizes an enrolled %s workspace in place and persists its authoritative remote root", async driver => {
+    const environment = { ...makeEnvironment(driver), id: randomUUID() };
     const lease = makeLease({ id: randomUUID(), environmentId: environment.id, provider: "daytona", providerLeaseId: "sandbox-allocation" });
     const workspace = makePersistedExecutionWorkspace({ id: randomUUID(), providerType: "cloud_sandbox", metadata: {
       remoteWorkspace: { schema: "paperclip.remote-workspace.v1", epoch: 1, source: { kind: "empty" },
@@ -293,7 +304,9 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     } });
     const remoteRoot = `/sandbox/.paperclip-workspaces/${workspace.id}`;
     const savedLease = { ...lease, metadata: { remoteCwd: remoteRoot } };
-    const target = { kind: "remote", transport: "sandbox", remoteCwd: "/sandbox", runner: { execute: vi.fn() } };
+    const target = driver === "ssh"
+      ? { kind: "remote", transport: "ssh", remoteCwd: "/sandbox", spec: { remoteCwd: "/sandbox" } }
+      : { kind: "remote", transport: "sandbox", remoteCwd: "/sandbox", runner: { execute: vi.fn() } };
     mockResolveEnvironmentExecutionTarget.mockResolvedValue(target);
     mockGetStoredWorkspace.mockResolvedValue({ ...workspace, cwd: remoteRoot });
     mockUpdateLeaseMetadata.mockResolvedValue(savedLease);
@@ -302,7 +315,7 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     } as never);
     try {
       const runtime = makeMockRuntime();
-      const input = { ...makeRealizeInput({ environment, lease, persistedExecutionWorkspace: workspace }), adapterType: "paperclip_runner" };
+      const input = { ...makeRealizeInput({ environment, lease, persistedExecutionWorkspace: workspace }), adapterType: driver === "ssh" ? "claude_local" : "paperclip_runner" };
       const result = await environmentRunOrchestrator(mockDb, { environmentRuntime: runtime }).realizeForRun(input);
       expect(prepare).toHaveBeenCalledWith(expect.objectContaining({ workspace, target, source: { kind: "empty" } }));
       expect(mockBuildWorkspaceRealizationRequest).not.toHaveBeenCalled();
@@ -310,6 +323,9 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
       expect(result.executionTarget).toMatchObject({ remoteCwd: remoteRoot,
         workspaceRealization: { mode: "in_place", authoritativeRoot: remoteRoot, outboundRestorePaths: [] } });
       expect(input.executionWorkspace.cwd).toBe(remoteRoot);
+      if (result.executionTarget?.kind === "remote" && result.executionTarget.transport === "ssh") {
+        expect(result.executionTarget.spec.remoteCwd).toBe(remoteRoot);
+      }
       expect(mockUpdateLeaseMetadata).toHaveBeenCalledWith(lease.id, expect.objectContaining({ remoteCwd: remoteRoot }));
       expect(result.lease.metadata?.remoteCwd).toBe(remoteRoot);
     } finally { prepare.mockRestore(); }
@@ -851,6 +867,34 @@ describe("native runner lifecycle changes before lease acquisition", () => {
     expect(coldAgain.lease.leasePolicy).toBe("ephemeral");
   });
 
+  // The remote-sandbox warm default asks the provider before it requests a
+  // reusable lease, and asks only for a run whose lifecycle nobody chose.
+  it.each([
+    ["a provider with reusable leases", {}, true, true, true],
+    ["a provider without reusable leases (E2B, Modal, fake)", {}, false, true, false],
+    ["an explicit per-turn agent", { lifecycleMode: "per_turn" }, true, false, false],
+    ["a managed Claude account", { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-4-6", managed: true }, true, false, false],
+  ] as const)("defaults an inheriting sandbox run to warm only on %s", async (_name, agent, supported, probed, warm) => {
+    const environment = { ...makeEnvironment("sandbox"), config: { provider: "daytona", reuseLease: false } };
+    mockGetEnvironment.mockResolvedValue(environment);
+    const acquireRunLease = vi.fn(async (input) => ({ environment: input.environment, lease: makeLease(), leaseContext: { executionWorkspaceId: null, executionWorkspaceMode: null } }));
+    const providerSupportsReusableLeases = vi.fn(async () => supported);
+    const orchestrator = environmentRunOrchestrator({} as never, {
+      environmentRuntime: { ...makeMockRuntime({ acquireRunLease }), providerSupportsReusableLeases } as never,
+    });
+    const { managed, ...adapterConfig } = { managed: false, ...agent };
+    await orchestrator.acquireForRun({
+      companyId: "company-1", selectedEnvironmentId: "env-1", localEnvironmentId: "local", adapterType: "paperclip_runner",
+      adapterConfig, managedAiCredentialIdentity: managed ? "account:generation" : undefined,
+      issueId: "task-1", heartbeatRunId: "run-1", agentId: "agent-1",
+      persistedExecutionWorkspace: null, executionWorkspaceSettings: null,
+    });
+    expect(providerSupportsReusableLeases).toHaveBeenCalledTimes(probed ? 1 : 0);
+    expect(acquireRunLease.mock.calls[0][0].environment.config.reuseLease).toBe(warm);
+    expect(acquireRunLease.mock.calls[0][0].warmRunnerIdleTimeoutMs).toBe(warm ? 300_000 : undefined);
+    expect(environment.config.reuseLease).toBe(false);
+  });
+
   it.each([
     ["paperclip_runner", undefined, undefined, false],
     ["paperclip_runner", "inherit", "per_turn", false],
@@ -946,8 +990,72 @@ describe("live remote runner lease reattachment", () => {
       runnerReconnectGraceMs: REMOTE_RUNNER_RECONNECT_GRACE_MS,
     });
     expect(result.lease).toEqual(savedLease);
+    expect(result.sandboxLeaseAcquisition).toEqual({ outcome: "resumed", providerLeaseId: "original-sandbox" });
     expect(result.leaseContext.executionWorkspaceId).toBe("ew-1");
     expect(result.environment.config.reuseLease).toBe(false);
+  });
+  it.each(["created", "replacement", "resumed"] as const)(
+    "reports exact-lease reattachment as resumed after historical %s acquisition", async outcome => {
+      const savedLease = originalLease();
+      savedLease.metadata!.sandboxLeaseAcquisition = {
+        outcome, providerLeaseId: "original-sandbox", previousProviderLeaseId: "older-sandbox", reason: "resume_failed",
+      };
+      const before = structuredClone(savedLease);
+      mockGetLease.mockResolvedValue(savedLease);
+      const runtime = makeMockRuntime();
+      const result = await environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun(input);
+      expect(result.sandboxLeaseAcquisition).toEqual({ outcome: "resumed", providerLeaseId: "original-sandbox" });
+      expect(result.lease.id).toBe(savedLease.id);
+      expect(result.lease.metadata?.remoteCwd).toBe("/remote/workspace");
+      expect(savedLease).toEqual(before);
+      expect(runtime.resumeRunLease).toHaveBeenCalledOnce();
+      expect(runtime.acquireRunLease).not.toHaveBeenCalled();
+      expect(mockUpdateLeaseMetadata).not.toHaveBeenCalled();
+    },
+  );
+  it.each([false, true])("preserves acquisition history when realization persists workspace metadata (remote authority: %s)", async remoteAuthority => {
+    const savedLease = originalLease();
+    savedLease.metadata!.sandboxLeaseAcquisition = {
+      outcome: "replacement", providerLeaseId: "original-sandbox",
+      previousProviderLeaseId: "older-sandbox", reason: "resume_failed",
+    };
+    const history = structuredClone(savedLease.metadata!.sandboxLeaseAcquisition);
+    mockGetLease.mockResolvedValue(savedLease);
+    mockUpdateLeaseMetadata.mockImplementation(async (_id, metadata) => ({ ...savedLease, metadata }));
+    mockBuildWorkspaceRealizationRequest.mockReturnValue({ runtimeOverlay: {} });
+    const { resolveEnvironmentExecutionTarget } = await vi.importActual<typeof import("../services/environment-execution-target.js")>("../services/environment-execution-target.js");
+    mockResolveEnvironmentExecutionTarget.mockImplementation(resolveEnvironmentExecutionTarget);
+    const config = await import("../services/environment-config.js");
+    const resolveConfig = vi.spyOn(config, "resolveEnvironmentDriverConfigForRuntime").mockResolvedValue({
+      driver: "sandbox", config: { provider: "daytona", reuseLease: false },
+    } as never);
+    const workspace = makePersistedExecutionWorkspace({ metadata: remoteAuthority ? {
+      remoteWorkspace: { schema: "paperclip.remote-workspace.v1", epoch: 1, source: { kind: "empty" },
+        writerRunId: randomUUID(), dirty: false, snapshotId: null, location: null },
+    } : null });
+    const prepare = vi.spyOn(remoteWorkspaces, "prepareRemoteWorkspace").mockImplementation(async args => ({
+      workspace, lease: args.lease, remoteRoot: "/remote/workspace", reference: {} as never,
+    } as never));
+    mockGetStoredWorkspace.mockResolvedValue(workspace);
+    try {
+      const runtime = makeMockRuntime({ supportsSync: () => false });
+      const orchestrator = environmentRunOrchestrator({} as never, { environmentRuntime: runtime });
+      const acquisition = await orchestrator.acquireForRun(input);
+      const result = await orchestrator.realizeForRun({
+        ...makeRealizeInput(), ...acquisition, adapterType: input.adapterType, persistedExecutionWorkspace: workspace,
+      });
+      expect(mockUpdateLeaseMetadata).toHaveBeenCalled();
+      for (const [, metadata] of mockUpdateLeaseMetadata.mock.calls) {
+        expect(metadata.sandboxLeaseAcquisition).toEqual(history);
+      }
+      expect(result.lease.metadata!.sandboxLeaseAcquisition).toEqual(history);
+      expect(result.executionTarget).toMatchObject({ kind: "remote", transport: "sandbox",
+        sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId: "original-sandbox" } });
+    } finally {
+      prepare.mockRestore();
+      resolveConfig.mockRestore();
+      mockResolveEnvironmentExecutionTarget.mockReset();
+    }
   });
   it("forwards the admitted warm idle window to the recovery resume", async () => {
     const savedLease = originalLease();
@@ -983,7 +1091,10 @@ describe("live remote runner lease reattachment", () => {
       expect(state).toBe("pending");
       expect(ready).toBe(false);
     } finally { release(); }
-    expect((await pending).lease).toEqual(before);
+    const result = await pending;
+    expect(result.lease).toEqual(before);
+    expect(result.sandboxLeaseAcquisition).toEqual({ outcome: "resumed", providerLeaseId: "original-sandbox" });
+    expect(savedLease).toEqual(before);
     expect(ready).toBe(true);
     expect(runtime.acquireRunLease).not.toHaveBeenCalled();
     expect(runtime.execute).not.toHaveBeenCalled();
@@ -1009,7 +1120,7 @@ describe("live remote runner lease reattachment", () => {
         providerLeaseId: "original-sandbox", metadata,
       })) });
       const result = await environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun(input);
-      expect(result.lease).toBe(savedLease);
+      expect(result.lease).toMatchObject({ id: savedLease.id, providerLeaseId: savedLease.providerLeaseId });
       expect(result.lease.metadata?.remoteCwd).toBe("/remote/workspace");
       expect(runtime.resumeRunLease).toHaveBeenCalledOnce();
       expect(runtime.acquireRunLease).not.toHaveBeenCalled();
@@ -1028,8 +1139,109 @@ describe("live remote runner lease reattachment", () => {
     const runtime = makeMockRuntime({ resumeRunLease: vi.fn(async () => { throw error; }) });
     await expect(environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun(input))
       .rejects.toBe(error);
+    expect(runtime.resumeRunLease).toHaveBeenCalledOnce();
     expect(runtime.acquireRunLease).not.toHaveBeenCalled();
     expect(runtime.execute).not.toHaveBeenCalled();
+  });
+  it("retries a provider gateway refusal during reattachment and keeps the original allocation", async () => {
+    const savedLease = originalLease();
+    mockGetLease.mockResolvedValue(savedLease);
+    const gateway = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR,
+      message: "<html><head><title>502 Bad Gateway</title></head></html>",
+      data: environmentResumeErrorData(Object.assign(new Error("gateway"), { statusCode: 502 })) });
+    const resumeRunLease = vi.fn()
+      .mockRejectedValueOnce(gateway)
+      .mockResolvedValueOnce({ providerLeaseId: "original-sandbox", metadata: { remoteCwd: "/remote/workspace" } });
+    const runtime = makeMockRuntime({ resumeRunLease });
+    const result = await environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun(input);
+    expect(resumeRunLease).toHaveBeenCalledTimes(2);
+    expect(result.lease).toMatchObject({ id: savedLease.id, providerLeaseId: "original-sandbox" });
+    expect(result.sandboxLeaseAcquisition).toEqual({ outcome: "resumed", providerLeaseId: "original-sandbox" });
+    expect(runtime.acquireRunLease).not.toHaveBeenCalled();
+  });
+  it("gives the first reattach resume the provider deadline and bounds every retry by the budget", async () => {
+    const gateway = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR, message: "web server returned an unknown error",
+      data: environmentResumeErrorData(Object.assign(new Error("gateway"), { statusCode: 520 })) });
+    const budgetMs = 1_500;
+    const timeouts: Array<number | undefined> = [];
+    const resumeRunLease = vi.fn(async ({ timeoutMs }: { timeoutMs?: number }) => {
+      timeouts.push(timeoutMs);
+      await new Promise(resolve => setTimeout(resolve, Math.min(timeoutMs ?? 300, 300)));
+      throw gateway;
+    });
+    const runtime = makeMockRuntime({ resumeRunLease });
+    const startedAt = Date.now();
+    await expect(environmentRunOrchestrator({} as never, { environmentRuntime: runtime, reattachResumeRetryBudgetMs: budgetMs })
+      .acquireForRun(input)).rejects.toBe(gateway);
+    expect(Date.now() - startedAt).toBeLessThan(300 + budgetMs + 250);
+    expect(timeouts[0]).toBeUndefined();
+    expect(timeouts.length).toBeGreaterThan(2);
+    const retries = timeouts.slice(1) as number[];
+    expect(retries.every(timeout => timeout <= budgetMs)).toBe(true);
+    expect(retries.every((timeout, index) => index === 0 || timeout < retries[index - 1]!)).toBe(true);
+  });
+  it("does not repeat a reattach resume that used up the provider's start deadline", async () => {
+    const deadline = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.TIMEOUT, message: "environmentResumeLease timed out" });
+    const resumeRunLease = vi.fn(async () => { throw deadline; });
+    const runtime = makeMockRuntime({ resumeRunLease });
+    await expect(environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun(input)).rejects.toBe(deadline);
+    expect(resumeRunLease).toHaveBeenCalledOnce();
+  });
+  it.each([500, 502, 520, 599])("treats a provider HTTP %i refusal during reattachment as transient", async statusCode => {
+    const savedLease = originalLease();
+    mockGetLease.mockResolvedValue(savedLease);
+    const refusal = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR, message: "gateway",
+      data: environmentResumeErrorData(Object.assign(new Error("gateway"), { statusCode })) });
+    const resumeRunLease = vi.fn()
+      .mockRejectedValueOnce(refusal)
+      .mockResolvedValueOnce({ providerLeaseId: "original-sandbox", metadata: { remoteCwd: "/remote/workspace" } });
+    const runtime = makeMockRuntime({ resumeRunLease });
+    await expect(environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun(input))
+      .resolves.toMatchObject({ lease: { id: savedLease.id } });
+    expect(resumeRunLease).toHaveBeenCalledTimes(2);
+  });
+  it("retries a failed name lookup while reattaching to a host this run already reached", async () => {
+    const savedLease = originalLease();
+    mockGetLease.mockResolvedValue(savedLease);
+    const lookup = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR, message: "getaddrinfo ENOTFOUND app.daytona.io",
+      data: environmentResumeErrorData(Object.assign(new Error("dns"), { code: "ENOTFOUND" })) });
+    const resumeRunLease = vi.fn()
+      .mockRejectedValueOnce(lookup)
+      .mockResolvedValueOnce({ providerLeaseId: "original-sandbox", metadata: { remoteCwd: "/remote/workspace" } });
+    const runtime = makeMockRuntime({ resumeRunLease });
+    await expect(environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun(input))
+      .resolves.toMatchObject({ lease: { id: savedLease.id } });
+    expect(resumeRunLease).toHaveBeenCalledTimes(2);
+  });
+  it.each([
+    ["a caller's cancellation", { code: "ABORT_ERR" }],
+    ["HTTP 501", { statusCode: 501 }],
+  ])("does not retry %s during reattachment", async (_label, fields) => {
+    const refusal = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR, message: "refused",
+      data: environmentResumeErrorData(Object.assign(new Error("refused"), fields)) });
+    const resumeRunLease = vi.fn(async () => { throw refusal; });
+    const runtime = makeMockRuntime({ resumeRunLease });
+    await expect(environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun(input)).rejects.toBe(refusal);
+    expect(resumeRunLease).toHaveBeenCalledOnce();
+  });
+  it("does not retry a definite provider refusal during reattachment", async () => {
+    const refusal = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR, message: "conflict",
+      data: environmentResumeErrorData(Object.assign(new Error("conflict"), { statusCode: 409 })) });
+    const resumeRunLease = vi.fn(async () => { throw refusal; });
+    const runtime = makeMockRuntime({ resumeRunLease });
+    await expect(environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun(input)).rejects.toBe(refusal);
+    expect(resumeRunLease).toHaveBeenCalledOnce();
+  });
+  it("stops retrying a gateway refusal once the reattachment budget is spent", async () => {
+    const gateway = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR, message: "bad gateway",
+      data: environmentResumeErrorData(Object.assign(new Error("gateway"), { statusCode: 503 })) });
+    const resumeRunLease = vi.fn(async () => { throw gateway; });
+    const runtime = makeMockRuntime({ resumeRunLease });
+    await expect(environmentRunOrchestrator({} as never, { environmentRuntime: runtime, reattachResumeRetryBudgetMs: 1_200 })
+      .acquireForRun(input)).rejects.toBe(gateway);
+    expect(resumeRunLease.mock.calls.length).toBeGreaterThan(1);
+    expect(resumeRunLease.mock.calls.length).toBeLessThan(6);
+    expect(runtime.acquireRunLease).not.toHaveBeenCalled();
   });
   it.each(["active", "foreign-company", "revoked", "undispatched", "stopped"])("inspects the original plugin task lease (%s)", async state => {
     mockGetEnvironment.mockResolvedValue(makeEnvironment("plugin"));

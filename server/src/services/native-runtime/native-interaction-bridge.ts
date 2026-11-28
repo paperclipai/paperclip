@@ -1,3 +1,4 @@
+import { notifyQueuedRunDispatch } from "../run-dispatch-notifications.js";
 import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
 import type { Db } from "@paperclipai/db";
@@ -134,6 +135,7 @@ export async function applyNativeAttentionStatusDecision(input: {
         if (effect.cause === "native_workspace_sync_out_unsafe_archive") {
           await notifyUnsafeWorkspaceExportRecovery(tx, input);
         }
+        await notifyQueuedRunDispatch(tx, { companyId: input.companyId });
         const [coordinator] = await tx.update(nativeRunFinalizations).set({
           phase: "terminal_failure",
           failureCode: effect.cause,

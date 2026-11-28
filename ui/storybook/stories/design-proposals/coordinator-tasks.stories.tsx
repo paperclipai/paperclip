@@ -11,7 +11,7 @@ import { storybookIssueLabels } from "../../fixtures/paperclipData";
 
 function CoordinatorTasksPreview() {
   return <DesignProposalAccess><div className="coordinator-workspace"><DesignPageShell title="Tasks"
-    sidebar={<><CoordinatorSidebar /><div className="design-sidebar-account"><SidebarAccountMenu forceExpanded /></div></>}
+    sidebar={<><CoordinatorSidebar /><div className="design-sidebar-account"><SidebarAccountMenu /></div></>}
     sidebarStorageKey="paperclip.storybook.coordinator-sidebar-width"><CoordinatorTasks /></DesignPageShell><NewIssueDialog /></div></DesignProposalAccess>;
 }
 
@@ -37,7 +37,7 @@ const meta = {
     } },
     { path: /\/api\/issues\/[^/]+$/, method: "GET", read: ({ url }) => initialItems.find(item => item.issue.id === url.pathname.split("/").at(-1))?.issue },
     { path: /\/api\/companies\/[^/]+\/attention$/, method: "GET", read: () => ({
-      companyId: "company-storybook", generatedAt: "2026-10-27T12:00:00Z", totalCount: 2, deskBadgeCount: 2, nextCursor: null, countsBySourceKind: { issue_thread_interaction: 2 },
+      companyId: "company-storybook", generatedAt: "2026-10-27T12:00:00Z", totalCount: 2, deskBadgeCount: 2, viewCounts: { mine: 2, unassigned: 0, company: 0 }, nextCursor: null, countsBySourceKind: { issue_thread_interaction: 2 },
       items: initialItems.slice(1, 3).map(({ issue }, index) => ({ id: `fixture-decision-${index}`, sourceKind: "issue_thread_interaction", subject: { kind: "interaction", id: `fixture-question-${index}` }, relatedIssue: { id: issue.id, title: issue.title, identifier: issue.identifier } })),
     }) },
     { path: /\/api\/companies\/[^/]+\/chats$/, method: "GET", read: () => [] },

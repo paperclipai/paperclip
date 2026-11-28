@@ -7,6 +7,39 @@ const run = { id: "run", agentId: "agent", status: "failed", scheduledRetryAt: n
   resultJson: { projectAccessDenied: { projectId: "22222222-2222-4222-8222-222222222222" } } };
 const agent = { status: "idle", pauseReason: null };
 
+describe("pending question presentation", () => {
+  const failed = { ...run, errorCode: "native_session_interrupted", resultJson: null };
+  const input = { run: failed, agent, paused: false, approval: false, question: true };
+  it("names the unanswered question instead of a historical failure, preserving an available manual Retry", () => {
+    for (const previousRun of [failed, { ...failed, status: "succeeded" }, undefined]) {
+      const presentation = projectTaskInterruption(issue, { ...input, run: previousRun });
+      expect(presentation).toMatchObject({ responsibility: "user", state: "waiting_for_user", userAction: "question",
+        canRetry: previousRun?.status === "failed" });
+      expect(presentation?.providerFailure).toBeUndefined();
+    }
+  });
+  it("does not offer another Retry while saved input or a Retry is pending", () => {
+    const wait = { id: "saved-input", requestedAt: new Date(), sourceRunId: failed.id };
+    for (const pending of [{ wait }, { retryWait: wait }])
+      expect(projectTaskInterruption(issue, { ...input, ...pending })).toMatchObject({ canRetry: false });
+  });
+  it("shows the question while automatic continuation waits, without offering to move it forward", () => {
+    for (const pendingSince of [undefined, Date.now() - 16 * 60_000])
+      expect(projectTaskInterruption(issue, { ...input, freshContinuation: { state: "continuing", pendingSince } }))
+        .toMatchObject({ state: "waiting_for_user", userAction: "question", canRetry: false });
+  });
+  it("preserves other current user gates", () => {
+    for (const [gate, userAction] of [[{ approval: true }, "approval"], [{ paused: true }, "resume"],
+      [{ ownerStopRequired: true }, "confirm_owner_stop"]] as const)
+      expect(projectTaskInterruption(issue, { ...input, ...gate })).toMatchObject({ state: "waiting_for_user", userAction, canRetry: false });
+  });
+  it("preserves live work and terminal task states", () => {
+    expect(projectTaskInterruption(issue, { ...input, run: { ...run, status: "running", errorCode: null } }))
+      .toMatchObject({ state: "working" });
+    expect(projectTaskInterruption({ ...issue, status: "done" }, input)).toMatchObject({ state: "resolved" });
+  });
+});
+
 describe("saved governed wait shutdown", () => {
   const now = Date.parse("2026-11-09T12:00:00Z");
   const pending = { ...run, runtimeMode: "native", errorCode: "native_governed_wait_settlement_pending", resultJson: null };
@@ -170,11 +203,20 @@ it("names a budget gate instead of generic execution checks for a refused Retry"
       message: "Retry is waiting for the budget to allow new work. Check Costs for unrecorded or unpriced usage." } });
 });
 
-it.each(["cleanup_quarantined", "cancelled_by_operator", "retry_source_changed"])("does not offer Retry for terminal Retry waits: %s", reason => {
+it.each(["cancelled_by_operator", "retry_source_changed"])("does not offer Retry for terminal Retry waits: %s", reason => {
   const failed = { ...run, errorCode: "native_provider_terminal_failed", resultJson: null };
   expect(projectTaskInterruption(issue, { run: failed, agent, paused: false, approval: false,
     wait: { id: "retry", requestedAt: new Date(), sourceRunId: failed.id, executionWaitReason: reason } }))
     .toMatchObject({ state: "failed", canRetry: false, retryWait: { reason } });
+});
+
+it("holds a Retry on a cleanup gate only while an owner settles it", () => {
+  const failed = { ...run, errorCode: "native_provider_terminal_failed", resultJson: null };
+  const wait = { id: "retry", requestedAt: new Date(), sourceRunId: failed.id, executionWaitReason: "cleanup_quarantined" };
+  expect(projectTaskInterruption(issue, { run: failed, agent, paused: false, approval: false, wait, cleanupSettling: true }))
+    .toMatchObject({ state: "failed", canRetry: false, retryWait: { reason: "cleanup_quarantined" } });
+  expect(projectTaskInterruption(issue, { run: failed, agent, paused: false, approval: false, wait }))
+    .toMatchObject({ state: "failed", canRetry: true, retryWait: { reason: "cleanup_quarantined" } });
 });
 
 it("keeps Retry for a Retry declined for its requester's access, since a new click replaces it", () => {
@@ -193,6 +235,65 @@ it("preserves the actual workspace preparation error without changing retry auth
     { run: failedRun, agent, paused: false, approval: false })).not.toHaveProperty("workspaceFailure");
   expect(projectTaskInterruption(issue, { run: { ...failedRun, errorCode: "unrelated_failure" }, agent, paused: false, approval: false }))
     .not.toHaveProperty("workspaceFailure");
+});
+
+describe("setup command failure presentation (CF1)", () => {
+  const setupError = "Execution workspace provision command \"bash ./scripts/provision-worktree.sh\" failed: bash: ./scripts/provision-worktree.sh: No such file or directory";
+  const setupRun = { ...run, errorCode: "setup_failed", error: setupError, resultJson: { setupCommandFailure: {
+    step: "workspace_provision", command: "bash ./scripts/provision-worktree.sh", exitCode: 127,
+    output: "bash: ./scripts/provision-worktree.sh: No such file or directory" } } };
+
+  it("names the broken setup command on the task without changing retry authority", () => {
+    const withCause = projectTaskInterruption(issue, { run: setupRun, agent, paused: false, approval: false });
+    const withoutCause = projectTaskInterruption(issue, { run: { ...setupRun, error: "x", resultJson: null }, agent, paused: false, approval: false });
+    expect(withCause).toMatchObject({ state: "failed", canRetry: true, userAction: null, setupFailure: {
+      step: "workspace_provision", command: "bash ./scripts/provision-worktree.sh", exitCode: 127,
+      message: "The project's workspace provision command \"bash ./scripts/provision-worktree.sh\" failed with exit code 127: bash: ./scripts/provision-worktree.sh: No such file or directory" } });
+    const { setupFailure: _named, ...rest } = withCause!;
+    expect(rest).toEqual(withoutCause);
+    expect(withCause).not.toHaveProperty("workspaceFailure");
+  });
+
+  it("recognizes a setup failure recorded before the structured cause existed", () => {
+    expect(projectTaskInterruption(issue, { run: { ...setupRun, resultJson: null }, agent, paused: false, approval: false }))
+      .toMatchObject({ state: "failed", setupFailure: { step: "workspace_provision", command: "bash ./scripts/provision-worktree.sh",
+        exitCode: null, output: "bash: ./scripts/provision-worktree.sh: No such file or directory" } });
+  });
+
+  it("keeps a transient setup retry scheduled and only adds the name", () => {
+    const retrying = { ...setupRun, status: "scheduled_retry", scheduledRetryAt: new Date(Date.now() + 60_000), scheduledRetryReason: "transient_failure" };
+    const named = projectTaskInterruption(issue, { run: retrying, agent, paused: false, approval: false });
+    const unnamed = projectTaskInterruption(issue, { run: { ...retrying, error: "x", resultJson: null }, agent, paused: false, approval: false });
+    expect(named?.setupFailure?.command).toBe("bash ./scripts/provision-worktree.sh");
+    const { setupFailure: _named, ...rest } = named!;
+    expect(rest).toEqual(unnamed);
+  });
+
+  it("bounds the output tail and strips credentials from the command", () => {
+    const noisy = { ...setupRun, resultJson: { setupCommandFailure: { step: "workspace_provision",
+      command: "GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789 ./setup.sh --password hunter22", exitCode: 1,
+      output: `${"x".repeat(5_000)}\nfinal line` } } };
+    const failure = projectTaskInterruption(issue, { run: noisy, agent, paused: false, approval: false })?.setupFailure;
+    expect(failure?.command).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz0123456789");
+    expect(failure?.command).not.toContain("hunter22");
+    expect(failure?.output?.length).toBeLessThanOrEqual(300);
+    expect(failure?.output).toMatch(/final line$/);
+  });
+
+  it("recognizes older quoted and multiline commands", () => {
+    for (const command of ['bash "./scripts/provision-worktree.sh"', "set -e\n./setup.sh"]) {
+      expect(projectTaskInterruption(issue, { run: { ...setupRun, resultJson: null,
+        error: `Execution workspace provision command "${command}" failed with exit code 2` }, agent, paused: false, approval: false })?.setupFailure)
+        .toMatchObject({ command, exitCode: 2 });
+    }
+  });
+
+  it("does not name setup for other failures or settled tasks", () => {
+    expect(projectTaskInterruption(issue, { run: { ...setupRun, errorCode: "adapter_failed" }, agent, paused: false, approval: false }))
+      .not.toHaveProperty("setupFailure");
+    expect(projectTaskInterruption({ ...issue, status: "done" }, { run: setupRun, agent, paused: false, approval: false }))
+      .not.toHaveProperty("setupFailure");
+  });
 });
 
 function operatorStoppedRun() {
@@ -240,6 +341,21 @@ describe("intentional native Stop presentation", () => {
   });
 });
 
+describe("intentional legacy Stop presentation", () => {
+  it("clears the failed-attempt notice only after the requested Stop is acknowledged", () => {
+    const stopped = { ...run, runtimeMode: "legacy" as const, status: "cancelled", finishedAt: new Date(), resultJson: {
+      cancellation: { source: "operator", expected: true, initiator: { type: "user" }, reason: "Stop", recordedAt: new Date().toISOString() },
+      executionCancellation: { state: "acknowledged", proof: "preparation_settled" },
+    } };
+    const input = { run: stopped, agent, paused: false, approval: false };
+    expect(projectTaskInterruption(issue, input)).toMatchObject({ state: "resolved", canRetry: false });
+    expect(projectTaskInterruption(issue, { ...input, run: { ...stopped, resultJson: { ...stopped.resultJson,
+      executionCancellation: { state: "requested" } } } })).toMatchObject({ state: "failed", canRetry: true });
+    expect(projectTaskInterruption(issue, { ...input, paused: true })).toMatchObject({ userAction: "resume" });
+    expect(projectTaskInterruption(issue, { ...input, approval: true })).toMatchObject({ userAction: "approval" });
+  });
+});
+
 it("preserves a provider explanation on a failed task without changing retry authority", () => {
   const providerFailure = { schema: "paperclip.provider-failure.v1", provider: "anthropic", phase: "startup",
     category: "rate_limit", message: "API error: 429 This request would exceed your account's rate limit.",
@@ -249,6 +365,35 @@ it("preserves a provider explanation on a failed task without changing retry aut
   expect(presentation).toMatchObject({ state: "failed", canRetry: true, providerFailure });
   expect(projectTaskInterruption({ ...issue, status: "done" }, { run: failedRun, agent, paused: false, approval: false }))
     .not.toHaveProperty("providerFailure");
+});
+
+it("shows a refused /swarm's plain reason without a Retry that would meet the same refusal", () => {
+  const providerFailure = { schema: "paperclip.provider-failure.v1", provider: "antigravity", phase: "startup",
+    category: "model_unavailable", retryability: "requires_action",
+    message: "Swarm is not available with Gemini 4 Neon (Low) yet, so nothing was changed: choose another model for this agent, such as Gemini 4 Argon, and send /swarm again." };
+  const refused = { ...run, errorCode: "antigravity_swarm_unavailable", error: providerFailure.message, resultJson: { providerFailure } };
+  expect(projectTaskInterruption(issue, { run: refused, agent, paused: false, approval: false }))
+    .toMatchObject({ state: "failed", canRetry: false, providerFailure });
+  // A swarm verification failure that may not repeat keeps its Retry.
+  const mismatch = { ...providerFailure, category: "unknown", retryability: "unknown", message: "Swarm stopped before it started: the provider did not confirm auto mode. Nothing was changed." };
+  expect(projectTaskInterruption(issue, { run: { ...refused, resultJson: { providerFailure: mismatch } }, agent, paused: false, approval: false }))
+    .toMatchObject({ state: "failed", canRetry: true });
+});
+
+it("asks for billing action for an exhausted provider quota without inventing a retry time", () => {
+  const failed = { ...run, errorCode: "native_provider_usage_limit", resultJson: { providerFailure: {
+    schema: "paperclip.provider-failure.v1", provider: "openai", phase: "turn",
+    category: "quota_exhausted", providerCode: "insufficient_quota", message: "Check your plan and billing details.",
+    retryability: "requires_action",
+  } } };
+  const input = { run: failed, agent, paused: false, approval: false };
+  expect(projectTaskInterruption(issue, input)).toMatchObject({ state: "waiting_for_user", responsibility: "user",
+    userAction: "provider_billing", nextRetryAt: null });
+  expect(projectTaskInterruption(issue, { ...input, paused: true })).toMatchObject({ userAction: "resume" });
+  expect(projectTaskInterruption(issue, { ...input, approval: true })).toMatchObject({ userAction: "approval" });
+  expect(projectTaskInterruption(issue, { ...input, run: { ...failed, resultJson: { providerFailure: {
+    ...failed.resultJson.providerFailure, retryAt: new Date(Date.now() + 60_000).toISOString(),
+  } } } })).not.toMatchObject({ userAction: "provider_billing" });
 });
 
 describe("task project-access interruption", () => {
@@ -353,8 +498,9 @@ describe("scheduled resource wait presentation", () => {
   });
 
   it("keeps failure retries, user gates and failed Retry preparation authoritative", () => {
-    expect(projectTaskInterruption(issue, { run: { ...waiting, scheduledRetryReason: "transient_failure" },
-      agent, paused: false, approval: false }, now)).toMatchObject({ state: "failed", canRetry: true });
+    expect(projectTaskInterruption(issue, { run: { ...waiting, scheduledRetryReason: "transient_failure",
+      scheduledRetryAt: new Date(now - 10 * 60_000) }, agent, paused: false, approval: false }, now))
+      .toMatchObject({ state: "failed", canRetry: true });
     expect(projectTaskInterruption(issue, { run: waiting, agent, paused: true, approval: false }, now))
       .toMatchObject({ state: "waiting_for_user", userAction: "resume" });
     expect(projectTaskInterruption(issue, { run: waiting, agent, paused: false, approval: false,
@@ -379,5 +525,160 @@ describe("saved Retry held by dependencies", () => {
     expect(presentation).toMatchObject({ state: "working", canRetry: false, intentId: "retry",
       retryWait: { reason: "dependency_blocked" } });
     expect(presentation?.retryWait?.message).toContain(text);
+  });
+});
+
+describe("setup command failure evidence", () => {
+  it("removes a registered secret that crosses the output cut before shortening", async () => {
+    const { setupCommandFailureResultJson } = await import("./workspace-setup-command-failure.js");
+    const secret = "registered-private-value-0123456789";
+    const failure = Object.assign(new Error("setup failed"), { step: "workspace_provision", command: "./setup.sh", exitCode: 1,
+      // The cut keeps the last 299 characters; it lands inside the secret.
+      output: `${secret}${"y".repeat(299 - 10)}` });
+    const recorded = setupCommandFailureResultJson(failure, [secret]);
+    expect(recorded).toMatchObject({ setupCommandFailure: { step: "workspace_provision", exitCode: 1 } });
+    const text = JSON.stringify(recorded);
+    for (let index = 0; index + 8 <= secret.length; index += 1) expect(text).not.toContain(secret.slice(index, index + 8));
+  });
+});
+
+describe("saved result that ran out of finalization retries", () => {
+  const review = { ...issue, status: "in_review" };
+  const succeeded = { ...run, status: "succeeded", runtimeMode: "native" as const, errorCode: null, resultJson: null };
+
+  it("offers Retry for a succeeded run whose accepted result could not be finalized", () => {
+    expect(projectTaskInterruption(review, { run: { ...succeeded, nativeFinalizationRetry: true }, agent,
+      paused: false, approval: false })).toMatchObject({ state: "failed", canRetry: true, observedRunId: "run" });
+  });
+
+  it("shows the saved result being applied after Retry", () => {
+    expect(projectTaskInterruption(review, { run: { ...succeeded, nativeFinalizationRetryPending: true }, agent,
+      paused: false, approval: false })).toMatchObject({ state: "working", canRetry: false, recoveryStep: "finishing_recovery" });
+  });
+
+  it("keeps ordinary succeeded and failed runs unchanged", () => {
+    expect(projectTaskInterruption(review, { run: succeeded, agent, paused: false, approval: false }))
+      .toMatchObject({ state: "resolved", canRetry: false });
+    expect(projectTaskInterruption(review, { run: { ...succeeded, status: "failed", errorCode: "adapter_failed" }, agent,
+      paused: false, approval: false })).toMatchObject({ state: "failed", canRetry: true });
+    expect(projectTaskInterruption({ ...review, status: "done" }, { run: { ...succeeded, nativeFinalizationRetry: true },
+      agent, paused: false, approval: false })).toMatchObject({ state: "resolved", canRetry: false });
+  });
+});
+
+// Remote native run shape: the provider turn completed and its work was
+// saved, then a same-run recovery was refused by the cleanup gate. The task
+// showed "Couldn't finish this attempt" with a Retry the server refuses (409).
+describe("native cleanup quarantine presentation", () => {
+  const quarantined = { ...run, runtimeMode: "native" as const, errorCode: "native_session_cleanup_quarantined",
+    error: "native_session_cleanup_quarantined: prior session cleanup requires operator recovery; verify its retained process ownership and checkpoint before a controlled restart. Clearing a task session does not resolve this quarantine.",
+    resultJson: null, finishedAt: new Date("2026-11-10T14:39:31.873Z") };
+
+  it("shows the task's blocker wait, not a failed attempt, after a completed turn", () => {
+    expect(projectTaskInterruption(issue, { run: { ...quarantined, completedTurnCleanup: true }, agent,
+      waitingOnBlockers: true, paused: false, approval: false })).toMatchObject({ state: "resolved", canRetry: false });
+  });
+
+  it("waits without Retry while an owner settles the gate", () => {
+    for (const completedTurnCleanup of [true, false]) {
+      const presentation = projectTaskInterruption(issue, { run: { ...quarantined, completedTurnCleanup }, agent,
+        cleanupSettling: true, paused: false, approval: false });
+      expect(presentation).toMatchObject({ state: "failed", canRetry: false, retryWait: { reason: "cleanup_quarantined" } });
+      expect(presentation?.retryWait?.message).not.toMatch(/operator|admin/i);
+    }
+    const preparation = { id: "retry", requestedAt: new Date(0), sourceRunId: quarantined.id, preparationStatus: "failed" };
+    expect(projectTaskInterruption(issue, { run: quarantined, agent, retryWait: preparation, cleanupSettling: true,
+      paused: false, approval: false })).toMatchObject({ canRetry: false });
+  });
+
+  it("offers Retry when nothing settles the gate by itself (s9107 t04/t05)", () => {
+    // An operator-required gate, or one lost with a restarted process, has no
+    // owner. Waiting would never end, so Retry is the way forward.
+    for (const completedTurnCleanup of [true, false]) {
+      const presentation = projectTaskInterruption(issue, { run: { ...quarantined, completedTurnCleanup }, agent,
+        paused: false, approval: false });
+      expect(presentation).toMatchObject({ state: "failed", canRetry: true });
+      expect(presentation).not.toHaveProperty("retryWait");
+    }
+  });
+
+  it("never leaves a failed task without Retry, a scheduled retry or a settling owner", () => {
+    // Invariant: a failed presentation without Retry must name a wait that an
+    // owner is settling. Enumerate the quarantine-related inputs.
+    const waits = [undefined, ...["cleanup_quarantined", "local_cleanup", "execution_settling"].map(reason =>
+      ({ id: "retry", requestedAt: new Date(0), sourceRunId: quarantined.id, executionWaitReason: reason }))];
+    for (const completedTurnCleanup of [true, false]) for (const wait of waits) for (const settling of [true, false]) {
+      const presentation = projectTaskInterruption(issue, { run: { ...quarantined, completedTurnCleanup }, agent,
+        retryWait: wait, cleanupSettling: settling, paused: false, approval: false });
+      if (presentation?.state !== "failed" || presentation.canRetry) continue;
+      expect(presentation.retryWait, JSON.stringify({ completedTurnCleanup, wait: wait?.executionWaitReason, settling }))
+        .toBeDefined();
+      if (presentation.retryWait?.reason === "cleanup_quarantined") expect(settling).toBe(true);
+    }
+  });
+
+  it("keeps Retry for ordinary failed native attempts", () => {
+    expect(projectTaskInterruption(issue, { run: { ...quarantined, errorCode: "native_session_interrupted" }, agent,
+      paused: false, approval: false })).toMatchObject({ state: "failed", canRetry: true });
+  });
+});
+
+describe("automatic scheduled retry", () => {
+  const now = Date.parse("2026-11-12T23:00:00Z");
+  const scheduled = { ...run, status: "scheduled_retry", runtimeMode: "legacy", errorCode: null, resultJson: null,
+    scheduledRetryReason: "transient_failure", scheduledRetryAt: new Date(now + 60_000) };
+
+  it("shows a pending transient-failure retry as scheduled without a competing Retry", () => {
+    expect(projectTaskInterruption(issue, { run: scheduled, agent, paused: false, approval: false }, now))
+      .toMatchObject({ state: "retry_scheduled", canRetry: false, nextRetryAt: new Date(now + 60_000).toISOString() });
+  });
+
+  it.each(["transient_failure", "native_environment_blocker"])(
+    "keeps a just-due %s retry working while the dispatcher promotes it", scheduledRetryReason => {
+      for (const overdueMs of [0, 1_000, 30_000, 119_000]) {
+        expect(projectTaskInterruption({ ...issue, status: "in_progress" }, { run: { ...scheduled, runtimeMode: "native",
+          scheduledRetryReason, scheduledRetryAt: new Date(now - overdueMs) }, agent, paused: false, approval: false }, now))
+          .toMatchObject({ state: "working", canRetry: false });
+      }
+    });
+
+  it("offers Retry once the scheduled retry is past due with nothing else pending", () => {
+    expect(projectTaskInterruption(issue, { run: { ...scheduled, scheduledRetryAt: new Date(now - 10 * 60_000) }, agent,
+      paused: false, approval: false }, now)).toMatchObject({ state: "failed", canRetry: true });
+  });
+
+  it("offers Retry once the scheduled retries are exhausted", () => {
+    expect(projectTaskInterruption(issue, { run: { ...scheduled, status: "failed", errorCode: "transient_failure_retry_exhausted",
+      scheduledRetryAt: new Date(now - 60_000) }, agent, paused: false, approval: false }, now))
+      .toMatchObject({ state: "failed", canRetry: true });
+  });
+});
+
+describe("hand-off of a run that failed before any provider work", () => {
+  const now = Date.parse("2026-11-13T15:08:12Z");
+  const failed = { ...run, runtimeMode: "native" as const, errorCode: "adapter_failed", finishedAt: new Date(now - 3_000),
+    resultJson: { failureCause: "native_predecessor_retirement_unproven", executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } };
+  const inProgress = { ...issue, status: "in_progress" };
+
+  it("shows the task as working while its fresh-sandbox continuation is being queued", () => {
+    for (const failureCause of ["native_predecessor_retirement_unproven", "native_failed_before_provider_turn"]) {
+      expect(projectTaskInterruption(inProgress, { run: { ...failed, resultJson: { ...failed.resultJson, failureCause } },
+        agent, paused: false, approval: false }, now)).toMatchObject({ state: "working", canRetry: false });
+    }
+  });
+
+  it("keeps the task working after the fallback is recorded while its continuation is still being scheduled", () => {
+    const recorded = { ...failed, resultJson: { ...failed.resultJson, predecessorRetirementFallback: { version: 1, providerWorkStarted: false } } };
+    expect(projectTaskInterruption(inProgress, { run: recorded, agent, paused: false, approval: false }, now))
+      .toMatchObject({ state: "working", canRetry: false });
+  });
+
+  it("offers Retry when the continuation was refused or never queued", () => {
+    const refused = { ...failed, resultJson: { ...failed.resultJson, predecessorRetirementFallback: { version: 1, providerWorkStarted: false },
+      continuationScheduling: "refused" } };
+    expect(projectTaskInterruption(inProgress, { run: refused, agent, paused: false, approval: false }, now))
+      .toMatchObject({ state: "failed", canRetry: true });
+    expect(projectTaskInterruption(inProgress, { run: { ...failed, finishedAt: new Date(now - 31_000) }, agent, paused: false, approval: false }, now))
+      .toMatchObject({ state: "failed", canRetry: true });
   });
 });

@@ -4,12 +4,12 @@ import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { expect, it } from "vitest";
 import { createCursorProfileExtensionAdapter } from "./cursor-extensions.js";
+import { acpxInternals } from "../../../test/support/acpx-bundle-internals.mjs";
 const require = createRequire(import.meta.url);
 const acpxRoot = dirname(require.resolve("acpx/package.json"));
-const { k: AcpClient } = await import(pathToFileURL(join(acpxRoot, "dist/live-checkpoint-BSIrfgVo.js")).href);
+const { AcpClient } = await acpxInternals(["AcpClient"], acpxRoot);
 // The fixture uses native Cursor's sessionless extension shape and request ID 0.
 // The real installed ACP SDK handles the pipe; the production adapter normalizes
 // answers. This is credential-free protocol coverage, not native availability.
@@ -30,7 +30,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line',line=>
   send({id:prompt,result:{stopReason:'end_turn'}});prompt=undefined;
  }
 });`;
-type Context = { requestId: string | number; signal: AbortSignal; responseDelivery?: Promise<void> };
+type Context = { requestId: string | number; signal: AbortSignal };
 async function withClient(onRequest: (method: string, params: Record<string, unknown>, context: Context) => Promise<unknown>, run: (client: InstanceType<typeof AcpClient>, received: unknown[]) => Promise<void>) {
   const cwd = await mkdtemp(join(tmpdir(), "cursor-sdk-")); const received: unknown[] = [];
   const client = new AcpClient({ agentCommand: "owned-fixture", cwd, permissionMode: "approve-all", fs: false, terminal: false, authPolicy: "skip", suppressSdkConsoleErrors: true,
@@ -42,10 +42,9 @@ async function withClient(onRequest: (method: string, params: Record<string, unk
   finally { await client.close(); await rm(cwd, { recursive: true, force: true }); }
 }
 it("roundtrips Cursor multi-select and revision-bound plan decisions through the installed ACP SDK", async () => {
-  const deliveries: Promise<void>[] = []; let turn = 0;
+  let turn = 0;
   await withClient(async (method, params, context) => {
     expect(context.requestId).toBe(0); expect(params).not.toHaveProperty("sessionId");
-    expect(context.responseDelivery).toBeInstanceOf(Promise); deliveries.push(context.responseDelivery!);
     const adapter = createCursorProfileExtensionAdapter({ workspacePath: tmpdir(), sessionId: "cursor-session", turnId: `turn-${++turn}` });
     const request = await adapter.request(method, { ...params, sessionId: "cursor-session" });
     if (!("input" in request)) throw new Error("Expected blocking Cursor interaction");
@@ -60,7 +59,7 @@ it("roundtrips Cursor multi-select and revision-bound plan decisions through the
     return request.input.resolve({ action: "submit", response: { schema: "paperclip.question_response.v1", answers } });
   }, async (client, received) => {
     expect((await client.prompt("cursor-session", "question")).stopReason).toBe("end_turn");
-    expect((await client.prompt("cursor-session", "plan")).stopReason).toBe("end_turn"); await Promise.all(deliveries);
+    expect((await client.prompt("cursor-session", "plan")).stopReason).toBe("end_turn");
     expect(received).toEqual([
       { jsonrpc: "2.0", id: 0, result: { outcome: { outcome: "answered", answers: [{ questionId: "native-single", selectedOptionIds: ["c"] }, { questionId: "native-multi", selectedOptionIds: ["cedar", "maple"] }] } } },
       { jsonrpc: "2.0", id: 0, result: { outcome: { outcome: "accepted" } } },

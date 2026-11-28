@@ -74,7 +74,7 @@ Use these checks alongside the entry-point recipes below and the operation recor
 
 ### `new-task`
 
-Automated: [board dialogs](../../ui/src/components/BoardDialogs.test.tsx) checks that the task form appears on the first synchronous open and retains its draft across reopen. [Creation dialog](../../ui/src/components/NewIssueDialog.test.tsx) covers typing while agent/project requests are pending and retaining that text when defaults arrive. These are component checks with mocked requests.
+Automated: none for mocked creation dialogs (`BoardDialogs` and `NewIssueDialog` component tests were removed; verify draft retention and pending-defaults behavior manually).
 
 Manual: Create a uniquely named task with an agent and project. Open its resulting link and reload. Confirm text, attachment, assignment, and project persisted, and verify execution started only when the task and agent are eligible.
 
@@ -96,7 +96,7 @@ Manual: Filter by status and assignee, change grouping/sort, open a task, and re
 
 Manual: Open a long task with slow historical requests. Read the instruction and recent reply before those requests finish. Edit the title/status while enrichment is pending and verify saves and rollbacks. Expand **More messages**, verify scroll position and no duplicate replies, return to the task, and follow an older comment link. Leave a task open across new messages and runs and confirm none disappear. Reconnect after several turns and verify watched runs settle. Reopen after steering with more than 50 newer activity rows; the delivered message must not reappear in the queue.
 
-Automated: [cold-open reads](../../server/src/__tests__/task-cold-open.test.ts) cover bounded reads, event filtering and company denial. [Task detail](../../ui/src/pages/IssueDetail.test.tsx) covers component behavior, while [issue service](../../server/src/__tests__/issues-service.test.ts) covers server contracts.
+Automated: [cold-open reads](../../server/src/__tests__/task-cold-open.test.ts) cover bounded reads, event filtering and company denial, and [issue service](../../server/src/__tests__/issues-service.test.ts) covers server contracts (mocked `IssueDetail` page tests were removed; verify task-detail UI via E2E/manual checks).
 
 Failure markers have no dashed divider rules. An adjacent run error and
 no-live-execution-path notice show only the last error, with its details and
@@ -106,9 +106,10 @@ text, and credential-access denials stay visible. Explicit non-recovery titles
 stop grouping. Saved stranded-recovery action metadata plus a known recovery
 statement also identify recovery notices with a default or source-run title.
 Only known recovery statements use the legacy text fallback.
-[Grouping tests](../../ui/src/components/task-chat/adjacent-errors.test.ts) and
-[marker tests](../../ui/src/components/task-chat/TaskChatMarker.test.tsx) cover
-the presentation. The [Failure notices stories](../../ui/storybook/stories/tasks/failure-notices.stories.tsx)
+[Grouping tests](../../ui/src/components/task-chat/adjacent-errors.test.ts) cover
+adjacent-error grouping (mocked `TaskChatMarker` unit tests were removed; marker
+presentation is covered by the Storybook stories and visual browser suite below).
+The [Failure notices stories](../../ui/storybook/stories/tasks/failure-notices.stories.tsx)
 mount the production thread view with fixture data. The focused
 [browser suite](../../tests/storybook-visual/failure-notices.spec.ts) checks
 play assertions, disclosure, retry callbacks, themes and phone width. These
@@ -119,7 +120,7 @@ uses a real disposable server and paused process agent, with no inference, to
 check both task interfaces. Done and cancelled tasks hide the paused-agent
 warning; reopening restores it. The agent stays paused and no run starts.
 
-Manual: For a disposable task owned by a legacy agent, have its current run
+Manual: For a disposable task owned by a legacy or native agent, have its current run
 assign the task to a human with status In review. Verify that assignment and
 status persist, that the current run finishes without `issue_reassigned`, and
 that slow workspace restoration does not turn the task Blocked. Try a later edit
@@ -156,7 +157,7 @@ cover these boundaries locally; deployed runner acceptance remains separate.
 
 ### `task-sharing`
 
-Automated: [Share sheet](../../ui/src/components/IssueShareSheet.test.tsx), [privacy controls](../../ui/src/components/PrivateTaskPrivacyControls.test.tsx), [grant routes](../../server/src/__tests__/issue-access-grants-routes.test.ts), and [privacy production review](../../server/src/__tests__/privacy-production-review.test.ts) cover component actions, persisted grants, inheritance, and actor/resource denials. They do not establish a live two-person browser journey.
+Automated: [privacy controls](../../ui/src/components/PrivateTaskPrivacyControls.test.tsx), [grant routes](../../server/src/__tests__/issue-access-grants-routes.test.ts), and [privacy production review](../../server/src/__tests__/privacy-production-review.test.ts) cover privacy controls, persisted grants, inheritance, and actor/resource denials (mocked `IssueShareSheet` UI tests were removed; verify share-sheet actions manually). They do not establish a live two-person browser journey.
 
 Manual: Use authenticated mode with two ordinary operators, an eligible agent, and disposable parent/child/sibling tasks. Create private work as the first person; confirm the second person cannot discover or cold-open it. Share only the child, reload both sessions, and verify child/descendant access without exposing the private parent, sibling, or unreadable project metadata. Inspect direct and inherited rows in Share; inherited rows must identify access managed at its source and offer no local revoke action. Confirm a shared reader cannot manage the task’s grants. Revoke the direct grant as its manager, reload, and retry list and direct reads; change inherited access at its ancestor or project source separately. Inspect blocked Make public actions under a private parent or nonpersonal private project; separately confirm the offered personal-project publish action removes that project binding while private descendants remain private. With an actual granted agent, test the responsible user’s access intersection and the allowed restriction to private; agent access must not permit sharing or publishing.
 

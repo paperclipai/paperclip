@@ -37,10 +37,24 @@ function createDeferred(): Deferred {
   return { promise, resolve };
 }
 
+/**
+ * Minimum time between two flushes of the ambient lane. Company-wide lists and
+ * projections (sidebar task summaries, the agent list, issue lists, badges)
+ * change on almost every run or task event in a busy company. After the lane
+ * has been quiet for this interval, an event refreshes them within one normal
+ * batch. An event inside the interval waits until the interval ends, so the
+ * lane flushes at most once per interval instead of on every batch.
+ */
+export const AMBIENT_INVALIDATION_SPACING_MS = 5_000;
+
 export function createInvalidationBatcher(
   queryClient: Pick<QueryClient, "invalidateQueries">,
   intervalMs: number = DEFAULT_INVALIDATION_INTERVAL_MS,
+  options: { minSpacingMs?: number } = {},
 ): InvalidationBatcher {
+  const minSpacingMs = options.minSpacingMs ?? 0;
+  // Start of the last flush that sent invalidations; spacing counts from it.
+  let lastFlushAt = Number.NEGATIVE_INFINITY;
   // Keyed by a stable serialization of the filters so repeated invalidations of
   // the same key (the common case) collapse to one entry.
   const pending = new Map<string, InvalidateQueryFilters>();
@@ -62,6 +76,7 @@ export function createInvalidationBatcher(
     }
     const filtersList = removeCoveredFilters([...pending.values()]);
     pending.clear();
+    lastFlushAt = Date.now();
     try {
       await Promise.all(filtersList.map((filters) => queryClient.invalidateQueries(
         getPageVisibility().visible ? filters : { ...filters, refetchType: "none" },
@@ -77,7 +92,10 @@ export function createInvalidationBatcher(
       windowDeferred = createDeferred();
     }
     if (timer === null) {
-      timer = setTimeout(() => void flush(), intervalMs);
+      // Leading edge: a quiet lane flushes after the normal batch interval.
+      // Trailing edge: a busy lane waits until its spacing has elapsed.
+      const delay = Math.max(intervalMs, lastFlushAt + minSpacingMs - Date.now());
+      timer = setTimeout(() => void flush(), delay);
     }
     return windowDeferred.promise;
   };
@@ -225,4 +243,26 @@ export function createCoalescingQueryClient(
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
+}
+
+/**
+ * Route invalidations to one of two batchers by query key. `isAmbient` selects
+ * the slower lane (see `AMBIENT_INVALIDATION_SPACING_MS`). Every other filter,
+ * including one without a query key, uses the fast lane.
+ */
+export function createLaneRoutingBatcher(
+  fast: InvalidationBatcher,
+  ambient: InvalidationBatcher,
+  isAmbient: (queryKey: readonly unknown[]) => boolean,
+): InvalidationBatcher {
+  return {
+    schedule: (filters) => (filters.queryKey && isAmbient(filters.queryKey) ? ambient : fast).schedule(filters),
+    flush: async () => {
+      await Promise.all([fast.flush(), ambient.flush()]);
+    },
+    dispose: () => {
+      fast.dispose();
+      ambient.dispose();
+    },
+  };
 }

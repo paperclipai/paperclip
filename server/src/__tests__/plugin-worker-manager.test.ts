@@ -1,3 +1,5 @@
+import { withPluginWorkspaceReplay } from "../services/plugin-workspace-replay-context.js";
+import { currentPluginInteractionOrigin } from "../services/plugin-interaction-context.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
@@ -335,6 +337,40 @@ describe("plugin-worker-manager stderr failure context", () => {
     } finally { await handle.stop().catch(() => undefined); }
   });
 
+  it("keeps the provider request identity while scoping reservation replay Git access to project consent", async () => {
+    const projectGit = vi.fn(async (_params: unknown, context: { invocationScope?: { projectGit?: { runId?: string } } }) => {
+      if (context.invocationScope?.projectGit?.runId) throw new Error("Active task run is unavailable");
+      return "project-consent";
+    });
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT, manifest: TEST_MANIFEST, config: {},
+      instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" }, apiVersion: 1,
+      hostHandlers: { "projects.resolveGitCredential": projectGit as never },
+    });
+    const scope = { pluginId: "test.plugin", companyId: "company-a", projectId: "project-a",
+      projectWorkspaceId: "source-a", executionWorkspaceId: "workspace-a" };
+    const params = { companyId: scope.companyId, projectId: scope.projectId, executionWorkspaceId: scope.executionWorkspaceId,
+      params: { mode: "echo", requestedCompanyId: scope.companyId, hostMethod: "projects.resolveGitCredential" },
+      runId: "stopped-run", agentId: "agent-a", operation: { kind: "prepare", source: { id: scope.projectWorkspaceId } } };
+    try {
+      await handle.start();
+      for (const method of ["workspacePrepare", "workspaceOperation"] as const) {
+        const call = () => handle.call(method, params as never);
+        await expect(call()).rejects.toThrow("Active task run is unavailable");
+        await expect(withPluginWorkspaceReplay({ ...scope, projectId: "another-project" }, call))
+          .rejects.toThrow("Active task run is unavailable");
+        await expect(withPluginWorkspaceReplay(scope, call)).resolves.toEqual({
+          identity: { runId: "stopped-run", agentId: "agent-a" }, credential: "project-consent",
+        });
+        expect(projectGit).toHaveBeenLastCalledWith(
+          { companyId: scope.companyId, projectId: scope.projectId, workspaceId: scope.projectWorkspaceId },
+          expect.objectContaining({ invocationScope: { companyId: scope.companyId,
+            projectGit: { projectId: scope.projectId, workspaceId: scope.projectWorkspaceId, operation: "prepare" } } }),
+        );
+      }
+    } finally { await handle.stop().catch(() => undefined); }
+  });
+
   it("passes performAction invocation scope to nested worker host calls", async () => {
     const companiesGet = vi.fn(async (
       params: { companyId: string },
@@ -380,11 +416,38 @@ describe("plugin-worker-manager stderr failure context", () => {
       });
       expect(companiesGet).toHaveBeenCalledWith(
         { companyId: "company-a" },
-        { invocationScope: { companyId: "company-a" }, traceparent: undefined, providerSpanBudget: { remaining: 256 } },
+        { invocationScope: { companyId: "company-a", agentOrigin: { agentId: "agent-1", runId: "run-1" } }, traceparent: undefined, providerSpanBudget: { remaining: 256 } },
       );
     } finally {
       await handle.stop().catch(() => undefined);
     }
+  });
+
+  it("binds nested host operations to the initiating agent and refuses proactive fallback during its invocation", async () => {
+    const companiesGet = vi.fn(async () => {
+      await Promise.resolve();
+      return currentPluginInteractionOrigin();
+    });
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT, manifest: TEST_MANIFEST, config: {},
+      instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" }, apiVersion: 1,
+      proactiveCompanyScopes: ["company-a"], hostHandlers: { "companies.get": companiesGet as never },
+    });
+    try {
+      await handle.start();
+      const input = { toolName: "probe", parameters: { mode: "echo", requestedCompanyId: "company-a" },
+        runContext: { companyId: "company-a", agentId: "agent-a", runId: "run-a" } };
+      await expect(handle.call("executeTool", input as HostToWorkerMethods["executeTool"][0])).resolves.toEqual({
+        companyId: "company-a", agentId: "agent-a", runId: "run-a",
+      });
+      expect(currentPluginInteractionOrigin()).toBeUndefined();
+      const calls = companiesGet.mock.calls.length;
+      await expect(handle.call("executeTool", { ...input, parameters: { ...input.parameters, mode: "missing" } } as HostToWorkerMethods["executeTool"][0]))
+        .rejects.toMatchObject({ code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED });
+      await expect(handle.call("executeTool", { ...input, parameters: { ...input.parameters, mode: "unknown" } } as HostToWorkerMethods["executeTool"][0]))
+        .rejects.toMatchObject({ code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED });
+      expect(companiesGet).toHaveBeenCalledTimes(calls);
+    } finally { await handle.stop().catch(() => undefined); }
   });
 
   it("passes echoed invocation scope to worker-to-host handlers", async () => {
@@ -1334,6 +1397,64 @@ describe("plugin worker manager setup-token pty route gate", () => {
     } finally {
       await handle.stop().catch(() => undefined);
     }
+  });
+
+  it("retains the opening company for scoped host calls during input, stop, and close", async () => {
+    const stages: string[] = [];
+    const handle = makeLoginPtyHandle({ hostHandlers: { "companies.get": async (
+      params: { companyId: string; stage: string }, context?: { invocationScope?: { companyId?: string } },
+    ) => {
+      if (context?.invocationScope?.companyId !== params.companyId || params.companyId !== "company-1") throw new Error("Host company scope denied");
+      stages.push(params.stage);
+      return { id: params.companyId };
+    } } });
+    try {
+      await handle.start();
+      const session = await handle.openLoginPtySession(ptyOpenInput({ probeLifecycle: true }));
+      session.write("browser-code");
+      await vi.waitFor(() => expect(stages).toEqual(["loginPtyInput"]));
+      session.kill();
+      await vi.waitFor(() => expect(stages).toEqual(["loginPtyInput", "loginPtyStop"]));
+      await session.close();
+      expect(stages).toEqual(["loginPtyInput", "loginPtyStop", "loginPtyClose"]);
+    } finally { await handle.stop().catch(() => undefined); }
+  });
+
+  it("fails the login when input delivery is unconfirmed", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const session = await handle.openLoginPtySession(ptyOpenInput({ rejectInput: true }));
+      session.write("browser-code");
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+      await session.close();
+    } finally { await handle.stop().catch(() => undefined); }
+  });
+
+  it("joins an in-flight close after input failure before releasing the login", async () => {
+    let releaseClose!: () => void;
+    const heldClose = new Promise<void>(resolve => { releaseClose = resolve; });
+    let closeCalls = 0;
+    const handle = makeLoginPtyHandle({ hostHandlers: { "companies.get": async (params: { stage: string }) => {
+      if (params.stage === "loginPtyClose") { closeCalls++; await heldClose; }
+      return { id: "company-1" };
+    } } });
+    try {
+      await handle.start();
+      const session = await handle.openLoginPtySession(ptyOpenInput({ rejectInput: true, probeLifecycle: true }));
+      session.write("browser-code");
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+      await vi.waitFor(() => expect(closeCalls).toBe(1));
+      let completed = 0;
+      const first = session.close().then(() => { completed++; });
+      const second = session.close().then(() => { completed++; });
+      await new Promise(resolve => setImmediate(resolve));
+      expect(completed).toBe(0);
+      releaseClose();
+      await Promise.all([first, second]);
+      expect(completed).toBe(2);
+      expect(closeCalls).toBe(1);
+    } finally { releaseClose(); await handle.stop().catch(() => undefined); }
   });
 
   it("terminalizes the route when the cumulative output passes the per-route bound", async () => {

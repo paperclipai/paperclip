@@ -5,6 +5,7 @@ import { ApiError, api, detachInflightGets } from "@/api/client";
 import { bindAccount } from "./account-scope";
 import { hasUnverifiedSession, markCachedSession } from "./cached-session";
 import { queryKeys } from "./queryKeys";
+import { mineRevealSourcesQueryKey } from "./inbox-mine-reveal-sources";
 import { readComposerRunSettings } from "../components/task-chat/composer-run-settings";
 import { agentConnection, agentDefaultModel } from "./bulk-agent-settings";
 import { clearPersistedQueryCache, persistedQueryScope, QUERY_CACHE_ACTIVE, QUERY_CACHE_CLEARED, QUERY_CACHE_MAX_AGE, QUERY_CACHE_PREFIX, startPersistedQueryCache } from "./persisted-query-cache";
@@ -38,6 +39,76 @@ function seed(client: QueryClient, userId = "alice", companyId = "company-one") 
 afterEach(() => { for (const dispose of handles.splice(0)) dispose(); vi.useRealTimers(); vi.clearAllMocks(); });
 
 describe("persisted read cache", () => {
+  it("restores learned PR status and negative reads without invalidating their demand-driven freshness", () => {
+    const first = setup(); seed(first.client);
+    const key = queryKeys.linkPreview("company-one", "alice", "https://github.com/acme/web/pull/241");
+    const result = { preview: { title: "Saved PR status", state: "merged" }, maxAgeMs: 60_000 };
+    first.client.setQueryData(key, result);
+    const absentKey = queryKeys.linkPreview("company-one", "alice", "https://github.com/acme/web/pull/242");
+    first.client.setQueryData(absentKey, { preview: null, maxAgeMs: 60_000 });
+    const updatedAt = first.client.getQueryState(key)!.dataUpdatedAt;
+    first.handle.flush();
+    const restored = setup(first.storage);
+    expect(restored.client.getQueryData(key)).toEqual(result);
+    expect(restored.client.getQueryData(absentKey)).toEqual({ preview: null, maxAgeMs: 60_000 });
+    expect(restored.client.getQueryState(key)).toMatchObject({ dataUpdatedAt: updatedAt, isInvalidated: false });
+  });
+
+  it("persists PR reads only for the active viewer and an accessible company", () => {
+    const first = setup(); seed(first.client);
+    const url = "https://github.com/acme/web/pull/241";
+    const result = { preview: { title: "Private PR" }, maxAgeMs: 60_000 };
+    const forbidden = [
+      queryKeys.linkPreview("company-one", "bob", url),
+      queryKeys.linkPreview("other-company", "alice", url),
+      ["link-preview", "company-one", null, url],
+      ["link-preview", "company-one", "alice"],
+      ["link-preview", "company-one", "alice", url, "extra"],
+    ];
+    for (const key of forbidden) first.client.setQueryData(key, result);
+    first.handle.flush();
+    expect([...first.storage.values.values()].join(" ")).not.toContain("Private PR");
+    const restored = setup(first.storage);
+    for (const key of forbidden) expect(restored.client.getQueryData(key)).toBeUndefined();
+  });
+
+  it("bounds saved PR reads and retains their original age through later saves", () => {
+    vi.useFakeTimers();
+    let now = Date.now();
+    const first = setup(undefined, () => now); seed(first.client);
+    for (let i = 0; i < 120; i += 1) first.client.setQueryData(
+      queryKeys.linkPreview("company-one", "alice", `https://github.com/acme/web/pull/${i + 1}`),
+      { preview: { title: `PR ${i + 1}`, state: "open" }, maxAgeMs: 60_000 }, { updatedAt: now - 120 + i });
+    first.handle.flush();
+    const restored = setup(first.storage, () => now);
+    expect(restored.client.getQueryCache().findAll({ queryKey: ["link-preview"] })).toHaveLength(100);
+    expect(restored.client.getQueryData(queryKeys.linkPreview("company-one", "alice", "https://github.com/acme/web/pull/1"))).toBeUndefined();
+    expect(restored.client.getQueryData(queryKeys.linkPreview("company-one", "alice", "https://github.com/acme/web/pull/120"))).toBeDefined();
+    first.client.removeQueries({ queryKey: ["link-preview"] });
+    now += 10 * 60_000;
+    first.handle.flush();
+    expect(setup(first.storage, () => now).client.getQueryCache().findAll({ queryKey: ["link-preview"] })).toHaveLength(100);
+    now += QUERY_CACHE_MAX_AGE;
+    first.client.setQueryData(queryKeys.auth.session, session(), { updatedAt: now });
+    first.client.setQueryData(queryKeys.companies.list("alice"), { companies: [{ id: "company-one" }] }, { updatedAt: now });
+    first.handle.flush();
+    expect(setup(first.storage, () => now).client.getQueryCache().findAll({ queryKey: ["link-preview"] })).toHaveLength(0);
+  });
+
+  it.each(["sign-out", "account-change", "membership-loss"])("removes persisted private PR reads on %s", action => {
+    const first = setup(); seed(first.client);
+    const key = queryKeys.linkPreview("company-one", "alice", "https://github.com/acme/private/pull/241");
+    first.client.setQueryData(key, { preview: { title: "Private PR status" }, maxAgeMs: 60_000 });
+    first.handle.flush();
+    expect([...first.storage.values.values()].join(" ")).toContain("Private PR status");
+    if (action === "sign-out") clearPersistedQueryCache(first.client);
+    if (action === "account-change") first.client.setQueryData(queryKeys.auth.session, session("bob"));
+    if (action === "membership-loss") first.client.setQueryData(queryKeys.companies.list("alice"), { companies: [] });
+    first.handle.flush();
+    expect([...first.storage.values.values()].join(" ")).not.toContain("Private PR status");
+    expect(setup(first.storage).client.getQueryData(key)).toBeUndefined();
+  });
+
   it.each([null, "", "   "])("skips hydration and persistence without a build stamp (%s)", (buildId) => {
     const first = setup(); seed(first.client); first.handle.flush();
     const saved = new Map(first.storage.values);
@@ -459,7 +530,22 @@ describe("persisted read cache", () => {
     expect(persistedQueryScope(["agent-chats", "company-one", "bob"], [], "alice", ["company-one"])).toBeUndefined();
   });
 
+  it("restores Mine's reveal sources for the same user and company only", () => {
+    const first = setup(); seed(first.client);
+    const sources = { userId: "alice", companyId: "company-one", approvals: [{ id: "approval-1", status: "pending" }], joinRequests: [], dismissals: [] };
+    first.client.setQueryData(mineRevealSourcesQueryKey("company-one", "alice"), sources);
+    first.client.setQueryData(mineRevealSourcesQueryKey("company-one", "bob"), { ...sources, userId: "bob" });
+    first.handle.flush();
+    const restored = setup(first.storage);
+    const state = restored.client.getQueryState(mineRevealSourcesQueryKey("company-one", "alice"));
+    expect(state?.data).toEqual(sources);
+    // Restored reads are marked stale, so every consumer still refreshes them.
+    expect(state?.isInvalidated).toBe(true);
+    expect(restored.client.getQueryData(mineRevealSourcesQueryKey("company-one", "bob"))).toBeUndefined();
+  });
+
   it.each(["build", "expiry"])("discards snapshots after %s changes", kind => {
+    vi.useFakeTimers();
     const startedAt = Date.now();
     const first = setup(undefined, () => startedAt); seed(first.client); first.handle.flush();
     const restored = setup(first.storage, () => kind === "expiry" ? startedAt + QUERY_CACHE_MAX_AGE + 1 : startedAt, undefined, kind === "build" ? "build-two" : "build-one");

@@ -1,4 +1,5 @@
 import { hasMigratedLegacyWorkspaceSource } from "./legacy-workspace-recovery-migration.js";
+import { nativeEffectiveRunTerminalStateSql } from "./native-runtime/native-accepted-outcome.js";
 import { retiredReusableLeasePredecessors } from "./environment-lease-handoff.js";
 import { and, eq, inArray, ne, or, sql } from "drizzle-orm";
 import { environmentLeases, environments, executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, issueRecoveryActions, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
@@ -7,6 +8,7 @@ import { readNativeWorkspaceSyncReference } from "./native-runtime/native-worksp
 import { readSystemRecovery, SystemRecoveryFailure } from "./system-recovery-state.js";
 import type { NativeWorkspaceFinalizationOwnership } from "./native-runtime/native-workspace-finalization-ownership.js";
 import { readStopOnlyCleanup } from "./sandbox-stop-and-retain.js";
+import { isAbandonedPreparedRemoteWorkspace } from "./remote-workspace-abandoned-preparation.js";
 import { LEGACY_WORKSPACE_RECOVERY_SCHEMA, SETTLED_WORKSPACE_RESTORE_HOLD_KEY } from "./workspace-restore-recovery-state.js";
 import { ENVIRONMENT_LEASE_POLICIES, EXECUTION_RECONCILIATION_CAUSES, readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema, type EnvironmentLeasePolicy,
   type WorkspaceSourceVerificationFailure } from "@paperclipai/shared";
@@ -25,13 +27,15 @@ export function workspaceSourceBindingFailure(reason: WorkspaceSourceVerificatio
 
 export class WorkspaceSourceInspectionLimit extends Error {}
 
+// A resolved hold that a sibling's save settled has nothing left to recover,
+// so it is never selected again, even when it names a historical source.
 export function workspaceRecoverySourceEligible(includeCompleted = false) {
   const actionEligible = sql`(${issueRecoveryActions.status} in ('active', 'escalated') or
     (${issueRecoveryActions.status} = 'cancelled'
       and ${inArray(issueRecoveryActions.cause, workspaceExportCauses)}
       and jsonb_typeof(${issueRecoveryActions.evidence}#>'{workspaceRecovery,requestIds}') = 'array'
       and ${issueRecoveryActions.evidence}#>'{workspaceRecovery,requestIds}' <> '[]'::jsonb) or
-    (${issueRecoveryActions.status} = 'resolved' and (
+    (${issueRecoveryActions.status} = 'resolved' and ${issueRecoveryActions.evidence}->'siblingWorkspaceRecovery' is null and (
       (${issueRecoveryActions.evidence}#>>'{automaticRecovery,policy}' = 'preserve_without_replay_v1'
         and ${issueRecoveryActions.evidence}#>>'{automaticRecovery,replay}' = 'blocked'
         and ${issueRecoveryActions.evidence}#>>'{automaticRecovery,runId}' = ${heartbeatRuns.id}::text) or
@@ -109,6 +113,7 @@ export async function inspectWorkspaceRecoverySource(db: Db, input: WorkspaceRec
     || remoteAuthority.location.remoteCwd !== remoteReference.remoteCwd
     || (remoteReference.state === "prepared" ? !remoteAuthority.dirty || remoteAuthority.writerRunId !== run.id
       : remoteAuthority.dirty || remoteAuthority.writerRunId !== null || remoteAuthority.snapshotId !== remoteReference.snapshotId))) {
+    if (await isAbandonedPreparedRemoteWorkspace(db, run)) throw new SystemRecoveryFailure("source_unavailable", "use_alternative_strategy");
     throw invalid("workspace_reference_mismatch");
   }
   if (remoteReference?.state === "saved") {
@@ -147,7 +152,7 @@ export async function inspectWorkspaceRecoverySource(db: Db, input: WorkspaceRec
       eq(nativeRunResults.runId, run.id), eq(nativeRunResults.id, coordinator.resultId),
       eq(nativeRunResults.completionContractId, run.completionContractId),
       eq(nativeRunResults.schemaStatus, "accepted"),
-      sql`${nativeRunResults.resultJson}#>>'{terminal,runTerminalState}' = 'succeeded'`,
+      sql`${nativeEffectiveRunTerminalStateSql(nativeRunResults.resultJson)} = 'succeeded'`,
     )).limit(1))[0] : null;
   const sources = [];
   for (const leaseId of leaseIds as string[]) {

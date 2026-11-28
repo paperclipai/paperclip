@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ChaosApi } from "./api.js";
-import { CHILD_WAKE_GRACE_MS, REST_CONFIRM_MS, STALL_GIVE_UP_MS, STOP_CONTINUE_AFTER_MS, TaskObserver, childSpeedTasksInTurn, childrenPending, listWorkspaceFiles } from "./observer.js";
+import { CHILD_WAKE_GRACE_MS, REST_CONFIRM_MS, STALL_GIVE_UP_MS, STOP_CONTINUE_AFTER_MS, TaskObserver, childSpeedTasksInTurn, childrenPending, listWorkspaceFiles, noteLivenessEvent, stopArmed, toRunSample } from "./observer.js";
 import { gradeTask } from "./grader.js";
 import { createFixtureRepository, type ChaosLab } from "./seed.js";
 import { Timeline } from "./timeline.js";
@@ -53,6 +53,137 @@ describe("TaskObserver", () => {
     expect(observer.done).toBe(true);
   });
 
+  it("does not finish a staging-mix task on the poll that posts its last after-end follow-up", async () => {
+    const previous = { ...process.env };
+    const delay = REST_CONFIRM_MS + 50;
+    Object.assign(process.env, { RESTART_CHAOS_MIX_FOLLOW_UP_AFTER_END_MS: `${delay}-${delay}`, RESTART_CHAOS_MIX_FOLLOW_UP_COUNT: "1" });
+    try {
+      let endedAt = 0;
+      const { api, posted } = fakeApi({ "/runs": () => [{ runId: "r1", status: "succeeded", createdAt: new Date(endedAt - 1_000).toISOString(),
+        finishedAt: new Date(endedAt).toISOString() }] });
+      const mixPlan: TaskPlan = { ...plan, workload: "SM", fault: "K0", followUpAfterMs: null,
+        stagingMix: { turnMinutes: 2, rounds: 2, subtasks: 0, followUpAfterMs: 1_000, arriveAtMs: 0, holdMs: 0 } };
+      const observer = new TaskObserver(mixPlan, api, lab, new Timeline(null), ready);
+      await observer.launch();
+      const start = observer.record.createdAt!;
+      endedAt = start;
+      const comments = () => posted.filter(route => route.endsWith("/comments")).length;
+      await observer.poll(start + 100);
+      expect(comments()).toBe(0);
+      await observer.poll(start + 100 + REST_CONFIRM_MS + 1);
+      expect(comments()).toBe(1);
+      expect(observer.done).toBe(false);
+      await observer.poll(start + 200 + REST_CONFIRM_MS + 2);
+      expect(observer.done).toBe(false);
+      await observer.poll(start + 300 + 2 * REST_CONFIRM_MS + 3);
+      expect(observer.done).toBe(true);
+    } finally {
+      for (const key of ["RESTART_CHAOS_MIX_FOLLOW_UP_AFTER_END_MS", "RESTART_CHAOS_MIX_FOLLOW_UP_COUNT"]) {
+        if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key];
+      }
+    }
+  });
+
+  it("does not finish a staging-mix task whose run ended before its planned follow-up was posted", async () => {
+    let endedAt = 0;
+    const { api, posted } = fakeApi({ "/runs": () => [{ runId: "r1", status: "succeeded", createdAt: new Date(endedAt - 1_000).toISOString(),
+      finishedAt: new Date(endedAt).toISOString() }] });
+    const followUpAfterMs = REST_CONFIRM_MS + 500;
+    const mixPlan: TaskPlan = { ...plan, workload: "SM", fault: "K0", followUpAfterMs: null,
+      stagingMix: { turnMinutes: 2, rounds: 2, subtasks: 0, followUpAfterMs, arriveAtMs: 0, holdMs: 0 } };
+    const observer = new TaskObserver(mixPlan, api, lab, new Timeline(null), ready);
+    await observer.launch();
+    const start = observer.record.createdAt!;
+    endedAt = start;
+    const comments = () => posted.filter(route => route.endsWith("/comments")).length;
+    await observer.poll(start + 100);
+    await observer.poll(start + 100 + REST_CONFIRM_MS + 1);
+    expect(comments()).toBe(0);
+    expect(observer.done).toBe(false);
+    await observer.poll(start + followUpAfterMs + 200);
+    expect(comments()).toBe(1);
+    expect(observer.record.stagingMix?.followUp).toMatchObject({ duringRun: false });
+    expect(observer.done).toBe(false);
+    await observer.poll(start + followUpAfterMs + 300);
+    await observer.poll(start + followUpAfterMs + 400 + REST_CONFIRM_MS);
+    expect(observer.done).toBe(true);
+  });
+
+  it("extends the deadline once by the first run's queue wait when it starts", async () => {
+    let createdAt = 0;
+    let startedAt: number | null = null;
+    const { api } = fakeApi({ "/runs": () => [{ runId: "r1", status: startedAt === null ? "queued" : "running",
+      createdAt: new Date(createdAt).toISOString(), startedAt: startedAt === null ? null : new Date(startedAt).toISOString() }] }, "in_progress");
+    const observer = new TaskObserver({ ...plan, workload: "A1", followUpAfterMs: null }, api, lab, new Timeline(null), ready);
+    await observer.launch();
+    const start = observer.record.createdAt!;
+    const deadline = observer.record.deadlineAt!;
+    createdAt = start;
+    await observer.poll(start + 1_000);
+    expect(observer.record.deadlineAt).toBe(deadline);
+    startedAt = start + 600_000;
+    await observer.poll(start + 601_000);
+    expect(observer.record.deadlineAt).toBe(deadline + 600_000);
+    await observer.poll(start + 602_000);
+    expect(observer.record.deadlineAt).toBe(deadline + 600_000);
+  });
+
+  it("does not time out while the first run is still queued, up to one more budget", async () => {
+    let createdAt = 0;
+    const { api } = fakeApi({ "/runs": () => [{ runId: "r1", status: "queued", createdAt: new Date(createdAt).toISOString(), startedAt: null }] }, "in_progress");
+    const observer = new TaskObserver({ ...plan, workload: "A1", followUpAfterMs: null }, api, lab, new Timeline(null), ready);
+    await observer.launch();
+    const start = observer.record.createdAt!;
+    const budget = observer.record.deadlineAt! - start;
+    createdAt = start;
+    await observer.poll(start + budget + 1_000);
+    expect(observer.record.timedOut).toBe(false);
+    await observer.poll(start + 2 * budget + 1_000);
+    expect(observer.record.timedOut).toBe(true);
+  });
+
+  it("waits while a follow-up run is queued and extends the deadline by its queue wait once it starts", async () => {
+    let queuedAt = 0;
+    let startedAt: number | null = null;
+    const first = () => ({ runId: "r1", status: "succeeded", createdAt: new Date(queuedAt - 60_000).toISOString(),
+      startedAt: new Date(queuedAt - 60_000).toISOString(), finishedAt: new Date(queuedAt - 1).toISOString() });
+    const { api } = fakeApi({ "/runs": () => [first(), { runId: "r2", status: startedAt === null ? "queued" : "running", wakeCommentIds: ["comment-1"],
+      createdAt: new Date(queuedAt).toISOString(), startedAt: startedAt === null ? null : new Date(startedAt).toISOString() }] }, "in_progress");
+    const observer = new TaskObserver({ ...plan, workload: "A1", followUpAfterMs: null }, api, lab, new Timeline(null), ready);
+    await observer.launch();
+    const start = observer.record.createdAt!;
+    const deadline = observer.record.deadlineAt!;
+    const budget = deadline - start;
+    queuedAt = start + 60_000;
+    observer.record.followUp = { at: start + 30_000, commentId: "comment-1", error: null };
+    await observer.poll(deadline + 1_000);
+    expect(observer.record.timedOut).toBe(false);
+    expect(observer.record.deadlineAt).toBe(deadline);
+    startedAt = deadline + 120_000;
+    await observer.poll(deadline + 121_000);
+    expect(observer.record.timedOut).toBe(false);
+    expect(observer.record.deadlineAt).toBe(deadline + startedAt - queuedAt);
+    await observer.poll(deadline + 122_000);
+    expect(observer.record.deadlineAt).toBe(deadline + startedAt - queuedAt);
+    expect(startedAt - queuedAt).toBeLessThan(2 * budget);
+  });
+
+  it("does not hold the deadline for a queued run that a recovery created", async () => {
+    let queuedAt = 0;
+    const { api } = fakeApi({ "/runs": () => [
+      { runId: "r1", status: "failed", createdAt: new Date(queuedAt - 60_000).toISOString(), startedAt: new Date(queuedAt - 60_000).toISOString(),
+        finishedAt: new Date(queuedAt - 1).toISOString() },
+      { runId: "r2", status: "queued", wakeCommentIds: ["comment-1"], createdAt: new Date(queuedAt).toISOString(), startedAt: null }] }, "in_progress");
+    const observer = new TaskObserver({ ...plan, workload: "A1", followUpAfterMs: null }, api, lab, new Timeline(null), ready);
+    await observer.launch();
+    const start = observer.record.createdAt!;
+    const deadline = observer.record.deadlineAt!;
+    queuedAt = start + 60_000;
+    observer.record.followUp = { at: start + 30_000, commentId: "comment-1", error: null };
+    await observer.poll(deadline + 1_000);
+    expect(observer.record.timedOut).toBe(true);
+  });
+
   it("keeps watching unexplained idle work until the stall limit, then records the stall", async () => {
     const { api } = fakeApi({}, "in_progress");
     const observer = new TaskObserver({ ...plan, workload: "A1", followUpAfterMs: null }, api, lab, new Timeline(null), ready);
@@ -65,6 +196,54 @@ describe("TaskObserver", () => {
     expect(observer.done).toBe(true);
     expect(observer.record.finalStatus).toBe("in_progress");
     expect(observer.record.restAt).toBe(start + 1_000);
+  });
+
+  describe("deadline versus rest confirmation", () => {
+    async function observe(statusAt: (now: number, start: number) => string) {
+      let start = 0;
+      let current = 0;
+      const { api } = fakeApi({ "/api/issues/i1": route => route.endsWith("/runs")
+        ? [{ runId: "r1", status: "succeeded", createdAt: new Date(0).toISOString(), finishedAt: new Date(1).toISOString() }]
+        : { id: "i1", status: statusAt(current, start), interruption: null } });
+      const observer = new TaskObserver({ ...plan, workload: "A1", followUpAfterMs: null }, api, lab, new Timeline(null), ready);
+      await observer.launch();
+      start = observer.record.createdAt!;
+      observer.record.deadlineAt = start + 60_000;
+      const poll = (at: number) => { current = at; return observer.poll(at); };
+      return { observer, start, poll };
+    }
+
+    it("confirms a task that began resting just before its deadline instead of timing it out", async () => {
+      const { observer, start, poll } = await observe((now, begin) => now >= begin + 59_000 ? "done" : "in_progress");
+      await poll(start + 58_000);
+      await poll(start + 59_000);
+      await poll(start + 60_001);
+      expect(observer.done).toBe(false);
+      expect(observer.record.timedOut).toBe(false);
+      await poll(start + 59_000 + REST_CONFIRM_MS);
+      expect(observer.done).toBe(true);
+      expect(observer.record.timedOut).toBe(false);
+      expect(observer.record.finalStatus).toBe("done");
+      expect(observer.record.restAt).toBe(start + 59_000);
+    });
+
+    it("times out a task that is still running at its deadline", async () => {
+      const { observer, start, poll } = await observe(() => "in_progress");
+      await poll(start + 59_000);
+      await poll(start + 60_001);
+      expect(observer.done).toBe(true);
+      expect(observer.record.timedOut).toBe(true);
+      expect(observer.record.finalStatus).toBe("in_progress");
+    });
+
+    it("times out a task that only starts resting after its deadline", async () => {
+      const { observer, start, poll } = await observe((now, begin) => now > begin + 60_000 ? "done" : "in_progress");
+      await poll(start + 59_000);
+      await poll(start + 60_001);
+      expect(observer.done).toBe(true);
+      expect(observer.record.timedOut).toBe(true);
+      expect(observer.record.restAt).toBeNull();
+    });
   });
 
   it("reports a failed workspace-operation read as a sweep error, not a clean rest", async () => {
@@ -187,6 +366,108 @@ describe("TaskObserver", () => {
     await observer.poll(start + 2_000 + STOP_CONTINUE_AFTER_MS + 1);
     expect(observer.record.followUp).toMatchObject({ commentId: "comment-1", duringRun: false });
     expect(posted.filter(route => route.endsWith("/cancel"))).toHaveLength(1);
+  });
+
+  it("S1 with a provider fault: stops on the first live provider turn, not the wall-clock window", async () => {
+    // Waves w-20261110T082702-s212 and w-20261110T091057-s213: the agent finished
+    // before the seeded window, so the PV2 interrupt_ack fault was never injected.
+    let events: unknown[] = [];
+    let runStatus = "running";
+    const base = fakeApi({
+      "/events": () => events,
+      "/runs": () => [{ id: "r1", status: runStatus, createdAt: new Date(0).toISOString(), finishedAt: null }],
+    }, "in_progress");
+    const posted: string[] = [];
+    const api = { ...base.api, get: base.api.get.bind(base.api), async post(route: string) {
+      posted.push(route);
+      if (route === "/api/heartbeat-runs/r1/cancel") { runStatus = "cancelled"; return { id: "r1" }; }
+      return route.endsWith("/issues") ? { id: "i1", identifier: "CHA-1" } : { id: "comment-1" };
+    } } as unknown as ChaosApi;
+    const pvPlan: TaskPlan = { ...plan, workload: "S1", adapter: "claude", followUpAfterMs: 60_000,
+      providerFault: { kind: "PV2", message: "interrupt_ack" } };
+    const observer = new TaskObserver(pvPlan, api, lab, new Timeline(null), ready);
+    await observer.launch();
+    const start = observer.record.createdAt!;
+    // Running, but no provider turn yet: the prompt has not reached the provider.
+    await observer.poll(start + 500);
+    expect(posted.filter(route => route.endsWith("/cancel"))).toEqual([]);
+    events = [{ seq: 1, eventType: "turn.started", createdAt: new Date(start + 600).toISOString(), payload: {} }];
+    await observer.poll(start + 1_000);
+    expect(posted.filter(route => route.endsWith("/cancel"))).toEqual(["/api/heartbeat-runs/r1/cancel"]);
+    expect(observer.record.stop).toMatchObject({ runId: "r1", httpStatus: 200 });
+    // The continue comment still waits for the seeded window.
+    events = [];
+    await observer.poll(start + 1_000 + STOP_CONTINUE_AFTER_MS + 1);
+    expect(observer.record.followUp).toBeNull();
+    await observer.poll(start + 60_000 + 1);
+    expect(observer.record.followUp).toMatchObject({ commentId: "comment-1" });
+  });
+
+  it("S1 with a provider fault: does not stop after a turn terminal, and stops once when the next turn starts", async () => {
+    const events = [
+      { seq: 1, eventType: "turn.started", createdAt: new Date(1).toISOString(), payload: {} },
+      { seq: 2, eventType: "turn.completed", createdAt: new Date(2).toISOString(), payload: {} },
+    ];
+    let nextTurn: unknown[] = [];
+    const base = fakeApi({
+      "/events": route => route.includes("afterSeq=0") ? events
+        : route.includes("afterSeq=2") ? nextTurn : [],
+      "/runs": () => [{ id: "r1", status: "running", createdAt: new Date(0).toISOString(), finishedAt: null }],
+    }, "in_progress");
+    const pvPlan: TaskPlan = { ...plan, workload: "S1", adapter: "claude", followUpAfterMs: 1_000,
+      providerFault: { kind: "PV2", message: "interrupt_ack" } };
+    const observer = new TaskObserver(pvPlan, base.api, lab, new Timeline(null), ready);
+    await observer.launch();
+    await observer.poll(observer.record.createdAt! + 5_000);
+    expect(base.posted.filter(route => route.endsWith("/cancel"))).toEqual([]);
+    expect(observer.record.stop ?? null).toBeNull();
+    // The next turn re-arms the Stop, and it fires once.
+    nextTurn = [{ seq: 3, eventType: "turn.started", createdAt: new Date(3).toISOString(), payload: {} }];
+    await observer.poll(observer.record.createdAt! + 6_000);
+    nextTurn = [];
+    await observer.poll(observer.record.createdAt! + 7_000);
+    expect(base.posted.filter(route => route.endsWith("/cancel"))).toEqual(["/api/heartbeat-runs/r1/cancel"]);
+    expect(observer.record.stop).toMatchObject({ runId: "r1" });
+  });
+
+  it("S1 with a provider fault: records a missed Stop when the run ends before any live turn and the task rests after the window", async () => {
+    const base = fakeApi({ "/events": () => [],
+      "/runs": () => [{ id: "r1", status: "succeeded", createdAt: new Date(0).toISOString(), finishedAt: new Date(1).toISOString() }],
+      "/comments": () => [], "/documents/": () => null, "/workspace-operations": () => [] }, "done");
+    const timeline = new Timeline(null);
+    const pvPlan: TaskPlan = { ...plan, workload: "S1", adapter: "claude", followUpAfterMs: 1_000,
+      providerFault: { kind: "PV2", message: "interrupt_ack" } };
+    const observer = new TaskObserver(pvPlan, base.api, lab, timeline, ready);
+    await observer.launch();
+    const start = observer.record.createdAt!;
+    await observer.poll(start + 500);
+    expect(observer.record.stop ?? null).toBeNull();
+    await observer.poll(start + 2_000);
+    expect(observer.record.stop).toMatchObject({ runId: null, missed: true });
+    expect(timeline.entries.some(entry => entry.kind === "task_stop_missed")).toBe(true);
+    expect(base.posted.filter(route => route.endsWith("/cancel"))).toEqual([]);
+  });
+
+  it("noteLivenessEvent: a runner replacement or stop clears the live provider turn", () => {
+    const replaced = { seq: 0, lastAt: null, openTools: 0, process: null } as Parameters<typeof noteLivenessEvent>[0];
+    noteLivenessEvent(replaced, { eventType: "native.process_identity_recorded", payload: { targetKind: "local", processPid: 1, processStartedAt: "a" } });
+    noteLivenessEvent(replaced, { eventType: "turn.started", payload: {} });
+    expect(replaced.turnActive).toBe(true);
+    noteLivenessEvent(replaced, { eventType: "native.process_identity_recorded", payload: { targetKind: "local", processPid: 2, processStartedAt: "b" } });
+    expect(replaced.turnActive).toBe(false);
+    noteLivenessEvent(replaced, { eventType: "turn.started", payload: {} });
+    noteLivenessEvent(replaced, { eventType: "native.local_process_stopped", payload: { processPid: 2 } });
+    expect(replaced.turnActive).toBe(false);
+  });
+
+  it("stopArmed: a provider-fault Stop needs a live provider turn; others keep the window", () => {
+    const live = { id: "r1", status: "running", providerTurnActive: true } as never;
+    const idle = { id: "r1", status: "running" } as never;
+    expect(stopArmed({ now: 0, windowAt: 1_000, providerFault: true, running: live })).toBe(true);
+    expect(stopArmed({ now: 5_000, windowAt: 1_000, providerFault: true, running: idle })).toBe(false);
+    expect(stopArmed({ now: 5_000, windowAt: 1_000, providerFault: true, running: undefined })).toBe(false);
+    expect(stopArmed({ now: 0, windowAt: 1_000, providerFault: false, running: live })).toBe(false);
+    expect(stopArmed({ now: 1_000, windowAt: 1_000, providerFault: false, running: undefined })).toBe(true);
   });
 
   it("S1: holds the Stop while another task's fault has the server down or recovering", async () => {
@@ -395,3 +676,11 @@ describe("childSpeedTasksInTurn", () => {
   });
 });
 
+describe("run samples", () => {
+  it("keeps the board's failure cause for U3 and omits it for older servers", () => {
+    const base = { runId: "r1", status: "failed", errorCode: "adapter_failed" };
+    expect(toRunSample({ ...base, failureCause: "40001" }).failureCause).toBe("40001");
+    expect(toRunSample(base)).not.toHaveProperty("failureCause");
+    expect(toRunSample({ ...base, failureCause: null })).not.toHaveProperty("failureCause");
+  });
+});

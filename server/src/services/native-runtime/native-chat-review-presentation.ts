@@ -181,7 +181,6 @@ async function reviewPresentationEvidence(
   if (
     !gate ||
     gate.kind !== "request_confirmation" ||
-    gate.createdByAgentId ||
     gate.createdByUserId ||
     !gate.sourceRunId ||
     gate.sourceRunId === run.id ||
@@ -197,8 +196,16 @@ async function reviewPresentationEvidence(
     return null;
   const [origin, competingInteraction, competingApproval] = await Promise.all([
     db
-      .select({ id: statusDecisions.id, decisionJson: statusDecisions.decisionJson })
+      .select({ id: statusDecisions.id, decisionJson: statusDecisions.decisionJson, agentId: heartbeatRuns.agentId })
       .from(statusDecisions)
+      .innerJoin(
+        heartbeatRuns,
+        and(
+          eq(heartbeatRuns.id, statusDecisions.runId),
+          eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.nativeIssueId, input.issueId),
+        ),
+      )
       .innerJoin(
         statusDecisionEffects,
         and(
@@ -255,7 +262,8 @@ async function reviewPresentationEvidence(
       .limit(1)
       .then((rows) => rows[0]),
   ]);
-  if (!origin || competingInteraction || competingApproval) return null;
+  if (!origin || competingInteraction || competingApproval
+    || (gate.createdByAgentId !== null && gate.createdByAgentId !== origin.agentId)) return null;
   const reviewEffects = Array.isArray(origin.decisionJson.effects) ? origin.decisionJson.effects : [];
   const matchesReviewRequest = reviewEffects.some((value) => {
     const effect = record(value);

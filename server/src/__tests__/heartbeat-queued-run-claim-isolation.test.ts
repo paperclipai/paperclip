@@ -8,9 +8,12 @@ import {
   companies,
   companyMemberships,
   createDb,
+  environmentLeases,
   heartbeatRuns,
   externalAgentHolds,
+  issueComments,
   issues,
+  issueThreadInteractions,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -294,6 +297,62 @@ describeEmbeddedPostgres("heartbeat queued-run claim isolation", () => {
     expect(mockAdapterExecute).toHaveBeenCalledOnce();
   });
 
+  async function insertCardAnswerInterruptRun(fault?: "other-answer" | "other-resolver") {
+    const { companyId, agentId } = await insertAgent();
+    const userId = `card-owner-${randomUUID()}`;
+    await db.insert(authUsers).values({ id: userId, name: "Card owner", email: `${userId}@paperclip.test`,
+      createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId,
+      status: "active", membershipRole: "owner" });
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Website", status: "in_progress",
+      assigneeAgentId: agentId, responsibleUserId: userId });
+    const [interaction] = await db.insert(issueThreadInteractions).values({ companyId, issueId,
+      kind: "request_confirmation", status: "accepted", payload: { version: 1, prompt: "Use the simpler layout?" },
+      result: { version: 1, outcome: "accepted" }, createdByUserId: userId,
+      resolvedByUserId: fault === "other-resolver" ? "another-user" : userId, resolvedAt: new Date() }).returning();
+    const queueId = randomUUID();
+    const { runId, wakeupRequestId } = await insertQueuedRun(companyId, agentId, {
+      reason: "issue_commented",
+      idempotencyKey: `queued-comment-interrupt:${queueId}`,
+      requestedByActorType: "user",
+      requestedByActorId: userId,
+      payload: { issueId, interactionId: interaction!.id, explicitUserContinuation: { queuedCommentInterruptId: queueId } },
+    }, new Date(Date.now() - 60_000));
+    await db.insert(agentWakeupRequests).values({ id: queueId, companyId, agentId, source: "automation",
+      triggerDetail: "system", reason: "issue_commented", status: "coalesced", runId,
+      requestedByActorType: "user", requestedByActorId: userId,
+      payload: { issueId, mutation: "interaction", interactionId: interaction!.id, interactionKind: "request_confirmation",
+        interactionStatus: "accepted", queuedCommentInterrupt: { actorId: userId, requestedAt: new Date().toISOString() } } });
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId, taskId: issueId,
+      interactionId: fault === "other-answer" ? randomUUID() : interaction!.id, interactionKind: "request_confirmation",
+      interactionStatus: "accepted", queuedCommentSourceWakeIds: [queueId] } }).where(sql`${heartbeatRuns.id} = ${runId}`);
+    return { runId, wakeupRequestId, userId };
+  }
+
+  it("claims the successor of an interrupt that delivers a queued card answer", async () => {
+    const { runId, userId } = await insertCardAnswerInterruptRun();
+
+    await expect(heartbeat.resumeQueuedRuns()).resolves.toBeUndefined();
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(await runStatus(runId)).toMatchObject({ status: "succeeded", errorCode: null });
+    const [run] = await db.select({ responsibleUserId: heartbeatRuns.responsibleUserId }).from(heartbeatRuns)
+      .where(sql`${heartbeatRuns.id} = ${runId}`);
+    expect(run).toMatchObject({ responsibleUserId: userId });
+  });
+
+  it.each(["other-answer", "other-resolver"] as const)(
+    "rejects a card-answer interrupt whose %s does not match the receipt", async (fault) => {
+      const { runId } = await insertCardAnswerInterruptRun(fault);
+
+      await expect(heartbeat.resumeQueuedRuns()).resolves.toBeUndefined();
+
+      expect(await runStatus(runId)).toMatchObject({ status: "cancelled", errorCode: "queued_run_claim_rejected" });
+      expect(mockAdapterExecute).not.toHaveBeenCalled();
+    },
+  );
+
   it("keeps processing other agents' queued runs after one agent's run is rejected", async () => {
     const first = await insertAgent();
     const second = await insertAgent();
@@ -305,5 +364,211 @@ describeEmbeddedPostgres("heartbeat queued-run claim isolation", () => {
 
     expect(await runStatus(rejectedRunId)).toMatchObject({ status: "cancelled" });
     expect(await runStatus(healthyRunId)).toMatchObject({ status: "succeeded" });
+  });
+
+  it("coalesces and claims a queued /new chat interrupt when a non-restore execution blocker exists", async () => {
+    const { companyId, agentId } = await insertAgent();
+    const userId = `chat-owner-${randomUUID()}`;
+    await db.insert(authUsers).values({
+      id: userId, name: "Chat owner", email: `${userId}@paperclip.test`,
+      createdAt: new Date(), updatedAt: new Date(),
+    });
+    await db.insert(companyMemberships).values({
+      companyId, principalType: "user", principalId: userId, status: "active", membershipRole: "owner",
+    });
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId, companyId, title: "Agent chat", status: "in_progress",
+      assigneeAgentId: agentId, conversationAgentId: agentId, conversationUserId: userId,
+      conversationState: "active", responsibleUserId: userId,
+    });
+    // An active conversation ownership hold (unreleased environment lease on a
+    // prior stopped run). A verified user `/new` is permitted past non-restore
+    // holds, so admission and receipt coalescing must agree.
+    const priorRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: priorRunId, companyId, agentId, runtimeMode: "legacy", status: "cancelled",
+      finishedAt: new Date(Date.now() - 5_000),
+      contextSnapshot: { issueId },
+      runnerProfileJson: { adapterDispatch: { adapterType: "codex_local" } },
+    });
+    await db.insert(environmentLeases).values({
+      companyId, heartbeatRunId: priorRunId, status: "active",
+    });
+
+    const commentId = randomUUID();
+    await db.insert(issueComments).values({
+      id: commentId, companyId, issueId, authorType: "user", authorUserId: userId, body: "/new",
+    });
+    const queueId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: queueId, companyId, agentId, source: "on_demand", triggerDetail: "manual",
+      reason: "issue_execution_deferred", status: "deferred_issue_execution",
+      requestedByActorType: "user", requestedByActorId: userId,
+      payload: {
+        issueId, commentId,
+        queuedCommentInterrupt: { actorId: userId, requestedAt: new Date().toISOString() },
+        _paperclipWakeContext: { issueId, commentId, wakeCommentId: commentId, wakeCommentIds: [commentId] },
+      },
+    });
+
+    await heartbeat.resumeQueuedCommentInterrupt(companyId, queueId);
+    await heartbeat.drainActiveRunExecutions();
+
+    const [receipt] = await db.select({ status: agentWakeupRequests.status, runId: agentWakeupRequests.runId })
+      .from(agentWakeupRequests).where(sql`${agentWakeupRequests.id} = ${queueId}`);
+    expect(receipt).toMatchObject({ status: "coalesced" });
+    expect(receipt?.runId).toBeTruthy();
+    expect(await runStatus(receipt!.runId!)).toMatchObject({ status: "succeeded", errorCode: null });
+    const [successor] = await db.select({ responsibleUserId: heartbeatRuns.responsibleUserId })
+      .from(heartbeatRuns).where(sql`${heartbeatRuns.id} = ${receipt!.runId!}`);
+    expect(successor).toMatchObject({ responsibleUserId: userId });
+    const [updatedIssue] = await db.select({ conversationBoundaryCommentId: issues.conversationBoundaryCommentId })
+      .from(issues).where(sql`${issues.id} = ${issueId}`);
+    expect(updatedIssue).toMatchObject({ conversationBoundaryCommentId: commentId });
+  });
+
+  it("does not duplicate an interrupt receipt behind an active chat run and delivers cleanly once the run ends", async () => {
+    const { companyId, agentId } = await insertAgent();
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: otherAgentId, companyId, name: "Other Agent", role: "engineer", status: "idle",
+      adapterType: "codex_local", adapterConfig: {},
+      runtimeConfig: { heartbeat: { enabled: true, intervalSec: 60, wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    const userId = `chat-owner-${randomUUID()}`;
+    await db.insert(authUsers).values({
+      id: userId, name: "Chat owner", email: `${userId}@paperclip.test`,
+      createdAt: new Date(), updatedAt: new Date(),
+    });
+    await db.insert(companyMemberships).values({
+      companyId, principalType: "user", principalId: userId, status: "active", membershipRole: "owner",
+    });
+    const issueId = randomUUID();
+    const activeRunId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId, companyId, title: "Busy agent chat", status: "in_progress",
+      assigneeAgentId: agentId, conversationAgentId: agentId, conversationUserId: userId,
+      conversationState: "active", responsibleUserId: userId,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: activeRunId, companyId, agentId: otherAgentId, status: "running",
+      invocationSource: "on_demand", contextSnapshot: { issueId },
+    });
+    await db.update(issues).set({ executionRunId: activeRunId }).where(sql`${issues.id} = ${issueId}`);
+    const commentId = randomUUID();
+    await db.insert(issueComments).values({
+      id: commentId, companyId, issueId, authorType: "user", authorUserId: userId,
+      body: "Follow-up message sent while busy",
+    });
+    const queueId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: queueId, companyId, agentId, source: "on_demand", triggerDetail: "manual",
+      reason: "issue_execution_deferred", status: "deferred_issue_execution",
+      requestedByActorType: "user", requestedByActorId: userId,
+      payload: {
+        issueId, commentId,
+        queuedCommentInterrupt: { actorId: userId, requestedAt: new Date().toISOString() },
+        _paperclipWakeContext: { issueId, commentId, wakeCommentId: commentId, wakeCommentIds: [commentId] },
+      },
+    });
+
+    // Resume attempts while an active execution still holds the issue must leave
+    // the original receipt deferred without inserting a second wake carrying
+    // `queued-comment-interrupt:<queueId>` (which would later promote uncoalesced
+    // and fail claim with 403).
+    await heartbeat.resumeQueuedCommentInterrupt(companyId, queueId);
+    const duplicateInterruptWakes = await db.select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(sql`${agentWakeupRequests.idempotencyKey} = ${`queued-comment-interrupt:${queueId}`}`);
+    expect(duplicateInterruptWakes).toEqual([]);
+    const [stillDeferred] = await db.select({ status: agentWakeupRequests.status, runId: agentWakeupRequests.runId })
+      .from(agentWakeupRequests).where(sql`${agentWakeupRequests.id} = ${queueId}`);
+    expect(stillDeferred).toMatchObject({ status: "deferred_issue_execution", runId: null });
+
+    // Once the active run completes and releases the lock, resuming delivers once.
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() })
+      .where(sql`${heartbeatRuns.id} = ${activeRunId}`);
+    await db.update(issues).set({ executionRunId: null }).where(sql`${issues.id} = ${issueId}`);
+
+    await heartbeat.resumeQueuedCommentInterrupt(companyId, queueId);
+    await heartbeat.drainActiveRunExecutions();
+
+    const [receipt] = await db.select({ status: agentWakeupRequests.status, runId: agentWakeupRequests.runId })
+      .from(agentWakeupRequests).where(sql`${agentWakeupRequests.id} = ${queueId}`);
+    expect(receipt).toMatchObject({ status: "coalesced" });
+    expect(receipt?.runId).toBeTruthy();
+    expect(await runStatus(receipt!.runId!)).toMatchObject({ status: "succeeded", errorCode: null });
+    const [successor] = await db.select({ responsibleUserId: heartbeatRuns.responsibleUserId })
+      .from(heartbeatRuns).where(sql`${heartbeatRuns.id} = ${receipt!.runId!}`);
+    expect(successor).toMatchObject({ responsibleUserId: userId });
+    expect(mockAdapterExecute).toHaveBeenCalledOnce();
+  });
+
+  it("still holds a non-reset ordinary chat message behind an active ownership blocker without creating a doomed run", async () => {
+    const { companyId, agentId } = await insertAgent();
+    const userId = `chat-owner-${randomUUID()}`;
+    await db.insert(authUsers).values({
+      id: userId, name: "Chat owner", email: `${userId}@paperclip.test`,
+      createdAt: new Date(), updatedAt: new Date(),
+    });
+    await db.insert(companyMemberships).values({
+      companyId, principalType: "user", principalId: userId, status: "active", membershipRole: "owner",
+    });
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId, companyId, title: "Held chat", status: "in_progress",
+      assigneeAgentId: agentId, conversationAgentId: agentId, conversationUserId: userId,
+      conversationState: "active", responsibleUserId: userId,
+    });
+    const priorRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: priorRunId, companyId, agentId, runtimeMode: "legacy", status: "cancelled",
+      finishedAt: new Date(Date.now() - 5_000),
+      contextSnapshot: { issueId },
+      runnerProfileJson: { adapterDispatch: { adapterType: "codex_local" } },
+    });
+    await db.insert(environmentLeases).values({
+      companyId, heartbeatRunId: priorRunId, status: "active",
+    });
+    const commentId = randomUUID();
+    await db.insert(issueComments).values({
+      id: commentId, companyId, issueId, authorType: "user", authorUserId: userId, body: "Regular follow-up",
+    });
+    const queueId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: queueId, companyId, agentId, source: "on_demand", triggerDetail: "manual",
+      reason: "issue_execution_deferred", status: "deferred_issue_execution",
+      requestedByActorType: "user", requestedByActorId: userId,
+      payload: {
+        issueId, commentId,
+        queuedCommentInterrupt: { actorId: userId, requestedAt: new Date().toISOString() },
+        _paperclipWakeContext: { issueId, commentId, wakeCommentId: commentId, wakeCommentIds: [commentId] },
+      },
+    });
+
+    await heartbeat.resumeQueuedCommentInterrupt(companyId, queueId);
+    await heartbeat.drainActiveRunExecutions();
+
+    const [receipt] = await db.select({ status: agentWakeupRequests.status, runId: agentWakeupRequests.runId })
+      .from(agentWakeupRequests).where(sql`${agentWakeupRequests.id} = ${queueId}`);
+    expect(receipt).toMatchObject({ status: "deferred_issue_execution", runId: null });
+    const runs = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+      .where(sql`${heartbeatRuns.companyId} = ${companyId} and ${heartbeatRuns.id} <> ${priorRunId}`);
+    expect(runs).toEqual([]);
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+
+    // Releasing the ownership blocker allows the interrupt to coalesce and succeed.
+    await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "success" })
+      .where(sql`${environmentLeases.heartbeatRunId} = ${priorRunId}`);
+    await heartbeat.resumeQueuedCommentInterrupt(companyId, queueId);
+    await heartbeat.drainActiveRunExecutions();
+
+    const [delivered] = await db.select({ status: agentWakeupRequests.status, runId: agentWakeupRequests.runId })
+      .from(agentWakeupRequests).where(sql`${agentWakeupRequests.id} = ${queueId}`);
+    expect(delivered).toMatchObject({ status: "coalesced" });
+    expect(await runStatus(delivered!.runId!)).toMatchObject({ status: "succeeded", errorCode: null });
+    expect(mockAdapterExecute).toHaveBeenCalledOnce();
   });
 });

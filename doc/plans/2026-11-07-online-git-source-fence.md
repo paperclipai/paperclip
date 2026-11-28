@@ -38,6 +38,10 @@ their existing reconstruction path.
 Preparation, lifecycle, runtime-service, expiration, and reopen owners retain
 the same physical keys before filesystem mutation or lifecycle exclusion. The
 importer holds all cohort task/project and lifecycle keys through publication.
+Each cohort reserves its members in fully joined batches of at most eight
+independent transactions. It joins every reservation before starting capture or
+releasing the source fence, including on failure. Partial journals keep the full exact member
+and operation set for resume; publication stays serial in one transaction.
 It also holds the existing per-run physical finalizer keys for each exact native
 recovery proof. It re-inspects the complete source proof before capture and
 publication. Changed descriptors, allocations, owners, aliases, or Git metadata
@@ -101,6 +105,13 @@ original source, restore uncommitted/staged work, and run fsck. No hosted import
 hold, cancellation, provider call, or shared-cache Git command is part of these
 local tests.
 
+A cohort shares its initial nested-source verification only within its held
+source and finalizer fences, keyed by physical root, Git roots and the exact
+recorded child set (or discovery). After every capture joins, a separate fresh
+verification checks each physical root and child set before publication. A
+changed child still rejects the whole cohort. Singleton imports keep their
+per-import checks. No local-byte proof survives the invocation.
+
 The online migration owner can checkpoint completed immutable nested-snapshot
 verification in the child snapshot ledger. This optional versioned proof binds
 the complete encrypted reference, child lineage, source operation and a known
@@ -117,3 +128,31 @@ reacquires the source locks and captures current local bytes again. Read-only
 verifier callers do not opt into checkpoint publication.
 A change that strengthens immutable archive verification must advance the proof
 version so earlier verification cannot bypass the new checks.
+
+
+A cohort with nine to 32 members is admitted only when every canonical resolved
+physical root is exactly the same. Cohorts of at most eight members retain the
+existing mixed-leaf rules. Source resolution, admission, reservation, recovery
+checks, final readers, replay and cleanup remain bounded to eight peers per
+stage. Capture concurrency remains at most eight, and all running peers join
+before an error or cancellation can release the source fence.
+
+With shared initial and final child verification, 30 fresh aliases need one
+initial and one final child pass instead of four pairs. For N distinct covered
+children this changes 8N child checks to 2N. Thirty parent captures, uploads and
+restores remain required. This is a work-count reduction; hosted wall-clock
+improvement is not yet measured. Saved six- and eight-member cohorts retain their
+exact membership. The canonical maintenance request accepts the same bounded
+32-member list; single-workspace and capture-worker limits stay unchanged.
+The journal shape is unchanged; older tools that enforce the
+eight-member bound refuse larger cohorts and must not regroup them.
+
+After a successful online cohort capture, members without archived repository
+intents release their parent archive, authenticated readback, fresh comparison
+archive and restored tree before the worker starts another member. The scratch
+root and nested-child verification areas remain until atomic publication, and
+the final fresh child checks still run. Archived repository intents retain their
+restored payload for the final publication proof. Select a larger cohort
+only after checking the actual parent capture footprint, its verification and
+restore scratch, and current free capacity on the target filesystem. The worker
+limit does not bound retained nested-child scratch. Keep the existing resource guards.

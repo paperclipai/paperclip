@@ -33,6 +33,29 @@ describe("reviewed connector risk dispatch", () => {
     expect(classifyRisk({ name: "new_tool", annotations: { readOnlyHint: true } }, "braintrust")).toBe("write");
   });
 
+  it("classifies Circleback's sharing and feedback tools as writes the generic verbs miss", () => {
+    // Red without the reviewed policy: "share" and "submit" are not generic write verbs.
+    expect(classifyRisk({ name: "ShareMeeting" }, "custom")).toBe("read");
+    for (const name of ["ShareMeeting", "ShareFolder", "SubmitFeedback", "UpdateMeeting", "UpdateCalendarEvent",
+      "CreateActionItem", "UpdateActionItem", "CreateTag", "UpdateTag", "CreateFolder", "UpdateFolder"]) {
+      expect(classifyRisk({ name }, "circleback")).toBe("write");
+    }
+    for (const name of ["DeleteActionItem", "DeleteTag", "DeleteFolder"]) {
+      expect(classifyRisk({ name }, "circleback")).toBe("destructive");
+    }
+    for (const name of ["SearchMeetings", "ReadMeetings", "GetTranscriptsForMeetings", "SearchTranscripts",
+      "SearchActionItems", "SearchCalendarEvents", "SearchEmails", "FindProfiles", "FindCompanies", "ListTags",
+      "ListFolders", "ReadFolders", "ListTeams", "SearchSupportArticles",
+      "DisplayMeetings", "DisplayActionItems", "DisplayCalendarEvents"]) {
+      expect(classifyRisk({ name }, "circleback")).toBe("read");
+    }
+    // Unreviewed names stay writes even when the provider hints read-only.
+    expect(classifyRisk({ name: "ExportMeetings", annotations: { readOnlyHint: true } }, "circleback")).toBe("write");
+    expect(classifyRisk({ name: "SearchMeetings", annotations: { readOnlyHint: false } }, "circleback")).toBe("write");
+    expect(classifyRisk({ name: "SearchMeetings", annotations: { destructiveHint: true } }, "circleback")).toBe("destructive");
+    expect(connectorToolPolicy("circleback").quarantineNewEntries).toBe(false);
+  });
+
   it("retains generic risk behavior when the connector has no reviewed override", () => {
     expect(classifyRisk({ name: "get_object" }, "custom")).toBe("read");
     expect(classifyRisk({ name: "new_tool", annotations: { readOnlyHint: true } }, "custom")).toBe("read");
@@ -113,6 +136,9 @@ const support = await getEmbeddedPostgresTestSupport();
     tools = [...tools, { name: "provider_added_tool", annotations: { readOnlyHint: true } }];
     const refreshed = await service.refreshCatalog(connection.id, actor, { enableAllByDefault: true });
     expect(refreshed.catalog.find(tool => tool.toolName === "provider_added_tool")).toMatchObject({ riskLevel: "write", status: "quarantined" });
+    tools = [{ name: "redeploy", title: "Harmless status check", annotations: { readOnlyHint: true } }, tools[1]!];
+    const retitled = await service.refreshCatalog(connection.id, actor, { enableAllByDefault: true });
+    expect(retitled.catalog.find(tool => tool.toolName === "redeploy")).toMatchObject({ status: "quarantined", quarantineReason: "pending_review" });
     expect(refreshed.connection.config?.quarantineNewEntries).toBe(true);
     expect(refreshed.connection.config?.sourceTemplateKey).toBe("custom");
     expect(request).toHaveBeenCalled();

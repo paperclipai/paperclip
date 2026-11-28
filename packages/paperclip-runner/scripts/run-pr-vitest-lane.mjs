@@ -43,7 +43,19 @@ const laneCount = laneMatch ? Number(laneMatch[2]) : null;
 if (laneMatch && (laneCount < 1 || laneIndex < 1 || laneIndex > laneCount)) {
   fail(`invalid package lane: ${laneArgs[0]}`);
 }
-const nativeServerOnly = args.includes("--native-server");
+const nativeArgs = args.filter((value) => value === "--native-server" || value.startsWith("--native-server="));
+const nativeMatch = nativeArgs.length === 1
+  ? /^--native-server(?:=(\d+)\/(\d+))?$/.exec(nativeArgs[0])
+  : null;
+if (nativeArgs.length > 1 || (nativeArgs.length === 1 && !nativeMatch)) {
+  fail(`unrecognized native server argument: ${nativeArgs.join(" ")}`);
+}
+const nativeServerOnly = nativeArgs.length === 1;
+const nativeLaneIndex = nativeMatch?.[1] ? Number(nativeMatch[1]) : null;
+const nativeLaneCount = nativeMatch?.[2] ? Number(nativeMatch[2]) : null;
+if (nativeLaneCount !== null && (nativeLaneCount < 1 || nativeLaneIndex < 1 || nativeLaneIndex > nativeLaneCount)) {
+  fail(`invalid native server lane: ${nativeArgs[0]}`);
+}
 if ([shardArg, laneMatch, nativeServerOnly].filter(Boolean).length > 1) {
   fail("--shard, --package-lane and --native-server are mutually exclusive");
 }
@@ -88,6 +100,10 @@ if (laneMatch) {
   packageArgs = separateWorkloads ? args.filter((arg) => arg !== shardArg) : args;
 }
 
+const nativeServerShardArgs = nativeLaneCount !== null && nativeLaneCount > 1
+  ? ["--shard-index", String(nativeLaneIndex - 1), "--shard-count", String(nativeLaneCount)]
+  : [];
+
 const plannedCommands = [
   { command: "pnpm", args: ["run", "ensure:eval-build-deps"], cwd: packageRoot },
   { command: "pnpm", args: ["run", "build:rust"], cwd: packageRoot },
@@ -97,7 +113,7 @@ const plannedCommands = [
   ...(runNativeRunnerGroup
     ? [{
         command: "pnpm",
-        args: ["test:run:general", "--", "--group", "general-server-native-runner"],
+        args: ["test:run:general", "--", "--group", "general-server-native-runner", ...nativeServerShardArgs],
         cwd: workspaceRoot,
       }]
     : []),
@@ -110,6 +126,7 @@ if (dryRun) {
     runNativeRunnerGroup,
     runPackageTests,
     ...(packageLane ? { packageLane } : {}),
+    ...(nativeLaneCount !== null ? { nativeServerLane: { index: nativeLaneIndex, count: nativeLaneCount } } : {}),
     plannedCommands,
   }, null, 2));
   process.exit(0);

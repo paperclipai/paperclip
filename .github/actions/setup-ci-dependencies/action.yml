@@ -57,12 +57,12 @@ runs:
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       run: |
-        if pnpm install --frozen-lockfile; then
+        if pnpm install --frozen-lockfile --prefer-offline; then
           echo 'frozen=true' >> "$GITHUB_OUTPUT"
         else
           echo '::notice title=Lockfile::checked-in lockfile is stale for this merge tree; resolving it inline'
           pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
-          pnpm install --frozen-lockfile
+          pnpm install --frozen-lockfile --prefer-offline
         fi
 
     - name: Replay workspace install hooks after restore
@@ -70,8 +70,12 @@ runs:
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       run: |
-        pnpm -r --if-present run postinstall
-        pnpm run postinstall
+        if [ -f scripts/replay-workspace-postinstall.mjs ]; then
+          node scripts/replay-workspace-postinstall.mjs
+        else
+          pnpm -r --if-present run postinstall
+          pnpm run postinstall
+        fi
 
     - name: Restore certified shared build outputs (read only)
       if: inputs.restore-cache == 'true' && steps.inputs.outputs.cacheable == 'true'
@@ -85,7 +89,11 @@ runs:
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       run: |
-        pnpm run preflight:workspace-links
+        if [ -f scripts/ensure-workspace-package-links.mjs ]; then
+          node scripts/ensure-workspace-package-links.mjs
+        else
+          pnpm run preflight:workspace-links
+        fi
         node scripts/ensure-plugin-build-deps.mjs
 
     - name: Save installed dependencies

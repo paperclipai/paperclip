@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { showPropertyRow } from "./task-panel.js";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect } from "@playwright/test";
@@ -6,7 +7,7 @@ import { HEARTBEAT_RUN_LIST_MAX_LIMIT } from "../../../packages/shared/src/const
 import { createTaskThroughUi } from "../user-actions.js";
 import { createObservedReader } from "./observation-read.js";
 import { openDocumentAuthoring } from "./task-document-flow.js";
-import { DEPENDENCY_IDLE_MS, dependencyNewAgentRuns, gradeTaskDependencyResume, type DependencyEvidence, type DependencyPoint, type DependencyScope } from "./task-dependency-resume-evidence.js";
+import { DEPENDENCY_IDLE_MS, dependencyNewAgentRuns, dependencyRunProjectionsAgree, gradeTaskDependencyResume, type DependencyEvidence, type DependencyPoint, type DependencyScope } from "./task-dependency-resume-evidence.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
 
 type Row = Record<string, any>;
@@ -29,20 +30,7 @@ const documentSnapshot = (row: Row) => Object.fromEntries(["id", "companyId", "i
   "documentId", "createdByAgentId", "createdByUserId", "createdByRunId"].map(key => [key, row[key]]));
 
 async function properties(context: JourneyContext, label: string) {
-  const { page } = context;
-  const row = page.locator('[data-property-row]:not([inert] *):not([aria-hidden="true"] *)')
-    .filter({ has: page.locator(`[data-property-label="${label}"]`) }).filter({ visible: true });
-  const toggle = page.getByRole("button", { name: "Toggle side panel", exact: true, pressed: false }).filter({ visible: true });
-  const propertiesButton = page.getByRole("button", { name: /^(Show properties|Properties)$/ }).filter({ visible: true });
-  await expect.poll(async () => await row.isVisible() || await toggle.isVisible() || await propertiesButton.isVisible()).toBe(true);
-  if (!await row.isVisible()) {
-    if (await toggle.isVisible()) await toggle.click();
-    else await propertiesButton.click();
-  }
-  await expect(row).toBeVisible();
-  await row.scrollIntoViewIfNeeded();
-  await expect(row).toBeInViewport();
-  return row;
+  return await showPropertyRow(context.page, label);
 }
 async function setStatus(context: JourneyContext, label: string) {
   const { page } = context;
@@ -201,24 +189,32 @@ export async function taskDependencyResume(context: JourneyContext, session: Tar
     await setStatus(context, "Done");
     await expect.poll(async () => (await read.get<Row>(`/api/issues/${blocker.issueId}`)).status).toBe("done");
     observations.released = await observe();
+    const settled = (point: DependencyPoint | undefined, expectedRun?: Row): point is DependencyPoint => Boolean(point
+      && point.dependent.status === "done" && point.dependentRuns.length === 1
+      && point.dependentRuns[0]?.status === "succeeded" && point.dependentRuns[0]?.nativePhase === "committed"
+      && point.document && point.revision && dependencyRunProjectionsAgree(point, startingRuns, expectedRun)
+      && !point.dependent.executionRunId && !point.dependent.checkoutRunId);
     stage = "await_automatic_resume";
     while (Date.now() < options.deadlineAt) {
       const point = await observe(); observations.finished = point;
-      if (point.dependent.status === "done" && point.dependentRuns.length === 1 && point.dependentRuns[0]?.status === "succeeded"
-        && point.dependentRuns[0]?.nativePhase === "committed" && point.document && point.revision
-        && !point.dependent.executionRunId && !point.dependent.checkoutRunId) break;
+      if (settled(point)) break;
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
-    if (!observations.finished || observations.finished.dependent.status !== "done" || observations.finished.dependentRuns[0]?.status !== "succeeded"
-      || observations.finished.dependentRuns[0]?.nativePhase !== "committed" || !observations.finished.document || !observations.finished.revision) {
-      throw new JourneyError("failed", "dependency_resume_deadline");
-    }
+    if (!settled(observations.finished)) throw new JourneyError("failed", "dependency_resume_deadline");
+    const finishedRun = observations.finished.dependentRuns[0]!;
     stage = "reopen_result";
     await page.goto(url(dependentSaved.identifier ?? dependent.issueId), { waitUntil: "domcontentloaded" });
     await page.reload(); await openDocumentAuthoring(context);
     const document = page.locator(`#document-${documentKey}`);
     await expect(document).toContainText(reference);
     observations.reopened = await observe();
+    while (!settled(observations.reopened, finishedRun)) {
+      const remaining = options.deadlineAt - Date.now();
+      if (remaining <= 0) throw new JourneyError("failed", "dependency_reopen_deadline");
+      await new Promise(resolve => setTimeout(resolve, Math.min(1000, remaining)));
+      if (Date.now() >= options.deadlineAt) throw new JourneyError("failed", "dependency_reopen_deadline");
+      observations.reopened = await observe();
+    }
     observations.reopened.resultVisible = await document.isVisible() && (await document.textContent())?.includes(reference) === true;
     const checks = gradeTaskDependencyResume({ ...observations, scope } as DependencyEvidence);
     evidence.checks.push(...checks);

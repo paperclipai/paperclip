@@ -6,13 +6,19 @@ import {
   PutObjectCommand,
   ListObjectsV2Command,
   ListObjectVersionsCommand,
+  ListMultipartUploadsCommand,
+  AbortMultipartUploadCommand,
 } from "@aws-sdk/client-s3";
-import { assertSourceFileSize, fileRangeMd5, putS3Multipart, putS3MultipartFile, sendFileRequestWithRetry } from "./s3-multipart.js";
+import { assertSourceFileSize, fileRangeMd5, putS3Multipart, putS3MultipartFile, sendFileRequestWithRetry,
+  sendThrottledRequestWithRetry, withBufferedUploadBody } from "./s3-multipart.js";
 import { createReadStream } from "node:fs";
 import { createHash } from "node:crypto";
 import { recordS3BodyFailure, withS3FailureDiagnostics } from "./s3-failure.js";
+import { sendThroughStorageOutage } from "./storage-unavailable.js";
 import { addAbortSignal, Readable } from "node:stream";
 import { retryS3RequestTimeouts } from "./s3-request-timeout-retry.js";
+import { refreshS3CredentialsOnRejection } from "./s3-credential-refresh.js";
+import { S3_CLIENT_MAX_SOCKETS } from "./s3-client-limits.js";
 import type { StorageProvider, GetObjectResult, HeadObjectResult } from "./types.js";
 import { notFound, unprocessable } from "../errors.js";
 
@@ -134,8 +140,13 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
     region,
     endpoint: config.endpoint,
     forcePathStyle: Boolean(config.forcePathStyle),
+    requestHandler: {
+      httpAgent: { maxSockets: S3_CLIENT_MAX_SOCKETS },
+      httpsAgent: { maxSockets: S3_CLIENT_MAX_SOCKETS },
+    },
   });
   retryS3RequestTimeouts(client);
+  refreshS3CredentialsOnRejection(client);
   // File sources carry Content-MD5 as their integrity check. Send plain bodies
   // so the backend verifies that digest directly; the default client wraps
   // bodies in aws-chunked framing with its own trailing checksum.
@@ -146,6 +157,7 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
     requestChecksumCalculation: "WHEN_REQUIRED",
   });
   retryS3RequestTimeouts(fileClient);
+  refreshS3CredentialsOnRejection(fileClient);
 
   async function listExactVersions(key: string, signal?: AbortSignal) {
     const versions = new Set<string>(), cursors = new Set<string>();
@@ -180,7 +192,7 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
     ])).digest("hex") : undefined,
 
     async putObjectConditional(input) {
-      const output = await client.send(new PutObjectCommand({
+      const send = () => withS3FailureDiagnostics("put_object", () => client.send(new PutObjectCommand({
         Bucket: bucket,
         Key: buildKey(prefix, input.objectKey),
         Body: input.body,
@@ -188,9 +200,37 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
         ContentLength: input.contentLength,
         IfMatch: input.ifMatch,
         IfNoneMatch: input.ifNoneMatch,
-      }), { abortSignal: input.signal });
+      }), { abortSignal: input.signal }), input.signal);
+      const output = Buffer.isBuffer(input.body) ? await sendThroughStorageOutage(send, input.signal) : await send();
       if (!output.ETag) throw new Error("Object storage did not return a publication ETag");
       return { etag: output.ETag };
+    },
+
+    async abortIncompleteUploads(input) {
+      const key = buildKey(prefix, input.objectKey);
+      const uploads: string[] = [];
+      let keyMarker: string | undefined, uploadIdMarker: string | undefined;
+      for (let pages = 0; ; pages++) {
+        input.signal?.throwIfAborted();
+        if (pages >= 100) throw new Error("s3_multipart_listing_cursor_invalid");
+        const output = await client.send(new ListMultipartUploadsCommand({ Bucket: bucket, Prefix: key,
+          KeyMarker: keyMarker, UploadIdMarker: uploadIdMarker, MaxUploads: 1000 }), { abortSignal: input.signal });
+        for (const upload of output.Uploads ?? []) if (upload.Key === key && upload.UploadId) uploads.push(upload.UploadId);
+        if (!output.IsTruncated) break;
+        if (!output.NextKeyMarker && !output.NextUploadIdMarker) throw new Error("s3_multipart_listing_cursor_invalid");
+        keyMarker = output.NextKeyMarker; uploadIdMarker = output.NextUploadIdMarker;
+      }
+      let aborted = 0;
+      for (const uploadId of uploads) {
+        input.signal?.throwIfAborted();
+        try {
+          await client.send(new AbortMultipartUploadCommand({ Bucket: bucket, Key: key, UploadId: uploadId }), { abortSignal: input.signal });
+          aborted++;
+        } catch (error) {
+          if ((error as { name?: string }).name !== "NoSuchUpload") throw error;
+        }
+      }
+      return aborted;
     },
 
     async listObjects(input) {
@@ -217,44 +257,49 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
         if (input.body instanceof Readable) input.body.destroy();
         await assertSourceFileSize(sourceFile, input.contentLength);
         const contentMd5 = await fileRangeMd5(sourceFile, 0, input.contentLength - 1, input.signal);
-        await sendFileRequestWithRetry(input.signal, async () => {
+        await sendThroughStorageOutage(() => sendFileRequestWithRetry(input.signal, async () => {
           const body = createReadStream(sourceFile);
           try {
             await withS3FailureDiagnostics("put_object", () => fileClient.send(new PutObjectCommand({
               Bucket: bucket, Key: key, Body: body, ContentType: input.contentType,
               ContentLength: input.contentLength, ContentMD5: contentMd5,
-            }), { abortSignal: input.signal }));
+            }), { abortSignal: input.signal }), input.signal);
           } finally { body.destroy(); }
-        });
+        }), input.signal);
         return { integrity: "server_verified_md5" } as const;
       }
       if (input.contentLength > 16 * 1024 * 1024) {
         await putS3Multipart(client, bucket, key, input);
         return;
       }
-      await withS3FailureDiagnostics("put_object", () => client.send(
+      const send = (body: Buffer | Readable) => withS3FailureDiagnostics("put_object", () => client.send(
         new PutObjectCommand({
           Bucket: bucket,
           Key: key,
-          Body: input.body,
+          Body: body,
           ContentType: input.contentType,
           ContentLength: input.contentLength,
         }),
         { abortSignal: input.signal },
-      ));
+      ), input.signal);
+      const sendBytes = async (body: Buffer) => {
+        await sendThroughStorageOutage(() => sendThrottledRequestWithRetry(input.signal, () => send(body)), input.signal);
+      };
+      if (Buffer.isBuffer(input.body)) return sendBytes(input.body);
+      if (!(await withBufferedUploadBody(input.body, input.contentLength, input.signal, sendBytes))) await send(input.body);
     },
 
     async getObject(input): Promise<GetObjectResult> {
       const key = buildKey(prefix, input.objectKey);
       try {
-        const output = await withS3FailureDiagnostics("get_object", () => client.send(
+        const output = await sendThroughStorageOutage(() => withS3FailureDiagnostics("get_object", () => client.send(
           new GetObjectCommand({
             Bucket: bucket,
             Key: key,
             Range: input.range ? `bytes=${input.range.start}-${input.range.end}` : undefined,
           }),
           { abortSignal: input.signal },
-        ));
+        ), input.signal), input.signal);
 
         const first = observeBodyFailures(await toReadableStream(output.Body), output);
         const etag = output.ETag;
@@ -264,7 +309,7 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
           const resumed = await withS3FailureDiagnostics("get_object", () => client.send(new GetObjectCommand({
             Bucket: bucket, Key: key, IfMatch: etag,
             Range: `bytes=${start + offset}-${end ?? ""}`,
-          }), { abortSignal: resumeSignal }));
+          }), { abortSignal: resumeSignal }), resumeSignal);
           return observeBodyFailures(await toReadableStream(resumed.Body), resumed);
         };
         const stream = etag && end !== undefined
@@ -288,13 +333,13 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
     async headObject(input): Promise<HeadObjectResult> {
       const key = buildKey(prefix, input.objectKey);
       try {
-        const output = await withS3FailureDiagnostics("head_object", () => client.send(
+        const output = await sendThroughStorageOutage(() => withS3FailureDiagnostics("head_object", () => client.send(
           new HeadObjectCommand({
             Bucket: bucket,
             Key: key,
           }),
           { abortSignal: input.signal },
-        ));
+        ), input.signal), input.signal);
 
         return {
           exists: true,
@@ -313,7 +358,7 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
     async deleteObject(input): Promise<void> {
       const key = buildKey(prefix, input.objectKey);
       if (input.allVersions) {
-        await withS3FailureDiagnostics("delete_object", async () => {
+        await sendThroughStorageOutage(() => withS3FailureDiagnostics("delete_object", async () => {
           // Finish listing before deleting: removing a cursor version must not skip later pages.
           const versions = await listExactVersions(key, input.signal);
           for (const versionId of versions) {
@@ -322,16 +367,16 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
               { abortSignal: input.signal });
           }
           if ((await listExactVersions(key, input.signal)).size) throw new Error("s3_object_versions_still_present");
-        });
+        }, input.signal), input.signal);
         return;
       }
-      await withS3FailureDiagnostics("delete_object", () => client.send(
+      await sendThroughStorageOutage(() => withS3FailureDiagnostics("delete_object", () => client.send(
         new DeleteObjectCommand({
           Bucket: bucket,
           Key: key,
         }),
         { abortSignal: input.signal },
-      ));
+      ), input.signal), input.signal);
     },
   };
 }

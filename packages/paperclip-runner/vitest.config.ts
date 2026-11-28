@@ -16,6 +16,18 @@ const ciReporters = [
 // without the root wrapper); see scripts/ci/vitest-retry.mjs.
 const retry = vitestRetryCount();
 
+function resolveRunnerCiMaxWorkers() {
+  const override = process.env.PAPERCLIP_RUNNER_VITEST_MAX_WORKERS?.trim();
+  if (override) {
+    const parsed = Number(override);
+    if (Number.isInteger(parsed) && parsed >= 1) return parsed;
+  }
+  const cpus = Math.max(1, availableParallelism());
+  // Hermetic files launch Runner and sidecar child processes; reserve 1 core
+  // on 4-core runners (3 workers) and 2 cores on 8-core runners (6 workers).
+  return cpus <= 4 ? Math.min(3, Math.max(1, cpus - 1)) : Math.min(6, cpus - 2);
+}
+
 export default defineConfig({
   resolve: {
     alias: [
@@ -27,10 +39,8 @@ export default defineConfig({
     ...(ciReporters.length > 0 ? { reporters: [...configDefaults.reporters, ...ciReporters] } : {}),
     ...(retry > 0 ? { retry } : {}),
     environment: "node",
-    // Hermetic files also launch Runner and sidecar processes. Reserve CPU
-    // capacity for their startup within the original readiness deadlines.
     ...(process.env.GITHUB_ACTIONS === "true"
-      ? { maxWorkers: Math.min(4, Math.max(1, Math.floor(availableParallelism() / 2))) }
+      ? { maxWorkers: resolveRunnerCiMaxWorkers() }
       : {}),
     sequence: { sequencer: RunnerSequencer },
     include: [

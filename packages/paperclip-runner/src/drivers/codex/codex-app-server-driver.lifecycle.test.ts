@@ -126,6 +126,21 @@ describe("Codex app-server Codex driver", () => {
     else expect(error.providerFailure).toBeUndefined();
   });
 
+  it.each([true, false])("records the transport's runner exit proof (%s) on a failed session open after close", async (proven) => {
+    class ExitProofTransport extends FakeCodexTransport {
+      closed = false;
+      override async close(): Promise<void> { await super.close(); this.closed = true; }
+      // Proof is read only after the driver's close completed.
+      runnerExitConfirmed(): boolean { return proven && this.closed; }
+    }
+    const transport = new ExitProofTransport();
+    transport.rejectMethods.set("thread/start", new CodexRpcError("error creating thread: bwrap: loopback: Failed RTM_NEWADDR", -32603));
+    const error = await makeDriver([transport]).openSession({ runId: "exit-proof", normalizedSessionId: "exit-proof",
+      workingDirectory: WORKSPACE }).catch(error => error);
+    expect(transport.closed).toBe(true);
+    expect(error.runnerExitConfirmed === true).toBe(proven);
+  });
+
   it("accepts runner-proven warm attachment when the host active-turn reducer is stale", async () => {
     const transport = new WarmAttachTransport();
     const driver = makeDriver([transport]);
