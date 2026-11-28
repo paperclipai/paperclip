@@ -108,7 +108,7 @@ describe("unclaimed Cloud background work", () => {
     const isEnabled = vi.fn().mockResolvedValue(false);
     const db = installDatabaseWorkSignals({ execute: vi.fn(), transaction: vi.fn() }) as unknown as Db;
     const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !standby, onError: vi.fn() });
-    const events = createPublicMcpEvents(db, { isEnabled } as PublicMcpOAuth, vi.fn(), {
+    const events = createPublicMcpEvents(db, { isEnabled } as unknown as PublicMcpOAuth, vi.fn(), {
       isBackgroundWorkEnabled: () => !standby,
     });
     try {

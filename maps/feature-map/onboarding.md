@@ -4,7 +4,7 @@ navigation: {"section":"Getting started and access","sectionOrder":10,"order":10
 
 # Onboarding and first work
 
-An operator can start an instance, create a company, configure its first agent, and reach a real first task. Instance setup and company onboarding are separate steps.
+An operator can start an instance, create a company, configure its first agent, and start in chat. Execution work begins after an accepted task proposal or an explicit task-creation request. Instance setup and company onboarding are separate steps.
 
 Feature ID: `onboarding`.
 
@@ -17,7 +17,7 @@ Agent access: [companion](../agent-access-map/onboarding.md).
 - `instance`: `onboarding/instance` — choose local instance configuration and start the server.
 - `company`: `onboarding/company` — create a company with its identity and initial agent.
 - `adapter`: `onboarding/adapter` — choose an available harness, model, account, and execution environment.
-- `first-task`: `onboarding/first-task` — leave setup with a task whose execution or missing prerequisite is visible.
+- `first-task`: `onboarding/first-task` — leave setup in chat, clarify the goal and exit criteria, and accept or explicitly request the first task.
 
 - `resume`: `onboarding/resume` — return to an incomplete wizard without losing saved state.
 
@@ -36,6 +36,10 @@ Use `/<company-prefix>/onboarding` to resume an existing company's agent setup;
 the unprefixed route starts at organization naming on self-hosted instances.
 Cloud-managed instances reuse their existing company for agent setup.
 
+First-agent onboarding offers only Claude and Codex, subject to instance adapter
+availability. Other providers remain available through Add agent after onboarding.
+A saved draft for another provider requires a new choice.
+
 ### `cli-setup`
 
 Use `paperclipai onboard --help` or `paperclipai run --help` to select an isolated data directory before setup.
@@ -46,7 +50,7 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Use 
 
 ### `web-wizard`
 
-Automated: [wizard tests](../../ui/src/components/OnboardingWizard.test.tsx) cover mocked wizard behavior; [onboarding browser suite](../../tests/e2e/onboarding.spec.ts) supplies its own test environment. Live model execution is a separate check.
+Automated: [onboarding browser suite](../../tests/e2e/onboarding.spec.ts) supplies its own test environment (mocked `OnboardingWizard` component tests were removed). Live model execution is a separate check.
 
 - **Create company and resume.** Start a fresh empty instance and run doctor using
   the [verification skill](../../.agents/skills/verify-paperclip/SKILL.md). Run
@@ -60,12 +64,17 @@ Automated: [wizard tests](../../ui/src/components/OnboardingWizard.test.tsx) cov
 
 Manual: Create a disposable company and first agent. Leave midway, reopen the
 company's onboarding route, and finish; drafts save automatically. Follow the
-created first task, verify the selected agent and company, and inspect its output
-or explicit authentication gate. Reload both company and task.
+agent chat, verify the selected agent and company, and watch the live welcome.
+No execution tasks or projects should exist yet. Request an interview or describe
+a goal and clear exit criteria, then accept the suggested task. Verify one
+standalone task is created. Reload chat and ensure the welcome is not repeated.
+Also verify an explicit task-creation request uses the normal handoff directly.
+See [chat-first onboarding](../../doc/onboarding-chat.md). Legacy first-task asset
+evaluations cover existing task-based onboarding, not this chat landing.
 
-For Codex or Claude, choose the harness and leave runner selection automatic to prove the
-first-agent default. On a qualified target it saves Paperclip Runner; Advanced
-also permits Legacy. Do not switch runners after onboarding when claiming proof
+For Codex or Claude, choose the harness to prove automatic first-agent runner
+selection. On a qualified target it saves Paperclip Runner. The wizard has no
+runner dropdown or empty Advanced section. Do not switch runners after onboarding when claiming proof
 of that default. Test the selected runtime and account, then complete a bounded
 useful task and follow-up with an independently checked file artifact. Saved
 execution configuration and recorded run identity must match after reload.
@@ -83,9 +92,8 @@ selected model and account stay unchanged and that the compatible executable is
 actually used. A failed installation still blocks hiring. Cloud failures must
 not display Manual debug shell commands or legacy operator hints; self-hosted
 failures retain that help.
-[Wizard controls](../../ui/src/components/OnboardingWizard.test.tsx) and
-[runtime controls](../../packages/adapters/claude-local/src/server/sandbox-cli-version.test.ts)
-cover these boundaries. They do not establish live Cloud onboarding success.
+[Runtime controls](../../packages/adapters/claude-local/src/server/sandbox-cli-version.test.ts)
+cover the adapter runtime boundary (mocked `OnboardingWizard` component tests were removed; verify wizard error help manually). They do not establish live Cloud onboarding success.
 
 For a new Claude agent on an explicit immutable sandbox image or a Daytona
 named snapshot, use Connect to
@@ -104,7 +112,7 @@ uses the existing saved environment probe when authoritative qualification is
 absent. The board actor needs the existing instance-environment administration
 permission. Refresh company/environment-scoped discovery before testing the
 selected runtime. A denied probe, unconfirmed cleanup or setup failure must be
-visible; selecting Legacy remains an explicit choice. Creation and discovery
+visible and retryable through setup. Creation and discovery
 themselves allocate no target. A valid measured unsupported target follows the
 server's Legacy default. Named Cloud snapshots remain a separate unqualified
 boot-identity and fresh-signup gap.
@@ -132,32 +140,15 @@ parent, and recovery stopped the completion callback before a provider turn.
 The failed report remains evidence; the revised source still needs live proof.
 Local cases and automatic selection remain unchanged.
 
-First-task task creation enforces proposal acceptance at the shared server
-boundary. Verify that native `create_task` and both REST creation endpoints reject
-an authenticated onboarding run before its latest proposal has a saved human
-acceptance, including an explicit standalone parent. Then accept a confirmation
-or the current plan revision and verify creation succeeds. Opening answers,
-agent-only acceptance, stale plans and newer pending/rejected proposals must not
-admit new work. [Admission controls](../../server/src/__tests__/onboarding-first-task-admission.test.ts)
-exercise native and REST calls against disposable PostgreSQL; live model and
-Cloud onboarding remain separate evidence.
-
-Native completion also requires a saved human proposal decision. An opening
-answer alone must leave the first task in review. Verify that premature native
-completion is refused, including a result already saved before finalization.
-Accepted proposals and acknowledged human rejections can close the first task;
-rejection still does not authorize new tasks. The
-[native completion controls](../../server/src/services/native-runtime/paperclip-control-plane-port.test.ts)
-exercise these boundaries against disposable PostgreSQL. These controls do not
-identify a historical Cloud failure or establish live onboarding success.
-
 For accepted file-producing work, verify exactly one self-assigned child with a
 self-contained description. The onboarding run must yield through the existing
 dependency/block disposition so the child's own execution can publish its file.
 Native file registration remains bound to the executing task. On completion,
 the original conversation must receive the actual child and downloadable file
-links. Document-only child work may finish inline; a plan-only request must not
-start implementation. Existing first-task asset controls check the instructions,
+links. Document-only child work may finish inline. Interview execution proposals
+must start their selected work after acceptance; a saved plan alone is not the
+requested result. Only an explicitly plan-only request stops at planning.
+Existing first-task asset controls check the instructions,
 not model compliance. Inspect the child's execution, document, downloaded file
 and source-correlated completion reply in the real journey.
 
@@ -199,7 +190,7 @@ Capability ID: `onboarding/resume`.
 Scope: ui
 Storybook: Restored incomplete wizard; invalid or unauthorized saved company; temporarily withheld draft; account switch; storage failure.
 Production: Reload company-prefixed onboarding without duplicating company; restore only authorized account/company draft and retain input after recoverable loading failure.
-Sources: Source: [OnboardingWizard.tsx](../../ui/src/components/OnboardingWizard.tsx), [onboarding-state.ts](../../ui/src/lib/onboarding-state.ts). Tests: [OnboardingWizard.test.tsx](../../ui/src/components/OnboardingWizard.test.tsx), [onboarding-state.test.ts](../../ui/src/lib/onboarding-state.test.ts), [onboarding.spec.ts](../../tests/e2e/onboarding.spec.ts)
+Sources: Source: [OnboardingWizard.tsx](../../ui/src/components/OnboardingWizard.tsx), [onboarding-state.ts](../../ui/src/lib/onboarding-state.ts). Tests: [onboarding-state.test.ts](../../ui/src/lib/onboarding-state.test.ts), [onboarding.spec.ts](../../tests/e2e/onboarding.spec.ts)
 
 #### `instance`
 

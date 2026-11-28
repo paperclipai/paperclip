@@ -1446,6 +1446,31 @@ describe("sandbox callback bridge", () => {
     ).resolves.toEqual([]);
   });
 
+  it("creates every staged copy of a private file without group or other access", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-private-sync-"));
+    cleanupDirs.push(rootDir);
+    const shimDir = path.join(rootDir, "shim");
+    const umaskLog = path.join(rootDir, "umask.log");
+    await mkdir(shimDir);
+    await writeFile(path.join(shimDir, "base64"),
+      `#!/bin/sh\numask > ${JSON.stringify(umaskLog)}\nPATH=${JSON.stringify(process.env.PATH ?? "")} exec base64 "$@"\n`, { mode: 0o700 });
+    const inner = createExecRunner();
+    const runner = {
+      execute: (input: Parameters<typeof inner.execute>[0]) =>
+        inner.execute({ ...input, env: { ...input.env, PATH: `${shimDir}:${process.env.PATH ?? ""}` } }),
+    };
+    const remoteDir = path.join(rootDir, "launchers");
+    const remotePath = path.posix.join(remoteDir, "broker.json");
+    const result = await syncRemoteTextFileWithHashSkip({
+      runner, remoteCwd: rootDir, remoteDir, remotePath, body: "{\"token\":\"fixture\"}\n",
+      label: "Private fixture", action: "sync private fixture",
+      lockDir: path.posix.join(remoteDir, ".broker.json.lock"), private: true, timeoutMs: 30_000,
+    });
+    expect(result.uploaded).toBe(true);
+    expect((await readFile(umaskLog, "utf8")).trim()).toMatch(/^0?077$/);
+    expect((await fs.stat(remotePath)).mode & 0o777).toBe(0o600);
+  });
+
   it("test_process_session_script_rewritten_on_hash_mismatch: a mismatched remote hash still rewrites the script", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-hashskip-cold-"));
     cleanupDirs.push(rootDir);
@@ -1571,6 +1596,7 @@ describe("sandbox callback bridge", () => {
       { method: "GET", path: "/api/companies/co-1/approvals" },
       { method: "GET", path: "/api/companies/co-1/routines" },
       { method: "GET", path: "/api/companies/co-1/skills" },
+      { method: "GET", path: "/api/agents/me/mcp-skills/skill-1/files" },
       { method: "GET", path: "/api/companies/co-1/email/inboxes" },
       { method: "GET", path: "/api/companies/co-1/email/tasks/issue-1" },
       { method: "GET", path: "/api/companies/co-1/email/deliveries/send-1" },

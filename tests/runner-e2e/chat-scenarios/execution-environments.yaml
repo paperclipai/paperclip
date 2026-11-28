@@ -22,8 +22,10 @@ scenarios:
       - execution-environments/capabilities
       - runs-adapters/availability
     context: >-
-      One target supports the requested coding harness and another does not; detailed
-      environment inventory is board-only.
+      Two saved computers are advertised as able to run the requested coding harness, and
+      neither has been tested for it; one is an SSH computer that cannot be reached. Paperclip
+      cannot save a computer that is advertised as unable to run that harness. Environment
+      inventory, capabilities and tests are board-only.
     query: >-
       Which computer can run Morgan with Claude Code?
     expected_outcome: >-

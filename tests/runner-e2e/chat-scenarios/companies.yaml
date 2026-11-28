@@ -63,7 +63,7 @@ scenarios:
       The fast-response experiment is available but disabled; settings and tests require a human
       connection manager.
     query: >-
-      Make chat acknowledge my requests faster.
+      Help me enable the company's Fast response feature so chat acknowledges my requests faster.
     expected_outcome: >-
       The agent explains the offered fast-response setting and directs the human to its
       configuration and test surface. The journey checks a real acknowledgement and its failure

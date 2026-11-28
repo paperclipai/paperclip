@@ -1,4 +1,5 @@
 import { useShowAgentCreatedTasks } from "../hooks/useShowAgentCreatedTasks";
+import { configurationWarningMessages } from "../lib/configuration-warnings";
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { Link, useParams, useNavigate, useLocation, Navigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -28,6 +29,7 @@ import { PageTabBar } from "../components/PageTabBar";
 import { ProjectWorkspacesContent } from "../components/ProjectWorkspacesContent";
 import { SummarySlotCard } from "../components/SummarySlotCard";
 import { MembershipAction } from "../components/MembershipAction";
+import { useCoordinatorWorkspaceEnabled } from "../hooks/useCoordinatorWorkspaceEnabled";
 import { StarToggle } from "../components/StarToggle";
 import { buildProjectWorkspaceSummaries } from "../lib/project-workspaces-tab";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
@@ -47,6 +49,8 @@ import {
   useResourceMembershipMutation,
   useResourceMemberships,
 } from "../hooks/useResourceMemberships";
+import { useUpdateIssueMutation } from "../hooks/useUpdateIssueMutation";
+import { companyProjectsQuery } from "@/lib/company-projects-query";
 
 /* ── Top-level tab types ── */
 
@@ -215,37 +219,36 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
   });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(companyId),
-    queryFn: () => projectsApi.list(companyId),
+    ...companyProjectsQuery(companyId),
     enabled: !!companyId,
   });
 
-  const { data: issues, isLoading, error } = useQuery({
+  const issuesQuery = useQuery({
     queryKey: [...queryKeys.issues.listByProject(companyId, projectId), showAgentCreatedTasks],
     queryFn: () => issuesApi.listAll(companyId, { projectId, includeRoutineExecutions: true, includeAgentCreatedTasks: showAgentCreatedTasks }),
     enabled: !!companyId,
   });
+  const { data: issues } = issuesQuery;
+  const issuesView = useQueryView(issuesQuery);
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
 
-  const updateIssue = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
-      issuesApi.update(id, data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, projectId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
-    },
+  const updateIssue = useUpdateIssueMutation({
+    companyId,
+    invalidateKeys: [queryKeys.issues.listByProject(companyId, projectId), queryKeys.issues.list(companyId)],
   });
+
+  if (issuesView.kind === "error") return <QueryErrorState error={issuesView.error} action="load project tasks" onRetry={issuesView.retry} retrying={issuesView.isFetching} />;
 
   return (
     <IssuesList
       issues={issues ?? []}
-      isLoading={isLoading}
-      error={error as Error | null}
+      isLoading={issuesView.kind === "loading" || issuesView.kind === "reconnecting"}
       agents={agents}
       projects={projects}
       liveIssueIds={liveIssueIds}
       projectId={projectId}
       enableAgentCreatedVisibilityFilter
+      toolbarPresentation="collection"
       viewStateKey="paperclip:project-issues-view"
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
     />
@@ -270,8 +273,7 @@ function ProjectPluginOperationsList({
     enabled: !!companyId,
   });
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(companyId),
-    queryFn: () => projectsApi.list(companyId),
+    ...companyProjectsQuery(companyId),
     enabled: !!companyId,
   });
   const liveRunsQueryKey = queryKeys.liveRuns(companyId);
@@ -291,32 +293,35 @@ function ProjectPluginOperationsList({
     refetchInterval: sharedLiveRuns.refetchInterval,
   });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
-  const { data: issues, isLoading, error } = useQuery({
+  const issuesQuery = useQuery({
     queryKey: queryKeys.issues.listPluginOperationsByProject(companyId, projectId, originKindPrefix),
     queryFn: () => issuesApi.list(companyId, { projectId, originKindPrefix }),
     enabled: !!companyId && !!projectId,
   });
+  const { data: issues } = issuesQuery;
+  const issuesView = useQueryView(issuesQuery);
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
 
-  const updateIssue = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
-      issuesApi.update(id, data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listPluginOperationsByProject(companyId, projectId, originKindPrefix) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, projectId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
-    },
+  const updateIssue = useUpdateIssueMutation({
+    companyId,
+    invalidateKeys: [
+      queryKeys.issues.listPluginOperationsByProject(companyId, projectId, originKindPrefix),
+      queryKeys.issues.listByProject(companyId, projectId),
+      queryKeys.issues.list(companyId),
+    ],
   });
+
+  if (issuesView.kind === "error") return <QueryErrorState error={issuesView.error} action="load project tasks" onRetry={issuesView.retry} retrying={issuesView.isFetching} />;
 
   return (
     <IssuesList
       issues={issues ?? []}
-      isLoading={isLoading}
-      error={error as Error | null}
+      isLoading={issuesView.kind === "loading" || issuesView.kind === "reconnecting"}
       agents={agents}
       projects={projects}
       liveIssueIds={liveIssueIds}
       projectId={projectId}
+      toolbarPresentation="collection"
       viewStateKey={`paperclip:project-plugin-operations-view:${pluginKey}`}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
     />
@@ -332,6 +337,8 @@ export function ProjectDetail() {
     filter?: string;
   }>();
   const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
+  const workspace = useCoordinatorWorkspaceEnabled();
+  const classicWorkspace = workspace.loaded && !workspace.enabled;
   const { closePanel } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();
@@ -466,7 +473,9 @@ export function ProjectDetail() {
   const updateProject = useMutation({
     mutationFn: (data: Record<string, unknown>) =>
       projectsApi.update(projectLookupRef, data, resolvedCompanyId ?? lookupCompanyId),
-    onSuccess: (_project, data) => {
+    onSuccess: (updated, data) => {
+      const notice = configurationWarningMessages(updated);
+      if (notice) pushToast({ title: "Project saved", body: notice, tone: "warn" });
       invalidateProject();
       if (data.visibility !== undefined) queryClient.invalidateQueries({ queryKey: ["issues"] });
     },
@@ -598,7 +607,9 @@ export function ProjectDetail() {
     fieldSaveRequestIds.current[field] = requestId;
     setFieldState(field, "saving");
     try {
-      await projectsApi.update(projectLookupRef, data, resolvedCompanyId ?? lookupCompanyId);
+      const updated = await projectsApi.update(projectLookupRef, data, resolvedCompanyId ?? lookupCompanyId);
+      const notice = configurationWarningMessages(updated);
+      if (notice) pushToast({ title: "Project saved", body: notice, tone: "warn" });
       invalidateProject();
       if (data.visibility !== undefined) queryClient.invalidateQueries({ queryKey: ["issues"] });
       if (fieldSaveRequestIds.current[field] !== requestId) return;
@@ -610,7 +621,7 @@ export function ProjectDetail() {
       scheduleFieldReset(field, 3000);
       throw error;
     }
-  }, [invalidateProject, lookupCompanyId, projectLookupRef, queryClient, resolvedCompanyId, scheduleFieldReset, setFieldState]);
+  }, [invalidateProject, lookupCompanyId, projectLookupRef, pushToast, queryClient, resolvedCompanyId, scheduleFieldReset, setFieldState]);
 
   const projectBudgetSummary = useMemo(() => {
     const matched = budgetOverview?.policies.find(
@@ -708,7 +719,7 @@ export function ProjectDetail() {
   }
   if (!project) return null;
   const showLeftProjectNotice =
-    projectMembershipState === "left" && !dismissedLeftProjectIds.has(project.id);
+    classicWorkspace && projectMembershipState === "left" && !dismissedLeftProjectIds.has(project.id);
   const projectMembershipPending =
     membershipMutation.isPending &&
     membershipMutation.variables?.resourceType === "project" &&
@@ -742,7 +753,7 @@ export function ProjectDetail() {
   return (
     <div className="space-y-6">
       {showLeftProjectNotice ? (
-        <div className="flex items-center gap-3 border border-yellow-300/35 bg-yellow-300/10 px-3 py-2 text-sm text-yellow-900 dark:text-yellow-100">
+        <div className="flex flex-wrap items-center gap-3 border border-yellow-300/35 bg-yellow-300/10 px-3 py-2 text-sm text-yellow-900 dark:text-yellow-100">
           <p className="min-w-0 flex-1">
             You left this project. It no longer appears in your sidebar.
           </p>
@@ -804,20 +815,22 @@ export function ProjectDetail() {
             </div>
           ) : null}
         </div>
-        <div className="ml-auto flex items-center gap-2">
-          <StarToggle
-            size="button"
-            starred={projectStarred}
-            pending={projectStarPending}
-            resourceName={project.name}
-            onToggle={(next) => membershipMutation.mutate({
-              resourceType: "project",
-              resourceId: project.id,
-              resourceName: project.name,
-              starred: next,
-            })}
-          />
-        </div>
+        {classicWorkspace && (
+          <div className="ml-auto flex items-center gap-2">
+            <StarToggle
+              size="button"
+              starred={projectStarred}
+              pending={projectStarPending}
+              resourceName={project.name}
+              onToggle={(next) => membershipMutation.mutate({
+                resourceType: "project",
+                resourceId: project.id,
+                resourceName: project.name,
+                starred: next,
+              })}
+            />
+          </div>
+        )}
       </div>
 
       <SummarySlotCard

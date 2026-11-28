@@ -1,5 +1,6 @@
 import { composeCopilotSystemInstructions, COPILOT_TASK_ORIENTATION_INSTRUCTIONS } from "./copilot-profile.js";
 import { configuredEnvironmentProjection } from "../../configured-environment.js";
+import { preconfiguredHomeEnvironment } from "../preconfigured-home.js";
 import {
   chmod,
   lstat,
@@ -19,6 +20,7 @@ import { dirname, join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { acpxSidecarErrorCode } from "../../cli/acpx-sidecar-input.js";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 import { createAcpxRecoveryBinding } from "./recovery-identity.js";
 import {
@@ -49,7 +51,7 @@ describe("ACPX runtime sandbox", () => {
     } });
     const config = await readFile(join(sandbox.agentHomeDirectory, "config.toml"), "utf8");
     const keys = JSON.parse(config.split("\n").find(line => line.startsWith("include_only = "))?.slice("include_only = ".length) ?? "[]");
-    expect(keys).toEqual(expect.arrayContaining(Object.keys(pages)));
+    expect(keys).toEqual(expect.arrayContaining([...Object.keys(pages), "SSL_CERT_FILE", "SSL_CERT_DIR", "GIT_SSL_CAINFO", "NODE_EXTRA_CA_CERTS", "DENO_CERT", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"]));
     expect(keys).not.toContain("OPENAI_API_KEY");
     expect(keys).not.toContain("HOST_SECRET");
     expect(keys).not.toContain("PAPERCLIP_OBSERVABILITY_CODEX_CONFIG");
@@ -78,6 +80,45 @@ describe("ACPX runtime sandbox", () => {
       expect(await readFile(config, "utf8")).toBe(contents);
       expect((await stat(home)).mode & 0o777).toBe(0o755);
       await expect(stat(join(sandbox.root, "home"))).rejects.toMatchObject({ code: "ENOENT" });
+    }
+  });
+
+  it("reuses a prepared Claude home without importing old permission settings", async () => {
+    const fixture = await sandboxFixture("claude");
+    const home = await realpath(fixture.root);
+    const profile = join(home, "profile");
+    await mkdir(profile, {mode: 0o700});
+    const skills = join(home, "skills");
+    await mkdir(skills);
+    await writeFile(join(skills, "SKILL.md"), "Shared skills");
+    await symlink(skills, join(profile, "skills"));
+    await writeFile(join(profile, "settings.json"), '{"agentOwned":true}');
+    const environment = { HOME: home, PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME: profile };
+    const first = await prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent: "claude", environment, providerPolicy: {readOnly:true} });
+    await first.initializeOwnedConfiguration!();
+    expect(first.agentHomeDirectory).toBe(profile);
+    expect(first.launchEnvironment.CLAUDE_CONFIG_DIR).toBe(profile);
+    expect(first.persistedEnvironment.CLAUDE_CONFIG_DIR).toBe(profile);
+    expect(first.launchEnvironment.PAPERCLIP_ACPX_ISOLATED_CONTEXT).toBe("1");
+    expect(first.protectedPaths).toContain(profile);
+    const settings = JSON.parse(await readFile(join(profile, "settings.json"), "utf8"));
+    expect(settings.agentOwned).toBeUndefined();
+    expect(settings.model).toBe(fixture.binding.requestedModel);
+    expect(await readFile(join(profile, "skills", "SKILL.md"), "utf8")).toBe("Shared skills");
+    const other = await sandboxFixture("claude");
+    const second = await prepareAcpxRuntimeSandbox({ binding: other.binding, agent: "claude", environment });
+    expect(second.agentHomeDirectory).toBe(profile);
+    expect(second.root).not.toBe(first.root);
+    const conflicting = { ...environment, CLAUDE_CONFIG_DIR: "ignored-relative-path" };
+    const overridden = await prepareAcpxRuntimeSandbox({ binding: other.binding, agent: "claude", environment: conflicting });
+    expect(overridden.agentHomeDirectory).toBe(profile);
+    expect(overridden.launchEnvironment.CLAUDE_CONFIG_DIR).toBe(profile);
+    expect(conflicting.CLAUDE_CONFIG_DIR).toBe("ignored-relative-path");
+    expect(preconfiguredHomeEnvironment(conflicting)).toEqual(preconfiguredHomeEnvironment(environment));
+    const alias = join(home, "profile-alias");
+    await symlink(profile, alias);
+    for (const invalid of ["relative-profile", alias]) {
+      await expect(prepareAcpxRuntimeSandbox({ binding: other.binding, agent: "claude", environment: {...environment, PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME: invalid} })).rejects.toThrow("prepared_harness_home_invalid");
     }
   });
 
@@ -127,6 +168,20 @@ describe("ACPX runtime sandbox", () => {
     for (const value of ["provider-secret", "configured-secret", "scoped-run-token", "private-identity"]) expect(config).not.toContain(value);
   });
 
+  it("seeds an isolated Antigravity API-key profile without inherited login/configuration", async () => {
+    const fixture = await sandboxFixture("antigravity");
+    const sandbox = await prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent: "antigravity",
+      environment: { GEMINI_API_KEY: "bound-key", GEMINI_HOME: "/foreign/profile", GOOGLE_APPLICATION_CREDENTIALS: "/foreign/adc.json" } });
+    await sandbox.initializeOwnedConfiguration?.();
+    expect(sandbox.launchEnvironment.GEMINI_HOME).toBe(sandbox.agentHomeDirectory);
+    expect(sandbox.launchEnvironment.AGY_ACP_FORCE_FILE_STORAGE).toBe("1");
+    expect(sandbox.launchEnvironment.GOOGLE_APPLICATION_CREDENTIALS).toBeUndefined();
+    const settings = join(sandbox.agentHomeDirectory, "antigravity-acp/settings.json");
+    expect(JSON.parse(await readFile(settings, "utf8"))).toEqual({ auth: { type: "gemini-api-key" } });
+    expect((await stat(settings)).mode & 0o777).toBe(0o600);
+    expect(JSON.stringify(sandbox.persistedEnvironment)).not.toContain("bound-key");
+  });
+
   it.each(["claude-sonnet-5", "sonnet", "custom-deployment-id"])(
     "preserves the requested Claude model %s in its isolated settings",
     async (model) => {
@@ -157,6 +212,17 @@ describe("ACPX runtime sandbox", () => {
       }
     }
   });
+
+  it.each(["approve-reads", "approve-paperclip", "deny-all", "approve-all"] as const)(
+    "denies Claude's self-scheduling tools in isolated settings under %s",
+    async (permissionMode) => {
+      const fixture = await sandboxFixture("claude");
+      const sandbox = await prepareAcpxRuntimeSandbox({ binding: { ...fixture.binding, permissionMode }, agent: "claude" });
+      await sandbox.initializeOwnedConfiguration?.();
+      const settings = JSON.parse(await readFile(join(sandbox.agentHomeDirectory, "settings.json"), "utf8"));
+      expect(settings.permissions.deny).toEqual(["CronCreate", "CronDelete", "CronList", "ScheduleWakeup"]);
+    },
+  );
 
   it("restores bound Claude effort in private settings across cold connections", async () => {
     const fixture = await sandboxFixture("claude");
@@ -303,6 +369,27 @@ describe("ACPX runtime sandbox", () => {
       await expect(prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent: "pi", providerPolicy: { readOnly: false, readRoots } })).rejects.toThrow();
     }
     await expect(prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent: "pi", providerPolicy: { readOnly: false, systemInstructions: "x".repeat(32 * 1024 + 1) } })).rejects.toThrow("bounded size");
+  });
+
+  it.each(["claude", "codex", "grok", "antigravity"] as const)("admits %s instructions that the sandbox does not deliver, whatever their size", async (agent) => {
+    const fixture = await sandboxFixture(agent);
+    const systemInstructions = "x".repeat(54_734);
+    const sandbox = await prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent, providerPolicy: { readOnly: false, systemInstructions } });
+    expect(Object.values(sandbox.launchEnvironment).some(value => value?.includes(systemInstructions))).toBe(false);
+  });
+
+  it.each(["pi", "cursor"] as const)("rejects oversized %s instructions with the instructions admission code", async (agent) => {
+    const fixture = await sandboxFixture(agent);
+    const failure = await prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent, providerPolicy: { readOnly: false, systemInstructions: "x".repeat(32 * 1024 + 1) } }).catch(error => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure.message).toMatch(/bounded size/);
+    expect(acpxSidecarErrorCode(failure)).toBe("ACPX_ADMISSION_INSTRUCTIONS");
+  });
+
+  it("rejects instructions containing NUL with the instructions admission code", async () => {
+    const fixture = await sandboxFixture("claude");
+    const failure = await prepareAcpxRuntimeSandbox({ binding: fixture.binding, agent: "claude", providerPolicy: { readOnly: false, systemInstructions: "a\0b" } }).catch(error => error);
+    expect(acpxSidecarErrorCode(failure)).toBe("ACPX_ADMISSION_INSTRUCTIONS");
   });
 
   it("re-prepares and re-synchronizes an existing private sandbox", async () => {
@@ -511,7 +598,7 @@ it("refreshes Copilot native instructions privately on every admission, includin
   expect(await readFile(path, "utf8")).toBe(composed(""));
 });
 
-async function sandboxFixture(agent: "pi" | "claude" | "codex" | "grok" | "cursor" | "copilot") {
+async function sandboxFixture(agent: "pi" | "claude" | "codex" | "grok" | "cursor" | "copilot" | "antigravity") {
   const root = await mkdtemp(join(tmpdir(), "paperclip-acpx-sandbox-"));
   temporaryDirectories.push(root);
   const workspace = join(root, "workspace");
@@ -524,6 +611,7 @@ async function sandboxFixture(agent: "pi" | "claude" | "codex" | "grok" | "curso
     codex: "gpt-5.6-sol",
     cursor: "provider-model-cursor",
     copilot: "provider-model-copilot",
+    antigravity: "provider-model-antigravity",
   } as const;
   const binding = await createAcpxRecoveryBinding({
     runtimeDirectory,

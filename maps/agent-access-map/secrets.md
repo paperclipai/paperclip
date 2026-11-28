@@ -4,6 +4,11 @@ Product map: [Secrets, personal credentials, and proposals](../feature-map/secre
 
 Feature ID: `secrets`.
 
+The agent **Secrets** page shows inline environment variables alongside company
+and user secret references. Inline values stay redacted on configuration reads.
+This presentation uses the existing agent configuration APIs and permissions;
+it does not grant another agent access to those values.
+
 Source revision: `3bbc2104b65caf9f7763938a01260a5673e12f7a`.
 
 Review depth and executed proof are separate. The operation records enumerate the named behavior and access boundaries. Their evidence states describe the reviewed sources; run results and environment limits belong in the PR or verification artifacts. A listed API or source test does not establish a live authorized journey. Follow the [map contract](../README.md).

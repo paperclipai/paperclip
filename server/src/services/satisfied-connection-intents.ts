@@ -1,7 +1,9 @@
+import { notifyIssueReviewState } from "./issue-review-state-notifications.js";
+import { notifyChatConfirmationResolution } from "./chat-confirmation-notifications.js";
 import { enqueueTerminalIssueInteractionChatPublications } from "./chat-interaction-publications.js";
 import { connectionManagementService } from "./connection-management.js";
 import { chatCredentialEntryGenerations } from "./chat-channels/credentials.js";
-import { and, asc, eq, gt, inArray, isNull, or } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, notInArray, or } from "drizzle-orm";
 import { approvals, chatEndpoints, chatExternalPrincipals, chatIdentityLinks, toolConnections, companyMemberships, connectionIntentDeliveries, issueApprovals, issueThreadInteractions, issues, type Db } from "@paperclipai/db";
 import { connectionIntentPayloadSchema } from "@paperclipai/shared";
 import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
@@ -126,7 +128,7 @@ export function satisfiedConnectionIntentService(db: Db) {
         .from(issueThreadInteractions).innerJoin(issues, and(
           eq(issues.id, issueThreadInteractions.issueId), eq(issues.companyId, issueThreadInteractions.companyId),
         )).where(and(eq(issueThreadInteractions.kind, "connection_intent"), eq(issueThreadInteractions.status, "pending"),
-          inArray(issues.status, ["in_progress", "in_review"]), isNull(issues.assigneeUserId),
+          notInArray(issues.status, ["done", "cancelled"]), isNull(issues.assigneeUserId),
           ...(afterId ? [gt(issueThreadInteractions.id, afterId)] : [])))
         .orderBy(asc(issueThreadInteractions.id)).limit(50);
       // Rotate past unavailable cards so they cannot starve a later ready one.
@@ -152,10 +154,14 @@ export function satisfiedConnectionIntentService(db: Db) {
                 eq(companyMemberships.principalId, intent.addresseeUserId),
               )).for("share");
             }
-            const connection = await findSatisfiedToolConnection(txDb, task, intent);
+            const continues = ["in_progress", "in_review"].includes(task.status);
+            const connection = continues ? await findSatisfiedToolConnection(txDb, task, intent)
+              : ["done", "cancelled"].includes(task.status) ? null : await findAvailableToolConnection(txDb, task, intent);
             if (!connection) return false;
+            await notifyIssueReviewState(tx, candidate);
             const now = new Date();
             // Retire the obsolete request without inventing a human approval.
+            await notifyChatConfirmationResolution(tx, intent);
             const [retired] = await tx.update(issueThreadInteractions).set({ status: "expired", resolvedAt: now, updatedAt: now,
               result: { version: 1, outcome: "expired", connectionId: connection.id,
                 reason: "An already authorized connection is available to the requesting agent." },
@@ -165,8 +171,10 @@ export function satisfiedConnectionIntentService(db: Db) {
             const interaction = await issueThreadInteractionService(txDb).getById(retired.id);
             if (interaction) await enqueueTerminalIssueInteractionChatPublications(txDb, interaction);
             await tx.update(issues).set({ updatedAt: now }).where(and(eq(issues.id, task.id), eq(issues.companyId, task.companyId)));
-            await tx.insert(connectionIntentDeliveries).values({ interactionId: intent.id, companyId: task.companyId }).onConflictDoNothing();
-            await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
+            if (continues) {
+              await tx.insert(connectionIntentDeliveries).values({ interactionId: intent.id, companyId: task.companyId }).onConflictDoNothing();
+              await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
+            }
             await logActivity(txDb, { companyId: task.companyId, actorType: "system", actorId: "connection-reconciliation",
               action: "issue.thread_interaction_resolved", entityType: "issue", entityId: task.id,
               details: { interactionId: intent.id, interactionKind: "connection_intent", status: "expired",
