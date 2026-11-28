@@ -218,6 +218,91 @@ describePostgres("agent configuration save latency", () => {
     expect(allocate).not.toHaveBeenCalled(); expect(probe).not.toHaveBeenCalled();
   });
 
+  it("rejects a roster model outside the preserved connection's catalog", async () => {
+    const routed = await aiConnectionService(db).save(agent.companyId, userId, {
+      provider: "openai", method: "api_key", ownership: "shared", name: "Routed gateway",
+      apiKey: "fixture-routed-key", agentIds: [agent.id], allAgents: false,
+      routing: { kind: "gateway", protocol: "responses", baseUrl: "https://gateway.example/v1", auth: "bearer", models: [{ id: "gpt-5.6-sol" }] },
+    }, "fixture-routed-key");
+    const routedBinding = { provider: "openai", method: "api_key", mode: "shared", connectionId: routed.connectionId, grantId: routed.grantId } as const;
+    await db.update(agents).set({ runtimeConfig: { aiConnection: routedBinding } }).where(eq(agents.id, agent.id));
+    // runtimeConfig is present but carries no binding: the old code restored
+    // the binding in a separate branch and skipped validation entirely, so
+    // the out-of-catalog model saved. The restored binding must be checked.
+    const response = await request(app).patch(`/api/agents/${agent.id}`).send({ adapterConfig: { model: "gpt-5.6-luna" },
+      runtimeConfig: { aiConnection: null } });
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(response.body.error).toContain("Choose a default model available on the selected connection");
+    expect((await readAgent()).adapterConfig.model).toBe("gpt-5.6-sol");
+    expect((await readAgent()).runtimeConfig.aiConnection).toEqual(routedBinding);
+    expect(allocate).not.toHaveBeenCalled(); expect(probe).not.toHaveBeenCalled();
+  });
+
+  it("preserves the connection for a roster model inside its catalog", async () => {
+    const routed = await aiConnectionService(db).save(agent.companyId, userId, {
+      provider: "openai", method: "api_key", ownership: "shared", name: "Routed gateway",
+      apiKey: "fixture-routed-key", agentIds: [agent.id], allAgents: false,
+      routing: { kind: "gateway", protocol: "responses", baseUrl: "https://gateway.example/v1", auth: "bearer", models: [{ id: "gpt-5.6-sol" }] },
+    }, "fixture-routed-key");
+    const routedBinding = { provider: "openai", method: "api_key", mode: "shared", connectionId: routed.connectionId, grantId: routed.grantId } as const;
+    await db.update(agents).set({ runtimeConfig: { aiConnection: routedBinding } }).where(eq(agents.id, agent.id));
+    const response = await request(app).patch(`/api/agents/${agent.id}`).send({ adapterConfig: { model: "gpt-5.6-sol" },
+      runtimeConfig: { aiConnection: null } });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect((await readAgent()).runtimeConfig.aiConnection).toEqual(routedBinding);
+    expect(allocate).not.toHaveBeenCalled(); expect(probe).not.toHaveBeenCalled();
+  });
+
+  it("rejects a model-only PATCH outside the reused connection's catalog", async () => {
+    const routed = await aiConnectionService(db).save(agent.companyId, userId, {
+      provider: "openai", method: "api_key", ownership: "shared", name: "Routed gateway",
+      apiKey: "fixture-routed-key", agentIds: [agent.id], allAgents: false,
+      routing: { kind: "gateway", protocol: "responses", baseUrl: "https://gateway.example/v1", auth: "bearer", models: [{ id: "gpt-5.6-sol" }, { id: "gpt-5.6-luna" }] },
+    }, "fixture-routed-key");
+    const routedBinding = { provider: "openai", method: "api_key", mode: "shared", connectionId: routed.connectionId, grantId: routed.grantId } as const;
+    await db.update(agents).set({ runtimeConfig: { aiConnection: routedBinding } }).where(eq(agents.id, agent.id));
+    // No runtimeConfig is sent at all: the old code silently reused the
+    // binding and never checked the new model against its catalog, so the
+    // out-of-catalog model saved and only failed later at run time.
+    const response = await request(app).patch(`/api/agents/${agent.id}`).send({ adapterConfig: { model: "gpt-5.6-nova" } });
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(response.body.error).toContain("Choose a default model available on the selected connection");
+    expect((await readAgent()).adapterConfig.model).toBe("gpt-5.6-sol");
+    expect((await readAgent()).runtimeConfig.aiConnection).toEqual(routedBinding);
+    expect(allocate).not.toHaveBeenCalled(); expect(probe).not.toHaveBeenCalled();
+  });
+
+  it("saves a model-only PATCH inside the reused connection's catalog", async () => {
+    const routed = await aiConnectionService(db).save(agent.companyId, userId, {
+      provider: "openai", method: "api_key", ownership: "shared", name: "Routed gateway",
+      apiKey: "fixture-routed-key", agentIds: [agent.id], allAgents: false,
+      routing: { kind: "gateway", protocol: "responses", baseUrl: "https://gateway.example/v1", auth: "bearer", models: [{ id: "gpt-5.6-sol" }, { id: "gpt-5.6-luna" }] },
+    }, "fixture-routed-key");
+    const routedBinding = { provider: "openai", method: "api_key", mode: "shared", connectionId: routed.connectionId, grantId: routed.grantId } as const;
+    await db.update(agents).set({ runtimeConfig: { aiConnection: routedBinding } }).where(eq(agents.id, agent.id));
+    const response = await request(app).patch(`/api/agents/${agent.id}`).send({ adapterConfig: { model: "gpt-5.6-luna" } });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect((await readAgent()).adapterConfig.model).toBe("gpt-5.6-luna");
+    expect((await readAgent()).runtimeConfig.aiConnection).toEqual(routedBinding);
+    expect(allocate).not.toHaveBeenCalled(); expect(probe).not.toHaveBeenCalled();
+  });
+
+  it("lets a model-less PATCH through against the reused connection", async () => {
+    const routed = await aiConnectionService(db).save(agent.companyId, userId, {
+      provider: "openai", method: "api_key", ownership: "shared", name: "Routed gateway",
+      apiKey: "fixture-routed-key", agentIds: [agent.id], allAgents: false,
+      routing: { kind: "gateway", protocol: "responses", baseUrl: "https://gateway.example/v1", auth: "bearer", models: [{ id: "gpt-5.6-sol" }] },
+    }, "fixture-routed-key");
+    const routedBinding = { provider: "openai", method: "api_key", mode: "shared", connectionId: routed.connectionId, grantId: routed.grantId } as const;
+    await db.update(agents).set({ runtimeConfig: { aiConnection: routedBinding } }).where(eq(agents.id, agent.id));
+    const response = await request(app).patch(`/api/agents/${agent.id}`).send({ name: "Renamed agent" });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect((await readAgent()).name).toBe("Renamed agent");
+    expect((await readAgent()).adapterConfig.model).toBe("gpt-5.6-sol");
+    expect((await readAgent()).runtimeConfig.aiConnection).toEqual(routedBinding);
+    expect(allocate).not.toHaveBeenCalled(); expect(probe).not.toHaveBeenCalled();
+  });
+
   it("rejects an account without an installation for this agent", async () => {
     await db.delete(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, account.connectionId));
     const response = await request(app).patch(`/api/agents/${agent.id}`).send({ runtimeConfig: { aiConnection: binding } });

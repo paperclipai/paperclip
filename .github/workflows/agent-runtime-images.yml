@@ -45,15 +45,16 @@ jobs:
       - name: Build + push all deployed harness images (linux/amd64)
         id: bake
         run: |
-          # Scope: the five harnesses the kubernetes sandbox provider supports
-          # out of the box (opencode, pi, codex, gemini, claude). acpx/hermes
-          # have Dockerfiles in the bake group but are not published by default.
+          # Scope: the harnesses the kubernetes sandbox provider supports
+          # out of the box (opencode, pi, codex, gemini, claude, agy).
+          # acpx/hermes have Dockerfiles in the bake group but are not
+          # published by default.
           # Platforms come from the bake HCL (linux/amd64).
           # Use --push rather than a "*.push" --set so the wildcard does not hit
           # the bake group (which has no such key -> "unknown key" error).
           docker buildx bake \
             -f docker/agent-runtime/buildx-bake.hcl \
-            base opencode pi codex gemini claude \
+            base opencode pi codex gemini claude agy \
             --push \
             --metadata-file=bake-metadata.json
           # Extract digests for cosign signing
@@ -63,12 +64,14 @@ jobs:
           CODEX_DIGEST=$(jq -r '."codex"."containerimage.digest"' bake-metadata.json)
           GEMINI_DIGEST=$(jq -r '."gemini"."containerimage.digest"' bake-metadata.json)
           CLAUDE_DIGEST=$(jq -r '."claude"."containerimage.digest"' bake-metadata.json)
+          AGY_DIGEST=$(jq -r '."agy"."containerimage.digest"' bake-metadata.json)
           echo "base_digest=$BASE_DIGEST" >> "$GITHUB_OUTPUT"
           echo "opencode_digest=$OPENCODE_DIGEST" >> "$GITHUB_OUTPUT"
           echo "pi_digest=$PI_DIGEST" >> "$GITHUB_OUTPUT"
           echo "codex_digest=$CODEX_DIGEST" >> "$GITHUB_OUTPUT"
           echo "gemini_digest=$GEMINI_DIGEST" >> "$GITHUB_OUTPUT"
           echo "claude_digest=$CLAUDE_DIGEST" >> "$GITHUB_OUTPUT"
+          echo "agy_digest=$AGY_DIGEST" >> "$GITHUB_OUTPUT"
         env:
           VERSION: ${{ env.VERSION }}
           REGISTRY: ${{ env.REGISTRY }}
@@ -96,3 +99,7 @@ jobs:
       - name: Cosign sign claude
         run: |
           cosign sign --yes "${{ env.REGISTRY }}/agent-runtime-claude@${{ steps.bake.outputs.claude_digest }}"
+
+      - name: Cosign sign agy
+        run: |
+          cosign sign --yes "${{ env.REGISTRY }}/agent-runtime-agy@${{ steps.bake.outputs.agy_digest }}"

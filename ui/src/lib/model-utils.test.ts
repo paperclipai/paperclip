@@ -3,7 +3,7 @@ import { adapterCuratesModelOrder } from "./model-utils";
 
 describe("adapterCuratesModelOrder", () => {
   it("keeps the advertised order for built-in adapters with a hand-ordered list", () => {
-    for (const adapterType of ["claude_local", "codex_local", "paperclip_runner", "gemini_local", "opencode_local"]) {
+    for (const adapterType of ["claude_local", "codex_local", "paperclip_runner", "gemini_local", "opencode_local", "agy_local"]) {
       expect(adapterCuratesModelOrder(adapterType)).toBe(true);
     }
   });

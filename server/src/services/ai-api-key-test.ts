@@ -45,8 +45,10 @@ async function providerErrorTypes(response: Response): Promise<string[]> {
     typeof candidate === "string" && KNOWN_PROVIDER_ERROR_TYPES.has(candidate));
 }
 
-function classify(status: number, errorTypes: string[]): AiKeyVerificationFailure {
+function classify(status: number, errorTypes: string[], provider: AiProvider): AiKeyVerificationFailure {
   if (status === 401 || status === 403) return "rejected";
+  // Antigravity's Google endpoint answers a bad key with 400, not 401/403.
+  if (provider === "antigravity" && status === 400) return "rejected";
   if (status === 402 || errorTypes.some(type => BILLING_ERROR_TYPES.has(type))) return "billing";
   if (status === 429) return "rateLimited";
   if (status >= 500) return "unavailable";
@@ -71,6 +73,7 @@ export async function validateAiApiKey(
     openrouter: "https://openrouter.ai/api/v1/key",
     xai: "https://api.x.ai/v1/models",
     google: "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1",
+    antigravity: "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1",
   };
   let response: Response;
   try {
@@ -78,7 +81,7 @@ export async function validateAiApiKey(
       redirect: "error",
       signal: AbortSignal.timeout(15000),
       headers:
-        provider === "google" ? { "x-goog-api-key": key } : provider === "anthropic"
+        provider === "google" || provider === "antigravity" ? { "x-goog-api-key": key } : provider === "anthropic"
           ? { "x-api-key": key, "anthropic-version": "2023-06-01" }
           : { Authorization: `Bearer ${key}` },
     });
@@ -95,7 +98,7 @@ export async function validateAiApiKey(
   }
   const errorTypes = response.status === 401 || response.status === 403 ? [] : await providerErrorTypes(response);
   if (response.status === 401 || response.status === 403) await response.body?.cancel();
-  const failure = classify(response.status, errorTypes);
+  const failure = classify(response.status, errorTypes, provider);
   const errorType = errorTypes.find(type => BILLING_ERROR_TYPES.has(type)) ?? errorTypes[0] ?? null;
   logger.warn({ provider, status: response.status, providerErrorType: errorType, failure: AI_KEY_VERIFICATION_FAILURES[failure].code },
     "AI provider did not verify an API key");

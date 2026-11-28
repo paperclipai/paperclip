@@ -42,6 +42,7 @@
     "@lexical/link": "0.48.0",
     "@lezer/highlight": "^1.2.3",
     "@mdxeditor/editor": "^4.2.3",
+    "@paperclipai/adapter-agy-local": "workspace:*",
     "@paperclipai/adapter-claude-local": "workspace:*",
     "@paperclipai/adapter-codex-local": "workspace:*",
     "@paperclipai/adapter-cursor-cloud": "workspace:*",

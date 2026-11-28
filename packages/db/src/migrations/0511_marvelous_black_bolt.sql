@@ -1,0 +1,5 @@
+-- paperclip:migration-compat online_compatible: the replacement provider CHECK accepts every value the old one accepted (it only adds 'antigravity'), so the previous release's writes stay valid; the dropped CHECK is not a unique target and nothing relies on it for upserts or cascades; the swap runs on small defaults tables with only a brief lock, and any concurrent write in the gap between drop and add is validated by the new CHECK.
+ALTER TABLE "ai_connection_defaults" DROP CONSTRAINT "ai_connection_defaults_provider_check";--> statement-breakpoint
+ALTER TABLE "ai_provider_defaults" DROP CONSTRAINT "ai_provider_defaults_provider_check";--> statement-breakpoint
+ALTER TABLE "ai_connection_defaults" ADD CONSTRAINT "ai_connection_defaults_provider_check" CHECK ("ai_connection_defaults"."provider" in ('anthropic','openai','openrouter','xai','google','github','antigravity'));--> statement-breakpoint
+ALTER TABLE "ai_provider_defaults" ADD CONSTRAINT "ai_provider_defaults_provider_check" CHECK ("ai_provider_defaults"."provider" in ('anthropic','openai','openrouter','xai','google','github','antigravity'));

@@ -182,6 +182,11 @@ export function defaultMigrationTargetForProvider(
       };
       break;
     case "google":
+    case "antigravity":
+      // Antigravity is Google's agent over the same acpx runtime as the
+      // "google" provider, so it migrates to the same target. (Omitting it
+      // left `base` unassigned for that provider — a runtime TypeError as
+      // well as TS2454.)
       base = {
         adapterType: "paperclip_runner",
         runnerProvider: "acpx",

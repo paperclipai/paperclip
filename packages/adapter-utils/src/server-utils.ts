@@ -4501,6 +4501,8 @@ export async function ensurePaperclipSkillSymlink(
     linkSource,
     linkTarget,
   ) => fs.symlink(linkSource, linkTarget),
+  unlinkSkill: (target: string) => Promise<void> = (linkTarget) =>
+    fs.unlink(linkTarget),
 ): Promise<"created" | "repaired" | "skipped"> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {
@@ -4528,7 +4530,7 @@ export async function ensurePaperclipSkillSymlink(
     return "skipped";
   }
 
-  await fs.unlink(target);
+  await unlinkSkill(target);
   await linkSkill(source, target);
   return "repaired";
 }

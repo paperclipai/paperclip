@@ -16,6 +16,7 @@ export const BUILTIN_ADAPTER_TYPES = new Set([
   "openclaw_gateway",
   "opencode_local",
   "pi_local",
+  "agy_local",
   "process",
   "http",
 ]);

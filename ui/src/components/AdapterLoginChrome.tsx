@@ -52,7 +52,9 @@ export type AdapterLoginChrome = "panel" | "onboarding";
 export const CONNECT_SOURCE_NAMES: Record<string, string> = {
   claude_local: "Claude",
   codex_local: "OpenAI",
+  gemini_local: "Gemini",
   grok_local: "Grok",
+  agy_local: "Antigravity",
   antigravity_runtime: "Antigravity",
 };
 
@@ -640,8 +642,8 @@ export function LocalProviderLoginInstructions({ adapterType, login, hostedRedir
     onSubmittingChange?.(submitting || codeSubmitted);
   }, [submitting, codeSubmitted, onSubmittingChange]);
   useEffect(() => () => onSubmittingChange?.(false), [onSubmittingChange]);
-  const provider = adapterType === "antigravity_runtime" ? "Antigravity" : adapterType === "claude_local" ? "Claude Code" : adapterType === "grok_local" ? "Grok CLI" : "Codex CLI";
-  const isolated = login?.isolated ?? (adapterType === "codex_local" || adapterType === "grok_local");
+  const provider = adapterType === "antigravity_runtime" ? "Antigravity" : adapterType === "claude_local" ? "Claude Code" : adapterType === "grok_local" ? "Grok CLI" : adapterType === "agy_local" ? "Antigravity (agy)" : "Codex CLI";
+  const isolated = login?.isolated ?? (adapterType === "codex_local" || adapterType === "grok_local" || adapterType === "agy_local");
   const command = login?.command;
   const browserLogin = adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "antigravity_runtime";
   const hostedGoogleRedirect = adapterType === "antigravity_runtime" && Boolean(hostedRedirect);

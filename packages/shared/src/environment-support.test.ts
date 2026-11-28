@@ -76,6 +76,30 @@ describe("isSandboxProviderSupportedForAdapter", () => {
       }),
     ]);
   });
+
+  it("treats agy_local as a remote-managed local adapter", () => {
+    expect(adapterSupportsRemoteManagedEnvironments("agy_local")).toBe(true);
+    expect(supportedEnvironmentDriversForAdapter("agy_local")).toEqual(["local", "ssh", "sandbox"]);
+    expect(
+      isSandboxProviderSupportedForAdapter("agy_local", "fake-plugin", ["fake-plugin"]),
+    ).toBe(true);
+  });
+
+  it("includes agy_local sandbox support in environment capabilities", () => {
+    const capabilities = getEnvironmentCapabilities(["agy_local"], {
+      sandboxProviders: {
+        "fake-plugin": { displayName: "Fake Plugin" },
+      },
+    });
+
+    expect(capabilities.adapters).toEqual([
+      expect.objectContaining({
+        adapterType: "agy_local",
+        drivers: expect.objectContaining({ sandbox: "supported", ssh: "supported" }),
+        sandboxProviders: expect.objectContaining({ "fake-plugin": "supported" }),
+      }),
+    ]);
+  });
 });
 
 describe("getEnvironmentCapabilities reusable leases default", () => {

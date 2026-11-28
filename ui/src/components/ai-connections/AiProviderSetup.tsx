@@ -44,6 +44,11 @@ const providers = [
   { id: "google", name: "Antigravity", description: "Antigravity sign-in or Gemini API key" },
   { id: "xai", name: "xAI", description: "Grok subscription or API key" },
   {
+    id: "antigravity",
+    name: "Antigravity",
+    description: "Antigravity subscription or API key",
+  },
+  {
     id: "openrouter",
     name: "OpenRouter",
     description: "Models through one API key",

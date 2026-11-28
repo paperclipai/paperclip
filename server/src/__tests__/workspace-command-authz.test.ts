@@ -67,4 +67,25 @@ describe("workspace host-command mutation detection", () => {
       },
     })).toEqual([]);
   });
+
+  it.each([
+    "command",
+    "hermesCommand",
+    "args",
+    "extraArgs",
+    "cwd",
+    "env",
+    "filesystemSandboxCommand",
+    "skillsRootPath",
+  ])("collects task override adapterConfig.%s as a host-command path", (key) => {
+    expect(collectIssueWorkspaceCommandPaths({
+      assigneeAdapterOverrides: { adapterConfig: { [key]: key === "env" ? {} : "value" } },
+    })).toContain(`assigneeAdapterOverrides.adapterConfig.${key}`);
+  });
+
+  it("ignores benign task override adapterConfig keys", () => {
+    expect(collectIssueWorkspaceCommandPaths({
+      assigneeAdapterOverrides: { adapterConfig: { model: "gpt-5.6-sol", temperature: 0.2 } },
+    })).toEqual([]);
+  });
 });

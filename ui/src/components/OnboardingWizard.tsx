@@ -158,6 +158,7 @@ import { buildNewAgentRuntimeConfig } from "../lib/new-agent-runtime-config";
 import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
+import { DEFAULT_AGY_LOCAL_MODEL } from "@paperclipai/adapter-agy-local";
 import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
 import {
@@ -178,7 +179,7 @@ import {
   onboardingStepPositionFor,
 } from "./onboarding/Stepper";
 import { AgentPreview } from "./onboarding/AgentPreview";
-import { ModelSourceTiles, type CredentialMode } from "./onboarding/ModelSourceTiles";
+import { ModelSourceTiles, CredentialTag, type CredentialMode } from "./onboarding/ModelSourceTiles";
 import { CredentialModeLink } from "./onboarding/CredentialModeLink";
 import { FooterNav, type FooterPrimaryIcon } from "./onboarding/FooterNav";
 import { OnboardingHeading } from "./onboarding/OnboardingPrimitives";
@@ -205,6 +206,37 @@ type Step = 0 | 1 | 2 | 3 | 4 | 5;
 type AdapterType = string;
 
 const ONBOARDING_ADAPTER_TYPES = new Set(["claude_local", "codex_local"]);
+
+// Adapters offered in the onboarding harness grid. First onboarding leads with
+// ONBOARDING_ADAPTER_TYPES (the recommended pair); the rest appear under "More
+// harnesses". cursor_cloud is managed-remote-only and is never offered here, so
+// it stays out of this set even though it is a visual choice. This must stay
+// broader than ONBOARDING_ADAPTER_TYPES: gating the grid on that pair leaves
+// moreAdapters permanently empty and the toggle dead.
+const ONBOARDING_GRID_ADAPTER_TYPES = new Set([
+  ...ONBOARDING_ADAPTER_TYPES,
+  "gemini_local",
+  "kimi_local",
+  "opencode_local",
+  "pi_local",
+  "cursor",
+  "agy_local",
+  "grok_local",
+  "hermes_local",
+]);
+
+// Adapters whose Connect step verifies the selected model against the
+// discovered catalog. handleGiveHeartbeat checks an opencode_local model
+// against adapterModels, so the query must run for opencode too — not just
+// the recommended Claude/Codex pair (upstream #18309 limited it to that
+// pair, which left OpenCode onboarding unable to finish: a missing catalog
+// reads as an empty list, so Connect always reported "No OpenCode models
+// discovered"). The other "More harnesses" adapters do not consult the
+// catalog on Connect, so they stay out.
+const ONBOARDING_MODEL_CATALOG_ADAPTER_TYPES = new Set([
+  ...ONBOARDING_ADAPTER_TYPES,
+  "opencode_local",
+]);
 
 function restoreOnboardingAdapterType(savedAdapterType: unknown, provider?: unknown, savedCopilot?: unknown): AdapterType {
   if (savedAdapterType === "paperclip_runner" && provider === "pi") return "pi_local";
@@ -252,8 +284,29 @@ function adapterConfigHasAnthropicApiKey(config: Record<string, unknown>): boole
  * adapter with no brand file here still renders — with its registry icon —
  * rather than a gap where a tile should be.
  */
-const MODEL_SOURCE_BRAND_MARKS: Record<string, string> = {
-  claude_local: "/brands/claude-color.svg",
+const MODEL_SOURCE_BRAND_MARKS: Record<string, { src: string; dark?: string }> = {
+  claude_local: { src: "/brands/claude-color.svg" },
+  gemini_local: { src: "/brands/adapters/gemini-color.svg" },
+  kimi_local: {
+    src: "/brands/adapters/kimi-color-light.svg",
+    dark: "/brands/adapters/kimi-color.svg",
+  },
+  cursor: {
+    src: "/brands/adapters/cursor.svg",
+    dark: "/brands/adapters/cursor-dark.svg",
+  },
+  grok_local: {
+    src: "/brands/adapters/grok.svg",
+    dark: "/brands/adapters/grok-dark.svg",
+  },
+  hermes_local: {
+    src: "/brands/adapters/hermesagent.svg",
+    dark: "/brands/adapters/hermesagent-dark.svg",
+  },
+  pi_local: {
+    src: "/brands/adapters/pi.svg",
+    dark: "/brands/adapters/pi-dark.svg",
+  },
 };
 
 
@@ -291,6 +344,15 @@ const MODEL_SOURCE_INLINE_MARKS: Record<string, ComponentType<{ className?: stri
 const API_KEY_ENV_KEYS: Record<string, string> = {
   claude_local: ANTHROPIC_API_KEY_ENV_KEY,
   codex_local: "OPENAI_API_KEY",
+  gemini_local: "GEMINI_API_KEY",
+  grok_local: "XAI_API_KEY",
+  kimi_local: "KIMI_MODEL_API_KEY",
+  cursor: "CURSOR_API_KEY",
+  opencode_local: "OPENROUTER_API_KEY",
+  pi_local: "ANTHROPIC_API_KEY",
+  agy_local: "GEMINI_API_KEY",
+  hermes_local: "OPENROUTER_API_KEY",
+  paperclip_runner: "COPILOT_GITHUB_TOKEN",
 };
 
 function apiKeyEnvKeyFor(adapterType: string): string {
@@ -308,7 +370,22 @@ function ModelSourceMark({
   if (Inline) return <Inline className="size-full" />;
   const brand = MODEL_SOURCE_BRAND_MARKS[type];
   if (!brand) return <Fallback className="size-full" />;
-  return <img src={brand} alt="" className="size-full" />;
+  return (
+    <>
+      <img
+        src={brand.src}
+        alt=""
+        className={cn("size-full shrink-0 object-contain", brand.dark && "dark:hidden")}
+      />
+      {brand.dark && (
+        <img
+          src={brand.dark}
+          alt=""
+          className="hidden size-full shrink-0 object-contain dark:block"
+        />
+      )}
+    </>
+  );
 }
 
 export { ONBOARDING_STORAGE_KEY } from "../lib/onboarding-state";
@@ -701,7 +778,25 @@ function OnboardingWizardInner({
     createdCompanyId,
     apiKeyEnvKeyFor(adapterType),
     effectiveOnboardingOpen && step === 4,
+    // The provider whose accounts to list follows the adapter, not the
+    // environment key: agy_local reads its key from GEMINI_API_KEY but its
+    // accounts are provider "antigravity", and pi_local reads its key from
+    // ANTHROPIC_API_KEY but its accounts are provider "openrouter".
+    // aiProviderForAdapter returns the right provider for both, agrees
+    // with the env-key derivation for every other adapter, and is
+    // undefined where there is no managed provider (so the derivation
+    // still applies there).
+    aiProviderForAdapter(adapterType),
   );
+  // Hermes cannot use managed OpenRouter accounts: isAiConnectionCompatible
+  // rejects them (the openrouter api_key capability lists only
+  // opencode_local and pi_local), while a typed key is carried as an env
+  // user secret. Offer only stored secrets for it, never managed accounts —
+  // the first saved account is auto-selected, so listing one would hand the
+  // environment test a binding it rejects.
+  const savedKeyOptions = adapterType === "hermes_local"
+    ? savedKeys.options.filter((option) => !option.aiConnection)
+    : savedKeys.options;
   // The chooser is absent in onboarding. Prefer the user's explicit default;
   // otherwise only reuse an unambiguous account, regardless of list ordering.
   const savedSubscription = savedKeys.subscriptions.find((option) => option.aiConnection?.mode === "responsible_user")
@@ -709,11 +804,11 @@ function OnboardingWizardInner({
   const [selectedSavedKey, setSelectedSavedKey] = useState<{ companyId: string; envKey: string; id: string } | null>(null);
   const selectedApiKeyId = selectedSavedKey?.companyId === createdCompanyId && selectedSavedKey?.envKey === apiKeyEnvKeyFor(adapterType)
     ? selectedSavedKey.id
-    : savedKeys.options[0]?.id;
-  const selectedApiKey = savedKeys.options.find((option) => option.id === selectedApiKeyId);
+    : savedKeyOptions[0]?.id;
+  const selectedApiKey = savedKeyOptions.find((option) => option.id === selectedApiKeyId);
   const credentialMode = credentialModeChoice ?? (
     (savedKeys.subscriptions.length > 0 || (adapterType === "claude_local" && savedKeys.storedLogin.data))
-      ? "subscription" : savedKeys.options.length || adapterType === "opencode_local" ? "api" : "subscription"
+      ? "subscription" : savedKeyOptions.length || adapterType === "opencode_local" || adapterType === "hermes_local" ? "api" : "subscription"
   );
   const onboardingAnalytics = useOnboardingAnalytics({
     open: effectiveOnboardingOpen,
@@ -771,8 +866,11 @@ function OnboardingWizardInner({
   const apiKeySecretRef = useRef<{ key: string; companyId: string; envKey: string; grantId?: string; binding?: Awaited<ReturnType<typeof storeProviderApiKey>>["binding"]; aiConnection?: AiConnectionBinding } | null>(null);
   const managedSubscriptionRef = useRef<{ companyId: string; binding: AiConnectionBinding; grantId?: string; sessionId?: string } | null>(null);
   const defaultSelectionsRef = useRef(new Map<string, { pending: Promise<unknown>; queued: number; revision: number; grantId?: string | null }>());
-  const managedProvider = aiProviderForAdapter(adapterType);
-  const managedSubscriptionProvider = managedProvider === "anthropic" || managedProvider === "openai" || managedProvider === "xai" || (managedProvider === "google" && adapterType === "antigravity_runtime") ? managedProvider : undefined;
+  // Hermes is not a managed-connection onboarding provider: its typed key is
+  // carried as an env user secret on the hired agent (see buildHermesConfig),
+  // even though the config form maps it to OpenRouter AI connections.
+  const managedProvider = adapterType === "hermes_local" ? undefined : aiProviderForAdapter(adapterType);
+  const managedSubscriptionProvider = managedProvider === "anthropic" || managedProvider === "openai" || managedProvider === "xai" || managedProvider === "antigravity" || (managedProvider === "google" && adapterType === "antigravity_runtime") ? managedProvider : undefined;
   function managedBindingForStep(): AiConnectionBinding | undefined {
     if (credentialMode === "api" && gatewayConnection?.companyId === createdCompanyId && gatewayConnection.adapterType === adapterType) return gatewayConnection.binding;
     const restoredBinding = restoredSetup?.companyId === createdCompanyId
@@ -1109,7 +1207,7 @@ function OnboardingWizardInner({
   } = useQuery({
     queryKey: createdCompanyId ? queryKeys.agents.adapterModels(createdCompanyId, adapterType, null) : ["agents", "none", "adapter-models", adapterType, null],
     queryFn: () => agentsApi.adapterModels(createdCompanyId!, adapterType, { environmentId: null }),
-    enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 4 && ONBOARDING_ADAPTER_TYPES.has(adapterType),
+    enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 4 && ONBOARDING_MODEL_CATALOG_ADAPTER_TYPES.has(adapterType),
     });
   // Automatic selection uses native Claude/Codex on qualified execution targets and
   // silently falls back to legacy on Windows, keeping the same onboarding UI.
@@ -1190,39 +1288,6 @@ function OnboardingWizardInner({
     loginEnvironmentProvider != null &&
     loginEnvironmentCapabilities?.sandboxProviders?.[loginEnvironmentProvider]?.supportsLoginPty ===
       true;
-  // The same capability gate the agent configuration form uses to show its
-  // login panel (AgentConfigForm.tsx:1064), minus the form's fourth input — a
-  // full adapter test result. The cheap auth signal below stands in for that
-  // input here, so this gate alone only decides whether the login mechanism
-  // could ever apply to the current adapter and environment.
-  const localLoginHealth = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get });
-  const localAiLoginSupported = Boolean(localLoginHealth.data?.localAiLoginSupported ?? localLoginHealth.data?.deploymentMode === "local_trusted");
-  const hostedGoogleAiLoginSupported = Boolean(localLoginHealth.data?.hostedGoogleAiLoginSupported);
-  const canUseLocalLogin = Boolean(managedSubscriptionProvider) && (
-    managedSubscriptionProvider === "google"
-      ? (hostedGoogleAiLoginSupported || (resolvedLoginEnvironment?.driver === "local" && localAiLoginSupported))
-      : (resolvedLoginEnvironment?.driver === "local" && localAiLoginSupported)
-  );
-  const googleHostedRedirect: boolean | "optional" = managedSubscriptionProvider === "google" && hostedGoogleAiLoginSupported
-    ? (localAiLoginSupported ? "optional" : true)
-    : false;
-  const localLogin = useLocalAiLogin(createdCompanyId, {
-    provider: managedSubscriptionProvider ?? "anthropic", method: "subscription",
-    name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} subscription`,
-    ownership: "personal", agentIds: [], allAgents: true,
-  }, sourcePicked && (setupPrepared || Boolean(createdAgentId)) && effectiveOnboardingOpen && step === 4 && canUseLocalLogin && credentialMode !== "api" &&
-    Boolean(managedProvider) && !savedSubscription && !savedKeys.storedLogin.data && !managedBindingForStep(),
-  );
-  useEffect(() => {
-    autoConnectStartedRef.current = false;
-    hiringAgentRef.current = null;
-    if (step === 4) {
-      setLoading(false);
-      setAdapterEnvLoading(false);
-    }
-    return () => { connectAttemptRef.current++; };
-  }, [effectiveOnboardingOpen, createdCompanyId, adapterType, credentialMode, step]);
-
   const canShowAdapterLogin = Boolean(
     adapterCaps.login != null &&
       resolvedLoginEnvironment?.driver === "sandbox" &&
@@ -1248,11 +1313,58 @@ function OnboardingWizardInner({
         resolvedLoginEnvironmentId ?? undefined,
       ),
     enabled:
-      Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 4 && canShowAdapterLogin,
+      Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 4 && (canShowAdapterLogin || adapterType === "agy_local"),
   });
   const authSignalStatus = authSignalQuery.data?.status ?? null;
   const showAdapterLoginPanel =
     canShowAdapterLogin && (authSignalStatus === "absent" || authSignalStatus === "unknown");
+  // A host Antigravity OAuth login detected on this machine satisfies the
+  // subscription by itself: local runs execute with the host HOME, so the
+  // hire must not detour through the separate managed login home (whose
+  // credential check would fail against an empty directory) and no sign-in
+  // attempt needs to be prepared. Only an OAuth login counts: a host API key
+  // also reports status "present", but it is metered usage, not a
+  // subscription — treating it as a login would let a user who left
+  // Subscription selected skip OAuth and silently connect through the key.
+  const hostAgyLoginPresent =
+    adapterType === "agy_local" &&
+    authSignalStatus === "present" &&
+    authSignalQuery.data?.authMode === "subscription";
+
+  // The same capability gate the agent configuration form uses to show its
+  // login panel (AgentConfigForm.tsx:1064), minus the form's fourth input — a
+  // full adapter test result. The cheap auth signal below stands in for that
+  // input here, so this gate alone only decides whether the login mechanism
+  // could ever apply to the current adapter and environment.
+  const localLoginHealth = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get });
+  const localAiLoginSupported = Boolean(localLoginHealth.data?.localAiLoginSupported ?? localLoginHealth.data?.deploymentMode === "local_trusted");
+  const hostedGoogleAiLoginSupported = Boolean(localLoginHealth.data?.hostedGoogleAiLoginSupported);
+  const canUseLocalLogin = Boolean(managedSubscriptionProvider) && (
+    managedSubscriptionProvider === "google"
+      ? (hostedGoogleAiLoginSupported || (resolvedLoginEnvironment?.driver === "local" && localAiLoginSupported))
+      : (resolvedLoginEnvironment?.driver === "local" && localAiLoginSupported)
+  );
+  const googleHostedRedirect: boolean | "optional" = managedSubscriptionProvider === "google" && hostedGoogleAiLoginSupported
+    ? (localAiLoginSupported ? "optional" : true)
+    : false;
+  const localLogin = useLocalAiLogin(createdCompanyId, {
+    provider: managedSubscriptionProvider ?? "anthropic", method: "subscription",
+    name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} subscription`,
+    ownership: "personal", agentIds: [], allAgents: true,
+  }, sourcePicked && (setupPrepared || Boolean(createdAgentId)) && effectiveOnboardingOpen && step === 4 && canUseLocalLogin && credentialMode !== "api" &&
+    Boolean(managedProvider) && !savedSubscription && !savedKeys.storedLogin.data && !managedBindingForStep() && !hostAgyLoginPresent,
+  );
+  useEffect(() => {
+    autoConnectStartedRef.current = false;
+    hiringAgentRef.current = null;
+    if (step === 4) {
+      setLoading(false);
+      setAdapterEnvLoading(false);
+    }
+    return () => { connectAttemptRef.current++; };
+  }, [effectiveOnboardingOpen, createdCompanyId, adapterType, credentialMode, step]);
+
+
   /**
    * Restores the connect sequence after a reload.
    *
@@ -1315,7 +1427,8 @@ function OnboardingWizardInner({
    * then replace it with a sign-in prompt. A reassurance that is wrong and then
    * withdrawn is worse than saying nothing for a beat.
    */
-  const authSignalUndecided = canShowAdapterLogin && authSignalStatus === null;
+  const authSignalUndecided =
+    (canShowAdapterLogin || adapterType === "agy_local") && authSignalStatus === null;
 
   const isLocalAdapterCaps =
     adapterCaps.supportsInstructionsBundle ||
@@ -1329,34 +1442,54 @@ function OnboardingWizardInner({
     adapterType === "kimi_local" ||
     adapterType === "opencode_local" ||
     adapterType === "pi_local" ||
-    adapterType === "cursor";
+    adapterType === "cursor" ||
+    adapterType === "agy_local" ||
+    adapterType === "grok_local" ||
+    adapterType === "hermes_local";
   // Build adapter grids dynamically from the UI registry + display metadata.
   // External/plugin adapters automatically appear with generic defaults, and
   // server-disabled types are filtered out.
   const { recommendedAdapters, moreAdapters } = useMemo(() => {
     const all = listUIAdapters()
       .filter((a) =>
-        ONBOARDING_ADAPTER_TYPES.has(a.type) &&
+        ONBOARDING_GRID_ADAPTER_TYPES.has(a.type) &&
         !disabledTypes.has(a.type) &&
         isVisualAdapterChoice(a.type)
       )
       .map((a) => ({ ...getAdapterDisplay(a.type), type: a.type }));
 
+    // The recommended row is the first-onboarding pair, full stop — not
+    // whatever the display metadata marks recommended. A deployment can mark
+    // another harness recommended and first onboarding still offers only
+    // Claude and Codex up front; the rest live under "More harnesses" — and a
+    // harness the deployment marks recommended is not offered there either,
+    // so a server-side recommendation cannot widen first onboarding past
+    // the pair.
     return {
-      recommendedAdapters: all.filter((a) => a.recommended),
-      moreAdapters: all.filter((a) => !a.recommended),
+      recommendedAdapters: all.filter((a) => ONBOARDING_ADAPTER_TYPES.has(a.type)),
+      moreAdapters: all.filter((a) => !ONBOARDING_ADAPTER_TYPES.has(a.type) && !a.recommended),
     };
   }, [disabledTypes]);
 
+  useEffect(() => {
+    if (moreAdapters.some((a) => a.type === adapterType)) {
+      setShowMoreAdapters(true);
+    }
+  }, [moreAdapters, adapterType]);
+
   /**
-   * A source chosen from the visible row. Read off the row rather than off
+   * A source chosen from the visible rows. Read off the rows rather than off
    * `adapterType` alone, because a restored draft can name an adapter this step
-   * no longer offers — a selection the customer cannot see.
+   * no longer offers — a selection the customer cannot see. Both rows count:
+   * the recommended row and "More harnesses" — a pick from More is a real
+   * selection, and excluding it left `connectStepReady` false forever.
    */
   const sourceSelected =
-    sourcePicked && recommendedAdapters.some((opt) => opt.type === adapterType);
+    sourcePicked &&
+    [...recommendedAdapters, ...moreAdapters].some((opt) => opt.type === adapterType);
 
   const hasSavedSubscription = Boolean(savedSubscription || savedKeys.storedLogin.data ||
+    hostAgyLoginPresent ||
     (credentialMode !== "api" && managedBindingForStep()));
   /** Without browser login, show instructions for the selected execution environment. */
   const connectStepHasNoSandbox =
@@ -1384,7 +1517,7 @@ function OnboardingWizardInner({
   const restoredApiCredential = restoredSetup?.companyId === createdCompanyId
     && agentHarnessType(restoredSetup.adapterType, restoredSetup.adapterConfig) === agentHarnessType(adapterType)
     && !selectedSavedKey && (restoredSetup.adapterConfig.env as Record<string, unknown> | undefined)?.[apiKeyEnvKeyFor(adapterType)];
-  const connectStepReady = Boolean(setupPrepared || createdAgentId) && sourceSelected && !adapterEnvLoading && !savedKeys.loading && runnerDiscoveryReady && !browserSignInUnavailable && connectionModelReady;
+  const connectStepReady = Boolean(setupPrepared || createdAgentId) && sourceSelected && !adapterEnvLoading && !savedKeys.loading && runnerDiscoveryReady && !browserSignInUnavailable && connectionModelReady && !(adapterType === "agy_local" && authSignalQuery.isLoading);
 
   useEffect(() => {
     if (step !== 4 || !createdCompanyId || !agentName.trim() || !adapterRegistryLoaded
@@ -1572,7 +1705,7 @@ function OnboardingWizardInner({
     if (!effectiveOnboardingOpen || step !== 4 || connectPhase !== "ready" ||
         !connectStepReady || connectStepNeedsLogin || connectCredentialStored ||
         credentialMode !== "subscription" ||
-        (adapterType !== "claude_local" && adapterType !== "codex_local") ||
+        (adapterType !== "claude_local" && adapterType !== "codex_local" && adapterType !== "agy_local") ||
         (!hasSavedSubscription && localLogin.status !== "ready") ||
         loading || autoConnectStartedRef.current) return;
     autoConnectStartedRef.current = true;
@@ -1812,7 +1945,11 @@ function OnboardingWizardInner({
       return;
     }
     if (visible.some((a) => a.type === adapterType)) return;
-    const next = visible[0].type;
+    // The snap lands on the recommended row — the one on screen. A "More"
+    // harness sits behind a collapsed toggle, so snapping to it would hold a
+    // selection the customer cannot see. When the pair itself is unavailable,
+    // fall back to Claude, matching the empty-grid branch above.
+    const next = recommendedAdapters[0]?.type ?? "claude_local";
     setAdapterType(next);
     // The snap is not a choice. It replaces a name the customer can no longer
     // see with the first one they can, which is the right thing to hold — but
@@ -1821,18 +1958,8 @@ function OnboardingWizardInner({
     // preselection this step was changed to stop doing. The saved answer was
     // unofferable, so the question is open again.
     setSourcePicked(false);
-    if (next === "opencode_local") {
-      setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
-      return;
-    }
-    if (next === "gemini_local") {
-      setModel(DEFAULT_GEMINI_LOCAL_MODEL);
-      return;
-    }
-    if (next === "cursor") {
-      setModel(DEFAULT_CURSOR_LOCAL_MODEL);
-      return;
-    }
+    // The snap only ever lands on the pair now, and neither member carries a
+    // default model — the saved model belonged to the unofferable draft.
     setModel("");
   }, [adapterRegistryLoaded, recommendedAdapters, moreAdapters, adapterType]);
 
@@ -1844,6 +1971,9 @@ function OnboardingWizardInner({
     pi_local: "pi",
     cursor: "agent",
     opencode_local: "opencode",
+    agy_local: "agy",
+    grok_local: "grok",
+    hermes_local: "hermes",
   };
   const effectiveAdapterCommand =
     command.trim() ||
@@ -2158,6 +2288,18 @@ function OnboardingWizardInner({
 
   function buildAdapterConfig(bindApiKey = false, setupRunner?: AgentRunner, existingAgent?: Agent): Record<string, unknown> {
     const adapter = getUIAdapter(adapterType);
+    const activeApiKeyBinding =
+      !managedBindingForStep() && credentialMode === "api" && (bindApiKey || selectedApiKey)
+        ? selectedApiKey?.binding ?? apiKeySecretRef.current?.binding
+        : undefined;
+    const envBindings = {
+      ...(defaultCreateValues.envBindings ?? {}),
+      ...(activeApiKeyBinding ? { [apiKeyEnvKeyFor(adapterType)]: activeApiKeyBinding } : {}),
+      ...(adapterType === "kimi_local"
+        ? { KIMI_MODEL_NAME: { type: "plain", value: model || DEFAULT_KIMI_LOCAL_MODEL } }
+        : {}),
+    };
+
     const savedAgent = existingAgent ?? restoredSetup;
     const savedConfig = savedAgent?.companyId === createdCompanyId
       && agentHarnessType(savedAgent.adapterType, savedAgent.adapterConfig) === agentHarnessType(adapterType)
@@ -2165,19 +2307,22 @@ function OnboardingWizardInner({
     const builtConfig = adapter.buildAdapterConfig({
       ...defaultCreateValues,
       adapterType,
+      envBindings,
       runner,
       ...(adapterType === "pi_local" ? { adapterSchemaValues: savedConfig } : {}),
       resolvedRunner: setupRunner ?? resolvedRunner,
       model:
-        adapterType === "gemini_local"
-          ? model || DEFAULT_GEMINI_LOCAL_MODEL
-          : adapterType === "kimi_local"
-            ? model || DEFAULT_KIMI_LOCAL_MODEL
-          : adapterType === "cursor"
-            ? model || DEFAULT_CURSOR_LOCAL_MODEL
-            : adapterType === "opencode_local"
-              ? model || DEFAULT_OPENCODE_LOCAL_MODEL
-              : model,
+        adapterType === "agy_local"
+          ? model || DEFAULT_AGY_LOCAL_MODEL
+          : adapterType === "gemini_local"
+            ? model || DEFAULT_GEMINI_LOCAL_MODEL
+            : adapterType === "kimi_local"
+              ? model || DEFAULT_KIMI_LOCAL_MODEL
+            : adapterType === "cursor"
+              ? model || DEFAULT_CURSOR_LOCAL_MODEL
+              : adapterType === "opencode_local"
+                ? model || DEFAULT_OPENCODE_LOCAL_MODEL
+                : model,
       command,
       args,
       url,
@@ -2237,6 +2382,25 @@ function OnboardingWizardInner({
           ? { ...(config.env as Record<string, unknown>) }
           : {};
       env[apiKeyEnvKeyFor(adapterType)] = selectedApiKey?.binding ?? apiKeySecretRef.current?.binding;
+      if (adapterType === "kimi_local" && !env.KIMI_MODEL_NAME) {
+        env.KIMI_MODEL_NAME = {
+          type: "plain",
+          value: model || DEFAULT_KIMI_LOCAL_MODEL,
+        };
+      }
+      config.env = env;
+    }
+    if (adapterType === "kimi_local") {
+      const env =
+        typeof config.env === "object" && config.env !== null && !Array.isArray(config.env)
+          ? { ...(config.env as Record<string, unknown>) }
+          : {};
+      if (!env.KIMI_MODEL_NAME) {
+        env.KIMI_MODEL_NAME = {
+          type: "plain",
+          value: model || DEFAULT_KIMI_LOCAL_MODEL,
+        };
+      }
       config.env = env;
     }
     if (credentialMode === "subscription" && savedSubscription?.binding && !(savedConfig.env as Record<string, unknown> | undefined)?.CODEX_HOME) {
@@ -2581,7 +2745,7 @@ function OnboardingWizardInner({
         if (!grantId) throw new Error("Choose a connected API account before continuing.");
         if (!await selectManagedDefault(createdCompanyId, selectedApiKey.aiConnection.provider, grantId, isCurrent, grantId)) return;
       }
-      if (credentialMode !== "api" && canUseLocalLogin && managedProvider && !managedBindingForStep() && !savedSubscription && !savedKeys.storedLogin.data) {
+      if (credentialMode !== "api" && canUseLocalLogin && managedProvider && !managedBindingForStep() && !savedSubscription && !savedKeys.storedLogin.data && !hostAgyLoginPresent) {
         const account = await localLogin.connect();
         if (!isCurrent()) return;
         managedSubscriptionRef.current = { companyId: createdCompanyId, binding: { provider: managedProvider, method: "subscription", mode: "responsible_user" }, grantId: account.grantId };
@@ -3264,6 +3428,10 @@ function OnboardingWizardInner({
                         // model retained by a previous source switch.
                         if (id !== adapterType || (id === "codex_local" && credentialMode === "subscription" && model.startsWith("claude-"))) {
                           if (id === "opencode_local") setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
+                          else if (id === "agy_local") setModel(DEFAULT_AGY_LOCAL_MODEL);
+                          else if (id === "gemini_local") setModel(DEFAULT_GEMINI_LOCAL_MODEL);
+                          else if (id === "kimi_local") setModel(DEFAULT_KIMI_LOCAL_MODEL);
+                          else if (id === "cursor") setModel(DEFAULT_CURSOR_LOCAL_MODEL);
                           else setModel("");
                         }
                         setConnectPhase("collapsing");
@@ -3301,9 +3469,71 @@ function OnboardingWizardInner({
                     >
                       <div className="-ml-3 mt-1">
                         <CredentialModeLink mode={credentialMode} onChange={setCredentialMode} />
-                        {savedKeys.options.length > 0 && <p className="px-3 text-sm text-muted-foreground">{savedKeys.options.length} saved API {savedKeys.options.length === 1 ? "key available" : "keys available"}.</p>}
+                        {savedKeyOptions.length > 0 && <p className="px-3 text-sm text-muted-foreground">{savedKeyOptions.length} saved API {savedKeyOptions.length === 1 ? "key available" : "keys available"}.</p>}
                         {credentialMode === "subscription" && authSignalStatus === "present" && <p className="px-3 text-sm text-muted-foreground">An existing provider connection is available.</p>}
                       </div>
+
+                      {moreAdapters.length > 0 && (
+                        <div className="mt-3">
+                          <button
+                            type="button"
+                            className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+                            onClick={() => setShowMoreAdapters((v) => !v)}
+                          >
+                            <ChevronDown
+                              className={cn(
+                                "size-3.5 transition-transform",
+                                showMoreAdapters ? "rotate-0" : "-rotate-90",
+                              )}
+                            />
+                            More harnesses ({moreAdapters.length})
+                          </button>
+
+                          {showMoreAdapters && (
+                            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 mt-2.5">
+                              {moreAdapters.map((opt) => (
+                                <button
+                                  key={opt.type}
+                                  type="button"
+                                  role="radio"
+                                  aria-checked={sourcePicked && adapterType === opt.type}
+                                  disabled={Boolean(opt.comingSoon)}
+                                  onClick={() => {
+                                    if (connectPhase !== "idle") return;
+                                    autoConnectStartedRef.current = false;
+                                    setSourcePicked(true);
+                                    setAdapterType(opt.type);
+                                    if (opt.type === "opencode_local") setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
+                                    else if (opt.type === "agy_local") setModel(DEFAULT_AGY_LOCAL_MODEL);
+                                    else if (opt.type === "gemini_local") setModel(DEFAULT_GEMINI_LOCAL_MODEL);
+                                    else if (opt.type === "kimi_local") setModel(DEFAULT_KIMI_LOCAL_MODEL);
+                                    else if (opt.type === "cursor") setModel(DEFAULT_CURSOR_LOCAL_MODEL);
+                                    else if (opt.type !== "codex_local") setModel("");
+                                    setConnectPhase("collapsing");
+                                  }}
+                                  className={cn(
+                                    "flex min-w-0 cursor-pointer flex-col items-center gap-1.5 rounded-md border p-3",
+                                    "transition-(--tp-border-color-background-color) ease-(--motion-ease-standard) duration-(--motion-duration-fast)",
+                                    "outline-none focus-visible:ring-ring/50 focus-visible:ring-(length:--rad-3)",
+                                    opt.comingSoon && "opacity-40 cursor-not-allowed",
+                                    sourcePicked && adapterType === opt.type
+                                      ? "border-foreground/40 bg-accent"
+                                      : "border-border bg-card hover:bg-accent/40",
+                                  )}
+                                >
+                                  <span className="flex size-(--sz-30px) shrink-0 items-center justify-center">
+                                    <ModelSourceMark type={opt.type} Fallback={opt.icon} />
+                                  </span>
+                                  <span className="text-(length:--text-compact) font-medium text-foreground truncate max-w-full">
+                                    {CONNECT_SOURCE_NAMES[opt.type] ?? opt.label}
+                                  </span>
+                                  <CredentialTag mode={credentialMode} />
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </motion.div>
                   </div>
 
@@ -3350,11 +3580,11 @@ function OnboardingWizardInner({
                       </p>
                     ) : credentialMode === "api" ? (
                       <OnboardingLoginCard
-                        instruction={hasGatewaySelection || connectionModels ? "Choose a model for your saved connection" : savedKeys.options.length ? "Choose a saved API key or enter a new one" : `Provide your ${
+                        instruction={hasGatewaySelection || connectionModels ? "Choose a model for your saved connection" : savedKeyOptions.length ? "Choose a saved API key or enter a new one" : `Provide your ${
                           CONNECT_SOURCE_NAMES[adapterType] ?? adapterType
                         } API key to connect`}
                       >
-                        {!hasGatewaySelection && <SavedProviderKeySelect {...savedKeys} disabled={loading || adapterEnvLoading} value={selectedApiKey?.id ?? ""} onChange={(id) => {
+                        {!hasGatewaySelection && <SavedProviderKeySelect {...savedKeys} options={savedKeyOptions} disabled={loading || adapterEnvLoading} value={selectedApiKey?.id ?? ""} onChange={(id) => {
                           setGatewayConnection(undefined);
                           if (connectionModels) setModel("");
                           setSelectedSavedKey(createdCompanyId ? { companyId: createdCompanyId, envKey: apiKeyEnvKeyFor(adapterType), id } : null);
@@ -3506,6 +3736,8 @@ function OnboardingWizardInner({
                           {...localLoginPrimary.instructionsProps}
                           login={{ ...localLogin, retry: () => { autoConnectStartedRef.current = false; setError(null); localLogin.retry(); } }}
                         />
+                      ) : adapterType === "agy_local" ? (
+                        <p className="text-xs text-muted-foreground">Antigravity is not signed in on this machine. Run agy in your terminal to sign in, or connect with an API key.</p>
                       ) : browserSignInUnavailable ? <p role="status" className="text-xs text-muted-foreground">This environment does not support browser sign-in. Go back to use an API key or choose another model.</p> : null
                     ) : null}
                   </motion.div>
@@ -3616,6 +3848,10 @@ function OnboardingWizardInner({
                                 ? `${effectiveAdapterCommand} -p "Respond with hello." --output-format stream-json`
                               : adapterType === "opencode_local"
                                 ? `${effectiveAdapterCommand} run --format json "Respond with hello."`
+                              : adapterType === "agy_local"
+                                ? `${effectiveAdapterCommand} -p "Respond with hello." --output-format stream-json`
+                              : adapterType === "grok_local"
+                                ? `${effectiveAdapterCommand} prompt "Respond with hello."`
                               : `${effectiveAdapterCommand} --print - --output-format stream-json --verbose`}
                           </p>
                           <p className="text-muted-foreground">
