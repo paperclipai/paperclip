@@ -2,7 +2,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, it } from "vitest";
 import type { Issue } from "@paperclipai/shared";
-import { IssueMonitorComposerStrip } from "./IssueMonitorBanner";
+import { IssueMonitorBanner, IssueMonitorComposerStrip } from "./IssueMonitorBanner";
 
 function waitingIssue(scheduledRetryReason: string) {
   return {
@@ -22,6 +22,15 @@ it("tells a user that a reply rechecks usage, not that it starts work outright",
   expect(markup).toContain("Pool exhausted");
   expect(markup).toContain("Sending a reply checks usage again now.");
   expect(markup).not.toContain("wakes the agent now");
+});
+
+it("hides Check now for a pool wait because no monitor exists to check", () => {
+  const issue = waitingIssue("ai_connection_pool_wait");
+  const banner = renderToStaticMarkup(<IssueMonitorBanner issue={issue} onCheckNow={() => {}} />);
+  const strip = renderToStaticMarkup(<IssueMonitorComposerStrip issue={issue} onCheckNow={() => {}} />);
+  expect(banner).toContain("Usage recheck");
+  expect(banner).not.toContain("Check now");
+  expect(strip).not.toContain("Check now");
 });
 
 it("keeps the wake-now promise for an ordinary scheduled retry", () => {
