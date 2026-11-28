@@ -718,8 +718,12 @@ function parseUsage(value: unknown): UsageSummary | undefined {
 function parseCostUsd(value: unknown): number | null {
   const record = asRecord(value);
   const raw = record?.cost_usd ?? record?.costUsd ?? asRecord(record?.usage)?.cost_usd ?? asRecord(record?.usage)?.costUsd;
-  const parsed = typeof raw === "number" ? raw : typeof raw === "string" ? Number.parseFloat(raw) : Number.NaN;
-  return Number.isFinite(parsed) ? parsed : null;
+  if (typeof raw === "number") return Number.isFinite(raw) && raw >= 0 ? raw : null;
+  if (typeof raw !== "string") return null;
+  const decimal = raw.trim();
+  if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(decimal)) return null;
+  const parsed = Number(decimal);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
 
 function extractSessionId(value: unknown): string | null {

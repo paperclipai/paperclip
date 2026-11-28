@@ -1126,6 +1126,33 @@ describe("testEnvironment", () => {
 });
 
 describe("mapFinalResultForTest", () => {
+  it.each([
+    ["0,25", null],
+    ["0.125 credits", null],
+    ["1e", null],
+    ["0x10", null],
+    ["1e999", null],
+    ["-0.25", null],
+    [" ", null],
+    [-0.25, null],
+    [" 1.25e-1 ", 0.125],
+    ["0", 0],
+    [0, 0],
+  ])("maps gateway cost %j to %j", (cost, expected) => {
+    const result = mapFinalResultForTest({
+      terminal: { runId: "run-1", status: "completed", payload: {
+        usage: { input_tokens: 10, output_tokens: 2, cost_usd: cost },
+      } },
+      outputChunks: [],
+      sessionKey: null,
+      strategy: "none",
+    });
+
+    expect(result.usage).toEqual({ inputTokens: 10, outputTokens: 2 });
+    expect(result.costUsd).toBe(expected ?? undefined);
+    expect(result.resultJson?.cost_usd).toBe(expected);
+  });
+
   it("maps failed statuses into adapter errors", () => {
     const result = mapFinalResultForTest({
       terminal: {
