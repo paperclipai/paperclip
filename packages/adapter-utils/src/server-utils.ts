@@ -846,6 +846,9 @@ type PaperclipWakePayload = {
   requestedCount: number;
   includedCount: number;
   missingCount: number;
+  cutCount: number;
+  cutCommentIds: string[];
+  cutAttachmentCount: number;
   truncated: boolean;
   fallbackFetchNeeded: boolean;
 };
@@ -1958,6 +1961,12 @@ export function normalizePaperclipWakePayload(
     ),
     includedCount: asNumber(commentWindow.includedCount, comments.length),
     missingCount: asNumber(commentWindow.missingCount, 0),
+    cutCount: asNumber(commentWindow.cutCount, 0),
+    cutCommentIds: asStringArray(commentWindow.cutCommentIds)
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0)
+      .slice(0, 20),
+    cutAttachmentCount: asNumber(commentWindow.cutAttachmentCount, 0),
     truncated: asBoolean(payload.truncated, false),
     fallbackFetchNeeded: asBoolean(payload.fallbackFetchNeeded, false),
   };
@@ -2493,6 +2502,26 @@ function renderPaperclipWakePromptBody(
           "",
         ]
       : [];
+  const issueCommentPath = normalized.issue?.id
+    ? `GET /api/issues/${normalized.issue.id}/comments`
+    : "GET /api/issues/{id}/comments";
+  // The closed reader already pages every comment id accepted for this run.
+  // A full-thread GET would leave that batch and break the zero-other-calls contract.
+  const cutCommentReadWith = externalChatReaderTurn
+    ? "`read_current_wake_comments`"
+    : issueCommentPath;
+  const cutLines = [
+    ...(normalized.cutCount > 0
+      ? [
+          `- cut comments: the oldest ${normalized.cutCount} of ${normalized.requestedCount} are not in this wake; read them with ${cutCommentReadWith} (cut ids: ${normalized.cutCommentIds.join(", ")}${normalized.cutCommentIds.length < normalized.cutCount ? ", ..." : ""})`,
+        ]
+      : []),
+    ...(normalized.cutAttachmentCount > 0
+      ? [
+          `- cut attachments: the oldest ${normalized.cutAttachmentCount} are not in this wake`,
+        ]
+      : []),
+  ];
   const wakeSummaryLines = [
     `- reason: ${normalized.reason ?? "unknown"}`,
     ...(normalized.executionContinuation?.trigger?.retriedReason
@@ -2505,6 +2534,7 @@ function renderPaperclipWakePromptBody(
           `- latest comment id: ${normalized.latestCommentId ?? "unknown"}`,
         ]
       : []),
+    ...cutLines,
     `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,
     ...(recoveryScoped
       ? [
