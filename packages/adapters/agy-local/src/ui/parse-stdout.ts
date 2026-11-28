@@ -23,14 +23,28 @@ function stringify(value: unknown): string {
   }
 }
 
-// Conversations whose reply already streamed as deltas, so the final result does not repeat it.
-const streamedConversations = new Set<string>();
-
 /**
  * Map one agy stream-json stdout line to transcript entries.
  * Shapes: init, step_update (agent_response / tool), result.
+ * Stateless: it cannot tell whether a reply already streamed, so use
+ * createAgyStdoutParser for a transcript.
  */
 export function parseAgyStdoutLine(line: string, ts: string): TranscriptEntry[] {
+  return createAgyStdoutParser()(line, ts);
+}
+
+/**
+ * One parser per transcript build. It remembers which conversations streamed
+ * their reply as deltas, so the final result does not repeat it, and a new
+ * build never inherits that from another one.
+ */
+export function createAgyStdoutParser(): (line: string, ts: string) => TranscriptEntry[] {
+  // Conversations whose reply already streamed as deltas in this build.
+  const streamedConversations = new Set<string>();
+  return (line, ts) => parseLine(line, ts, streamedConversations);
+}
+
+function parseLine(line: string, ts: string, streamedConversations: Set<string>): TranscriptEntry[] {
   let parsed: Record<string, unknown> | null = null;
   try {
     parsed = asRecord(JSON.parse(line));

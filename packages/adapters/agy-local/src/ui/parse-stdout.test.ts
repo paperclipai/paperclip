@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseAgyStdoutLine } from "./parse-stdout.js";
+import { createAgyStdoutParser, parseAgyStdoutLine } from "./parse-stdout.js";
 import { buildAgyLocalConfig } from "./build-config.js";
 import { AGY_CONVERSATION_ID, AGY_INIT_LINE, AGY_RESULT_LINE, AGY_TOOL_DONE_LINE } from "../test-fixtures.js";
 
@@ -25,10 +25,12 @@ describe("parseAgyStdoutLine", () => {
       event: "step_update",
       step_update: { conversation_id: AGY_CONVERSATION_ID, step_index: 3, state: "ACTIVE", step_type: "agent_response", text_delta: text },
     });
-    expect(parseAgyStdoutLine(delta("hel"), "t")).toEqual([{ kind: "assistant", ts: "t", text: "hel", delta: true }]);
-    expect(parseAgyStdoutLine(delta("lo"), "t")).toEqual([{ kind: "assistant", ts: "t", text: "lo", delta: true }]);
-    expect(parseAgyStdoutLine(AGY_RESULT_LINE, "t").map((e) => e.kind)).toEqual(["result"]);
-    // The next run, with no streamed text, still shows the final response.
+    const parse = createAgyStdoutParser();
+    expect(parse(delta("hel"), "t")).toEqual([{ kind: "assistant", ts: "t", text: "hel", delta: true }]);
+    expect(parse(delta("lo"), "t")).toEqual([{ kind: "assistant", ts: "t", text: "lo", delta: true }]);
+    expect(parse(AGY_RESULT_LINE, "t").map((e) => e.kind)).toEqual(["result"]);
+    // A new transcript build never saw those deltas, so it still shows the final response.
+    expect(createAgyStdoutParser()(AGY_RESULT_LINE, "t").map((e) => e.kind)).toEqual(["assistant", "result"]);
     expect(parseAgyStdoutLine(AGY_RESULT_LINE, "t").map((e) => e.kind)).toEqual(["assistant", "result"]);
   });
 
