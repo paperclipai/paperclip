@@ -4,7 +4,7 @@ import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { and, count, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { heartbeatRuns, instanceUserRoles, invites } from "@paperclipai/db";
-import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import type { AuthOidcConfig, DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import {
   readPersistedDevServerStatus,
   removeDevServerRestartRequest,
@@ -126,6 +126,7 @@ export function healthRoutes(
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
     authReady: boolean;
+    authOidc?: Pick<AuthOidcConfig, "providerId" | "displayName">;
     companyDeletionEnabled: boolean;
     serverInfo?: ServerInfoSnapshot;
     databaseBackupHealth?: InspectDatabaseBackupHealthOptions;
@@ -415,6 +416,7 @@ export function healthRoutes(
         deploymentExposure: opts.deploymentExposure,
         localAiLoginSupported: supportsLocalAiLogin(opts),
         hostedGoogleAiLoginSupported: supportsHostedGoogleAiLogin(opts),
+        ...(opts.authOidc ? { oidc: opts.authOidc } : {}),
         commit,
         bootstrapStatus,
         bootstrapInviteActive,
@@ -441,6 +443,7 @@ export function healthRoutes(
       localAiLoginSupported: supportsLocalAiLogin(opts),
       hostedGoogleAiLoginSupported: supportsHostedGoogleAiLogin(opts),
       authReady: opts.authReady,
+      ...(opts.authOidc ? { oidc: opts.authOidc } : {}),
       bootstrapStatus,
       bootstrapInviteActive,
       features: {

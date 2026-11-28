@@ -14,6 +14,7 @@ import { ApiError } from "../api/client";
 const getSessionMock = vi.hoisted(() => vi.fn());
 const signInEmailMock = vi.hoisted(() => vi.fn());
 const signUpEmailMock = vi.hoisted(() => vi.fn());
+const signInOidcMock = vi.hoisted(() => vi.fn());
 const healthMock = vi.hoisted(() => vi.fn());
 const beginCloudSignInMock = vi.hoisted(() => vi.fn());
 
@@ -28,6 +29,7 @@ vi.mock("../api/auth", () => ({
     getSession: () => getSessionMock(),
     signInEmail: (input: unknown) => signInEmailMock(input),
     signUpEmail: (input: unknown) => signUpEmailMock(input),
+    signInOidc: (input: unknown) => signInOidcMock(input),
   },
 }));
 
@@ -225,6 +227,29 @@ describe("AuthPage", () => {
     expect(nameInput.getAttribute("autocomplete")).toBe("name");
     expect(nameInput.required).toBe(true);
     expect(passwordInput.getAttribute("autocomplete")).toBe("new-password");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("offers single sign-on only when the server advertises a provider", async () => {
+    const first = await mount();
+    expect(container.textContent).not.toContain("Sign in with");
+    await act(async () => {
+      first.root.unmount();
+    });
+
+    healthMock.mockResolvedValue({ status: "ok", deploymentMode: "authenticated", oidc: { providerId: "kanidm", displayName: "Kanidm" } });
+    const { root } = await mount("/auth?next=%2Fboard");
+    const button = [...container.querySelectorAll("button")].find((b) => b.textContent === "Sign in with Kanidm");
+    expect(button).toBeTruthy();
+    expect(container.querySelector('input[name="password"]')).toBeTruthy();
+
+    await act(async () => {
+      button!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(signInOidcMock).toHaveBeenCalledWith({ providerId: "kanidm", callbackURL: "/board" });
 
     await act(async () => {
       root.unmount();

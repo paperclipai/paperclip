@@ -1,8 +1,10 @@
 import type { Request, RequestHandler } from "express";
 import type { IncomingHttpHeaders } from "node:http";
-import { betterAuth, type Auth } from "better-auth";
+import { betterAuth, type Auth, type BetterAuthOptions } from "better-auth";
+import { genericOAuth } from "better-auth/plugins";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { toNodeHandler } from "better-auth/node";
+import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import {
   authAccounts,
@@ -44,7 +46,15 @@ type BetterAuthSessionResolver = {
   api?: BetterAuthGetSessionApi;
 };
 
-type BetterAuthInstance = BetterAuthHandlerTarget & BetterAuthSessionResolver;
+type BetterAuthInstance = BetterAuthHandlerTarget & BetterAuthSessionResolver & Pick<Auth, "options" | "$context">;
+
+const oidcUserInfoSchema = z.object({
+  sub: z.string().min(1),
+  email: z.email(),
+  email_verified: z.boolean().optional(),
+  name: z.string().optional(),
+  picture: z.string().optional(),
+});
 
 const AUTH_COOKIE_PREFIX_FALLBACK = "default";
 const AUTH_COOKIE_PREFIX_INVALID_SEGMENTS_RE = /[^a-zA-Z0-9_-]+/g;
@@ -254,6 +264,11 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
       "For local development, set BETTER_AUTH_SECRET=paperclip-dev-secret in your .env file.",
     );
   }
+  const oidc = config.authOidc;
+  const oidcSecret = process.env.PAPERCLIP_AUTH_OIDC_CLIENT_SECRET;
+  if (oidc && !oidcSecret) {
+    throw new Error("OIDC login requires a client secret in PAPERCLIP_AUTH_OIDC_CLIENT_SECRET");
+  }
   const disableSecureCookies = shouldDisableSecureAuthCookies({
     deploymentMode: config.deploymentMode,
     deploymentExposure: config.deploymentExposure,
@@ -262,7 +277,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
     publicUrl,
   });
 
-  const authConfig = {
+  const authConfig: BetterAuthOptions = {
     baseURL: baseUrl,
     secret,
     trustedOrigins,
@@ -277,15 +292,20 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
     }),
     account: {
       additionalFields: {
-        issuer: { type: "string" as const, required: false, input: false, returned: false },
+        issuer: { type: "string", required: false, input: false, returned: false },
       },
+      ...(oidc ? { accountLinking: { enabled: true, requireLocalEmailVerified: true } } : {}),
     },
     databaseHooks: {
       account: {
         create: {
-          before: async (account: { providerId: string; issuer?: unknown }) => ({
-            data: { ...account, issuer: legacyAccountIssuerForCreate(account) },
-          }),
+          before: async (account, context) => {
+            if (oidc && account.providerId === oidc.providerId) {
+              const user = await context?.context.internalAdapter.findUserById(account.userId);
+              if (user?.emailVerified !== true) return false;
+            }
+            return { data: { ...account, issuer: legacyAccountIssuerForCreate(account) } };
+          },
         },
       },
     },
@@ -324,8 +344,49 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
       : {}),
   };
 
+  if (oidc) {
+    const userInfoUrl = oidc.userInfoUrl;
+    const oidcPlugin = genericOAuth({
+      config: [
+        {
+          providerId: oidc.providerId,
+          discoveryUrl: oidc.discoveryUrl,
+          accountSubject: ({ profile }) => typeof profile.sub === "string" ? profile.sub : "",
+          ...(oidc.authorizationUrl ? { authorizationUrl: oidc.authorizationUrl } : {}),
+          ...(oidc.tokenUrl ? { tokenUrl: oidc.tokenUrl } : {}),
+          ...(userInfoUrl
+            ? {
+                getUserInfo: async ({ accessToken }) => {
+                  if (!accessToken) return null;
+                  try {
+                    const response = await fetch(userInfoUrl, {
+                      headers: { Authorization: `Bearer ${accessToken}` },
+                      redirect: "error",
+                    });
+                    if (!response.ok) return null;
+                    const parsed = oidcUserInfoSchema.safeParse(await response.json());
+                    if (!parsed.success) return null;
+                    const { sub, email, email_verified, name, picture } = parsed.data;
+                    return { sub, email, emailVerified: email_verified === true, name: name ?? email, image: picture };
+                  } catch {
+                    return null;
+                  }
+                },
+              }
+            : { requireIdTokenVerification: true }),
+          clientId: oidc.clientId,
+          clientSecret: oidcSecret,
+          scopes: ["openid", "email", "profile"],
+          pkce: true,
+          disableSignUp: true,
+        },
+      ],
+    });
+    authConfig.plugins = [...(authConfig.plugins ?? []), oidcPlugin];
+  }
+
   if (!baseUrl) {
-    delete (authConfig as { baseURL?: string }).baseURL;
+    delete authConfig.baseURL;
   }
 
   const defaultAuth = betterAuth(authConfig);
@@ -353,6 +414,8 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
   };
 
   return {
+    options: defaultAuth.options,
+    $context: defaultAuth.$context,
     handler: (request) => {
       const auth = shouldDisableSecureAuthCookies({
         ...cookieSecurityInput,
