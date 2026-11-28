@@ -36,6 +36,7 @@ import { isRunnerRevisionMismatch, RUNNER_REVISION_MISMATCH_CODE, RUNNER_REVISIO
 import { readPluginTaskError } from "../environment-task-runtime.js";
 import { isStorageUnavailableError, STORAGE_CREDENTIALS_REJECTED_MESSAGE, STORAGE_UNAVAILABLE_CODE, STORAGE_UNAVAILABLE_EXHAUSTED_MESSAGE, STORAGE_UNAVAILABLE_MESSAGE, STORAGE_UNAVAILABLE_RETRY, storageUnavailableHeldMessage, storageUnavailableMessage } from "../../storage/storage-unavailable.js";
 import { type RunSessionOutcome, resolveNextSessionState, normalizeUsageTotals, resolveCacheAdjustedCostUsd, resolveLedgerBiller, resolveLedgerCostStatus, normalizeLedgerBillingType } from "./run-state.js";
+import { resolveAdapterResultOutcome } from "./adapter-result-outcome.js";
 import { readGitConnectionFailure } from "../git-connection-failure.js";
 import { CONFIGURATION_INCOMPLETE_FAILURE_CODE, ConfigurationIncompleteFailure } from "./run-preparation.js";
 import { isWorkspaceValidationFailedRun, isWorkspaceValidationFailure, attachPaperclipSessionMetadataToSessionParams } from "./workspaces.js";
@@ -500,28 +501,10 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       outcome = latestRun.status;
     } else if (signal.aborted) {
       outcome = "cancelled";
-    } else if (adapterResult.nativeFinalization) {
-      const nativeTerminal =
-        adapterResult.nativeFinalization.terminal.runTerminalState;
-      outcome =
-        nativeTerminal === "succeeded"
-          ? "succeeded"
-          : nativeTerminal === "cancelled"
-            ? "cancelled"
-            : "failed";
-    } else if (adapterResult.timedOut) {
-      outcome = "timed_out";
-    } else if (adapterResult.resultJson?.status === "cancelled") {
-      outcome = "cancelled";
-    } else if (
-      (adapterResult.exitCode ?? 0) === 0 &&
-      !adapterResult.errorMessage &&
-      !adapterResult.signal &&
-      !processCancellation?.failed
-    ) {
-      outcome = "succeeded";
     } else {
-      outcome = "failed";
+      outcome = resolveAdapterResultOutcome(adapterResult, {
+        processCancellationFailed: Boolean(processCancellation?.failed),
+      });
     }
 
     const nextSessionState = resolveNextSessionState({

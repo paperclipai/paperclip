@@ -150,6 +150,7 @@ export interface AdapterExecutionResult {
    */
   cacheAdjustedCostUsd?: number | null;
   resultJson?: Record<string, unknown> | null;
+  terminalResultSuccess?: boolean;
   runtimeServices?: AdapterRuntimeServiceReport[];
   /**
    * Each referenced (mentioned) project that failed to stage into the remote sandbox for this run,

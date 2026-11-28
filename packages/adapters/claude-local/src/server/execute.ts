@@ -77,6 +77,7 @@ import {
   isClaudeMaxTurnsResult,
   isClaudeProviderQuotaError,
   isClaudeRefusalResult,
+  isClaudeSuccessResult,
   isClaudeTransientUpstreamError,
   isClaudeUnknownSessionError,
   isClaudePoisonedPreviousMessageIdError,
@@ -1320,6 +1321,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         billingType,
         costUsd: parsedStream.costUsd,
         resultJson: mergedResultJson,
+        terminalResultSuccess: isClaudeSuccessResult(parsed),
         summary: parsedStream.summary || asString(parsed.result, ""),
         clearSession:
           clearSessionForMaxTurns ||
