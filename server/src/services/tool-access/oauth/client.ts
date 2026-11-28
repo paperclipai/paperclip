@@ -117,6 +117,28 @@ function selectOAuthDcrTokenEndpointAuthMethod(
   );
 }
 
+/**
+ * The token-endpoint auth method a registration response actually bound the
+ * client to. An omitted value keeps what Paperclip requested. A different value
+ * is accepted only when Paperclip can authenticate that way and the
+ * authorization server advertised it (or advertised nothing); anything else is
+ * an incompatible registration.
+ */
+function resolveRegisteredAuthMethod(
+  registered: unknown,
+  requested: OAuthTokenEndpointAuthMethod,
+  supported: string[] | undefined,
+): OAuthTokenEndpointAuthMethod {
+  if (registered === undefined || registered === null || registered === requested) return requested;
+  if (
+    (registered === "none" || registered === "client_secret_basic" || registered === "client_secret_post") &&
+    (!supported?.length || supported.includes(registered))
+  ) {
+    return registered;
+  }
+  throw invalidOAuthDcrResponse("token_endpoint_auth_method", "registered_value_mismatch");
+}
+
 export function storedOAuthTokenEndpointAuthMethod(
   oauth: Record<string, unknown>,
   clientSecret: string | null | undefined,
@@ -168,7 +190,7 @@ export function createOAuthClientProtocol({ fetchRemoteHttpUrl, assertOAuthEndpo
         },
       );
     }
-    const tokenEndpointAuthMethod = selectOAuthDcrTokenEndpointAuthMethod(
+    const requestedAuthMethod = selectOAuthDcrTokenEndpointAuthMethod(
       input.endpoints.tokenEndpointAuthMethodsSupported,
     );
 
@@ -191,7 +213,7 @@ export function createOAuthClientProtocol({ fetchRemoteHttpUrl, assertOAuthEndpo
           : []),
       ],
       response_types: ["code"],
-      token_endpoint_auth_method: tokenEndpointAuthMethod,
+      token_endpoint_auth_method: requestedAuthMethod,
       // MCP requires an explicit `application_type`: `web` for Paperclip's
       // server-side HTTPS callback, `native` for a local install's localhost
       // callback, which OIDC servers refuse for web clients.
@@ -233,6 +255,19 @@ export function createOAuthClientProtocol({ fetchRemoteHttpUrl, assertOAuthEndpo
       required: true,
       maxLength: MAX_OAUTH_DCR_CLIENT_ID_LENGTH,
     })!;
+    // RFC 7591 §3.2.1: the registration response is authoritative for the
+    // client's metadata, and a server may substitute values it prefers. The
+    // TrueFoundry MCP gateway, for example, registers every client as
+    // `client_secret_post` and returns a secret even when `none` was requested.
+    // Treating that as a mismatch left a working registration unusable. Adopt the
+    // method the server actually registered when it is one Paperclip can speak
+    // and the authorization server advertised, and then require the secret that
+    // method needs.
+    const tokenEndpointAuthMethod = resolveRegisteredAuthMethod(
+      record.token_endpoint_auth_method,
+      requestedAuthMethod,
+      input.endpoints.tokenEndpointAuthMethodsSupported,
+    );
     const clientSecret = parseOAuthDcrString(record, "client_secret", {
       required: tokenEndpointAuthMethod !== "none",
       maxLength: MAX_OAUTH_DCR_CLIENT_SECRET_LENGTH,
@@ -267,16 +302,6 @@ export function createOAuthClientProtocol({ fetchRemoteHttpUrl, assertOAuthEndpo
         allowOmitted: true,
       },
     );
-    if (
-      record.token_endpoint_auth_method !== undefined &&
-      record.token_endpoint_auth_method !==
-        requestedMetadata.token_endpoint_auth_method
-    ) {
-      throw invalidOAuthDcrResponse(
-        "token_endpoint_auth_method",
-        "registered_value_mismatch",
-      );
-    }
     const clientIdIssuedAt = parseOAuthDcrTimestamp(
       record,
       "client_id_issued_at",
