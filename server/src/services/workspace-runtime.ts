@@ -7188,6 +7188,7 @@ async function startLocalRuntimeService(
           excludedPorts,
           runtimeServiceId: provisioningRecord?.id ?? input.runtimeServiceId,
         });
+        if (deferReadiness) started.readiness.catch(() => undefined);
         if (runtimeProvisionCommand) {
           await persistRuntimeServiceRecord(input.db, started.record);
         }
@@ -8085,10 +8086,7 @@ async function startRuntimeServicesForWorkspaceControlUnlocked(
     await persistRuntimeServiceRecord(persistenceDb, started.record);
     refs.push(toRuntimeServiceRef(started.record));
 
-    if (options?.deferReadiness && started.record.status === "starting" && !started.record.reused) {
-      // Attach a rejection handler immediately; the caller awaits the same promise after
-      // the DB transaction commits, but transaction failures may skip that wait path.
-      started.readiness.catch(() => undefined);
+    if (options?.deferReadiness && !started.record.reused) {
       pendingReadiness.push({ ...started, service });
       startedServiceIds.push(started.record.id);
     }
