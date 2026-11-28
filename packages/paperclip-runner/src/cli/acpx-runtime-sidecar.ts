@@ -21,6 +21,7 @@ import { resolveCompletionContinuation } from "../drivers/completion-continuatio
 import { createInterface } from "node:readline";
 import { deliverAcpxResponse, requireAcpxResponseDelivery } from "../drivers/acpx/response-delivery.js";
 import { createAcpxSidecarHostEnvironment } from "../drivers/acpx/environment.js";
+import { acpxCredentialFileSourcePath } from "../drivers/acpx/credential-file.js";
 
 import type {
   AcpElicitationContext,
@@ -379,6 +380,9 @@ async function dispatch(
           MCP_TOOL_TIMEOUT: String(60 * 60 * 1_000),
         } : createAcpxSidecarHostEnvironment(process.env, params.agent, params.normalizedSessionId),
         expectedIdentity: params.expectedIdentity,
+        // The Runner forwards the execution host's credential file path only
+        // to this sidecar. Admission validates the agent and source exclusivity.
+        managedCredentialSourcePath: acpxCredentialFileSourcePath(process.env),
         assignedMcpTransport: "prp",
         semanticTools: {
           tools: params.tools,

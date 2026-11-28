@@ -2777,6 +2777,7 @@ it("preserves an explicit OpenCode permission mode at the runner spawn boundary"
       PAPERCLIP_OPENCODE_RUNTIME_DIR: "/runner/opencode",
       PAPERCLIP_NATIVE_MCP_STDIO: "[]",
       PAPERCLIP_NATIVE_MCP_PROXY: "/runner/paperclip-runnerd",
+      PAPERCLIP_ACPX_AUTH_JSON_FILE: "/host/auth.json",
       DATABASE_URL: "must-not-reach-runnerd",
       PAPERCLIP_API_KEY: "must-not-reach-runnerd",
       NODE_OPTIONS: "--require=/untrusted/bootstrap.cjs",
@@ -2814,6 +2815,7 @@ it("preserves an explicit OpenCode permission mode at the runner spawn boundary"
     PAPERCLIP_OPENCODE_RUNTIME_DIR: "/runner/opencode",
     PAPERCLIP_NATIVE_MCP_STDIO: "[]",
     PAPERCLIP_NATIVE_MCP_PROXY: "/runner/paperclip-runnerd",
+    PAPERCLIP_ACPX_AUTH_JSON_FILE: "/host/auth.json",
   });
   expect(launches[0]!.environment.DATABASE_URL).toBeUndefined();
   expect(launches[0]!.environment.PAPERCLIP_API_KEY).toBeUndefined();

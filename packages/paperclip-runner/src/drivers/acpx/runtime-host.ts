@@ -20,6 +20,7 @@ import { bindAcpxAgentFiles } from "./agent-files-binding.js";
 import { assertAcpxProfileEnvironment, assertAcpxProfileWorkspace, classifyAcpxProfileError, verifyAcpxProfileInstallation } from "./profile-installation.js";
 import { createAcpxRuntimeSkillLease } from "./runtime-skill-lease.js";
 import { stageManagedGrokCredential } from "./grok-credentials.js";
+import { supportsAcpxCredentialFile, validateCodexAuthDocument } from "./credential-file.js";
 import { stageManagedAntigravityCredential } from "./antigravity-credentials.js";
 import { claudeNativeSkillPrompt } from "./native-skill-prompt.js";
 import { prepareStdioMcpBindings } from "../stdio-mcp.js";
@@ -304,7 +305,12 @@ export interface OpenAcpxRuntimeHostOptions {
   systemInstructions?: string;
   runtimeContext?: NativeRuntimeContextSnapshot | null;
   environment?: NodeJS.ProcessEnv;
-  managedCodexCredentialSourcePath?: string;
+  /**
+   * Absolute path of a host-owned `auth.json` for an ACPX agent with a file
+   * credential (Codex or Grok). It seeds the isolated provider home and is
+   * exclusive with the inline credential and the provider API key.
+   */
+  managedCredentialSourcePath?: string;
   expectedIdentity?: AcpxExpectedSessionIdentity;
   /** Revalidate a pinned recovery workspace through provider admission. */
   assertWorkspaceHeld?: () => void;
@@ -450,11 +456,11 @@ export class AcpxRuntimeHost {
     }
     options.assertWorkspaceHeld?.();
     if (
-      options.agent !== "codex" &&
-      options.managedCodexCredentialSourcePath !== undefined
+      options.managedCredentialSourcePath !== undefined &&
+      !supportsAcpxCredentialFile(options.agent)
     ) {
       throw new Error(
-        "Managed Codex credentials require the Codex ACPX profile",
+        "Managed credential files require the Codex or Grok ACPX profile",
       );
     }
 
@@ -556,7 +562,10 @@ export class AcpxRuntimeHost {
             const lease = await (dependencies.stageCredential ?? stageManagedCodexCredential)({
               agentHomeDirectory: sandbox.agentHomeDirectory,
               environment: options.environment,
-              sourcePath: options.managedCodexCredentialSourcePath,
+              ...(options.managedCredentialSourcePath === undefined ? {} : {
+                sourcePath: options.managedCredentialSourcePath,
+                validateDocument: validateCodexAuthDocument,
+              }),
             });
             return retainAcpxCredentialRefresh({
               lease, agentHomeDirectory: sandbox.agentHomeDirectory,
@@ -579,7 +588,8 @@ export class AcpxRuntimeHost {
       } else if (options.agent === "grok") {
         credential = await acquireAbortableAdmissionResource({
           signal: options.signal,
-          acquire: () => stageManagedGrokCredential({ agentHomeDirectory: sandbox.agentHomeDirectory, environment: options.environment, retainRefresh: () => admissionSucceeded }),
+          acquire: () => stageManagedGrokCredential({ agentHomeDirectory: sandbox.agentHomeDirectory, environment: options.environment,
+            sourcePath: options.managedCredentialSourcePath, retainRefresh: () => admissionSucceeded }),
           resource: "credential", releaseLate: (lease) => lease.close(),
           reportFailure: (failure) => dependencies.reportRetainedCleanupFailure(failure),
         });

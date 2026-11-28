@@ -18839,6 +18839,8 @@ async function createRunnerdBackendWithinSessionClaim(
   delete effectiveRunnerEnvironmentBase.PAPERCLIP_RUNNER_EXTERNAL_SANDBOX;
   delete effectiveRunnerEnvironmentBase.PAPERCLIP_RUNNER_HOME_MODE;
   delete effectiveRunnerEnvironmentBase.PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME;
+  // Only the execution host that runs the Runner may name a credential file.
+  delete effectiveRunnerEnvironmentBase.PAPERCLIP_ACPX_AUTH_JSON_FILE;
   if (preconfiguredHome) {
     if (remoteCommandRunner) {
       const home = await readRemoteUserHome(remoteCommandRunner);

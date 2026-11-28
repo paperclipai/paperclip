@@ -94,6 +94,7 @@ import {
   type QualifiedAcpxAgent,
 } from "../drivers/acpx/qualified-profiles.js";
 import { ACPX_CREDENTIAL_BINDING_ENV, createAcpxCredentialBinding, createSanitizedAcpxSpawnInput } from "../drivers/acpx/environment.js";
+import { ACPX_AUTH_JSON_FILE_ENV, assertAcpxCredentialFileAdmissible } from "../drivers/acpx/credential-file.js";
 import {
   createSanitizedAwsAgentCoreEnvironment,
   createSanitizedClaudeManagedEnvironment,
@@ -3956,6 +3957,9 @@ function createCapabilityRunnerdProviderEnvironmentBase(input: {
     const credentialBinding = createAcpxCredentialBinding(
       input.options.environment, input.options.acpxAgent ?? "codex", input.identity.normalizedSessionId,
     );
+    // Checked before the environment is filtered: an inline secret that the
+    // sidecar allowlist drops must still reject a host credential file.
+    const credentialFile = assertAcpxCredentialFileAdmissible(input.options.environment, input.options.acpxAgent ?? "codex");
     return {
       ...createSanitizedAcpxSpawnInput(
         input.options.environment,
@@ -3964,6 +3968,7 @@ function createCapabilityRunnerdProviderEnvironmentBase(input: {
       ...(credentialBinding === undefined ? {} : { [ACPX_CREDENTIAL_BINDING_ENV]: credentialBinding }),
       ...(input.options.acpxAgent === "grok" && input.options.environment?.PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET
         ? { PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET: input.options.environment.PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET } : {}),
+      ...(credentialFile === undefined ? {} : { [ACPX_AUTH_JSON_FILE_ENV]: credentialFile }),
       ...(input.options.acpxAgent === "antigravity" && input.options.environment?.PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET
         ? { PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET: input.options.environment.PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET } : {}),
       ...commonIdentity,

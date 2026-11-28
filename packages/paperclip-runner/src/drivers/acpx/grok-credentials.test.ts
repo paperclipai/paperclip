@@ -89,6 +89,18 @@ describe("Grok isolated credentials", () => {
     expect(await readFile(join(directory, "auth-refresh.json"), "utf8")).toBe(credential);
     expect(await readFile(join(directory, "auth.json"), "utf8")).toBe(successor);
   });
+  it("stages a host credential file and retains its refresh for write-back", async () => {
+    const directory = await home();
+    const source = join(await home(), "auth.json");
+    await writeFile(source, credential, { mode: 0o600 });
+    const lease = await stageManagedGrokCredential({ agentHomeDirectory: directory, sourcePath: source });
+    expect(await readFile(join(directory, "auth.json"), "utf8")).toBe(credential);
+    const refreshed = credential.replace("test-token", "refreshed-token");
+    await writeFile(join(directory, "auth.json"), refreshed, { mode: 0o600 });
+    await lease.close();
+    expect(await readFile(join(directory, "auth-refresh.json"), "utf8")).toBe(refreshed);
+    expect(await readFile(source, "utf8")).toBe(credential);
+  });
   it("never passes other providers, host homes or the inline credential to Grok", () => {
     const result = createSanitizedAcpxSpawnInput({ XAI_API_KEY: "selected", HOME: "/host", GROK_HOME: "/host/.grok", OPENAI_API_KEY: "other", PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET: credential }, "grok");
     expect(result.env).toEqual({ XAI_API_KEY: "selected" });

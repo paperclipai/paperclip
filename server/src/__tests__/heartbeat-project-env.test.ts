@@ -255,6 +255,7 @@ describe("resolveExecutionRunAdapterConfig", () => {
           PAPERCLIP_API_KEY: { type: "secret_ref", secretId: "secret-api-key", version: "latest" },
           PAPERCLIP_CLOUD_PROVIDER_TOKEN_AGENT: "agent-cloud",
           PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME: "/agent/claude",
+          PAPERCLIP_ACPX_AUTH_JSON_FILE: "/agent/auth.json",
           AGENT_ONLY: "agent-only",
         },
       },

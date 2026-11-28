@@ -246,6 +246,10 @@ fn pi_credential_environment_keys(binding: Option<&str>) -> Result<Vec<String>, 
     Ok(value.names)
 }
 
+/// Absolute path of an execution-host `auth.json` for an ACPX Codex or Grok
+/// session. See the Runner README for the seeding and write-back contract.
+pub(crate) const ACPX_AUTH_JSON_FILE_ENV: &str = "PAPERCLIP_ACPX_AUTH_JSON_FILE";
+
 impl AcpxSidecarTransport {
     pub fn start(config: &AcpxSidecarTransportConfig) -> Result<Self, LocalRunnerError> {
         Self::start_with_environment_keys(config, &[])
@@ -399,6 +403,35 @@ impl AcpxSidecarTransport {
         if agent == "claude" && std::env::var_os("PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME").is_some()
         {
             keys.push("PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME");
+        }
+        if std::env::var_os(ACPX_AUTH_JSON_FILE_ENV).is_some_and(|value| !value.is_empty()) {
+            // The execution host's credential file seeds the isolated provider
+            // home. Only the sidecar receives the path; it never reaches the
+            // provider. Other agents have no file credential, so fail closed.
+            let conflicting: &[&str] = match agent {
+                "codex" => &[
+                    "PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET",
+                    "OPENAI_API_KEY",
+                    "CODEX_API_KEY",
+                ],
+                "grok" => &["PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET", "XAI_API_KEY"],
+                _ => {
+                    return Err(LocalRunnerError::invalid(
+                        "Managed credential files require the Codex or Grok ACPX profile",
+                    ))
+                }
+            };
+            // Check before the allowlist filters the environment: a dropped
+            // inline secret must still reject the file rather than vanish.
+            if conflicting
+                .iter()
+                .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
+            {
+                return Err(LocalRunnerError::invalid(
+                    "Managed credential file source is ambiguous",
+                ));
+            }
+            keys.push(ACPX_AUTH_JSON_FILE_ENV);
         }
         keys.extend_from_slice(credential_keys);
         // Pi owns a native distribution copy, including a pending refresh at

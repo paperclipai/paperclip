@@ -180,6 +180,8 @@ export async function stageManagedCodexCredential(input: {
   agentHomeDirectory: string;
   environment?: NodeJS.ProcessEnv;
   sourcePath?: string;
+  /** Provider-specific document check applied to the exact bytes being staged. */
+  validateDocument?: (bytes: Buffer) => void;
 }): Promise<ManagedCodexCredentialLease> {
   const home = await resolvePrivateAgentHome(input.agentHomeDirectory);
   // Join an older failed close before claiming the next generation. This
@@ -229,6 +231,7 @@ async function stageClaimedManagedCodexCredential(
   input: {
     environment?: NodeJS.ProcessEnv;
     sourcePath?: string;
+    validateDocument?: (bytes: Buffer) => void;
   },
   home: string,
   ownerGeneration: CredentialLeaseGeneration,
@@ -303,6 +306,7 @@ async function stageClaimedManagedCodexCredential(
     : await readManagedCredential(input.sourcePath!);
   try {
     validateCredentialDocument(credential);
+    input.validateDocument?.(credential);
     // As with API-key mode, an intent-publication failure occurs before any
     // credential mutation and therefore needs no process-only quarantine.
     await createCredentialCleanupIntent(intentPath, home);

@@ -1050,6 +1050,85 @@ with the current launch settings. History remains in the account directory.
 Task control files remain in the session runtime directory. Separate directories
 under one OS user are not a credential isolation boundary.
 
+## Host credential file
+
+An execution environment can supply the login for an ACPX agent whose
+credential is one `auth.json` document, currently `codex` and `grok`, through
+`PAPERCLIP_ACPX_AUTH_JSON_FILE`. The value is the absolute path of the host's
+credential file in the agent's own format. The provider keeps running in its
+Runner-owned isolated home: Runner copies the credential in at admission and
+copies fresher refreshes back. It never points the provider at the host file or
+its directory. The host sets the variable on the Runner process. Core's server
+never sets it and removes it from the environment it hands to the Runner, so
+configuration bindings cannot supply it.
+
+Admission fails closed when:
+
+- the session's agent is not ACPX `codex` or `grok`;
+- the path is relative or names the isolated home's own `auth.json`;
+- the variable is combined with the inline credential
+  (`PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET`, `PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET`)
+  or the provider API key (`OPENAI_API_KEY`/`CODEX_API_KEY`, `XAI_API_KEY`);
+- the file is a symlink, is not a regular file, is empty or larger than
+  256 KiB, is not owned by the Runner user, or grants group or other access;
+- the document does not match the agent's format. A Codex document carries
+  either `OPENAI_API_KEY` or `tokens.account_id` with token material. A Grok
+  document has exactly one `<issuer>::<uuid>` key whose value has a non-empty
+  `key` and `refresh_token`.
+
+Seeding reads the file once and stages those exact bytes into the isolated
+home through the same crash-safe staging, cleanup and provider lifetime lease
+as the inline credential. The variable crosses the Runner to the ACPX sidecar
+only; the provider process never receives it.
+
+Write-back runs during the session, not only at close. Runner watches the
+isolated `auth.json` (and the final `auth-refresh.json` snapshot at close).
+When the provider refreshes it, Runner replaces the host file only if the
+refreshed credential is strictly fresher for the same identity:
+
+- Codex: the same `tokens.account_id` and a later `last_refresh` (RFC 3339)
+  that is no more than five minutes past the Runner clock. API-key documents
+  are never written back.
+- Grok: the same `<issuer>::<uuid>` key and a later `expires_at` (ISO 8601
+  string, epoch seconds below 10^12, or epoch milliseconds) that is no more
+  than 400 days past the Runner clock. Both expiries must be present and
+  readable.
+
+Runner never replaces a newer host file, never writes a different account, and
+never creates a missing host file. The replacement is a synced temporary file
+in the host file's directory, renamed over the host file and followed by a
+directory sync. It keeps the host file's mode and, where the Runner user may
+set it, its group. If the host file changed while the replacement was prepared,
+Runner discards it, reads the host file again and decides at once, up to three
+times. Any other failure to settle a refresh against the host file, or a host
+file that keeps changing, fails the command or turn that observed it: a rotated
+refresh token must never be lost quietly. When the consumer opted in to credential observation, the
+`auth.credentials.updated` event follows the write-back as before.
+
+The host directory must allow the Runner user to create and rename files.
+
+Both providers rotate the refresh token when they refresh, and a rotated token
+stops working:
+
+- Codex saves the new refresh token that a refresh returns. A rotated token is
+  refused with `refresh_token_reused`, and the user must sign in again. Codex
+  refreshes when `last_refresh` is older than about eight days, or after a
+  request is refused. OpenAI's guidance is one `auth.json` per runner or per
+  serialized job stream, and never one file shared across concurrent jobs or
+  machines ([Codex CI/CD authentication](https://learn.chatgpt.com/docs/auth/ci-cd-auth)).
+- Grok Build expects xAI's identity provider to accept a rotated refresh token
+  for about a minute at most, then to refuse it (`invalid_grant`). Presenting a
+  rotated token can also make the identity provider revoke the newer token that
+  another holder received.
+
+Each provider coordinates its own processes through its home: Codex re-reads
+`auth.json` before it refreshes after a refused request, and Grok Build
+serializes refreshes with `auth.json.lock`. Each session's provider runs in its
+own isolated home, so that coordination never reaches the host file or another
+session. Runner does not lock the host file either. Run at most one session at
+a time for each account and host file, or give concurrent sessions separate
+accounts.
+
 ## Preconfigured home
 
 Set `homeMode: "preconfigured"` in a `paperclip_runner` agent's adapter config

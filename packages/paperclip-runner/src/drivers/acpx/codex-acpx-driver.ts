@@ -167,7 +167,7 @@ export interface CodexAcpxDriverOptions {
   runtimeContext?: OpenAcpxRuntimeHostOptions["runtimeContext"];
   systemInstructions?: string;
   environment?: NodeJS.ProcessEnv;
-  managedCodexCredentialSourcePath?: string;
+  managedCredentialSourcePath?: string;
   dynamicTools?: readonly Readonly<Record<string, unknown>>[];
   dynamicToolHandler?: (call: CodexAcpxDynamicToolCall) => Promise<unknown>;
   /** Server-owned task completion validation, shared with Codex tool calls. */
@@ -485,8 +485,8 @@ export class CodexAcpxDriver implements HarnessDriver {
         runtimeContext: this.#options.runtimeContext,
         systemInstructions: this.#options.systemInstructions,
         environment: this.#options.environment,
-        managedCodexCredentialSourcePath:
-          this.#options.managedCodexCredentialSourcePath,
+        managedCredentialSourcePath:
+          this.#options.managedCredentialSourcePath,
         ...(assertWorkspaceHeld === undefined ? {} : { assertWorkspaceHeld }),
         ...(snapshot?.providerIdentity?.kind === "acpx"
           ? { expectedIdentity: snapshot.providerIdentity }
