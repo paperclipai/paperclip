@@ -78,6 +78,7 @@ import { badRequest, forbidden, notFound, HttpError, unprocessable } from "../..
 import { casesDisabledError } from "../cases-disabled.js";
 import { runnerApiCatalog, searchRunnerApi, withCompanyPagePaths } from "./runner-api-catalog.js";
 import { assertRunnerApiDispatchable, executeRunnerApi, validateRunnerApiCall, RUNNER_API_MAX_BYTES, type RunnerApiCall, type RunnerApiFile, type RunnerApiIo } from "./runner-api-client.js";
+import { omitIssueUpdateEcho } from "./runner-api-update-echo.js";
 import { finishPendingRunnerApiCaptureDeletes, markRunnerApiCaptureEvictions, RUNNER_API_CAPTURE_EVICTION_PASSES, runnerApiCaptureCleanupStalled, runnerApiCaptureUsageBytes } from "./runner-api-capture-retention.js";
 import { acquireRunnerApiResponseSlot, RUNNER_API_RESPONSE_DEADLINE_MS, RunnerApiCaptureReservationReclaimedError, runnerApiCompanyCaptureMaxBytes, RUNNER_API_RESPONSE_MAX_BYTES, RUNNER_API_RESPONSE_RUN_MAX_BYTES, RunnerApiResponseLimitError } from "./runner-api-response-limits.js";
 import { and, desc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
@@ -578,7 +579,8 @@ export class PaperclipRunnerToolAuthority {
       if (readOnlyApiMethod(operation.method)) return this.#recoverRead(call);
       const result = await this.#completedApiReceipt(run.resultJson?.apiToolReceipts, call.callId, apiInput);
       if (result === undefined) return null;
-      return { result: call.tool === "hire_agent" ? hireAgentResult(result, context.actor.adapterConfig?.provider) : apiToolResult(result) };
+      return { result: call.tool === "hire_agent" ? hireAgentResult(result, context.actor.adapterConfig?.provider)
+        : apiToolResult(call.tool === "call_api" ? omitIssueUpdateEcho(result, call.arguments) : result) };
     }
     if (call.tool === "workspace_write" || call.tool === "workspace_run") {
       const bridge = record(record(run.resultJson?.bridgeToolReceipts)[callKey]);
@@ -1006,7 +1008,7 @@ export class PaperclipRunnerToolAuthority {
         // PRP reserves operationId/callId for semantic result identity. The
         // HTTP operation is metadata, including in previously saved receipts;
         // exposing it as operationId makes the runner reject a valid response.
-        return apiToolResult(await this.#withWorkspacePageHref(await this.#callApi(call.callId, call.arguments)));
+        return apiToolResult(await this.#withWorkspacePageHref(omitIssueUpdateEcho(await this.#callApi(call.callId, call.arguments), call.arguments)));
       }
       case "get_task_context": {
         if (this.#apiScope(context).kind === "skill_test") return {
