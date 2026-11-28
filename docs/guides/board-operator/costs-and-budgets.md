@@ -89,10 +89,11 @@ Only board users can set or change a budget.
 ### In the UI
 
 - **All budgets** — select **Costs** in the sidebar, then open **Budgets**. The page lists each budget that exists and each open budget incident.
+- **Company budget** — open company settings and use the **Monthly budget** field in the General section. The field takes dollars. Leave it blank for no limit.
 - **Agent budget** — open the agent's page and select **Budget**.
 - **Project budget** — open the project's page and select the **Budget** tab.
 
-The Budgets page shows a company budget only after one exists. If the company has no budget yet, you can create one with the API below.
+The Budgets page shows a company budget only after one exists. If the company has no budget yet, set one from the Monthly budget field in company settings or with the API below.
 
 ### With the API
 
