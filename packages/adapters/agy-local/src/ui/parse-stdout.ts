@@ -30,7 +30,7 @@ function stringify(value: unknown): string {
  * createAgyStdoutParser for a transcript.
  */
 export function parseAgyStdoutLine(line: string, ts: string): TranscriptEntry[] {
-  return createAgyStdoutParser()(line, ts);
+  return createAgyStdoutParser().parseLine(line, ts);
 }
 
 /**
@@ -38,10 +38,13 @@ export function parseAgyStdoutLine(line: string, ts: string): TranscriptEntry[] 
  * their reply as deltas, so the final result does not repeat it, and a new
  * build never inherits that from another one.
  */
-export function createAgyStdoutParser(): (line: string, ts: string) => TranscriptEntry[] {
+export function createAgyStdoutParser(): { parseLine: (line: string, ts: string) => TranscriptEntry[]; reset: () => void } {
   // Conversations whose reply already streamed as deltas in this build.
   const streamedConversations = new Set<string>();
-  return (line, ts) => parseLine(line, ts, streamedConversations);
+  return {
+    parseLine: (line, ts) => parseLine(line, ts, streamedConversations),
+    reset: () => streamedConversations.clear(),
+  };
 }
 
 function parseLine(line: string, ts: string, streamedConversations: Set<string>): TranscriptEntry[] {

@@ -26,11 +26,11 @@ describe("parseAgyStdoutLine", () => {
       step_update: { conversation_id: AGY_CONVERSATION_ID, step_index: 3, state: "ACTIVE", step_type: "agent_response", text_delta: text },
     });
     const parse = createAgyStdoutParser();
-    expect(parse(delta("hel"), "t")).toEqual([{ kind: "assistant", ts: "t", text: "hel", delta: true }]);
-    expect(parse(delta("lo"), "t")).toEqual([{ kind: "assistant", ts: "t", text: "lo", delta: true }]);
-    expect(parse(AGY_RESULT_LINE, "t").map((e) => e.kind)).toEqual(["result"]);
+    expect(parse.parseLine(delta("hel"), "t")).toEqual([{ kind: "assistant", ts: "t", text: "hel", delta: true }]);
+    expect(parse.parseLine(delta("lo"), "t")).toEqual([{ kind: "assistant", ts: "t", text: "lo", delta: true }]);
+    expect(parse.parseLine(AGY_RESULT_LINE, "t").map((e) => e.kind)).toEqual(["result"]);
     // A new transcript build never saw those deltas, so it still shows the final response.
-    expect(createAgyStdoutParser()(AGY_RESULT_LINE, "t").map((e) => e.kind)).toEqual(["assistant", "result"]);
+    expect(createAgyStdoutParser().parseLine(AGY_RESULT_LINE, "t").map((e) => e.kind)).toEqual(["assistant", "result"]);
     expect(parseAgyStdoutLine(AGY_RESULT_LINE, "t").map((e) => e.kind)).toEqual(["assistant", "result"]);
   });
 
