@@ -138,7 +138,9 @@ jobs:
       - name: Warm incremental typecheck cache
         if: ${{ github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master' && inputs.ref == github.sha && steps.typecheck_incremental.outputs.cache-hit != 'true' }}
         run: |
-          node server/scripts/typecheck-layers.mjs --checkers 4
+          if [ ! -d server/node_modules/.cache/paperclip-typecheck ]; then
+            node server/scripts/typecheck-layers.mjs --checkers 4
+          fi
           node scripts/storybook-catalog.mjs
           node scripts/run-tsc.mjs -p ui/tsconfig.json --incremental --tsBuildInfoFile ui/node_modules/.cache/paperclip-ui.tsbuildinfo
 
@@ -163,7 +165,7 @@ jobs:
       matrix:
         include:
           # Split the long chat file by collected test locations, and balance
-          # the remaining server files across ten runners. Rust-backed server
+          # the remaining server files across twenty runners. Rust-backed server
           # suites run in the cached Runner lane below. Local invocations retain
           # their complete general-server group.
           - group: general-server-without-chat-or-native-runner
