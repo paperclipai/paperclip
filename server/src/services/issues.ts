@@ -2518,7 +2518,6 @@ export async function listUnfinalizedExecutionWorkspaceIds(
       executionWorkspaceId: workspaceOperations.executionWorkspaceId,
       phase: workspaceOperations.phase,
       status: workspaceOperations.status,
-      startedAt: workspaceOperations.startedAt,
     })
     .from(workspaceOperations)
     .where(
@@ -2529,22 +2528,19 @@ export async function listUnfinalizedExecutionWorkspaceIds(
           executionWorkspaceIds,
         ),
       ),
-    );
+    )
+    .orderBy(asc(workspaceOperations.startedAt), asc(workspaceOperations.createdAt), asc(workspaceOperations.id));
 
   const latestByWorkspace = new Map<
     string,
-    { phase: string; status: string; startedAt: Date }
+    { phase: string; status: string }
   >();
   for (const row of rows) {
     if (!row.executionWorkspaceId) continue;
-    const current = latestByWorkspace.get(row.executionWorkspaceId);
-    if (!current || row.startedAt > current.startedAt) {
-      latestByWorkspace.set(row.executionWorkspaceId, {
-        phase: row.phase,
-        status: row.status,
-        startedAt: row.startedAt,
-      });
-    }
+    latestByWorkspace.set(row.executionWorkspaceId, {
+      phase: row.phase,
+      status: row.status,
+    });
   }
 
   for (const workspaceId of executionWorkspaceIds) {
@@ -2568,23 +2564,24 @@ function blockerWorkspaceFacts(companyId: string, workspaceScope: SQL) {
       select distinct workspace_id from (${workspaceScope}) scoped_workspaces(workspace_id)
     ), workspace_facts as materialized (
       select candidate.workspace_id, finalized.started_at as finalized_at,
-        legacy.phase, legacy.status, legacy.started_at
+        finalized.created_at as finalized_created_at,
+        legacy.phase, legacy.status, legacy.started_at, legacy.created_at
       from candidate_workspaces candidate
       left join lateral (
-        select started_at from (
-          select phase, status, started_at from workspace_operations
+        select started_at, created_at from (
+          select id, phase, status, started_at, created_at from workspace_operations
           where company_id = ${companyId}::uuid
             and execution_workspace_id = candidate.workspace_id
           order by started_at desc offset 0
         ) workspace_history
         where phase = 'workspace_finalize' and status = 'succeeded'
-        order by started_at desc limit 1
+        order by started_at desc, created_at desc, id desc limit 1
       ) finalized on true
       left join lateral (
-        select phase, status, started_at from workspace_operations
+        select phase, status, started_at, created_at from workspace_operations
         where company_id = ${companyId}::uuid
           and execution_workspace_id = candidate.workspace_id and issue_id is null
-        order by started_at desc limit 1
+        order by started_at desc, created_at desc, id desc limit 1
       ) legacy on true
     ) select * from workspace_facts
   ) as blocker_workspace_facts`;
@@ -2597,17 +2594,19 @@ function pendingFinalizeBlockerCondition(companyId: string, issueId: SQL, worksp
   return sql`${workspaceId} is not null and exists (
     select 1 from (values (1)) seed(value)
     left join lateral (
-      select phase, status, started_at, finished_at, heartbeat_run_id from workspace_operations blocker_operation
+      select phase, status, started_at, created_at, finished_at, heartbeat_run_id from workspace_operations blocker_operation
       where blocker_operation.company_id = ${companyId}::uuid
         and blocker_operation.execution_workspace_id = ${workspaceId}
         and blocker_operation.issue_id = ${issueId}
-      order by blocker_operation.started_at desc limit 1
+      order by blocker_operation.started_at desc, blocker_operation.created_at desc, blocker_operation.id desc limit 1
     ) latest_blocker_operation on true
     where coalesce(latest_blocker_operation.started_at, blocker_workspace_facts.started_at) is not null
       and not (coalesce(latest_blocker_operation.phase, blocker_workspace_facts.phase) = 'workspace_finalize'
         and coalesce(latest_blocker_operation.status, blocker_workspace_facts.status) = 'succeeded')
       and (blocker_workspace_facts.finalized_at is null
-        or blocker_workspace_facts.finalized_at <= coalesce(latest_blocker_operation.started_at, blocker_workspace_facts.started_at))
+        or (blocker_workspace_facts.finalized_at, blocker_workspace_facts.finalized_created_at)
+          <= (coalesce(latest_blocker_operation.started_at, blocker_workspace_facts.started_at),
+            coalesce(latest_blocker_operation.created_at, blocker_workspace_facts.created_at)))
       and not (
         latest_blocker_operation.status = 'succeeded'
         and latest_blocker_operation.finished_at is not null
@@ -2737,7 +2736,6 @@ export async function runWorkspaceIsFinalized(
     .select({
       phase: workspaceOperations.phase,
       status: workspaceOperations.status,
-      startedAt: workspaceOperations.startedAt,
     })
     .from(workspaceOperations)
     .where(
@@ -2746,15 +2744,14 @@ export async function runWorkspaceIsFinalized(
         eq(workspaceOperations.executionWorkspaceId, executionWorkspaceId),
         eq(workspaceOperations.heartbeatRunId, runId),
       ),
-    );
+    )
+    .orderBy(asc(workspaceOperations.startedAt), asc(workspaceOperations.createdAt), asc(workspaceOperations.id));
 
   if (rows.length === 0) return true;
 
-  let latestFinalize: { status: string; startedAt: Date } | null = null;
+  let latestFinalize: { status: string } | null = null;
   for (const row of rows) {
-    if (row.phase !== "workspace_finalize") continue;
-    if (!latestFinalize || row.startedAt > latestFinalize.startedAt)
-      latestFinalize = row;
+    if (row.phase === "workspace_finalize") latestFinalize = row;
   }
 
   // The run touched the workspace but hasn't reached the sync-back phase yet.

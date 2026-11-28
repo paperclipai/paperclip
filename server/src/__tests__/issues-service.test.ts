@@ -46,7 +46,9 @@ import {
   MAX_CHILD_ISSUES_CREATED_BY_HELPER,
   ISSUE_LIST_MAX_LIMIT,
   issueService,
+  listUnfinalizedExecutionWorkspaceIds,
   readIssueCommentRunLogText,
+  runWorkspaceIsFinalized,
 } from "../services/issues.ts";
 import { getRunLogStore } from "../services/run-log-store.js";
 import * as nativeRunLogRecovery from "../services/native-runtime/native-run-log-recovery.js";
@@ -4881,6 +4883,71 @@ const dependencyTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ISSU
       expect(listed?.blockerAttention?.pendingFinalizeBlockerIssueIds ?? []).toEqual(ready ? [] : [f.blockerId]);
     },
   );
+
+  it("orders blocker operations with equal start times by creation", async () => {
+    const f = await seedSharedWorkspaceDependency();
+    const startedAt = new Date("2026-05-23T22:00:00.000Z");
+    await db.insert(workspaceOperations).values({ companyId: f.companyId, executionWorkspaceId: f.executionWorkspaceId,
+      issueId: f.blockerId, phase: "workspace_finalize", status: "succeeded", startedAt,
+      createdAt: new Date("2026-05-23T22:00:00.002Z") });
+    await db.insert(workspaceOperations).values({ companyId: f.companyId, executionWorkspaceId: f.executionWorkspaceId,
+      issueId: f.blockerId, phase: "worktree_prepare", status: "succeeded", startedAt,
+      createdAt: new Date("2026-05-23T22:00:00.001Z") });
+    await expect(svc.getDependencyReadiness(f.dependentId)).resolves.toMatchObject({
+      isDependencyReady: true,
+      pendingFinalizeBlockerIssueIds: [],
+    });
+
+    await db.insert(workspaceOperations).values({ companyId: f.companyId, executionWorkspaceId: f.executionWorkspaceId,
+      issueId: f.blockerId, phase: "worktree_prepare", status: "succeeded", startedAt,
+      createdAt: new Date("2026-05-23T22:00:00.003Z") });
+    await expect(svc.getDependencyReadiness(f.dependentId)).resolves.toMatchObject({
+      isDependencyReady: false,
+      pendingFinalizeBlockerIssueIds: [f.blockerId],
+    });
+  });
+
+  it("clears a blocker operation with a foreign finalize created later at the same start time", async () => {
+    const f = await seedSharedWorkspaceDependency();
+    const startedAt = new Date("2026-05-23T22:00:00.000Z");
+    await db.insert(workspaceOperations).values({ companyId: f.companyId, executionWorkspaceId: f.executionWorkspaceId,
+      issueId: f.blockerId, phase: "worktree_prepare", status: "succeeded", startedAt,
+      createdAt: new Date("2026-05-23T22:00:00.001Z") });
+    await db.insert(workspaceOperations).values({ companyId: f.companyId, executionWorkspaceId: f.executionWorkspaceId,
+      issueId: f.foreignIssueId, phase: "workspace_finalize", status: "succeeded", startedAt,
+      createdAt: new Date("2026-05-23T22:00:00.002Z") });
+    await expect(svc.getDependencyReadiness(f.dependentId)).resolves.toMatchObject({
+      isDependencyReady: true,
+      pendingFinalizeBlockerIssueIds: [],
+    });
+  });
+
+  it("lists a workspace as unfinalized when an operation is created after its finalize at the same start time", async () => {
+    const f = await seedSharedWorkspaceDependency();
+    const startedAt = new Date("2026-05-23T22:00:00.000Z");
+    await db.insert(workspaceOperations).values({ companyId: f.companyId, executionWorkspaceId: f.executionWorkspaceId,
+      issueId: f.blockerId, phase: "workspace_finalize", status: "succeeded", startedAt,
+      createdAt: new Date("2026-05-23T22:00:00.001Z") });
+    await db.insert(workspaceOperations).values({ companyId: f.companyId, executionWorkspaceId: f.executionWorkspaceId,
+      issueId: f.blockerId, phase: "worktree_prepare", status: "running", startedAt,
+      createdAt: new Date("2026-05-23T22:00:00.002Z") });
+    expect([...await listUnfinalizedExecutionWorkspaceIds(db, f.companyId, [f.executionWorkspaceId])])
+      .toEqual([f.executionWorkspaceId]);
+  });
+
+  it("uses the last created finalize of a run when finalize start times are equal", async () => {
+    const f = await seedSharedWorkspaceDependency();
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: f.assigneeAgentId, status: "running" });
+    const startedAt = new Date("2026-05-23T22:00:00.000Z");
+    await db.insert(workspaceOperations).values({ companyId: f.companyId, executionWorkspaceId: f.executionWorkspaceId,
+      heartbeatRunId: runId, phase: "workspace_finalize", status: "failed", startedAt,
+      createdAt: new Date("2026-05-23T22:00:00.001Z") });
+    await db.insert(workspaceOperations).values({ companyId: f.companyId, executionWorkspaceId: f.executionWorkspaceId,
+      heartbeatRunId: runId, phase: "workspace_finalize", status: "running", startedAt,
+      createdAt: new Date("2026-05-23T22:00:00.002Z") });
+    await expect(runWorkspaceIsFinalized(db, f.companyId, f.executionWorkspaceId, runId)).resolves.toBe(false);
+  });
 
   it("reports dependency readiness for blocked issue chains", async () => {
     const companyId = randomUUID();
