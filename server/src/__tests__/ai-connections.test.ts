@@ -13,7 +13,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import { promises as fs } from "node:fs";
-import { mkdtemp, realpath, rm, access, readFile, writeFile, stat } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, rm, access, readFile, writeFile, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
@@ -2604,6 +2604,167 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       reader.mockResolvedValue({ credential: "completed-before-restart", accountLabel: undefined });
       await expect(login.check(companyId, owner, { ...intent, agentIds: [] }, id)).resolves.toEqual({ status: "ready" });
     } finally { reader.mockRestore(); await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.id, id)); }
+  });
+  it("stops a sign-in process that a reopen launched while the attempt was being cancelled", async () => {
+    const owner = "reopen-during-cancel";
+    const intent = { provider: "openai", method: "subscription", ownership: "personal", name: "Two tabs", allAgents: false, agentIds: [] as string[] } as const;
+    const running = new Set<number>();
+    let launched = 0;
+    browserLoginMock.startLocalBrowserLogin.mockImplementation(() => { const process = ++launched; running.add(process); return { abort: () => { running.delete(process); } } as never; });
+    const login = localAiLoginService(db);
+    let id: string | undefined;
+    try {
+      id = (await login.start(companyId, owner, intent)).sessionId;
+      expect([...running]).toEqual([1]);
+      const transaction = db.transaction.bind(db);
+      let reopened = false;
+      const spy = vi.spyOn(db, "transaction").mockImplementation((async (...args: Parameters<typeof transaction>) => {
+        if (!reopened && running.size === 0) {
+          reopened = true;
+          expect((await login.start(companyId, owner, intent)).sessionId).toBe(id);
+          expect([...running]).toEqual([2]);
+        }
+        return transaction(...args);
+      }) as typeof db.transaction);
+      try { await login.cancel(companyId, owner, id); } finally { spy.mockRestore(); }
+      expect(reopened).toBe(true);
+      expect(launched).toBe(2);
+      expect([...running]).toEqual([]);
+      expect((await db.select().from(adapterAuthSessions).where(eq(adapterAuthSessions.id, id)))[0]?.status).toBe("cancelled");
+      const next = await login.start(companyId, owner, intent);
+      expect(next.sessionId).not.toBe(id);
+      await login.cancel(companyId, owner, next.sessionId);
+      expect([...running]).toEqual([]);
+    } finally {
+      browserLoginMock.startLocalBrowserLogin.mockReset();
+      await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.startedByUserId, owner));
+    }
+  });
+  it("launches no sign-in process when the attempt cannot be read under its lock", async () => {
+    const owner = "launch-read-fails";
+    const intent = { provider: "openai", method: "subscription", ownership: "personal", name: "Read fails", allAgents: false, agentIds: [] as string[] } as const;
+    let launched = 0;
+    browserLoginMock.startLocalBrowserLogin.mockImplementation(() => { launched += 1; return { abort: () => {} } as never; });
+    const login = localAiLoginService(db);
+    const transaction = db.transaction.bind(db);
+    let calls = 0;
+    const spy = vi.spyOn(db, "transaction").mockImplementation((async (...args: Parameters<typeof transaction>) => {
+      calls += 1;
+      if (calls === 2) throw new Error("database unavailable");
+      return transaction(...args);
+    }) as typeof db.transaction);
+    try {
+      await expect(login.start(companyId, owner, intent)).rejects.toThrow("database unavailable");
+      expect(launched).toBe(0);
+      const [attempt] = await db.select().from(adapterAuthSessions).where(eq(adapterAuthSessions.startedByUserId, owner));
+      expect(attempt).toMatchObject({ status: "waiting_for_user", expiresAt: expect.any(Date) });
+    } finally {
+      spy.mockRestore(); browserLoginMock.startLocalBrowserLogin.mockReset();
+      await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.startedByUserId, owner));
+    }
+  });
+  it("launches no sign-in process for an attempt that expired after it was read", async () => {
+    const owner = "expired-before-launch";
+    const intent = { provider: "openai", method: "subscription", ownership: "personal", name: "Expired", allAgents: false, agentIds: [] as string[] } as const;
+    let launched = 0;
+    browserLoginMock.startLocalBrowserLogin.mockImplementation(() => { launched += 1; return { abort: () => {} } as never; });
+    const login = localAiLoginService(db);
+    const transaction = db.transaction.bind(db);
+    let calls = 0;
+    const spy = vi.spyOn(db, "transaction").mockImplementation((async (...args: Parameters<typeof transaction>) => {
+      calls += 1;
+      if (calls === 2) await db.update(adapterAuthSessions).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(adapterAuthSessions.startedByUserId, owner));
+      return transaction(...args);
+    }) as typeof db.transaction);
+    try {
+      await expect(login.start(companyId, owner, intent)).rejects.toThrow("This sign-in has ended");
+      expect(launched).toBe(0);
+    } finally {
+      spy.mockRestore(); browserLoginMock.startLocalBrowserLogin.mockReset();
+      await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.startedByUserId, owner));
+    }
+  });
+  it("stops a sign-in process that was launched after the expiry worker stopped the previous one", async () => {
+    const owner = "launch-during-expiry";
+    const intent = { provider: "openai", method: "subscription", ownership: "personal", name: "Expiring", allAgents: false, agentIds: [] as string[] } as const;
+    const running = new Set<number>();
+    let launched = 0;
+    browserLoginMock.startLocalBrowserLogin.mockImplementation(() => { const process = ++launched; running.add(process); return { abort: () => { running.delete(process); } } as never; });
+    const login = localAiLoginService(db);
+    try {
+      const id = (await login.start(companyId, owner, intent)).sessionId;
+      const expire = (at: number) => db.update(adapterAuthSessions).set({ expiresAt: new Date(at) }).where(eq(adapterAuthSessions.id, id));
+      await expire(Date.now() - 1000);
+      const transaction = db.transaction.bind(db);
+      let relaunched = false;
+      const spy = vi.spyOn(db, "transaction").mockImplementation((async (...args: Parameters<typeof transaction>) => {
+        if (!relaunched && running.size === 0) {
+          relaunched = true;
+          await expire(Date.now() + 60_000);
+          await login.start(companyId, owner, intent);
+          expect([...running]).toEqual([2]);
+          await expire(Date.now() - 1000);
+        }
+        return transaction(...args);
+      }) as typeof db.transaction);
+      try { await login.reapExpired(); } finally { spy.mockRestore(); }
+      expect(relaunched).toBe(true);
+      expect([...running]).toEqual([]);
+      expect((await db.select().from(adapterAuthSessions).where(eq(adapterAuthSessions.id, id)))[0]).toMatchObject({ status: "timed_out", expiresAt: null });
+    } finally {
+      browserLoginMock.startLocalBrowserLogin.mockReset();
+      await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.startedByUserId, owner));
+    }
+  });
+  it("records a pending cancellation when a process that a reopen launched does not stop in time", async () => {
+    const owner = "slow-second-stop";
+    const intent = { provider: "openai", method: "subscription", ownership: "personal", name: "Slow stop", allAgents: false, agentIds: [] as string[] } as const;
+    let launched = 0;
+    browserLoginMock.startLocalBrowserLogin.mockImplementation(() => (++launched === 1 ? { abort: () => {} } : { abort: () => new Promise<void>(() => {}) }) as never);
+    const login = localAiLoginService(db);
+    const realSetTimeout = globalThis.setTimeout;
+    const stopDeadlinePassesAtOnce = vi.spyOn(globalThis, "setTimeout").mockImplementation(((handler: () => void, ms?: number, ...rest: unknown[]) =>
+      realSetTimeout(handler, ms === 5_000 ? 0 : ms, ...rest)) as typeof setTimeout);
+    try {
+      const id = (await login.start(companyId, owner, intent)).sessionId;
+      const transaction = db.transaction.bind(db);
+      let reopened = false;
+      const spy = vi.spyOn(db, "transaction").mockImplementation((async (...args: Parameters<typeof transaction>) => {
+        if (!reopened) { reopened = true; await login.start(companyId, owner, intent); }
+        return transaction(...args);
+      }) as typeof db.transaction);
+      try { await expect(login.cancel(companyId, owner, id)).rejects.toThrow("still stopping"); } finally { spy.mockRestore(); }
+      expect(launched).toBe(2);
+      const [attempt] = await db.select().from(adapterAuthSessions).where(eq(adapterAuthSessions.id, id));
+      expect(attempt).toMatchObject({ status: "waiting_for_user", failureReason: "local_login_retirement_pending" });
+      expect(attempt!.expiresAt!.getTime()).toBeLessThanOrEqual(Date.now());
+    } finally {
+      stopDeadlinePassesAtOnce.mockRestore();
+      browserLoginMock.startLocalBrowserLogin.mockReset();
+      await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.startedByUserId, owner));
+    }
+  });
+  it.skipIf(process.getuid?.() === 0)("makes a cancel due for the expiry worker when its login home cannot be removed", async () => {
+    const [environment] = await db.select().from(environments).where(eq(environments.driver, "local")).limit(1);
+    const id = randomUUID();
+    const owner = "unremovable-home";
+    const intent = { provider: "openai", method: "subscription", ownership: "personal", name: "Unremovable home", allAgents: false, agentIds: [] } as const;
+    await db.insert(adapterAuthSessions).values({ id, publicSessionId: id, companyId, environmentId: environment.id, startedByUserId: owner, adapterType: "codex_local", aiConnection: { ...intent, agentIds: [] }, connectionMethod: "local_subscription", status: "waiting_for_user", expiresAt: new Date(Date.now() + 60_000) });
+    const parent = path.join(home, "instances", "ai-connection-fixture", "ai-local-logins");
+    const read = async () => (await db.select().from(adapterAuthSessions).where(eq(adapterAuthSessions.id, id)))[0]!;
+    await mkdir(path.join(parent, id), { recursive: true });
+    await chmod(parent, 0o500);
+    try {
+      const login = localAiLoginService(db);
+      await expect(login.cancel(companyId, owner, id)).rejects.toMatchObject({ code: "EACCES" });
+      const pending = await read();
+      expect(pending).toMatchObject({ status: "waiting_for_user", failureReason: "local_login_retirement_pending" });
+      expect(pending.expiresAt!.getTime()).toBeLessThanOrEqual(Date.now());
+      await expect(login.start(companyId, owner, { ...intent, agentIds: [] })).rejects.toThrow();
+      await chmod(parent, 0o700);
+      await login.reapExpired();
+      expect(await read()).toMatchObject({ status: "cancelled", expiresAt: null });
+    } finally { await chmod(parent, 0o700); await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.id, id)); }
   });
   it("requires an owned browser sign-in attempt for local subscriptions", async () => {
     const reader = vi.spyOn(localCredentials, "readVerifiedLocalAiCredentialDetails").mockResolvedValue({ credential: "fixture-local-token", accountLabel: undefined });
