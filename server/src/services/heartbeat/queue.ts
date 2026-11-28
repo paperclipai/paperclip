@@ -1,3 +1,6 @@
+import { withAntigravitySwarmMarkers } from "../antigravity-swarm.js";
+import { authorizationService } from "../authorization.js";
+import { hasActionableCommentIntent, canNotifyIssueCommentAssignee, isOrdinaryIssueCommentWake } from "../issue-comment-wakeup.js";
 import { QUEUED_MESSAGES_DELIVERED_REASON } from "../../modules/wake-queue/index.js";
 import { connectionIntentService } from "../connection-intents.js";
 import { verifyBlockerStallWake } from "../recovery/blocker-stall-wakeups.js";
@@ -1021,6 +1024,76 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     });
   }
 
+  async function ordinaryCommentWakeAllowed(tx: Db, input: {
+    companyId: string; issueId: string; agentId: string; assigneeAgentId: string | null;
+    status: string; context: Record<string, unknown>; reason: string | null | undefined;
+    expectedActorId?: string | null; nativeRunId?: string | null;
+  }) {
+    if (!isOrdinaryIssueCommentWake(input.reason, input.context)) return true;
+    if (input.reason === "issue_comment_mentioned") return false; // Native upstream mentions remain annotations.
+    if (input.status === "blocked" || input.assigneeAgentId !== input.agentId) return false;
+    // Explicitly authorized resume is a separate route operation. Reblocking
+    // still wins at the issue lock, and all normal execution guards still run.
+    if (input.context.resumeIntent === true || input.reason === "issue_reopened_via_comment") return true;
+    // Annotation questions are a separate persisted native input, not task comments.
+    // Recheck the service-created receipt and its author at admission and claim;
+    // caller-supplied context alone cannot establish this cause.
+    if ((input.expectedActorId === input.context.annotationReactionUserId || input.nativeRunId) &&
+        input.context.source === "issue.document_annotation_reaction" &&
+        input.context.annotationReaction === "question" &&
+        typeof input.context.annotationCommentId === "string" &&
+        typeof input.context.annotationReactionUserId === "string") {
+      const [receipt] = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.agentId, input.agentId),
+        input.nativeRunId ? eq(agentWakeupRequests.runId, input.nativeRunId) : undefined,
+        eq(agentWakeupRequests.reason, "issue_commented"), eq(agentWakeupRequests.requestedByActorType, "user"),
+        eq(agentWakeupRequests.requestedByActorId, input.context.annotationReactionUserId),
+        inArray(agentWakeupRequests.status, ["deferred_issue_execution", "queued", "coalesced"]),
+        sql`${agentWakeupRequests.payload}->>'issueId' = ${input.issueId}`,
+        sql`${agentWakeupRequests.payload}->>'mutation' = 'annotation_reaction'`,
+        sql`${agentWakeupRequests.payload}->>'annotationCommentId' = ${input.context.annotationCommentId}`,
+        sql`exists (select 1 from document_annotation_comment_reactions reaction
+          join document_annotation_comments annotation on annotation.id = reaction.comment_id
+          where reaction.company_id = ${input.companyId} and annotation.company_id = ${input.companyId}
+            and annotation.issue_id = ${input.issueId}::uuid
+            and annotation.id::text = ${input.context.annotationCommentId}
+            and reaction.actor_type = 'user' and reaction.actor_id = ${input.context.annotationReactionUserId}
+            and reaction.reaction = 'question'
+            and ${agentWakeupRequests.idempotencyKey} = 'annotation-question-reaction:' || reaction.id::text)`,
+      )).limit(1);
+      if (receipt) return true;
+    }
+    const ids = [...new Set([...queuedCommentIdsFromRunContext(input.context), ...extractWakeCommentIds(input.context),
+      readNonEmptyString(input.context.sourceCommentId), readNonEmptyString(input.context.commentId),
+      readNonEmptyString(input.context.wakeCommentId)].filter((id): id is string => typeof id === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)))];
+    if (ids.length === 0) return false;
+    const comments = await tx.select({ id: issueComments.id, body: issueComments.body,metadata:issueComments.metadata,companyId:issueComments.companyId,issueId:issueComments.issueId,authorAgentId:issueComments.authorAgentId,authorUserId:issueComments.authorUserId,onBehalfOfUserId:issueComments.onBehalfOfUserId,createdByRunId:issueComments.createdByRunId }).from(issueComments).where(and(
+      eq(issueComments.companyId, input.companyId), eq(issueComments.issueId, input.issueId),
+      inArray(issueComments.id, ids), isNull(issueComments.deletedAt),
+    ));
+    // A person's standing agent conversation has its own persisted recipient
+    // and author binding. It is not an ordinary task-composer comment.
+    const [conversation] = await tx.select({ agentId: issues.conversationAgentId, userId: issues.conversationUserId })
+      .from(issues).where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.issueId))).limit(1);
+    // Peer messages in a person's agent chat retain their native authenticated
+    // run provenance. Ordinary task comments still require explicit intent.
+    if (conversation?.agentId === input.agentId && conversation.userId) {
+      for (const comment of comments) {
+        if (!comment.authorAgentId || comment.onBehalfOfUserId !== conversation.userId || !comment.createdByRunId) continue;
+        const [source] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.id, comment.createdByRunId), eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.agentId, comment.authorAgentId), eq(heartbeatRuns.responsibleUserId, conversation.userId),
+        )).limit(1);
+        if (source) return true;
+      }
+    }
+    const recordedCommands = await withAntigravitySwarmMarkers(tx, input.companyId, input.issueId, comments);
+    return recordedCommands.some(comment => comment.nativeCommand === "swarm" || (
+      conversation?.agentId === input.agentId && !!conversation.userId &&
+      !comment.authorAgentId && comment.authorUserId === conversation.userId
+    ) || canNotifyIssueCommentAssignee(comment.body, input.agentId, input.status, hasActionableCommentIntent(comment,input.agentId)));
+  }
+
   async function claimQueuedRun(
     run: typeof heartbeatRuns.$inferSelect,
     companyAgents?: AgentOrgRow[],
@@ -1029,6 +1102,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     slots?: { full: boolean },
   ) {
     if (run.status !== "queued") return run;
+    let nonAssigneeCommentWake: boolean | undefined;
     // Every start path ends here (dispatch passes, executeRun of a queued run,
     // a delivered continuation). A server whose run admission is closed (it
     // received SIGTERM and is draining) or that yields new starts to a
@@ -1040,6 +1114,111 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     // A system continuation queued while its task was open has nothing left to
     // do once another run finished or cancelled the task before this one
     // started. A person's message on a done task is not one of these reasons.
+    let context = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(context.issueId);
+    // Filter untrusted/ineligible comment input before native identity selection.
+    // Claim rechecks again under the same issue/wake/run lock order. Neither
+    // check can grant a start: all ordinary admission and owner/Stop gates follow.
+    async function recheckCommentContribution(tx: Db, owner: {assigneeAgentId:string|null;status:string}|undefined) {
+      if (!issueId) return true;
+        // Follow the native queue-edit order: issue, wake, run. Use the locked
+        // context so a concurrently attached comment is neither lost nor trusted
+        // from an old in-memory dispatch snapshot.
+        if (run.wakeupRequestId) await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)
+          .where(and(eq(agentWakeupRequests.id, run.wakeupRequestId), eq(agentWakeupRequests.companyId, run.companyId))).for("update");
+        const [current] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, run.id),
+          eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.status, "queued"))).for("update");
+        if (!current) return false;
+        let currentContext = parseObject(current.contextSnapshot);
+        let ordinary = isOrdinaryIssueCommentWake(currentContext.wakeReason as string | undefined, currentContext);
+        let recoveredIndependentOrigin = false;
+        if (ordinary) {
+          // A pre-upgrade merge may have overwritten an independent cause with
+          // a comment reason. Restore only an admitted, same-run native origin;
+          // caller context or a claimed independent flag cannot mint that proof.
+          const receipts = await tx.select().from(agentWakeupRequests).where(and(
+            eq(agentWakeupRequests.companyId,run.companyId),eq(agentWakeupRequests.agentId,run.agentId),
+            eq(agentWakeupRequests.runId,run.id),inArray(agentWakeupRequests.status,["queued","coalesced"])))
+            .orderBy(desc(agentWakeupRequests.requestedAt));
+          for (const receipt of receipts) {
+            const origin=parseObject(parseObject(receipt.payload)[DEFERRED_WAKE_CONTEXT_KEY]);
+            const reason=readNonEmptyString(receipt.reason);
+            if (!reason || origin.issueId!==issueId || origin.wakeReason!==reason ||
+                isOrdinaryIssueCommentWake(reason,origin)) continue;
+            const commentIds=extractWakeCommentIds(currentContext);
+            const independentIds=new Set(extractWakeCommentIds(origin));
+            currentContext={...currentContext,...origin,wakeCommentIds:commentIds,
+              ordinaryIssueCommentIds:commentIds.filter(id=>!independentIds.has(id)),
+              ...(commentIds.length?{commentId:commentIds[commentIds.length-1],wakeCommentId:commentIds[commentIds.length-1]}:{})};
+            ordinary=false;
+            recoveredIndependentOrigin=true;
+            break;
+          }
+        }
+        if (!ordinary && (!Array.isArray(currentContext.ordinaryIssueCommentIds) ||
+            (currentContext.ordinaryIssueCommentIds.length===0 && !recoveredIndependentOrigin))) return true;
+        let discardedOnly = false;
+        if (ordinary || Array.isArray(currentContext.ordinaryIssueCommentIds)) {
+          const marked = new Set<string>(ordinary
+            ? [...extractWakeCommentIds(currentContext), ...queuedCommentIdsFromRunContext(currentContext),
+                currentContext.commentId, currentContext.wakeCommentId, currentContext.sourceCommentId].filter((id): id is string => typeof id === "string")
+            : (currentContext.ordinaryIssueCommentIds as unknown[]).filter((id): id is string => typeof id === "string"));
+          // Preserve the native deleted-message cancellation contract while
+          // keeping this pre-identity eligibility check fail closed.
+          if (ordinary && marked.size > 0 && [...marked].every(id => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))) {
+            const markedRows = await tx.select({ id: issueComments.id, deletedAt: issueComments.deletedAt })
+              .from(issueComments).where(and(eq(issueComments.companyId, run.companyId),
+                eq(issueComments.issueId, issueId), inArray(issueComments.id, [...marked])));
+            discardedOnly = markedRows.length === marked.size && markedRows.every(row => row.deletedAt !== null);
+          }
+          const allowed = new Set<string>();
+          for (const id of marked) {
+            if (owner && await ordinaryCommentWakeAllowed(tx, { companyId:run.companyId,issueId,agentId:run.agentId,
+                assigneeAgentId:owner.assigneeAgentId,status:owner.status, reason:ordinary ? currentContext.wakeReason as string | undefined : "issue_commented",
+                context:{wakeReason:ordinary ? currentContext.wakeReason : "issue_commented",commentId:id,
+                  ...(ordinary && currentContext.resumeIntent===true ? {resumeIntent:true}: {})} })) allowed.add(id);
+          }
+          const retained = extractWakeCommentIds(currentContext).filter(id => !marked.has(id) || allowed.has(id));
+          for (const key of ["sourceCommentId", "commentId", "wakeCommentId"]) {
+            const id = readNonEmptyString(currentContext[key]);
+            if (id && marked.has(id) && !allowed.has(id)) delete currentContext[key];
+          }
+          currentContext.wakeCommentIds = retained;
+          currentContext.ordinaryIssueCommentIds = [...allowed];
+          // Rebuild from retained ids; never forward a stale embedded comment.
+          delete currentContext.paperclipWake;
+          await tx.update(heartbeatRuns).set({contextSnapshot:currentContext}).where(eq(heartbeatRuns.id,run.id));
+          Object.assign(context,currentContext);
+          for (const key of ["sourceCommentId", "commentId", "wakeCommentId", "paperclipWake"])
+            if (!(key in currentContext)) delete context[key];
+          run = {...run,contextSnapshot:currentContext};
+        }
+        if (ordinary && (!owner || !await ordinaryCommentWakeAllowed(tx, { companyId: run.companyId, issueId,
+            agentId: run.agentId, assigneeAgentId: owner.assigneeAgentId, status: owner.status,
+            context: currentContext, reason: currentContext.wakeReason as string | undefined, nativeRunId: current.id }))) {
+          const now = new Date();
+          // Retire before dispatch, never active work or the durable comment.
+          const error = discardedOnly ? "Queued messages were discarded before dispatch" : "Comment retained without starting work";
+          await tx.update(heartbeatRuns).set({ status: "cancelled", finishedAt: now,
+            errorCode: discardedOnly ? "queued_comment_discarded" : "issue_comment_no_longer_eligible", error })
+            .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.status, "queued")));
+          if (run.wakeupRequestId) await tx.update(agentWakeupRequests).set({ status: "skipped", finishedAt: now, error }).where(and(eq(agentWakeupRequests.id, run.wakeupRequestId),
+              eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.status, "queued")));
+          await tx.update(issues).set({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null })
+            .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)));
+          return false;
+        }
+      return true;
+    }
+    if (issueId && (isOrdinaryIssueCommentWake(context.wakeReason as string | undefined,context) ||
+        (Array.isArray(context.ordinaryIssueCommentIds) && context.ordinaryIssueCommentIds.length>0))) {
+      const eligible = await db.transaction(async tx => {
+        const [owner] = await tx.select({assigneeAgentId:issues.assigneeAgentId,status:issues.status}).from(issues)
+          .where(and(eq(issues.id,issueId),eq(issues.companyId,run.companyId))).for("update");
+        return recheckCommentContribution(tx as unknown as Db,owner);
+      });
+      if (!eligible) return null;
+    }
     const runContext = parseObject(run.contextSnapshot);
     const systemContinuationReason = readNonEmptyString(runContext.wakeReason);
     const continuedIssueId = readNonEmptyString(runContext.issueId);
@@ -1183,7 +1362,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     }
     if (!run.startedAt && !await canStartNewExternalBotWork(agent)) return null;
 
-    const context = parseObject(run.contextSnapshot);
+    context = parseObject(run.contextSnapshot);
     const budgetBlock = await budgets.getInvocationBlock(
       run.companyId,
       run.agentId,
@@ -1254,7 +1433,6 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       return null;
     }
 
-    const issueId = readNonEmptyString(context.issueId);
     if (issueId && activeRunExecutions.size > 0) {
       // Native finalization publishes success before workspace synchronization,
       // provider suspension, and lease release finish. A queued comment must
@@ -1383,6 +1561,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         companyId: run.companyId,
         expectedStatus: "queued",
       });
+      if (staleness.outcome === "not_stale") nonAssigneeCommentWake = staleness.nonAssigneeCommentWake;
       if (staleness.outcome === "cancelled" || staleness.outcome === "deferred") {
         applyRunDispatchPostCommitEffects(staleness.postCommitEffects);
         if (staleness.outcome === "cancelled" && staleness.errorCode === "issue_assignee_changed") {
@@ -1421,6 +1600,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     async function lockIssueExecutionClaim(tx: Db) {
       const [owner] = issueId ? await tx.select({
         assigneeAgentId: issues.assigneeAgentId,
+        status: issues.status,
         statusVersion: issues.statusVersion,
         executionRunId: issues.executionRunId,
         checkoutRunId: issues.checkoutRunId,
@@ -1436,6 +1616,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           ...(predecessorRunId ? { predecessorRunId } : {}) }, "claimQueuedRun: queued run declined at the issue execution claim");
         return { ownsIssue, blocked: true };
       };
+      if (!await recheckCommentContribution(tx,owner)) return declined("issue_comment_no_longer_eligible");
       if (handoff && (handoff.wakeupRequestId !== run.wakeupRequestId || handoff.state === "awaiting_release"))
         return declined("case_handoff_pending");
       if (caseHandoffReceipt) {
@@ -1679,7 +1860,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                   .update(heartbeatRuns)
                   .set({
                     status: "running",
-                    runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType } })}::jsonb`,
+                    runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType },
+                    ...(nonAssigneeCommentWake !== undefined ? { aiConnectionNonAssigneeCommentWake: nonAssigneeCommentWake } : {}) })}::jsonb`,
                     ...legacyControllerClaim(run.runtimeMode),
                     responsibleUserId,
                     startedAt: lockedRun.startedAt ?? claimedAt,
@@ -1790,7 +1972,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 .update(heartbeatRuns)
                 .set({
                   status: "running",
-                  runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType } })}::jsonb`,
+                  runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType },
+                    ...(nonAssigneeCommentWake !== undefined ? { aiConnectionNonAssigneeCommentWake: nonAssigneeCommentWake } : {}) })}::jsonb`,
                     ...legacyControllerClaim(run.runtimeMode),
                   responsibleUserId,
                   startedAt: lockedRun.startedAt ?? claimedAt,
@@ -1862,7 +2045,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       : await withChatControlRecoveryGate(run, "claim", async (tx) => {
           const claimValues = {
             status: "running",
-            runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType } })}::jsonb`,
+            runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType },
+                    ...(nonAssigneeCommentWake !== undefined ? { aiConnectionNonAssigneeCommentWake: nonAssigneeCommentWake } : {}) })}::jsonb`,
             ...legacyControllerClaim(run.runtimeMode),
             responsibleUserId,
             startedAt: run.startedAt ?? claimedAt,
@@ -3642,6 +3826,13 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               operatorResponsibleUserId = opts.requestedByActorId!;
             }
             if (opts.queuedCommentInterruptId) {
+              // Recheck the persisted click's current native wake entitlement
+              // under the issue lock before creating a run or reopening work.
+              const clickAccess = await authorizationService(tx as unknown as Db).decide({
+                actor: { type: "agent", agentId: agent.id, companyId: agent.companyId, onBehalfOfUserId: opts.requestedByActorId!, source: "agent_jwt" }, action: "agent:wake",
+                resource: { type: "agent", companyId: agent.companyId, agentId: agent.id },
+              });
+              if (!clickAccess.allowed) return { kind: "deferred" as const };
               // The locked board receipt supplies execution authority even when
               // another user authored the messages. Dispatch revalidates the receipt.
               operatorResponsibleUserId = opts.requestedByActorId!;
@@ -3847,6 +4038,37 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               idempotencyKey: opts.idempotencyKey ?? null,
               finishedAt: new Date(),
             });
+            return { kind: "skipped" as const };
+          }
+
+          // Save independently addressed input behind another agent's execution.
+          // Promotion and dispatch still require the real assignee and current intent.
+          if (!durableRequest && reason === "issue_commented" && wakeCommentId &&
+              opts.requestedByActorType === "user" && issue.executionRunId &&
+              issue.assigneeAgentId !== agent.id && enrichedContextSnapshot.resumeIntent !== true) {
+            const [addressed] = await tx.select().from(issueComments).where(and(
+              eq(issueComments.companyId, issue.companyId), eq(issueComments.issueId, issue.id),
+              eq(issueComments.id, wakeCommentId), isNull(issueComments.deletedAt)));
+            if (addressed && !addressed.authorAgentId && addressed.authorUserId === opts.requestedByActorId &&
+                canNotifyIssueCommentAssignee(addressed.body, agent.id, issue.status,
+                  hasActionableCommentIntent(addressed, agent.id))) {
+              await tx.insert(agentWakeupRequests).values({ ...durableReceiptFields,
+                companyId: agent.companyId, agentId, source, triggerDetail, reason,
+                payload: { ...payload, issueId: issue.id, [DEFERRED_WAKE_CONTEXT_KEY]: enrichedContextSnapshot },
+                status: "deferred_issue_execution", requestedByActorType: "user",
+                requestedByActorId: opts.requestedByActorId ?? null,
+                idempotencyKey: opts.idempotencyKey ?? null });
+              return { kind: "deferred" as const };
+            }
+          }
+
+          // The branded durable request has already reauthorized its exact chat receipt above.
+          // Its source is independent of ordinary task-composer intent.
+          if (!durableRequest && !await ordinaryCommentWakeAllowed(tx as unknown as Db, { companyId: issue.companyId,
+            issueId: issue.id, agentId: agent.id, assigneeAgentId: issue.assigneeAgentId,
+            status: issue.status === "done" && opts.queuedCommentInterruptId &&
+              executionWaitRequestId === opts.queuedCommentInterruptId ? "todo" : issue.status,
+            context: enrichedContextSnapshot, reason, expectedActorId: opts.requestedByActorType === "user" ? opts.requestedByActorId : null })) {
             return { kind: "skipped" as const };
           }
 

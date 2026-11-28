@@ -1873,7 +1873,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         const finishedAt =
           meta?.finishedAt ?? meta?.startedAt ?? meta?.createdAt;
         const diskFullBesideInterruption = Boolean(props.interruption) && code === "sandbox_disk_full" && source.status === "failed";
-        if (!historical && (!props.interruption || credentialAccess || diskFullBesideInterruption ||
+        if (!historical && (!props.interruption || source.status === "cancelled" || credentialAccess || diskFullBesideInterruption ||
             (props.interruption.responsibility === "user" &&
               ["native_provider_model_rejected", "native_provider_approval_required"].includes(code)))) entriesWithFailures.push({
           ms: toMs(finishedAt),

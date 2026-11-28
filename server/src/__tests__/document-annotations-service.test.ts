@@ -887,6 +887,25 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
     expect(recoveredReceipt).toMatchObject({ status: "coalesced", runId: runs[0]!.id });
   });
 
+  it.each(["missing receipt", "different caller"])("rejects annotation question context with %s", async (mode) => {
+    const { companyId, issueId, thread, comment, agentId, userId, queue } = await setupAssignedAnnotatedIssue();
+    if (mode === "different caller") await annotations.setCommentReaction({
+      target: { kind: "issue", issueId, key: "plan" }, threadId: thread.id, commentId: comment.id,
+      reaction: "question", present: true, actor: { actorType: "user", actorId: userId, userId },
+    });
+    const run = await queue.trackWakeup(agentId, {
+      source: "automation", triggerDetail: "system", reason: "issue_commented", allowRunCoalescing: false,
+      requestedByActorType: "user", requestedByActorId: mode === "different caller" ? `other-${userId}` : userId,
+      payload: { issueId }, contextSnapshot: {
+        issueId, taskId: issueId, annotationCommentId: comment.id, annotationThreadId: thread.id,
+        annotationReaction: "question", annotationReactionUserId: userId,
+        source: "issue.document_annotation_reaction", wakeReason: "issue_commented",
+      },
+    });
+    expect(run).toBeNull();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(0);
+  });
+
   it("wakes an idle waiting agent chat when a person adds a question reaction", async () => {
     const { companyId, issueId, thread, comment, agentId, userId, queue } = await setupAssignedAnnotatedIssue({ waitingChat: true });
 

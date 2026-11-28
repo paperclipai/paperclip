@@ -58,7 +58,7 @@ describePostgres("saved Slack invitation command in heartbeat prompts", () => {
     await db.insert(authUsers).values({ id: userId, name: "Invitation user", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
     await db.insert(companies).values({ id: companyId, name: "Invitation fixture", issuePrefix: `I${companyId.slice(0, 6)}` });
     await db.insert(agents).values({
-      id: agentId, companyId, name: "Original researcher", adapterType, status: "idle",
+      id: agentId, companyId, name: "Original researcher", adapterType, status: "idle", adapterConfig: { cwd: process.cwd() },
     });
     await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
     await db.insert(toolApplications).values({ id: applicationId, companyId, applicationKey: `chat:slack:${endpointId}`, name: "Slack", type: "chat", status: "active" });
@@ -81,7 +81,7 @@ describePostgres("saved Slack invitation command in heartbeat prompts", () => {
 
   async function turn(f: Awaited<ReturnType<typeof seed>>) {
     const commentId = randomUUID(), deliveryId = randomUUID();
-    await db.insert(issueComments).values({ id: commentId, companyId: f.companyId, issueId: f.issueId, authorType: "user", authorUserId: f.userId, body: "How can a teammate talk to you?" });
+    await db.insert(issueComments).values({ id: commentId, companyId: f.companyId, issueId: f.issueId, authorType: "user", authorUserId: f.userId, body: `[@Agent](agent://${f.agentId}) How can a teammate talk to you?`, metadata: { version: 1, sections: [], commentWake: { version: 1, kind: "actionable", companyId: f.companyId, issueId: f.issueId, actorType: "user", actorId: f.userId, recipientAgentId: f.agentId, request: "Explain how a teammate can connect." } } });
     await db.insert(chatDeliveries).values({ id: deliveryId, companyId: f.companyId, endpointId: f.endpointId, conversationId: f.conversationId, principalId: f.principalId, providerEventId: commentId, deduplicationKey: commentId, eventKind: "message", normalizedEvent: {}, state: "processed", attempts: 1, processedAt: new Date() });
     await db.insert(chatMessageLinks).values({ companyId: f.companyId, endpointId: f.endpointId, conversationId: f.conversationId, deliveryId, commentId, providerMessageId: commentId, direction: "inbound" });
     const run = await heartbeat.wakeup(f.agentId, {

@@ -30,6 +30,15 @@ describe("issuesApi.list", () => {
     mockApi.patch.mockResolvedValue({});
   });
 
+
+  it("forwards deliberate intent while keeping plain comments unannotated", async () => {
+    const intent = { kind: "actionable" as const, recipientAgentId: "d2d7ac5b-4014-4dc0-936f-19ad0bc9e787", request: "Inspect mobile" };
+    await issuesApi.addComment("issue-1", "Status only");
+    expect(mockApi.post).toHaveBeenLastCalledWith("/issues/issue-1/comments", { body: "Status only" });
+    await issuesApi.addComment("issue-1", "Inspect mobile", undefined, undefined, undefined, "request-1", undefined, intent);
+    expect(mockApi.post).toHaveBeenLastCalledWith("/issues/issue-1/comments", { body: "Inspect mobile", clientRequestId: "request-1", commentIntent: intent });
+  });
+
   it("encodes a linked comment id as one path component and forwards cancellation", async () => {
     const signal = new AbortController().signal;
     await issuesApi.getComment("issue-1", "../../health?raw=true#fragment", { signal });

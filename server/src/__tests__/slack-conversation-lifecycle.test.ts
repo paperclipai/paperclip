@@ -633,7 +633,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   it("a new board message reactivates the same conversation and prevents stale settlement", async () => {
     const f = await fixture();
     await settle(f);
-    const followup = await issueService(db).addComment(f.issueId, "what's your name?", { userId: "local-board" });
+    const followup = await issueService(db).addComment(f.issueId, `[@Carl](agent://${f.agentId}) what's your name?`, { userId: "local-board" }, { commentIntent: { kind: "actionable", recipientAgentId: f.agentId, request: "what's your name?" } });
     expect((await state(f))?.externalConversationState).toBe("active");
     expect(await pendingExternalConversationSettlement(db, f.companyId, f.issueId)).toBe(false);
     expect(await settle(f)).toBe(false);

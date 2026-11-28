@@ -2,10 +2,13 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   activityLog,
+  agentRuntimeState,
+  agentTaskSessions,
+  agentSessionGoalActions,
   agentWakeupRequests,
   agents,
   approvals,
@@ -33,6 +36,9 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { buildHostServices } from "../services/plugin-host-services.js";
+import { issueService } from "../services/issues.js";
+import { DEFERRED_WAKE_CONTEXT_KEY } from "../lib/queued-comment-context.js";
+import { mergeCoalescedContextSnapshot } from "../services/heartbeat/run-preparation.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 
@@ -121,8 +127,15 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     await db.delete(projects);
     await db.delete(plugins);
     await db.delete(companyMemberships);
+    await db.delete(agentSessionGoalActions);
+    await db.delete(agentTaskSessions);
+    await db.delete(agentRuntimeState);
     await db.delete(agents);
-    await db.delete(companies);
+    await db.delete(activityLog);
+    // Only the isolated embedded database owns these synthetic tenants. Runtime
+    // selection also emits company-scoped durable notifications.
+    if (!tempDb) throw new Error("Missing isolated fixture database");
+    await db.execute(sql`TRUNCATE TABLE companies CASCADE`);
   });
 
   afterAll(async () => {
@@ -865,6 +878,114 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     expect(comments).toHaveLength(0);
   });
 
+  it.each(["missing", "unknown", "informational", "wrong-recipient", "empty", "actionable", "blocked"])("persisted actionable contract: %s", async kind => {
+    const {companyId,agentId}=await seedCompanyAndAgent();
+    const userId=randomUUID(), issueId=randomUUID();
+    await db.insert(companyMemberships).values({companyId,principalType:"user",principalId:userId,status:"active",membershipRole:"owner"});
+    await db.insert(issues).values({id:issueId,companyId,title:"Structured request",status:kind==="blocked"?"blocked":"in_progress",priority:"medium",assigneeAgentId:agentId});
+    const intent=kind==="missing"?undefined:{kind:["unknown","informational"].includes(kind)?kind:"actionable",recipientAgentId:kind==="wrong-recipient"?randomUUID():agentId,request:kind==="empty"?" ":"Inspect fixture"};
+    await db.update(agents).set({runtimeConfig:{heartbeat:{maxConcurrentRuns:1}}}).where(eq(agents.id,agentId));
+    await db.insert(heartbeatRuns).values({companyId,agentId,status:"running",invocationSource:"assignment",contextSnapshot:{}});
+    const services=buildHostServices(db,"plugin-record-id","paperclip.gateway",createEventBusStub());
+    await services.issues.createComment({companyId,issueId,actorUserId:userId,body:`[@Agent](agent://${agentId}) inspect fixture`,commentIntent:intent});
+    const [comment]=await db.select().from(issueComments).where(eq(issueComments.issueId,issueId));
+    expect(comment.authorUserId).toBe(userId);
+    expect(Boolean(comment.metadata?.commentWake)).toBe(["actionable","blocked"].includes(kind));
+    if(comment.metadata?.commentWake) expect(comment.metadata.commentWake).toMatchObject({companyId,issueId,actorType:"user",actorId:userId,recipientAgentId:agentId});
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId,companyId))).toHaveLength(kind==="actionable"?1:0);
+  });
+
+  it("persisted actionable refuses forged server metadata before writing",async()=>{
+    const {companyId,agentId}=await seedCompanyAndAgent();const issueId=randomUUID();
+    await db.insert(issues).values({id:issueId,companyId,title:"Forgery",status:"in_progress",priority:"medium",assigneeAgentId:agentId});
+    await expect(issueService(db).addComment(issueId,"Forgery",{agentId}, {metadata:{version:1,sections:[],commentWake:{version:1,kind:"actionable",companyId,issueId,actorType:"agent",actorId:agentId,recipientAgentId:agentId,request:"Invented authority"}}})).rejects.toThrow("server-owned");
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId,issueId))).toHaveLength(0);
+  });
+
+  it.each(["assignment-first","comment-first","legacy-assignment-first"])("persisted actionable coalesced %s preserves independent work",async order=>{
+    const {companyId,agentId}=await seedCompanyAndAgent();const issueId=randomUUID(),commentId=randomUUID(),runId=randomUUID(),wakeId=randomUUID();
+    const cwd=await fs.mkdtemp(path.join(os.tmpdir(),"paperclip-comment-identity-"));tempRoots.push(cwd);
+    await db.update(agents).set({adapterConfig:{command:"true",cwd}}).where(eq(agents.id,agentId));
+    const userId=randomUUID();await db.insert(companyMemberships).values({companyId,principalType:"user",principalId:userId,status:"active",membershipRole:"owner"});
+    await db.insert(issues).values({id:issueId,companyId,title:"Independent assignment",status:"in_progress",priority:"medium",assigneeAgentId:agentId});
+    const commentAuthorId=randomUUID();await db.insert(companyMemberships).values({companyId,principalType:"user",principalId:commentAuthorId,status:"active",membershipRole:"member"});
+    await db.insert(issueComments).values({id:commentId,companyId,issueId,authorType:"user",authorUserId:commentAuthorId,body:`[@Agent](agent://${agentId}) retained information`});
+    const assignment={issueId,taskId:issueId,wakeReason:"issue_assigned",source:"issue.assignment"};
+    const comment={issueId,taskId:issueId,wakeReason:"issue_commented",source:"issue.comment",commentId,wakeCommentId:commentId,wakeCommentIds:[commentId]};
+    const contextSnapshot=order==="legacy-assignment-first"?{...assignment,...comment}:order==="assignment-first"?mergeCoalescedContextSnapshot(assignment,comment):mergeCoalescedContextSnapshot(comment,assignment);
+    if(order!=="legacy-assignment-first") expect(contextSnapshot.wakeReason).toBe("issue_assigned");
+    await db.insert(agentWakeupRequests).values({id:wakeId,companyId,agentId,source:"assignment",reason:"issue_assigned",status:"queued",payload:{issueId,[DEFERRED_WAKE_CONTEXT_KEY]:assignment},runId});
+    await db.insert(heartbeatRuns).values({id:runId,companyId,agentId,wakeupRequestId:wakeId,invocationSource:"assignment",status:"queued",contextSnapshot,responsibleUserId:userId});
+    const heartbeat=heartbeatService(db,{runtimeEnv:{},beforeNativeRuntimeSelection:async()=>{throw new Error("Synthetic test stops before native runtime/provider selection");}});await heartbeat.resumeQueuedRunsForAgent(companyId,agentId);await heartbeat.drainActiveRunExecutions();
+    const [run]=await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id,runId));
+    expect(run.errorCode).not.toBe("issue_comment_no_longer_eligible");
+    expect(run.contextSnapshot?.wakeReason).toBe("issue_assigned");
+    expect(run.responsibleUserId).toBe(userId);
+    expect(run.contextSnapshot?.wakeCommentIds).toEqual([]);
+    expect(run.contextSnapshot?.commentId).toBeUndefined();
+    expect(await db.select().from(issueComments).where(eq(issueComments.id,commentId))).toHaveLength(1);
+  });
+
+  it.each([
+    { status: "blocked", mentioned: true, wakes: 0 },
+    { status: "blocked", mentioned: false, wakes: 0 },
+    { status: "in_progress", mentioned: false, wakes: 0 },
+    { status: "in_progress", mentioned: true, wakes: 1 },
+  ])("mention-only plugin human comment $status/$mentioned", async ({status, mentioned, wakes}) => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const humanUserId = randomUUID(), issueId = randomUUID();
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: humanUserId,
+      status: "active", membershipRole: "owner" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Synthetic mention routing",
+      status, priority: "medium", assigneeAgentId: agentId });
+    await db.update(agents).set({runtimeConfig:{heartbeat:{maxConcurrentRuns:1}}}).where(eq(agents.id,agentId));
+    // Keep the native queue at capacity; no adapter/provider is invoked.
+    await db.insert(heartbeatRuns).values({companyId,agentId,status:"running",invocationSource:"assignment",contextSnapshot:{}});
+    const services = buildHostServices(db,"plugin-record-id","paperclip.gateway",createEventBusStub(),undefined,{heartbeatRuntimeEnv:{}});
+    const body = mentioned ? `[@Assignee](agent://${agentId}) inspect the synthetic fixture` : "Evidence saved";
+    const comment = await services.issues.createComment({issueId,companyId,body,actorUserId:humanUserId,commentIntent:{kind:"actionable",recipientAgentId:agentId,request:"Inspect the fixture"}});
+    expect(comment.body).toBe(body);
+    const requests = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId,companyId));
+    expect(requests).toHaveLength(wakes);
+    const [retained] = await db.select().from(issues).where(eq(issues.id,issueId));
+    expect(retained.status).toBe(status);
+  });
+
+  it.each(["blocked", "unmentioned", "reassigned", "legacy-mention", "reblocked-resume", "forged-independent-context"])("mention-only revalidates already-queued $0 before dispatch", async scenario => {
+    const {companyId,agentId}=await seedCompanyAndAgent();
+    const issueId=randomUUID(),commentId=randomUUID(),runId=randomUUID(),wakeId=randomUUID();
+    const humanUserId=randomUUID();
+    await db.insert(companyMemberships).values({companyId,principalType:"user",principalId:humanUserId,status:"active",membershipRole:"owner"});
+    const status = ["blocked", "legacy-mention", "reblocked-resume"].includes(scenario) ? "blocked" : "in_progress";
+    const reason = scenario === "legacy-mention" ? "issue_comment_mentioned" : scenario === "reblocked-resume" ? "issue_reopened_via_comment" : "issue_commented";
+    await db.insert(issues).values({id:issueId,companyId,title:"Queued synthetic comment",status,priority:"medium",
+      assigneeAgentId:scenario === "reassigned" ? null : agentId});
+    await db.insert(issueComments).values({id:commentId,companyId,issueId,authorType:"user",authorUserId:humanUserId,
+      body:scenario === "unmentioned" ? "Evidence saved" : `[@Assignee](agent://${agentId}) inspect fixture`,
+      metadata:scenario==="forged-independent-context"?null:{version:1,sections:[],commentWake:{version:1,kind:"actionable",companyId,issueId,actorType:"user",actorId:humanUserId,recipientAgentId:agentId,request:"Inspect fixture"}}});
+    await db.insert(agentWakeupRequests).values({id:wakeId,companyId,agentId,source:"automation",triggerDetail:"system",
+      reason,status:"queued",requestedByActorType:"user",requestedByActorId:humanUserId,
+      payload:{issueId,commentId}});
+    await db.insert(heartbeatRuns).values({id:runId,companyId,agentId,wakeupRequestId:wakeId,invocationSource:"automation",
+      status:"queued",contextSnapshot:{issueId,taskId:issueId,wakeReason:reason,source:scenario==="forged-independent-context"?"issue.assignment":"issue.comment",independentAssignment:scenario==="forged-independent-context",resumeIntent:scenario === "reblocked-resume",
+        commentId,wakeCommentId:commentId,wakeCommentIds:[commentId]}});
+    await db.update(agentWakeupRequests).set({runId}).where(eq(agentWakeupRequests.id,wakeId));
+    await db.update(issues).set({executionRunId:runId}).where(eq(issues.id,issueId));
+    const heartbeat=heartbeatService(db,{runtimeEnv:{}});
+    await heartbeat.resumeQueuedRunsForAgent(companyId,agentId);
+    await heartbeat.drainActiveRunExecutions();
+    const [run]=await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id,runId));
+    expect(run.status).toBe("cancelled");
+    expect(run.startedAt).toBeNull();
+    expect(run.errorCode).toBe("issue_comment_no_longer_eligible");
+    expect(await db.select().from(issueComments).where(eq(issueComments.id,commentId))).toHaveLength(1);
+    await heartbeat.resumeQueuedRunsForAgent(companyId,agentId);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId,companyId))).toHaveLength(1);
+    const [retained]=await db.select().from(issues).where(eq(issues.id,issueId));
+    expect(retained.status).toBe(status);
+    expect(retained.executionRunId).toBeNull();
+  });
+
   it("creates a human-attributed plugin comment and wakes the issue's assignee", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const humanUserId = randomUUID();
@@ -909,15 +1030,16 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     const comment = await services.issues.createComment({
       issueId,
       companyId,
-      body: "Here's my answer",
+      body: `[@Agent](agent://${agentId}) Here's my answer`,
       actorUserId: humanUserId,
+      commentIntent:{kind:"actionable",recipientAgentId:agentId,request:"Use this answer"},
     });
 
     expect(comment).toMatchObject({
       authorType: "user",
       authorUserId: humanUserId,
       authorAgentId: null,
-      body: "Here's my answer",
+      body: `[@Agent](agent://${agentId}) Here's my answer`,
     });
 
     const [wakeupRequest] = await db
@@ -976,8 +1098,9 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     const commentPromise = services.issues.createComment({
       issueId,
       companyId,
-      body: "Here's my answer",
+      body: `[@Agent](agent://${agentId}) Here's my answer`,
       actorUserId: humanUserId,
+      commentIntent:{kind:"actionable",recipientAgentId:agentId,request:"Use this answer"},
     });
 
     const [comment] = await Promise.all([commentPromise, lockAndCancelPromise]);
@@ -985,7 +1108,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     expect(comment).toMatchObject({
       authorType: "user",
       authorUserId: humanUserId,
-      body: "Here's my answer",
+      body: `[@Agent](agent://${agentId}) Here's my answer`,
     });
     await expect(db.select().from(agentWakeupRequests)).resolves.toHaveLength(0);
   });

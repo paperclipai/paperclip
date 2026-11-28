@@ -3985,3 +3985,95 @@ describe("composer Stop", () => {
     expect(sendButton().disabled).toBe(failed);
   });
 });
+
+describe("comment action intent", () => {
+
+  it.each([false, true])("clears action for a suggested reassignment through queued-edit restoration (edit=%s)", async (edit) => {
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    const view = (suggestion: string, queuedEdit?: { commentId: string; body: string }) => (
+      <TaskChatComposer onAdd={onAdd} workMode="standard" enableReassign
+        currentAssigneeValue="agent:a1" suggestedAssigneeValue={suggestion}
+        reassignOptions={[{ id: "agent:a1", label: "Alpha" }, { id: "agent:a2", label: "Beta" }]}
+        agentMap={new Map([["a1", { icon: "bot" }], ["a2", { icon: "bot" }]])}
+        queuedEdit={queuedEdit} onSaveQueuedEdit={vi.fn()} />
+    );
+    render(view("agent:a1"));
+    typeText("Please deliver this update.");
+    const checkbox = () => container.querySelector<HTMLInputElement>('input[aria-label="Request action"]')!;
+    flushSync(() => checkbox().click());
+    expect(checkbox().checked).toBe(true);
+    render(view("agent:a2"));
+    await flushAsync();
+    expect(checkbox().checked).toBe(false);
+    expect(checkbox().disabled).toBe(true);
+    if (edit) {
+      render(view("agent:a2", { commentId: "queued", body: "Existing queued comment" }));
+      await flushAsync();
+      expect(container.querySelector('input[aria-label="Request action"]')).toBeNull();
+      render(view("agent:a2"));
+      await flushAsync();
+      expect(checkbox().checked).toBe(false);
+      expect(checkbox().disabled).toBe(true);
+    }
+    await act(async () => sendButton().click());
+    expect(onAdd).toHaveBeenCalledOnce();
+    expect(onAdd.mock.calls[0][0]).toBe("Please deliver this update.");
+    expect(onAdd.mock.calls[0][2]).toEqual({ assigneeAgentId: "a2", assigneeUserId: null });
+    expect(onAdd.mock.calls[0][7]).toBeUndefined();
+  });
+
+
+it("clears request action on pending reassignment and sends the selected assignee", async () => {
+  const onAdd = vi.fn().mockResolvedValue(undefined);
+  renderComposer({onAdd,workMode:"standard",enableReassign:true,currentAssigneeValue:"agent:a1",
+    reassignOptions:[{id:"agent:a1",label:"Alpha"},{id:"agent:a2",label:"Beta"}],
+    agentMap:new Map([["a1",{icon:"bot"}],["a2",{icon:"bot"}]])});
+  typeText("Please deliver this update.");
+  const checkbox = () => container.querySelector<HTMLInputElement>('input[aria-label="Request action"]')!;
+  flushSync(() => checkbox().click());
+  expect(checkbox().checked).toBe(true);
+  flushSync(() => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-assignee"]')!.click());
+  await flushAsync();
+  flushSync(() => document.querySelector('[data-assignee-identity="agent:a2"]')!.closest("button")!.click());
+  await flushAsync();
+  expect(checkbox().checked).toBe(false);
+  expect(checkbox().disabled).toBe(true);
+  await act(async () => sendButton().click());
+  expect(onAdd).toHaveBeenCalledOnce();
+  expect(onAdd.mock.calls[0][0]).toBe("Please deliver this update.");
+  expect(onAdd.mock.calls[0][2]).toEqual({ assigneeAgentId: "a2", assigneeUserId: null });
+  expect(onAdd.mock.calls[0][7]).toBeUndefined();
+  expect(container.textContent).not.toContain("Request action needs the current agent recipient");
+});
+
+
+  it.each([false, true])("persists deliberate request action and leaves ordinary sends silent (action=%s)", async (action) => {
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    const id = "d2d7ac5b-4014-4dc0-936f-19ad0bc9e787";
+    renderComposer({ onAdd, workMode: "standard", currentAssigneeValue: `agent:${id}`, issueStatus: "in_progress" });
+    typeText("Please check mobile too.");
+    if (action) flushSync(() => container.querySelector<HTMLInputElement>('input[aria-label="Request action"]')!.click());
+    await act(async () => sendButton().click());
+    expect(onAdd).toHaveBeenCalledOnce();
+    const call = onAdd.mock.calls[0];
+    expect(call[0]).toBe(action ? `[@Recipient](agent://${id})\n\nPlease check mobile too.` : "Please check mobile too.");
+    expect(call[7]).toEqual(action ? { kind: "actionable", recipientAgentId: id, request: "Please check mobile too." } : undefined);
+  });
+
+  it("stores actionable input on blocked tasks without asking to reopen", async () => {
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    const id = "d2d7ac5b-4014-4dc0-936f-19ad0bc9e787";
+    renderComposer({ onAdd, workMode: "standard", currentAssigneeValue: `agent:${id}`, issueStatus: "blocked" });
+    typeText("Evidence for the owner");
+    flushSync(() => container.querySelector<HTMLInputElement>('input[aria-label="Request action"]')!.click());
+    await act(async () => sendButton().click());
+    expect(onAdd.mock.calls[0][1]).toBeUndefined();
+    expect(onAdd.mock.calls[0][7]?.recipientAgentId).toBe(id);
+  });
+
+  it("does not expose request action without an agent recipient", () => {
+    renderComposer({ onAdd: vi.fn(), workMode: "standard", currentAssigneeValue: "user:board" });
+    expect(container.querySelector('input[aria-label="Request action"]')).toBeNull();
+  });
+
+});

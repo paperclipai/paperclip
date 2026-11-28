@@ -5,6 +5,7 @@ import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll } from "vitest";
 import {
   agentWakeupRequests,
+  authUsers,
   agents,
   companies,
   companyMemberships,
@@ -32,6 +33,13 @@ export function createIssueQueuedCommentsHarness(prefix = "paperclip-queued-comm
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase(prefix);
     db = createDb(tempDb.connectionString);
+    // Current upstream's responsible-user intersection requires a real user,
+    // in addition to the per-company membership seeded below.
+    await db.insert(authUsers).values(["queue-owner", "other-operator"].map((id) => ({
+      id, name: id, email: `${id}@queue-fixture.invalid`,
+      createdAt: new Date(), updatedAt: new Date(),
+    }))).onConflictDoNothing();
+
   }, 30_000);
 
   afterEach(async () => {
@@ -161,7 +169,8 @@ export function createIssueQueuedCommentsHarness(prefix = "paperclip-queued-comm
       issueId,
       authorType: "user" as const,
       authorUserId: "queue-owner",
-      body: index === 0 ? "First queued message" : "Second queued message",
+      metadata: {version: 1 as const, sections: [], commentWake: {version: 1 as const, kind: "actionable" as const, companyId: companyId, issueId: issueId, actorType: "user" as const, actorId: "queue-owner", recipientAgentId: agentId, request: "Inspect the queued input"}},
+      body: `[@Worker](agent://${agentId}) ` + (index === 0 ? "First queued message" : "Second queued message"),
       createdAt: new Date(`2026-08-22T15:0${index + 1}:00.000Z`),
       updatedAt: new Date(`2026-08-22T15:0${index + 1}:00.000Z`),
     })));

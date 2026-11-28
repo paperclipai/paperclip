@@ -125,8 +125,18 @@ describeEmbeddedPostgres("issue queued-comment steering routes", () => {
         startupPreparationSettledAt: new Date().toISOString() } }).where(eq(heartbeatRuns.id, seeded.runId));
       await heartbeatService(db).resumeQueuedCommentInterrupt(seeded.companyId, seeded.wakeId);
       const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
-      expect(wake.status, JSON.stringify(wake)).toBe("coalesced");
-      const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, wake.runId!));
+      if (runtime === "native") {
+        expect((await db.select().from(issues).where(eq(issues.id, seeded.issueId)))[0].status).toBe("blocked");
+        expect(wake.status).toBe("deferred_issue_execution");
+        expect(wake.runId).toBeNull();
+        // Native cancellation records a blocked state. An explicit authorized
+        // unblock is separate from saving or interrupting with a comment.
+        await issueService(db).update(seeded.issueId, { status: "todo", actorUserId: "queue-owner" });
+        await heartbeatService(db).resumeQueuedCommentInterrupt(seeded.companyId, seeded.wakeId);
+      }
+      const [delivered] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+      expect(delivered.status, JSON.stringify(delivered)).toBe("coalesced");
+      const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, delivered.runId!));
       expect(successor.status).toBe("queued");
       expect(successor.contextSnapshot?.wakeCommentIds).toEqual(seeded.commentIds);
       await heartbeatService(db).resumeQueuedCommentInterrupt(seeded.companyId, seeded.wakeId);

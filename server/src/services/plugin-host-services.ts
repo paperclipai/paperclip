@@ -1,3 +1,4 @@
+import { hasActionableCommentIntent, canNotifyIssueCommentAssignee } from "./issue-comment-wakeup.js";
 import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import { currentPluginInteractionOrigin } from "./plugin-interaction-context.js";
 import { projectGitAuthorizationService } from "./project-git-authorization.js";
@@ -2673,6 +2674,7 @@ export function buildHostServices(
           params.issueId,
           params.body,
           { agentId: params.actorUserId ? undefined : params.authorAgentId, userId: params.actorUserId },
+          {commentIntent:params.commentIntent},
         )) as IssueComment;
         await logPluginActivity({
           companyId,
@@ -2716,8 +2718,7 @@ export function buildHostServices(
           })) ?? issue;
           if (
             postCommentIssue.assigneeAgentId
-            && postCommentIssue.status !== "done"
-            && postCommentIssue.status !== "cancelled"
+            && canNotifyIssueCommentAssignee(comment.body, postCommentIssue.assigneeAgentId, postCommentIssue.status, hasActionableCommentIntent(comment,postCommentIssue.assigneeAgentId))
           ) {
             await heartbeat.wakeup(postCommentIssue.assigneeAgentId, {
               source: "automation",

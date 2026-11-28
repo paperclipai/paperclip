@@ -17,6 +17,7 @@ import {
   statusDecisions,
   workAssessments,
   issues,
+  issueComments,
 } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
@@ -48,6 +49,20 @@ vi.mock("../adapters/index.js", () => ({
 import { heartbeatService } from "../services/heartbeat.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { reconcileNativeFinalizations } from "../services/native-runtime/native-finalization-reconciler.js";
+
+async function actionableFixtureWake(db: ReturnType<typeof createDb>, heartbeat: ReturnType<typeof heartbeatService>, agentId: string, input: NonNullable<Parameters<ReturnType<typeof heartbeatService>["wakeup"]>[1]>) {
+  if (input.reason === "issue_commented") {
+    const issueId = String(input.contextSnapshot?.issueId ?? input.payload?.issueId);
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then(rows => rows[0]!);
+    const commentId = randomUUID();
+    await db.insert(issueComments).values({ id: commentId, companyId: issue.companyId, issueId,
+      authorUserId: "responsible-user", body: `[@Agent](agent://${agentId}) Continue the requested fixture work.`,
+      metadata: { version: 1, sections: [], commentWake: { version: 1, kind: "actionable", companyId: issue.companyId,
+        issueId, actorType: "user", actorId: "responsible-user", recipientAgentId: agentId, request: "Continue the requested fixture work." } } });
+    input = { ...input, payload: { ...input.payload, issueId, commentId } };
+  }
+  return heartbeat.wakeup(agentId, input);
+}
 
 describe("P6-32 legacy finalization regression", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
@@ -119,7 +134,7 @@ describe("P6-32 legacy finalization regression", () => {
       return execute();
     });
     const heartbeat = heartbeatService(db);
-    const queued = await heartbeat.wakeup(agentId, {
+    const queued = await actionableFixtureWake(db, heartbeat, agentId, {
       source: "automation",
       triggerDetail: "system",
       reason: "issue_commented",

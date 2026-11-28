@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -209,4 +210,39 @@ test("validateNightlyManifest rejects missing files, duplicates, and protected c
 test("pr-trusted.yml invokes check-test-budget.mjs with --base on pull requests", () => {
   const workflow = readFileSync(path.join(repoRoot, ".github/workflows/pr-trusted.yml"), "utf8");
   assert.match(workflow, /node \.\/scripts\/check-test-budget\.mjs --base "\$base_sha"/);
+});
+
+
+test("large moved-suite diffs retain added-line sleep enforcement", () => {
+  const tmp = mkdtempSync(path.join(os.tmpdir(), "test-budget-large-diff-"));
+  const git = (...args) => execFileSync("git", args, { cwd: tmp, encoding: "utf8" });
+  try {
+    git("init", "-q");
+    git("config", "user.email", "fixture@example.invalid");
+    git("config", "user.name", "Test fixture");
+    mkdirSync(path.join(tmp, "scripts/ci"), { recursive: true });
+    writeFileSync(path.join(tmp, "scripts/ci/nightly-only-suites.json"), JSON.stringify({ version: 1, suites: [] }));
+    mkdirSync(path.join(tmp, "server/src"), { recursive: true });
+    const testFile = path.join(tmp, "server/src/moved.test.ts");
+    // Removing old statements, as with a retained-suite move, exceeds Node's
+    // default 1 MiB child-process buffer without making a huge final test.
+    writeFileSync(testFile, "// previous suite statement " + "x".repeat(80) + "\n" +
+      ("// moved old statement " + "x".repeat(80) + "\n").repeat(20_000));
+    git("add", "."); git("commit", "-qm", "before move");
+    const base = git("rev-parse", "HEAD").trim();
+    writeFileSync(testFile, "await delay(2500);\n");
+    git("add", "."); git("commit", "-qm", "move with violation");
+    const failed = runTestBudgetCheck({ root: tmp, base });
+    assert.equal(failed.checkedFiles, 1);
+    assert.deepEqual(failed.violations
+      .map(v => ({ file: v.file, line: v.line })), [{ file: "server/src/moved.test.ts", line: 1 }]);
+    writeFileSync(testFile, "await delay(500);\n");
+    git("add", "."); git("commit", "-qm", "move with permitted wait");
+    const passed = runTestBudgetCheck({ root: tmp, base });
+    assert.throws(() => runTestBudgetCheck({ root: tmp, base: "missing-base-ref" }));
+    assert.equal(passed.checkedFiles, 1);
+    assert.deepEqual(passed.violations, []);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 });

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { eq, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { agentApiKeys, assets, chatTaskHandoffs, documents, heartbeatRunEvents, issueDocuments, issues } from "@paperclipai/db";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -184,7 +184,11 @@ describe("bulk issue documents through native API tools", () => {
     expect(result).not.toHaveProperty("artifact");
     // Bodies alone fit, but their metadata pushes the response over budget.
     // The incremental JSON builder must refuse this before joining a response.
-    await server.db.update(documents).set({ latestBody: "x".repeat(524000) }).where(eq(documents.companyId, f.companyId));
+    // Only the sixteen documents queried below need the near-limit body.
+    // Retain the two-hundred-document size-only preflight above without
+    // rewriting the other ninety-two megabytes as unrelated fixture work.
+    await server.db.update(documents).set({ latestBody: "x".repeat(524000) })
+      .where(inArray(documents.id, rows.slice(0, 16).map(row => row.id)));
     const nearLimit = await f.authority.execute({ tool: "save_api_response", callId: randomUUID(), arguments: {
       operationId, pathParams: { companyId: f.companyId }, query: { key: "sentry-case", issueIds: ids.slice(0, 16).join(",") },
     } }) as any;

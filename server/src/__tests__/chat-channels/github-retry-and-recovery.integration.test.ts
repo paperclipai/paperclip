@@ -1,3 +1,4 @@
+import { issueService } from "../../services/issues.js";
 import { environmentService } from "../../services/environments.js";
 import { databaseWorkPending, reconcileDatabaseWork, subscribeDatabaseWork } from "@paperclipai/db";
 import { configureAgentLifecycle } from "../../services/agent-lifecycle.js";
@@ -1142,16 +1143,30 @@ describeEmbeddedPostgres("chat channels: github retry and recovery", () => {
       const companyId = f.fixture.companyId, agentId = f.fixture.assignedAgentId, issueId = f.issue.id;
       await initializeRunIdentity(db, { companyId, runId: f.runId, issueId, responsibleUserId: "owner-user",
         messageIds: [String(f.action.payload.commentId)], cause: "chat_message" });
-      const [comment] = await db.insert(issueComments).values({ companyId, issueId, authorType: "user",
-        authorUserId: "owner-user", body: "Continue from saved work and review the current head." }).returning();
       await db.update(agents).set({ status: "running", runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } } })
         .where(eq(agents.id, agentId));
       const [capacity] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running" }).returning();
       const heartbeat = heartbeatService(db);
-      const current = await heartbeat.wakeup(agentId, { source: "automation", triggerDetail: "system",
-        reason: "issue_reopened_via_comment", requestedByActorType: "user", requestedByActorId: "owner-user",
-        payload: { issueId, commentId: comment.id }, contextSnapshot: { issueId, taskKey: issueId,
-          source: "issue.comment.reopen", wakeCommentId: comment.id, wakeCommentIds: [comment.id] } });
+      // The saved chat failure blocks the task. A Board resume supplies the
+      // separate authorized transition before the new board-message turn.
+      const resumeApp = express();
+      resumeApp.use(express.json());
+      resumeApp.use((req, _res, next) => { req.actor = boardActor(companyId); next(); });
+      resumeApp.use("/api", issueRoutes(db, createStorageService().storage));
+      resumeApp.use(errorHandler);
+      const resumeResponse = await request(resumeApp).post(`/api/issues/${issueId}/comments`).send({
+        body: "Continue from saved work and review the current head.", resume: true,
+        commentIntent: { kind: "actionable", recipientAgentId: agentId,
+          request: "Continue from saved work and review the current head." },
+      }).expect(201);
+      const comment = resumeResponse.body;
+      const current = await vi.waitFor(async () => {
+        const [wake] = await db.select().from(agentWakeupRequests).where(and(
+          eq(agentWakeupRequests.companyId, companyId),
+          sql`${agentWakeupRequests.payload}->>'commentId' = ${comment.id}`));
+        expect(wake?.runId).toBeTruthy();
+        return (await readHeartbeatRunsById(wake!.runId!))[0];
+      }, { timeout: 5_000, interval: 50 });
       expect(current).toMatchObject({ status: "queued" });
       await initializeRunIdentity(db, { companyId, runId: current!.id, issueId, responsibleUserId: "owner-user",
         parentRunId: f.runId, messageIds: [comment.id], cause: "issue_reopened_via_comment" });
@@ -1885,10 +1900,11 @@ describeEmbeddedPostgres("chat channels: github retry and recovery", () => {
             eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, context.issue.id)))))
             .toEqual(expect.arrayContaining([expect.objectContaining({ status: "active" })]));
           if (mode === "committed_delayed_cleanup" || queuedBoard) {
-            const [boardComment] = queuedBoard ? await db.insert(issueComments).values({
-              companyId, issueId: context.issue.id, authorType: "user", authorUserId: "owner-user",
-              body: "Keep this independent continuation for its own authorized turn.",
-            }).returning() : [];
+            const boardComment = queuedBoard ? await issueService(db).addComment(context.issue.id,
+              `[@Worker](agent://${context.fixture.assignedAgentId}) Keep this independent continuation for its own authorized turn.`, { userId: "owner-user" }, {
+                commentIntent: { kind: "actionable", recipientAgentId: context.fixture.assignedAgentId,
+                  request: "Keep this independent continuation for its own authorized turn." },
+              }) : undefined;
             const [boardWake] = boardComment ? await db.insert(agentWakeupRequests).values({ companyId,
               agentId: context.fixture.assignedAgentId, source: "automation", triggerDetail: "system",
               reason: "issue_commented", status: "deferred_issue_execution",

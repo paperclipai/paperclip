@@ -980,7 +980,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           issueId: string,
           body: string,
           companyId: string,
-          options?: { authorAgentId?: string; actorUserId?: string },
+          options?: { authorAgentId?: string; actorUserId?: string; commentIntent?: {kind:string;recipientAgentId?:string;request?:string} },
         ) {
           return callHost("issues.createComment", {
             issueId,
@@ -988,6 +988,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             companyId,
             authorAgentId: options?.authorAgentId,
             actorUserId: options?.actorUserId,
+            commentIntent: options?.commentIntent,
           });
         },
 

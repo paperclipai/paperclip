@@ -613,7 +613,7 @@ describeEmbeddedPostgres("issue queued-comment dispatch routes", () => {
     expect(run.status).toBe("running");
     expect(run.runnerProfileJson).toEqual(originalProfile);
     expect(steerNativeSessionMock).toHaveBeenCalledWith(expect.objectContaining({ runId: seeded.runId,
-      message: "First queued message", correlationId: seeded.commentIds[0] }));
+      message: `[@Worker](agent://${seeded.agentId}) First queued message`, correlationId: seeded.commentIds[0] }));
     expect(run.resultJson).toMatchObject({ concurrentProviderReceipt: "preserve", queuedSteeringAcknowledgements: {
       [seeded.commentIds[0]]: { status: "acknowledged", turnId: "turn-before-model-change" },
     } });
@@ -800,7 +800,7 @@ describeEmbeddedPostgres("issue queued-comment dispatch routes", () => {
       const seeded = await seedDeclinedConnectionReceipt(runState);
       const client = app(seeded.companyId);
       const sent = await request(client).post(`/api/issues/${seeded.issueId}/comments`)
-        .send({ body: "Skip Slack for now and continue" }).expect(201);
+        .send({ body: `[@Worker](agent://${seeded.agentId}) Skip Slack for now and continue`, commentIntent: {kind: "actionable", recipientAgentId: seeded.agentId, request: "Skip Slack for now and continue"} }).expect(201);
       await vi.waitFor(async () => expect(await db.select().from(agentWakeupRequests)).toHaveLength(2));
       const queue = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
       const next = queue.body.entries.find((entry: any) => entry.comment.id === sent.body.id);
@@ -824,10 +824,10 @@ describeEmbeddedPostgres("issue queued-comment dispatch routes", () => {
       const seeded = await seedDeclinedConnectionReceipt(runState);
       const client = app(seeded.companyId);
       const first = await request(client).post(`/api/issues/${seeded.issueId}/comments`)
-        .send({ body: "Skip Slack for now" }).expect(201);
+        .send({ body: `[@Worker](agent://${seeded.agentId}) Skip Slack for now`, commentIntent: {kind: "actionable", recipientAgentId: seeded.agentId, request: "Skip Slack for now"} }).expect(201);
       await vi.waitFor(async () => expect(await db.select().from(agentWakeupRequests)).toHaveLength(2));
       const second = await request(client).post(`/api/issues/${seeded.issueId}/comments`)
-        .send({ body: "Use email updates instead" }).expect(201);
+        .send({ body: `[@Worker](agent://${seeded.agentId}) Use email updates instead`, commentIntent: {kind: "actionable", recipientAgentId: seeded.agentId, request: "Use email updates instead"} }).expect(201);
       await vi.waitFor(async () => {
         const queue = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
         expect(queue.body.entries.map((entry: any) => entry.comment.id)).toEqual([first.body.id, second.body.id]);

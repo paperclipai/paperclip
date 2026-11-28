@@ -1,3 +1,4 @@
+import type { ActionableCommentIntent } from "@/lib/composer-draft";
 import { createUuid } from "@/lib/uuid";
 import { invalidateInteractionRecordViews } from "@/lib/attention-record-views";
 import { companyProjectsQuery } from "@/lib/company-projects-query";
@@ -5157,8 +5158,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   });
 
   const addComment = useAccountBoundMutation({
-    mutationFn: async ({ body, reopen, interrupt, attachmentIds, clientRequestId, runSettings, nativeCommand }: {
-      body: string; reopen?: boolean; interrupt?: boolean; attachmentIds?: string[]; clientRequestId?: string; runSettings?: ComposerRunSettings; nativeCommand?: "swarm";
+    mutationFn: async ({ body, reopen, interrupt, attachmentIds, clientRequestId, runSettings, nativeCommand, commentIntent }: {
+      body: string; reopen?: boolean; interrupt?: boolean; attachmentIds?: string[]; clientRequestId?: string; runSettings?: ComposerRunSettings; nativeCommand?: "swarm"; commentIntent?: ActionableCommentIntent;
     }, { assertCurrentAccount }) => {
       if (issue?.conversationAgentId) clearLegacyChatMessageRequests(`${issue.companyId}:${currentUserId}:${issue.conversationAgentId}`);
       const writableIssueId = await resolveWritableIssueId();
@@ -5180,7 +5181,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         assertCurrentAccount();
         queryClient.setQueryData(queryKeys.issues.detail(writableIssueId), updated);
       }
-      return issuesApi.addComment(writableIssueId, body, reopen, interrupt, attachmentIds, clientRequestId ?? createUuid(), nativeCommand);
+      return issuesApi.addComment(writableIssueId, body, reopen, interrupt, attachmentIds, clientRequestId ?? createUuid(), nativeCommand, commentIntent);
     },
     onMutate: async ({ body, reopen, interrupt }) => {
       // Start cache cancellation immediately but do not put it in front of the
@@ -5580,6 +5581,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       attachmentIds,
       clientRequestId,
       runSettings,
+      commentIntent,
     }: {
       body: string;
       reopen?: boolean;
@@ -5588,6 +5590,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       attachmentIds?: string[];
       clientRequestId?: string;
       runSettings?: ComposerRunSettings;
+      commentIntent?: ActionableCommentIntent;
     }, { assertCurrentAccount }) => {
       const freshIssue = runSettings && !reassignment
         ? await issuesApi.getCore(issueId!, { cache: "no-store", fresh: true })
@@ -5595,6 +5598,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       assertCurrentAccount();
       return issuesApi.update(issueId!, {
         comment: body,
+        ...(commentIntent ? { commentIntent } : {}),
         commentClientRequestId: clientRequestId,
         ...(attachmentIds?.length ? { attachmentIds } : {}),
         ...(reassignment ? {
@@ -7070,10 +7074,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       clientRequestId?: string,
       runSettings?: ComposerRunSettings,
       nativeCommand?: "swarm",
+      commentIntent?: ActionableCommentIntent,
     ) => {
       // A swarm request always uses the comments endpoint, which checks it.
       if (nativeCommand) {
-        await addComment.mutateAsync({ body, reopen, attachmentIds, clientRequestId, nativeCommand });
+        await addComment.mutateAsync({ body, reopen, attachmentIds, clientRequestId, nativeCommand, commentIntent });
         return;
       }
       if (!issue?.conversationAgentId && (reassignment || runSettings)) {
@@ -7084,10 +7089,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           attachmentIds,
           clientRequestId,
           runSettings,
+          commentIntent,
         });
         return;
       }
-      await addComment.mutateAsync({ body, reopen, attachmentIds, clientRequestId, runSettings });
+      await addComment.mutateAsync({ body, reopen, attachmentIds, clientRequestId, runSettings, commentIntent });
     },
     [addComment, addCommentAndReassign, issue?.conversationAgentId],
   );
