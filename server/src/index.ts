@@ -126,6 +126,8 @@ import {
   getPostgresDataDirectory,
   inspectMigrations,
   applyPendingMigrations,
+  verifyLiveSchema,
+  formatSchemaDrift,
   createEmbeddedPostgresLogBuffer,
   prepareEmbeddedPostgresNativeRuntime,
   reconcilePendingMigrationHistory,
@@ -756,6 +758,45 @@ async function startServerWithDatabaseTeardown(
     activeDatabaseConnectionString = embeddedConnectionString;
     resolvedEmbeddedPostgresPort = port;
     startupDbInfo = { mode: "embedded-postgres", dataDir, port };
+  }
+
+  // Boot-time schema-drift verification. The migration gate above only proves
+  // the drizzle journal matches the committed migration files; it never checks
+  // that the recorded DDL is physically present. When a prod journal's lineage
+  // diverges from the committed files (the AGE-759 outage), the gate reports
+  // "up to date" while code-selected columns are absent, producing silent drift
+  // that only surfaces as request-time 500s. Diff the live schema against the
+  // drizzle schema so we refuse to serve traffic that is guaranteed to 500.
+  {
+    const schemaVerification = await verifyLiveSchema(activeDatabaseConnectionString);
+    if (schemaVerification.status === "drift") {
+      const detail = formatSchemaDrift(schemaVerification);
+      const allowDrift = process.env.PAPERCLIP_ALLOW_SCHEMA_DRIFT === "true";
+      logger.error(
+        {
+          code: "schema_drift",
+          missingTables: schemaVerification.missingTables,
+          missingColumns: schemaVerification.missingColumns,
+          checkedTables: schemaVerification.checkedTables,
+          allowDrift,
+        },
+        `Live database schema is missing code-expected objects (${detail}). ` +
+          "The migration journal is recorded as applied but the DDL is not physically present.",
+      );
+      if (!allowDrift) {
+        throw new Error(
+          `schema_drift: live database is missing code-expected schema (${detail}). ` +
+            "Refusing to start against a drifted schema that would 500 at request time. " +
+            "Reconcile the migration history / re-apply the missing migrations, " +
+            "or set PAPERCLIP_ALLOW_SCHEMA_DRIFT=true to start anyway (unsafe).",
+        );
+      }
+    } else {
+      logger.info(
+        { checkedTables: schemaVerification.checkedTables },
+        "Live database schema verified against drizzle schema; no drift detected",
+      );
+    }
   }
 
   // Ends every pool this process opened. Used by the orderly shutdown path

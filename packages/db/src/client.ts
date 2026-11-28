@@ -7,6 +7,8 @@ import { installDatabaseWorkSignals } from "./work-signals.js";
 import { installDatabaseResponseCapture } from "./response-capture.js";
 import { createPreparedQueryState, installPreparedQueries, preparedQueryStats, type PreparedQueryState, type PreparedQueryStats } from "./prepared-queries.js";
 import { drizzleWithLazyTransactionQueries } from "./lazy-transaction-queries.js";
+import { is } from "drizzle-orm";
+import { PgTable, getTableConfig } from "drizzle-orm/pg-core";
 import * as schema from "./schema/index.js";
 
 const MIGRATIONS_FOLDER = fileURLToPath(new URL("./migrations", import.meta.url));
@@ -1560,6 +1562,152 @@ export async function inspectMigrations(url: string): Promise<MigrationState> {
   } finally {
     await sql.end();
   }
+}
+
+/**
+ * A single code-expected column that the live database is missing.
+ */
+export interface MissingSchemaColumn {
+  table: string;
+  column: string;
+}
+
+/**
+ * Result of diffing the drizzle schema the deployed code relies on against the
+ * columns/tables that physically exist in the live database.
+ *
+ * - `status: "ok"` — every code-expected table and column is present.
+ * - `status: "drift"` — at least one code-expected table or column is absent.
+ *
+ * The check is intentionally conservative: it only reports schema the code
+ * *expects but is missing*. Extra/unknown tables and columns in the database
+ * (additive drift) are safe and ignored.
+ */
+export type SchemaVerificationResult =
+  | { status: "ok"; checkedTables: number }
+  | {
+      status: "drift";
+      checkedTables: number;
+      missingTables: string[];
+      missingColumns: MissingSchemaColumn[];
+    };
+
+/**
+ * Collects the `public`-schema tables and their physical column names that the
+ * drizzle schema (the shape the deployed code selects against) defines.
+ */
+function collectExpectedSchema(): Map<string, Set<string>> {
+  const expected = new Map<string, Set<string>>();
+  for (const value of Object.values(schema)) {
+    if (!is(value, PgTable)) continue;
+    const config = getTableConfig(value);
+    // Only verify the default (public) schema; the migration journal and any
+    // explicitly namespaced objects are handled elsewhere.
+    if (config.schema && config.schema !== "public") continue;
+    let columns = expected.get(config.name);
+    if (!columns) {
+      columns = new Set<string>();
+      expected.set(config.name, columns);
+    }
+    for (const column of config.columns) {
+      columns.add(column.name);
+    }
+  }
+  return expected;
+}
+
+/**
+ * Verifies that the live database physically contains the tables and columns
+ * the deployed drizzle schema selects against.
+ *
+ * This closes the migration-gate blind spot behind the AGE-759 outage: the
+ * drizzle journal (`__drizzle_migrations`) only records *which migration files
+ * ran*, never whether the resulting DDL is actually present. When a prod
+ * journal's lineage diverges from the committed files, {@link inspectMigrations}
+ * can report `upToDate` while code-selected columns are physically absent,
+ * producing silent drift that only surfaces as a request-time 500
+ * (SQLSTATE 42703/42P01). This verifier diffs the drizzle schema against
+ * `information_schema` so that drift can be caught proactively at boot.
+ */
+export async function verifyLiveSchema(url: string): Promise<SchemaVerificationResult> {
+  const expected = collectExpectedSchema();
+  const sql = createUtilitySql(url);
+  try {
+    const liveTableRows = await sql<{ tableName: string }[]>`
+      select table_name as "tableName"
+      from information_schema.tables
+      where table_schema = 'public'
+        and table_type = 'BASE TABLE'
+    `;
+    const liveTables = new Set(liveTableRows.map((row) => row.tableName));
+
+    const liveColumnRows = await sql<{ tableName: string; columnName: string }[]>`
+      select table_name as "tableName", column_name as "columnName"
+      from information_schema.columns
+      where table_schema = 'public'
+    `;
+    const liveColumns = new Map<string, Set<string>>();
+    for (const row of liveColumnRows) {
+      let columns = liveColumns.get(row.tableName);
+      if (!columns) {
+        columns = new Set<string>();
+        liveColumns.set(row.tableName, columns);
+      }
+      columns.add(row.columnName);
+    }
+
+    const missingTables: string[] = [];
+    const missingColumns: MissingSchemaColumn[] = [];
+    for (const [tableName, expectedColumns] of expected) {
+      if (!liveTables.has(tableName)) {
+        // Whole table absent: report the table, not each of its columns.
+        missingTables.push(tableName);
+        continue;
+      }
+      const presentColumns = liveColumns.get(tableName) ?? new Set<string>();
+      for (const columnName of expectedColumns) {
+        if (!presentColumns.has(columnName)) {
+          missingColumns.push({ table: tableName, column: columnName });
+        }
+      }
+    }
+
+    if (missingTables.length === 0 && missingColumns.length === 0) {
+      return { status: "ok", checkedTables: expected.size };
+    }
+
+    missingTables.sort();
+    missingColumns.sort((a, b) =>
+      a.table === b.table ? a.column.localeCompare(b.column) : a.table.localeCompare(b.table),
+    );
+    return {
+      status: "drift",
+      checkedTables: expected.size,
+      missingTables,
+      missingColumns,
+    };
+  } finally {
+    await sql.end();
+  }
+}
+
+/**
+ * Human-readable one-line summary of a schema-drift result, suitable for logs
+ * and thrown error messages.
+ */
+export function formatSchemaDrift(result: Extract<SchemaVerificationResult, { status: "drift" }>): string {
+  const parts: string[] = [];
+  if (result.missingTables.length > 0) {
+    parts.push(`missing tables: ${result.missingTables.join(", ")}`);
+  }
+  if (result.missingColumns.length > 0) {
+    parts.push(
+      `missing columns: ${result.missingColumns
+        .map(({ table, column }) => `${table}.${column}`)
+        .join(", ")}`,
+    );
+  }
+  return parts.join("; ");
 }
 
 export async function applyPendingMigrations(url: string): Promise<void> {
