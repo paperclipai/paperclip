@@ -187,6 +187,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EXPERIMENTAL_BUNDLED_PLUGIN_PACKAGE_NAMES = new Set([
   "@paperclipai/plugin-llm-wiki",
   "@paperclipai/plugin-modal",
+  "@andhash/plugin-pc-telegram",
   "@paperclipai/plugin-workspace-diff",
 ]);
 /**
@@ -2436,7 +2437,7 @@ export function pluginRoutes(
         companyId,
         { targetType: "plugin", targetId: plugin.id },
         secretRefs,
-        { replaceAll: true },
+        { replaceAll: true, preserveConfigPathPrefixes: ["plugin-secret."] },
       );
 
       const result = await registry.upsertConfig(plugin.id, companyId, {

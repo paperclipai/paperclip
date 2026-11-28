@@ -1321,6 +1321,40 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     ).rejects.toThrow("over the");
   });
 
+  it("records issue.attachment_added when a plugin creates an attachment", async () => {
+    const { companyId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId, companyId, title: "Needs a file", status: "todo", priority: "medium",
+    });
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+    const created = await services.issues.createAttachment({
+      issueId,
+      companyId,
+      filename: "note.txt",
+      contentType: "text/plain",
+      contentBase64: Buffer.from("hello").toString("base64"),
+    });
+    const activities = await db
+      .select()
+      .from(activityLog)
+      .where(and(eq(activityLog.entityType, "issue"), eq(activityLog.entityId, issueId)));
+    expect(activities).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        actorType: "plugin",
+        actorId: "plugin-record-id",
+        action: "issue.attachment_added",
+        entityId: issueId,
+        details: expect.objectContaining({
+          attachmentId: created.id,
+          originalFilename: "note.txt",
+          contentType: "text/plain",
+          byteSize: created.byteSize,
+        }),
+      }),
+    ]));
+  });
+
   // PAP-16091 / PAP-16050: a plugin is a non-member principal. Every issue-read
   // path the host exposes (which a Slack notifier/digest plugin would fan out
   // to shared channels) must apply the canonical visibility predicate so private

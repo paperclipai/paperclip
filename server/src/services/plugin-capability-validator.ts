@@ -67,6 +67,7 @@ const OPERATION_CAPABILITIES: Record<string, readonly PluginCapability[]> = {
   "issue.interactions.read": ["issue.interactions.read"],
   "issue.attachments.list": ["issue.attachments.read"],
   "issue.attachments.get": ["issue.attachments.read"],
+  "issues.createAttachment": ["issue.attachments.write"],
   "approvals.list": ["approvals.read"],
   "approvals.get": ["approvals.read"],
   "agents.list": ["agents.read"],
@@ -130,6 +131,8 @@ const OPERATION_CAPABILITIES: Record<string, readonly PluginCapability[]> = {
   "webhooks.receive": ["webhooks.receive"],
   "http.request": ["http.outbound"],
   "secrets.resolve": ["secrets.read-ref"],
+  "secrets.store": ["secrets.write"],
+  "secrets.discard": ["secrets.write"],
 
   // Agent tools
   "agent.tools.register": ["agent.tools.register"],

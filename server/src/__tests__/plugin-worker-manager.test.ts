@@ -450,6 +450,141 @@ describe("plugin-worker-manager stderr failure context", () => {
     } finally { await handle.stop().catch(() => undefined); }
   });
 
+  it("keeps a retained company invocation after the action that opened it returns", async () => {
+    const companiesGet = vi.fn(async () => ({ id: "company-a" }) as Company);
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" },
+      apiVersion: 1,
+      hostHandlers: { "companies.get": companiesGet as never },
+    });
+    const boardActor = {
+      type: "user" as const,
+      userId: "user-1",
+      agentId: null,
+      runId: null,
+      companyId: "company-a",
+    };
+    try {
+      await handle.start();
+      const retained = await handle.call("performAction", {
+        key: "probe",
+        params: { mode: "retain", requestedCompanyId: "company-a" },
+        actorContext: boardActor,
+        renderEnvironment: null,
+      });
+      expect(retained).toEqual({ invocationId: expect.any(String) });
+      await expect(handle.call("getData", {
+        key: "probe",
+        companyId: "company-a",
+        params: { mode: "use-retained", requestedCompanyId: "company-a" },
+      } as HostToWorkerMethods["getData"][0])).resolves.toEqual({ id: "company-a" });
+      expect(companiesGet).toHaveBeenCalledWith(
+        { companyId: "company-a" },
+        expect.objectContaining({ invocationScope: { companyId: "company-a" } }),
+      );
+      await handle.call("getData", {
+        key: "probe",
+        companyId: "company-a",
+        params: { mode: "release-retained", requestedCompanyId: "company-a" },
+      } as HostToWorkerMethods["getData"][0]);
+      await expect(handle.call("getData", {
+        key: "probe",
+        companyId: "company-a",
+        params: { mode: "use-retained", requestedCompanyId: "company-a" },
+      } as HostToWorkerMethods["getData"][0])).rejects.toMatchObject({
+        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+      });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("opens a fresh company scope when retain echoes an already released invocation", async () => {
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" },
+      apiVersion: 1,
+      proactiveCompanyScopes: ["company-a"],
+      hostHandlers: { "companies.get": vi.fn(async () => ({ id: "company-a" })) as never },
+    });
+    try {
+      await handle.start();
+      await expect(handle.call("getData", {
+        key: "probe",
+        companyId: "company-a",
+        params: { mode: "retain-released", requestedCompanyId: "company-a" },
+      } as HostToWorkerMethods["getData"][0])).resolves.toEqual({ invocationId: expect.any(String) });
+      await expect(handle.call("getData", {
+        key: "probe",
+        companyId: "company-a",
+        params: { mode: "retain-released", requestedCompanyId: "company-b" },
+      } as HostToWorkerMethods["getData"][0])).rejects.toMatchObject({
+        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+      });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("refuses background retain for a released agent invocation", async () => {
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" },
+      apiVersion: 1,
+      proactiveCompanyScopes: ["company-a"],
+      hostHandlers: { "companies.get": vi.fn(async () => ({ id: "company-a" })) as never },
+    });
+    try {
+      await handle.start();
+      await expect(handle.call("executeTool", {
+        toolName: "probe",
+        parameters: { mode: "retain-after-release", requestedCompanyId: "company-a" },
+        runContext: { companyId: "company-a", agentId: "agent-a", runId: "run-a" },
+      } as HostToWorkerMethods["executeTool"][0])).resolves.toEqual({ released: true });
+      await expect(handle.call("getData", {
+        key: "probe",
+        companyId: "company-a",
+        params: { mode: "released-agent-outcome" },
+      } as HostToWorkerMethods["getData"][0])).resolves.toEqual({
+        denied: true,
+        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+      });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("refuses to retain background company access from an agent invocation", async () => {
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" },
+      apiVersion: 1,
+      proactiveCompanyScopes: ["company-a"],
+      hostHandlers: { "companies.get": vi.fn(async () => ({ id: "company-a" })) as never },
+    });
+    try {
+      await handle.start();
+      await expect(handle.call("executeTool", {
+        toolName: "probe",
+        parameters: { mode: "retain", requestedCompanyId: "company-a" },
+        runContext: { companyId: "company-a", agentId: "agent-a", runId: "run-a" },
+      } as HostToWorkerMethods["executeTool"][0])).rejects.toMatchObject({
+        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+      });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
   it("passes echoed invocation scope to worker-to-host handlers", async () => {
     const companiesGet = vi.fn(async () => ({ id: "company-1" }) as Company);
     const handle = createPluginWorkerHandle("test.plugin", {
