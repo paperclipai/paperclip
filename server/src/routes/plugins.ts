@@ -19,6 +19,7 @@
  * @see doc/plugins/PLUGIN_SPEC.md for the full plugin specification
  */
 
+import { LOCAL_OPERATOR_SOCKET_PARAM } from "@paperclipai/shared/local-operator-constants";
 import { access, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -1961,7 +1962,10 @@ export function pluginRoutes(
         method: req.method,
         path: requestPath,
         params: match.params,
-        query: normalizeQuery(req.query),
+        // The board page's operator token authenticates the socket; it never reaches plugin code.
+        query: normalizeQuery(Object.fromEntries(
+          Object.entries(req.query).filter(([key]) => key !== LOCAL_OPERATOR_SOCKET_PARAM),
+        ) as typeof req.query),
         body: requestBody,
         actor: {
           actorType: actor.actorType,

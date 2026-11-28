@@ -35,6 +35,8 @@ export type HealthStatus = {
   deploymentMode?: "local_trusted" | "authenticated";
   deploymentExposure?: "private" | "public";
   localAiLoginSupported?: boolean;
+  /** This local board opens only through a sign-in link from `paperclipai open`. */
+  localOperatorSignInRequired?: boolean;
   hostedGoogleAiLoginSupported?: boolean;
   authReady?: boolean;
   bootstrapStatus?: "ready" | "bootstrap_pending";

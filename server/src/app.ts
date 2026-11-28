@@ -80,6 +80,7 @@ import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
 import { skillAccessRequestContext } from "./services/skill-access.js";
 import { actorMiddleware } from "./middleware/auth.js";
+import { localOperatorCredential } from "./middleware/local-operator-credential.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import {
   privateHostnameGuard,
@@ -664,6 +665,7 @@ export async function createApp(
   // board/agent bearer authentication. Mount before actorMiddleware so its
   // per-session Bearer cannot be mistaken for an agent API key.
   app.use(voiceWebhookRoutes(db, chatChannels.voice));
+  if (opts.deploymentMode === "local_trusted") app.use("/api", localOperatorCredential().signInRoutes());
   app.use(
     actorMiddleware(db, {
       deploymentMode: opts.deploymentMode,

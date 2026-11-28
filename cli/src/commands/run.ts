@@ -13,6 +13,7 @@ import type { PaperclipConfig } from "../config/schema.js";
 import { readConfig } from "../config/store.js";
 import {
   describeLocalInstancePaths,
+  instanceIdForConfigPath,
   resolvePaperclipHomeDir,
   resolvePaperclipInstanceId,
 } from "../config/home.js";
@@ -46,8 +47,18 @@ export interface StartedServer {
   shutdown?: (signal?: "SIGINT" | "SIGTERM") => Promise<void>;
 }
 
+/**
+ * `--instance`, else the instance whose standard config file was passed, else
+ * the environment. `paperclipai open` resolves the same way, so it finds this
+ * server's runtime info and key.
+ */
+export function resolveRunInstanceId(opts: Pick<RunOptions, "config" | "instance">): string {
+  const fromConfig = !opts.instance?.trim() && opts.config ? instanceIdForConfigPath(opts.config) : null;
+  return resolvePaperclipInstanceId(opts.instance?.trim() || fromConfig || undefined);
+}
+
 export async function runCommand(opts: RunOptions): Promise<void> {
-  const instanceId = resolvePaperclipInstanceId(opts.instance);
+  const instanceId = resolveRunInstanceId(opts);
   process.env.PAPERCLIP_INSTANCE_ID = instanceId;
   if (!opts.skipServiceManagerCheck) {
     await assertForegroundRunAllowed(instanceId, opts.force);

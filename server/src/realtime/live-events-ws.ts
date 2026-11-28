@@ -1,5 +1,7 @@
 import { createLiveEventDelivery, sharedDeliveryRead, type LiveDeliveryReads } from "./live-event-delivery.js";
 import { localAgentProcessBoundary } from "../middleware/local-agent-process-boundary.js";
+import { localOperatorCredential } from "../middleware/local-operator-credential.js";
+import { LOCAL_OPERATOR_SOCKET_PARAM } from "@paperclipai/shared/local-operator-credential";
 import { skillAccessService } from "../services/skill-access.js";
 import { createHash } from "node:crypto";
 import type { IncomingMessage, Server as HttpServer } from "node:http";
@@ -138,7 +140,7 @@ function headersFromIncomingMessage(req: IncomingMessage): Headers {
   return headers;
 }
 
-async function authorizeUpgrade(
+export async function authorizeUpgrade(
   db: Db,
   req: IncomingMessage,
   companyId: string,
@@ -156,6 +158,8 @@ async function authorizeUpgrade(
   // Browser board context has no bearer token in local_trusted and authenticated modes.
   if (!token) {
     if (opts.deploymentMode === "local_trusted") {
+      const operator = localOperatorCredential();
+      if (operator.required && !operator.hasBrowserToken(url.searchParams.get(LOCAL_OPERATOR_SOCKET_PARAM))) return null;
       if (!(await localAgentProcessBoundary().grantsImplicitBoard(req.socket))) return null;
       return {
         companyId,
@@ -448,7 +452,7 @@ export function setupLiveEventsWebSocketServer(
     }
 
     const onRawSocketError = (err: Error) => {
-      logger.warn({ err, path: req.url }, "live websocket upgrade socket error");
+      logger.warn({ err, path: req.url?.split("?")[0] }, "live websocket upgrade socket error");
     };
     const cleanupRawSocketListeners = () => {
       socket.off("error", onRawSocketError);
@@ -497,7 +501,7 @@ export function setupLiveEventsWebSocketServer(
         });
       })
       .catch((err) => {
-        logger.error({ err, path: req.url }, "failed websocket upgrade authorization");
+        logger.error({ err, path: req.url?.split("?")[0] }, "failed websocket upgrade authorization");
         rejectUpgrade(socket, "500 Internal Server Error", "upgrade failed");
       }));
   });

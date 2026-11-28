@@ -37,9 +37,19 @@ import { captureQueryException } from "./lib/sentry";
 import { startPersistedQueryCache } from "./lib/persisted-query-cache";
 import { adoptHardLoadChatBootstrap } from "./lib/issue-chat-bootstrap";
 import { hasPendingWrites, subscribePendingWrites } from "./lib/reload-safety";
+import {
+  captureLocalOperatorToken,
+  installLocalOperatorFetch,
+  installLocalOperatorWebSocket,
+  startLocalOperatorReadCookieRefresh,
+} from "./lib/local-operator";
 import "@mdxeditor/editor/style.css";
 import "./index.css";
 
+captureLocalOperatorToken();
+installLocalOperatorFetch();
+installLocalOperatorWebSocket();
+startLocalOperatorReadCookieRefresh();
 initPluginBridge(React, ReactDOM);
 
 // React 19.2 emits an unbounded stream of performance.measure() entries for its

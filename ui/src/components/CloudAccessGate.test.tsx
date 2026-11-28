@@ -225,6 +225,17 @@ describe("CloudAccessGate restart recovery", () => {
     expect(container.textContent).not.toContain("Reconnecting");
   });
 
+  it("asks a browser that has not signed in to a protected local board to open it from the terminal", async () => {
+    fetchMock.mockResolvedValueOnce(Response.json({
+      status: "ok",
+      deploymentMode: "local_trusted",
+      localOperatorSignInRequired: true,
+    }));
+    await render();
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.textContent).toContain("paperclipai open");
+  });
+
   it("supports manual retry while startup health is pending", async () => {
     fetchMock.mockResolvedValueOnce(Response.json({ status: "starting", deploymentMode: "local_trusted" }));
     await render();

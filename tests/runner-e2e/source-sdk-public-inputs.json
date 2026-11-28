@@ -296,6 +296,8 @@
     "packages/shared/src/leading-user-command.ts": "d4bea3d1d76fcbf721f846f5adb47a58004a0497",
     "packages/shared/src/link-preview.test.ts": "136041c928343ad6272f43701b39cf95be255f3e",
     "packages/shared/src/link-preview.ts": "b7431d4c30a12067e80e6806728b3ae7c7541f8f",
+    "packages/shared/src/local-operator-constants.ts": "4fa295c735018203ace26a533ddbc05507035535",
+    "packages/shared/src/local-operator-credential.ts": "9bc59055013fe394cfe45b83075de9844558146f",
     "packages/shared/src/markdown-work-products.test.ts": "7293d14ad45ec2b11b5deaab4ce070c36f7c9010",
     "packages/shared/src/markdown-work-products.ts": "16a88cfb717f325c247a516e78b47d53871b52ed",
     "packages/shared/src/mcp-apps.test.ts": "848f3247bdc98af398daa144b0e44991a3f352b3",

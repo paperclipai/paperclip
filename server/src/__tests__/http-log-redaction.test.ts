@@ -21,6 +21,16 @@ it("redacts a routine caller run token on ordinary HTTP routes", async () => {
   expect(chunks.join("")).not.toContain("private-routine-caller-token");
 });
 
+it("redacts the local board page's operator token", async () => {
+  const chunks: string[] = [];
+  const stream = new Writable({ write(chunk, _encoding, callback) { chunks.push(chunk.toString()); callback(); } });
+  const app = express();
+  app.use(createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)));
+  app.get("/api/health", (_req, res) => res.json({ ok: true }));
+  await request(app).get("/api/health").set("X-Paperclip-Local-Operator", "private-local-operator-token");
+  expect(chunks.join("")).not.toContain("private-local-operator-token");
+});
+
 describe("HTTP logger redaction", () => {
   it.each([200, 400, 500])("keeps connector and observability credentials out of %i logs", async status => {
     const canaries = ["configuration-canary", "signing-canary", "client-canary", "bot-canary", "oauth-code-canary", "provider-echo-canary"];

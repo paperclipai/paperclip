@@ -161,6 +161,7 @@ import {
 import { getOperatorSettingDefaults } from "./services/setting-defaults.js";
 import { setupEnvironmentCustomImageTerminalWebSocketServer } from "./realtime/environment-custom-image-terminal-ws.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
+import { localOperatorCredential } from "./middleware/local-operator-credential.js";
 import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "./middleware/auth.js";
 import {
   feedbackService,
@@ -2193,14 +2194,21 @@ async function startServerWithDatabaseTeardown(
   });
   if (process.env.PAPERCLIP_OPEN_ON_LISTEN === "true") {
     const openHost = config.host === "0.0.0.0" || config.host === "::" ? "127.0.0.1" : config.host;
-    const url = `http://${openHost}:${listenPort}`;
+    const boardUrl = `http://${openHost.includes(":") ? `[${openHost}]` : openHost}:${listenPort}`;
+    const operator = config.deploymentMode === "local_trusted" ? localOperatorCredential() : null;
+    let url = boardUrl;
+    try {
+      if (operator?.required) url = operator.signInUrl(boardUrl);
+    } catch (err) {
+      logger.warn({ err }, "Could not make a board sign-in link; run `paperclipai open` to sign in");
+    }
     void import("open")
       .then((mod) => mod.default(url))
       .then(() => {
-        logger.info(`Opened browser at ${url}`);
+        logger.info(`Opened browser at ${boardUrl}`);
       })
       .catch((err) => {
-        logger.warn({ err, url }, "Failed to open browser on startup");
+        logger.warn({ err, url: boardUrl }, "Failed to open browser on startup");
       });
   }
   printStartupBanner({
@@ -2221,6 +2229,10 @@ async function startServerWithDatabaseTeardown(
         databaseBackupRetentionDays: config.databaseBackupRetentionDays,
         databaseBackupDir: config.databaseBackupDir,
   });
+  if (config.deploymentMode === "local_trusted" && localOperatorCredential().required
+    && process.env.PAPERCLIP_OPEN_ON_LISTEN !== "true") {
+    console.log("  Open the board from this computer with `paperclipai open`.");
+  }
   const boardClaimUrl = getBoardClaimWarningUrl(config.host, listenPort);
   if (boardClaimUrl) {
     const red = "\x1b[41m\x1b[30m";

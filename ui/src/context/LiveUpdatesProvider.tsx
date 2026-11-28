@@ -1,4 +1,5 @@
 import { LiveTranscriptInterests, DISCONNECTED_TRANSCRIPT_STREAM } from "../lib/live-transcript-interests";
+import { withLocalOperatorSocketToken } from "../lib/local-operator";
 import { resolveAgentAppearance, TASK_IDENTITY_CHANGED_FIELD, issueActivityChangesTaskIdentity } from "@paperclipai/shared";
 import { getPageVisibility, usePageVisibility } from "../lib/page-visibility";
 import { createLiveQueryRecovery } from "../lib/live-query-recovery";
@@ -2552,9 +2553,9 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
 
     const connect = () => {
       if (closed) return;
-      const url = buildSameOriginWebSocketUrl(
+      const url = withLocalOperatorSocketToken(buildSameOriginWebSocketUrl(
         `/api/companies/${encodeURIComponent(liveCompanyId)}/events/ws`,
-      );
+      ));
       const nextSocket = tryCreateWebSocket(url);
       if (!nextSocket) {
         startPolling();
