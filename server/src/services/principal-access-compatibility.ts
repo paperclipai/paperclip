@@ -14,8 +14,10 @@ export type PrincipalAccessCompatibilityBackfillStats = {
   humanGrantsInserted: number;
 };
 
+type DbOrTx = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
+
 export async function insertMissingPrincipalGrants(
-  db: Db,
+  db: DbOrTx,
   input: {
     companyId: string;
     principalType: PrincipalType;
@@ -78,7 +80,7 @@ export async function insertMissingPrincipalGrants(
 }
 
 export async function ensureHumanRoleDefaultGrants(
-  db: Db,
+  db: DbOrTx,
   input: {
     companyId: string;
     principalId: string;

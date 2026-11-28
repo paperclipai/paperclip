@@ -173,12 +173,14 @@ describeEmbeddedPostgres("access routes permissions upgrade compatibility", () =
           eq(principalPermissionGrants.principalId, member.principalId),
         ),
       );
-    expect(grants).toHaveLength(1);
-    expect(grants[0]).toMatchObject({
-      permissionKey: "tasks:assign_scope",
-      scope: customScope,
-      grantedByUserId: owner.principalId,
-    });
+    expect(grants.length).toBeGreaterThan(1);
+    expect(grants).toContainEqual(
+      expect.objectContaining({
+        permissionKey: "tasks:assign_scope",
+        scope: customScope,
+        grantedByUserId: owner.principalId,
+      }),
+    );
   });
 
   it("sweeps personal connection access when the member route suspends a user", async () => {
