@@ -92,6 +92,9 @@ const CLIENT_ID_RE = /^[A-Za-z0-9._~-]{1,128}$/;
 const CODE_RE = /^[A-Za-z0-9._~-]{1,1024}$/;
 const CODE_CHALLENGE_RE = /^[A-Za-z0-9_-]{43,128}$/;
 const STATE_RE = /^[A-Za-z0-9_-]{16,256}$/;
+// The opaque token of the short authorization link that `claude` 2.1.330 and
+// later print: the entire query is this one bare key.
+const SHORT_LINK_TOKEN_RE = /^[A-Za-z0-9_-]{32,256}$/;
 // One `scope` token. The `scope` value is one to eight space-separated tokens.
 const SCOPE_TOKEN_RE = /^[A-Za-z0-9:._-]{1,64}$/;
 
@@ -301,6 +304,17 @@ function hasValidQuery(parsed: URL): boolean {
   for (const [key, values] of byKey) {
     if (API_KEY_RE.test(key)) return false;
     if (API_KEY_RE.test(values[0])) return false;
+  }
+
+  // Newer Claude CLIs (2.1.330 and later) emit a short authorization link whose
+  // whole query is one opaque token with no `=value`, for example
+  // `https://claude.ai/oauth/authorize?<token>`. The authorization server
+  // expands it into the full request, so the CLI no longer prints the individual
+  // OAuth parameters. The origin-and-path pin above and the API-key rejection
+  // still apply; the token must be one bare key from a bounded safe alphabet.
+  if (byKey.size === 1) {
+    const [[key, [value]]] = [...byKey];
+    if (value === "" && SHORT_LINK_TOKEN_RE.test(key)) return true;
   }
 
   // Require each required key.

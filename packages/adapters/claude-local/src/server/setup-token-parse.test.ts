@@ -224,6 +224,57 @@ describe("parseSetupTokenPrompt", () => {
     expect(parseSetupTokenPrompt(completeOutput(crossPair))).toBeNull();
   });
 
+  describe("short authorization link (claude 2.1.330)", () => {
+    // `claude` 2.1.330 prints a short link whose whole query is one opaque
+    // token, then lays each word out with Cursor Horizontal Absolute moves and
+    // wraps the URL in an OSC 8 hyperlink. Captured from a live
+    // `claude setup-token` run, with the token replaced.
+    const TOKEN = "IHFOtT5RAUIUb9dF-omMbROaQKnAdVP66c4In7JwhnW8";
+    const SHORT_URL = `https://claude.ai/oauth/authorize?${TOKEN}`;
+
+    it("accepts the bare-token link in plain text", () => {
+      const result = parseSetupTokenPrompt(completeOutput(SHORT_URL));
+      expect(result?.url).toBe(SHORT_URL);
+      expect(result?.prompt).toBe(SETUP_TOKEN_PROMPT);
+    });
+
+    it("accepts the link from the live 2.1.330 terminal layout", () => {
+      const live = [
+        "\x1b[38;2;215;119;87mWelcome\x1b[9Gto\x1b[12GClaude\x1b[19GCode\x1b[39m",
+        "\x1b[2G\x1b[38;2;255;255;255m\u00b7\x1b[4G\x1b[39mOpening\x1b[12Gbrowser\x1b[20Gto\x1b[23Gsign\x1b[28Gin\u2026",
+        `Browser didn't open?\x1b[23GUse the URL\x1b[35Gbelow\x1b[41Gto\x1b[44Gsign\x1b[49Gin\x1b[52G(c to copy)`,
+        "",
+        `\x1b]8;id=86k8yi;${SHORT_URL}\x07\x1b[38;2;153;153;153m${SHORT_URL}\x1b[39m\x1b]8;;\x07`,
+        "",
+        "\x1b[2GPaste\x1b[8Gcode\x1b[13Ghere\x1b[18Gif\x1b[21Gprompted",
+      ].join("\r\r\n");
+      const result = parseSetupTokenPrompt(live);
+      expect(result?.url).toBe(SHORT_URL);
+      expect(result?.prompt).toBe(SETUP_TOKEN_PROMPT);
+    });
+
+    it("still pins the host and path", () => {
+      expect(
+        parseSetupTokenPrompt(completeOutput(`https://claude.example.com/oauth/authorize?${TOKEN}`)),
+      ).toBeNull();
+      expect(
+        parseSetupTokenPrompt(completeOutput(`https://claude.ai/other/path?${TOKEN}`)),
+      ).toBeNull();
+    });
+
+    it("rejects a short token that is too short, has a value, or looks like an API key", () => {
+      expect(parseSetupTokenPrompt(completeOutput("https://claude.ai/oauth/authorize?abc"))).toBeNull();
+      expect(parseSetupTokenPrompt(completeOutput(`${SHORT_URL}=x`))).toBeNull();
+      expect(
+        parseSetupTokenPrompt(completeOutput(`https://claude.ai/oauth/authorize?sk-ant-oat01-${"a".repeat(30)}`)),
+      ).toBeNull();
+    });
+
+    it("rejects a short token mixed with other keys", () => {
+      expect(parseSetupTokenPrompt(completeOutput(`${SHORT_URL}&state=${STATE}`))).toBeNull();
+    });
+  });
+
   it("returns null for a missing query key", () => {
     const missingKey = CLAUDE_COM_URL.replace(`&state=${STATE}`, "");
     expect(parseSetupTokenPrompt(completeOutput(missingKey))).toBeNull();
