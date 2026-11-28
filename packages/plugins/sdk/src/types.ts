@@ -1571,6 +1571,10 @@ export interface PluginIssuesClient {
     /** Inherit this issue's project and workspace strategy. The new issue always gets its own workspace. */
     inheritExecutionWorkspaceFromIssueId?: string;
     title: string;
+    /** Company-wide retry key (1–255 characters). Prefix it with your plugin ID. */
+    idempotencyKey?: string | null;
+    /** Set false to reuse a recent open issue with the same title; true bypasses that check. */
+    allowDuplicate?: boolean;
     description?: string;
     status?: Issue["status"];
     priority?: Issue["priority"];
