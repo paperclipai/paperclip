@@ -2995,6 +2995,75 @@ describe("TaskChatComposer", () => {
       expect(editable().textContent).toBe("");
     });
 
+    it("collapses the card to its header and expands it again without losing answers", () => {
+      const onDismiss = vi.fn();
+      const onSkip = vi.fn();
+      renderComposer({
+        onAdd: vi.fn(),
+        workMode: "standard",
+        takeover: {
+            id: "question-1",
+            label: "Deployment target",
+            pendingCount: 1,
+            content: <input aria-label="Answer" defaultValue="" />,
+            onDismiss,
+            onSkip,
+          },
+      });
+
+      const card = () => container.querySelector<HTMLElement>('[data-testid="task-chat-composer-takeover"]')!;
+      const body = () => container.querySelector<HTMLElement>('[data-testid="task-chat-composer-takeover-body"]')!;
+      const toggle = () => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-takeover-collapse"]')!;
+      const skipButton = () => Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+        .find((button) => button.textContent?.trim() === "Skip");
+      const input = container.querySelector<HTMLInputElement>('input[aria-label="Answer"]')!;
+      input.value = "staging";
+
+      expect(toggle().getAttribute("aria-expanded")).toBe("true");
+      expect(toggle().getAttribute("aria-label")).toBe("Collapse Deployment target");
+      flushSync(() => toggle().click());
+
+      expect(card().getAttribute("data-collapsed")).toBe("true");
+      expect(card().textContent).toContain("Deployment target");
+      expect(body().hidden).toBe(true);
+      expect(skipButton()).toBeUndefined();
+      expect(toggle().getAttribute("aria-expanded")).toBe("false");
+      expect(toggle().getAttribute("aria-label")).toBe("Expand Deployment target");
+      expect(container.querySelector('[data-testid="mdx-editor"]')).not.toBeNull();
+
+      flushSync(() => toggle().click());
+      expect(card().getAttribute("data-collapsed")).toBeNull();
+      expect(body().hidden).toBe(false);
+      expect(container.querySelector<HTMLInputElement>('input[aria-label="Answer"]')).toBe(input);
+      expect(input.value).toBe("staging");
+      expect(skipButton()).not.toBeUndefined();
+      expect(onDismiss).not.toHaveBeenCalled();
+      expect(onSkip).not.toHaveBeenCalled();
+    });
+
+    it("shows the label of a label-less card while it is collapsed", () => {
+      renderComposer({
+        onAdd: vi.fn(),
+        workMode: "standard",
+        takeover: {
+            id: "tool-action",
+            label: "Run deploy script",
+            hideLabel: true,
+            pendingCount: 1,
+            content: <p>Allow the deploy?</p>,
+            onDismiss: vi.fn(),
+            onSkip: vi.fn(),
+          },
+      });
+
+      const header = () => container.querySelector<HTMLElement>('[data-testid="task-chat-composer-takeover-header"]')!;
+      expect(header().textContent).not.toContain("Run deploy script");
+      expect(header().className).toContain("absolute");
+      flushSync(() => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-takeover-collapse"]')!.click());
+      expect(header().textContent).toContain("Run deploy script");
+      expect(header().className).not.toContain("absolute");
+    });
+
     it("keeps the composer mode shortcut available beneath an open question", () => {
       renderComposer({
         onAdd: vi.fn(),

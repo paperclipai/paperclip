@@ -42,6 +42,7 @@ import {
   RotateCw,
   Square,
   ChevronDown,
+  ChevronUp,
   CircleHelp,
   Loader2,
   X,
@@ -393,6 +394,7 @@ export function TaskChatComposer({
   const [takeoverBusy, setTakeoverBusy] = useState(false);
   const [takeoverError, setTakeoverError] = useState<string | null>(null);
   const [takeoverHeaderClaimed, setTakeoverHeaderClaimed] = useState(false);
+  const [takeoverCollapsed, setTakeoverCollapsed] = useState(false);
   const [takeoverHeaderSlot, setTakeoverHeaderSlot] =
     useState<HTMLElement | null>(null);
   const [takeoverControlsSlot, setTakeoverControlsSlot] =
@@ -492,6 +494,7 @@ export function TaskChatComposer({
   useEffect(() => {
     setTakeoverBusy(false);
     setTakeoverError(null);
+    setTakeoverCollapsed(false);
   }, [takeover?.id]);
 
   useEffect(() => {
@@ -1309,21 +1312,25 @@ export function TaskChatComposer({
           className={cn(
             "relative rounded-xl border border-border bg-card p-(--sz-18px) shadow-sm",
             mobile ? "overflow-visible" : "max-h-(--tc-interaction-card-max-h) overflow-y-auto scrollbar-auto-hide",
+            takeoverCollapsed && "py-2",
           )}
           aria-label={takeover.label}
           data-testid="task-chat-composer-takeover"
+          data-collapsed={takeoverCollapsed ? "true" : undefined}
         >
           <div
             className={cn(
               "flex min-w-0 items-center gap-2",
-              takeover.hideLabel && takeover.pendingCount === 1
-                ? "absolute right-0 top-0 z-10"
-                : "mb-3",
+              takeoverCollapsed
+                ? null
+                : takeover.hideLabel && takeover.pendingCount === 1
+                  ? "absolute right-0 top-0 z-10"
+                  : "mb-3",
             )}
             data-testid="task-chat-composer-takeover-header"
           >
             <div className="min-w-0 flex-1">
-              {!takeoverHeaderClaimed && !takeover.hideLabel ? (
+              {!takeoverHeaderClaimed && (!takeover.hideLabel || takeoverCollapsed) ? (
                 <strong className="block truncate text-sm font-medium text-foreground">
                   {takeover.label}
                 </strong>
@@ -1342,12 +1349,20 @@ export function TaskChatComposer({
               ) : null}
               <div ref={setTakeoverControlsSlot} className="flex shrink-0 items-center" data-testid="task-chat-composer-takeover-controls-slot" />
               <Button type="button" size="icon-xs" variant="ghost" className="text-muted-foreground hover:text-foreground"
+                aria-label={takeoverCollapsed ? `Expand ${takeover.label}` : `Collapse ${takeover.label}`}
+                aria-expanded={!takeoverCollapsed}
+                data-testid="task-chat-composer-takeover-collapse"
+                onClick={() => setTakeoverCollapsed(value => !value)}>
+                {takeoverCollapsed ? <ChevronUp aria-hidden /> : <ChevronDown aria-hidden />}
+              </Button>
+              <Button type="button" size="icon-xs" variant="ghost" className="text-muted-foreground hover:text-foreground"
                 aria-label={`Dismiss ${takeover.label}`} disabled={takeoverBusy} onClick={takeover.onDismiss}>
                 <X aria-hidden />
               </Button>
             </div>
           </div>
-          <div className={takeover.hideLabel && takeover.pendingCount === 1 ? "pr-8" : "pr-1"}
+          <div className={takeover.hideLabel && takeover.pendingCount === 1 ? "pr-16" : "pr-1"}
+            hidden={takeoverCollapsed}
             data-testid="task-chat-composer-takeover-body">
             <TaskChatComposerTakeoverActionsContext.Provider
               value={{
@@ -1362,7 +1377,7 @@ export function TaskChatComposer({
             </TaskChatComposerTakeoverActionsContext.Provider>
           </div>
           {takeoverError ? <p className="mt-2 text-sm text-destructive" role="alert">{takeoverError}</p> : null}
-          {!takeover.inlineSkip && !takeover.hideSkip ? (
+          {!takeoverCollapsed && !takeover.inlineSkip && !takeover.hideSkip ? (
             <div className="mt-3 flex items-center justify-end gap-2">{takeoverSkipButton}</div>
           ) : null}
         </section>
