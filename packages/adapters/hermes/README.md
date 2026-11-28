@@ -144,6 +144,23 @@ This mode does not start Hermes. It creates runs with `POST /v1/runs`, streams
 Hermes events with SSE, polls run status as a fallback, and stops timed-out runs
 with `POST /v1/runs/{run_id}/stop`.
 
+### Check a named profile
+
+To connect to a profile named `researcher`, set these fields in `adapterConfig`
+alongside your API key.
+
+```json
+{
+  "apiBaseUrl": "https://hermes.example.com/p/researcher",
+  "expectedProfile": "researcher"
+}
+```
+
+Paperclip checks `/p/researcher/health/detailed`. The endpoint must require
+authentication, accept the saved key, and report a ready, idle gateway. If you
+use a reverse proxy, forward the profile path and keep the authentication
+status codes from Hermes.
+
 ### Compatibility with the old gateway package
 
 `@paperclipai/adapter-hermes-gateway` remains as a deprecated compatibility shim
