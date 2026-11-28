@@ -108,6 +108,8 @@ Package identity and executable containment remain checked. Browser login keeps
 its provider-specific credential home and resolves the installed Codex CLI on
 64-bit Linux and macOS independently of the daemon's libc requirements.
 
+Codex child-thread tracking accepts both completed `collabAgentToolCall` spawn receipts and completed `subAgentActivity` items whose kind is `started`. The active parent must supply the receipt. The recorded child ID does not grant authority to unrelated threads or let a child supply root completion results.
+
 Exact dependency pins remain release and ACPX artifact-qualification checks.
 They make published builds reproducible and verify sandbox artifacts; they do not
 add a version-number gate to ordinary native Codex startup or browser login.
