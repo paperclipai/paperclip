@@ -136,6 +136,78 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
     }
   }, 30_000);
 
+  it("preserves JSON numbers, JSON null and json text in JavaScript backups", async () => {
+    const source = await createTempDatabase();
+    const target = await createSiblingDatabase(source, "json_precision_restore_target");
+    const sourceSql = postgres(source, { max: 1, onnotice: () => {} });
+    const targetSql = postgres(target, { max: 1, onnotice: () => {} });
+    try {
+      await sourceSql.unsafe(`
+        CREATE TABLE public.json_precision_records (id integer PRIMARY KEY, j json, b jsonb, hidden jsonb);
+        INSERT INTO public.json_precision_records VALUES
+          (1, NULL, NULL, '{"k":1}'),
+          (2, 'null', 'null', '{"k":1}'),
+          (3, '"text"', '"text"', '{"k":1}'),
+          (4, '{"big": 9007199254740993123, "fraction": 0.123456789012345678901}',
+              '{"big": 9007199254740993123, "fraction": 0.123456789012345678901}', '{"k":1}'),
+          (5, '[9007199254740993, 1e400, {"b":1,"a":2,"a":3}]', '[9007199254740993, null]', '{"k":1}');
+      `);
+      const before = [...await sourceSql`SELECT id, j::text AS j, b::text AS b FROM public.json_precision_records ORDER BY id`];
+      const backup = await runDatabaseBackup({
+        connectionString: source,
+        backupDir: createTempDir("json-precision-backup-"),
+        backupEngine: "javascript",
+        retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+        nullifyColumns: { "public.json_precision_records": ["hidden"] },
+      });
+      await runDatabaseRestore({ connectionString: target, backupFile: backup.backupFile });
+      expect([...await targetSql`SELECT id, j::text AS j, b::text AS b FROM public.json_precision_records ORDER BY id`])
+        .toEqual(before);
+      expect(before[3]?.b).toContain("9007199254740993123");
+      expect(await targetSql`SELECT id FROM public.json_precision_records WHERE j IS NULL ORDER BY id`)
+        .toEqual([{ id: 1 }]);
+      expect(await targetSql`SELECT count(*)::int AS n FROM public.json_precision_records WHERE hidden IS NOT NULL`)
+        .toEqual([{ n: 0 }]);
+    } finally {
+      await sourceSql.end();
+      await targetSql.end();
+    }
+  }, 30_000);
+
+  it("keeps carriage returns in json and text values when the JavaScript restore path runs", async () => {
+    const source = await createTempDatabase();
+    const target = await createSiblingDatabase(source, "line_ending_restore_target");
+    const sourceSql = postgres(source, { max: 1, onnotice: () => {} });
+    const targetSql = postgres(target, { max: 1, onnotice: () => {} });
+    const previousPsqlPath = process.env.PAPERCLIP_PSQL_PATH;
+    const backupDir = createTempDir("line-ending-backup-");
+    try {
+      await sourceSql.unsafe(`
+        CREATE TABLE public.line_ending_records (id integer PRIMARY KEY, j json, body text);
+        INSERT INTO public.line_ending_records VALUES
+          (1, E'{\\r\\n  "a": 1,\\r  "b": [1,\\r\\n2]\\r\\n}', E'first\\r\\nsecond\\rthird');
+      `);
+      const before = [...await sourceSql`SELECT id, j::text AS j, body FROM public.line_ending_records ORDER BY id`];
+      expect(before[0]?.j).toContain("\r\n");
+      const backup = await runDatabaseBackup({
+        connectionString: source,
+        backupDir,
+        backupEngine: "javascript",
+        retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+      });
+      // No psql at this path, so the restore uses the JavaScript statement reader.
+      process.env.PAPERCLIP_PSQL_PATH = path.join(backupDir, "missing-psql");
+      await runDatabaseRestore({ connectionString: target, backupFile: backup.backupFile });
+      expect([...await targetSql`SELECT id, j::text AS j, body FROM public.line_ending_records ORDER BY id`])
+        .toEqual(before);
+    } finally {
+      if (previousPsqlPath === undefined) delete process.env.PAPERCLIP_PSQL_PATH;
+      else process.env.PAPERCLIP_PSQL_PATH = previousPsqlPath;
+      await sourceSql.end();
+      await targetSql.end();
+    }
+  }, 30_000);
+
   it(
     "keeps the newest backup for each retained calendar month",
     async () => {
