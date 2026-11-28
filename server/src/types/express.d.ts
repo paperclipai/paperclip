@@ -32,6 +32,7 @@ declare global {
         onBehalfOfUserId?: string | null;
         authorizingUserId?: string;
         identityContextId?: string | null;
+        sessionId?: string;
         source?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "mcp_oauth" | "cloud_tenant" | "cloud_control" | "none";
       };
     }

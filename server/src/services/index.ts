@@ -222,3 +222,5 @@ export {
 } from "./remote-agent-profiles.js";
 
 export { decisionModelService, defineDecisionFeature } from "./decision-models.js";
+
+export { webhookService } from "./webhooks.js";
