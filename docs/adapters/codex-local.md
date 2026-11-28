@@ -65,8 +65,8 @@ A managed home is created empty, so the adapter must provision auth into it befo
 `CODEX_HOME`. The winning credential file is:
 
 1. **Per-agent API key:** when adapter env contains a non-empty
-   `OPENAI_API_KEY`, Paperclip writes `$CODEX_HOME/auth.json` with only
-   `{ "OPENAI_API_KEY": "..." }`. This overwrites any existing file or symlink
+   `OPENAI_API_KEY`, Paperclip writes `$CODEX_HOME/auth.json` with
+   `{ "auth_mode": "apikey", "OPENAI_API_KEY": "..." }`. This overwrites any existing file or symlink
    at that path. Codex CLI versions that Paperclip supports read the key from
    `auth.json`, not directly from the process environment.
 2. **Host ChatGPT-subscription login:** when no per-agent key is configured,
@@ -108,7 +108,7 @@ fleet with ChatGPT-subscription credentials.
 - **Source fields:** resolved Codex auth mode (`api` vs `subscription`) and
   execution target kind (`local`, `remote:ssh`, or `remote:sandbox`). Infer the
   auth mode from the final managed `$CODEX_HOME/auth.json` shape after seeding:
-  `{ "OPENAI_API_KEY": ... }` means API-key mode; subscription-token-shaped
+  `{ "auth_mode": "apikey", "OPENAI_API_KEY": ... }` means API-key mode; subscription-token-shaped
   host auth, including the symlinked host file, means ChatGPT-subscription
   mode. Use top-level shape only; do not read credential values into the
   warning. The target kind comes from `AdapterExecutionTarget`.
