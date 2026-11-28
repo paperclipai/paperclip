@@ -279,6 +279,7 @@ export interface HeartbeatQueueDependencies extends Pick<HeartbeatRetryDependenc
   formatIssueIdentifierLink: (identifier: string | null, fallback: string) => string;
 }
 
+const STRANDED_QUEUE_REVISIT_MS = 5 * 60 * 1000;
 
 
 
@@ -2115,6 +2116,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     return cancelled;
   }
 
+  const strandedQueueVisits = new Map<string, number>();
+
   async function resumeDeferredExecutionReceipts(scope: DeferredReceiptRecoveryOptions = {}) {
     if ((await getSchedulingSuppression()).suppressed) return;
     await resumeExecutionWaitComments(scope);
@@ -2272,7 +2275,15 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         cutoff ? gte(agentWakeupRequests.requestedAt, cutoff) : undefined))
       .orderBy(asc(agentWakeupRequests.updatedAt)).limit(50);
     const releasedNativeSources = new Set<string>();
+    const visitedAt = Date.now();
+    for (const [wakeId, at] of strandedQueueVisits) {
+      if (visitedAt - at >= STRANDED_QUEUE_REVISIT_MS) strandedQueueVisits.delete(wakeId);
+    }
     for (const { wake } of strandedQueues) {
+      if (!scope.requestId) {
+        if (strandedQueueVisits.has(wake.id)) continue;
+        strandedQueueVisits.set(wake.id, visitedAt);
+      }
       const ownerWake = isDependencyResolvedWakePayload(wake.payload) || isAssignmentWakePayload(wake.payload)
         || wake.payload?.mutation === "annotation_reaction";
       if (!ownerWake && !queuedCommentIdsFromWakePayload(wake.payload).length &&
