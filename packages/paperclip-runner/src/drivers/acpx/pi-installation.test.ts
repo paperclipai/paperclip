@@ -45,7 +45,7 @@ describe("Pi installation factory", () => {
     const helper = stripTypeScriptTypes(await readFile(new URL("./pi-acp-runtime.ts", import.meta.url), "utf8")).split("\n").map(line => line.trimEnd()).join("\n");
     const materializer = await readFile(new URL("../../../scripts/materialize-pi-distribution.mjs", import.meta.url), "utf8");
     expect(materializer).toContain(`helperSha256: "${hash(helper)}"`);
-    expect(hash(await readFile(new URL("../../../../../patches/pi-acp@0.0.33.patch", import.meta.url)))).toBe("a7c63900b513490cceed9e41bc3bd06f03f2cd56265f434aa2c5dc7925fa76b4");
+    expect(hash(await readFile(new URL("../../../../../patches/pi-acp@0.0.33.patch", import.meta.url)))).toBe("ba3792d5647818a9fa06d03106b5a0717ba1af59d3316f0b26f8427081121291");
   });
 
   it("admits only the exact current profile", () => {

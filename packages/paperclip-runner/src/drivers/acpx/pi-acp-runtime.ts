@@ -368,8 +368,8 @@ export function createPiLaunchSpec(
   environment: NodeJS.ProcessEnv,
 ): { command: string; args: string[]; env: NodeJS.ProcessEnv; invocationNamespace: string } {
   if (environment.PAPERCLIP_ACPX_ISOLATED_CONTEXT !== "1") throw new Error("Pi requires an isolated runner launch");
-  const command = requiredFile(environment, "PAPERCLIP_PI_NODE_EXECUTABLE");
-  const entrypoint = requiredFile(environment, "PAPERCLIP_PI_ENTRYPOINT");
+  const local = environment.PAPERCLIP_PI_LOCAL_EXECUTABLE !== undefined;
+  const command = requiredFile(environment, local ? "PAPERCLIP_PI_LOCAL_EXECUTABLE" : "PAPERCLIP_PI_NODE_EXECUTABLE");
   const extension = requiredFile(environment, "PAPERCLIP_PI_EXTENSION_PATH");
   if (environment.PAPERCLIP_PI_READ_ONLY !== "0" && environment.PAPERCLIP_PI_READ_ONLY !== "1") throw new Error("Pi requires an explicit read-only policy");
   const readRoots = pathArray(environment.PAPERCLIP_PI_READ_ROOTS);
@@ -390,20 +390,42 @@ export function createPiLaunchSpec(
     instructions: environment.PAPERCLIP_PI_SYSTEM_INSTRUCTIONS ?? "",
   });
   if (Buffer.byteLength(configuration) > 64 * 1024) throw new Error("Pi launch configuration exceeds its bound");
-  const guard = environment.PAPERCLIP_PI_MODULE_GUARD_PATH === undefined ? []
-    : ["--require", requiredFile(environment, "PAPERCLIP_PI_MODULE_GUARD_PATH")];
-  const args = [...guard, entrypoint, "--mode", "rpc", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-approve", "--offline", "-e", extension];
+  const args: string[] = [];
+  if (!local) {
+    if (environment.PAPERCLIP_PI_MODULE_GUARD_PATH !== undefined) {
+      args.push("--require", requiredFile(environment, "PAPERCLIP_PI_MODULE_GUARD_PATH"));
+    }
+    args.push(requiredFile(environment, "PAPERCLIP_PI_ENTRYPOINT"));
+  }
+  args.push("--mode", "rpc");
+  if (!local) args.push("--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes");
+  args.push("--no-approve", "--offline", "-e", extension);
+  const privateHome = environment.PI_CODING_AGENT_DIR;
+  if (local) {
+    if (!privateHome) throw new Error("Pi session home is missing");
+    args.push("--session-dir", resolve(privateHome, "sessions"));
+  }
   for (const root of readRoots) args.push("--skill", root);
   if (params.sessionPath) {
-    const home = environment.PI_CODING_AGENT_DIR;
-    if (!home) throw new Error("Pi session home is missing");
-    const sessionRoot = realpathSync(resolve(home, "sessions"));
+    if (!privateHome) throw new Error("Pi session home is missing");
+    const sessionRoot = realpathSync(resolve(privateHome, "sessions"));
     const sessionPath = realpathSync(params.sessionPath);
     const suffix = relative(sessionRoot, sessionPath);
     if (!suffix || isAbsolute(suffix) || suffix === ".." || suffix.startsWith(`..${sep}`) || !lstatSync(params.sessionPath).isFile()) throw new Error("Pi session escaped its private home");
     args.push("--session", sessionPath);
   }
   const env: NodeJS.ProcessEnv = { ...environment, PAPERCLIP_PI_RUNTIME_CONFIGURATION: configuration };
+  if (local) {
+    const host = record(JSON.parse(environment.PAPERCLIP_PI_LOCAL_ENVIRONMENT ?? "{}"));
+    for (const name of ["HOME", "PATH", "PI_CODING_AGENT_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"]) {
+      const value = host[name];
+      if (value === undefined && name.startsWith("XDG_")) delete env[name];
+      else env[name] = text(value, 65_536);
+    }
+    delete env.PI_CODING_AGENT_SESSION_DIR;
+    delete env.PAPERCLIP_PI_LOCAL_EXECUTABLE;
+    delete env.PAPERCLIP_PI_LOCAL_ENVIRONMENT;
+  }
   // Ambient AGENT_HOME never grants filesystem authority. Only the runner's
   // authenticated working-copy binding reaches both the model and tool gate.
   if (agentHome) env.AGENT_HOME = agentHome; else delete env.AGENT_HOME;

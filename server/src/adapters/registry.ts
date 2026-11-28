@@ -1,3 +1,4 @@
+import { operatorLocalPiConfig } from "../services/native-runtime/local-pi-runner-config.js";
 import { pluginRunnerAiConnectionRequiredTestResult } from "../services/plugin-runner-ai-connection.js";
 import { HttpError } from "../errors.js";
 import type { AdapterRuntimeCommandSpec, ServerAdapterModule } from "./types.js";
@@ -537,7 +538,12 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
           });
         }
         const { probeAcpxClaudeInstallation, probeAcpxGrokInstallation, probeAcpxCursorInstallation, probeAcpxPiInstallation } = await import("../vendor/paperclip-runner/live/index.js");
-        await (profile.acpxAgent === "pi" ? probeAcpxPiInstallation : profile.acpxAgent === "grok" ? probeAcpxGrokInstallation : profile.acpxAgent === "cursor" ? probeAcpxCursorInstallation : probeAcpxClaudeInstallation)(profile.model);
+        const localPi = profile.acpxAgent === "pi" && context.agentId ? operatorLocalPiConfig(context.companyId, context.agentId) : undefined;
+        if (localPi !== undefined) {
+          await probeAcpxPiInstallation(profile.model, localPi);
+        } else {
+          await (profile.acpxAgent === "pi" ? probeAcpxPiInstallation : profile.acpxAgent === "grok" ? probeAcpxGrokInstallation : profile.acpxAgent === "cursor" ? probeAcpxCursorInstallation : probeAcpxClaudeInstallation)(profile.model);
+        }
         return verifyNativeAcpxApiKey(context.config, {
           adapterType: "paperclip_runner", status: "pass" as const, testedAt: new Date().toISOString(),
           checks: [{ code: "acpx_runtime_ready", level: "info" as const, message: `ACPX ${profile.acpxAgent} runtime is installed and verified. Model access is checked when it runs.` }],

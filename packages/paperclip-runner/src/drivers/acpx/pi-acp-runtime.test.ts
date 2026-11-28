@@ -306,4 +306,31 @@ describe("Pi ACP bridge", () => {
     await symlink(join(root, "cli.js"), join(root, "sessions", "escape.jsonl"));
     expect(() => createPiLaunchSpec({ cwd: root, sessionPath: join(root, "sessions", "escape.jsonl") }, environment)).toThrow("escaped");
   });
+
+  it("launches installed Pi directly with normal discovery and a Runner-owned session", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-pi-local-launch-")); temporary.push(root);
+    const sessionDir = join(root, "sessions");
+    const sessionPath = join(sessionDir, "session.jsonl");
+    const command = join(root, "pi");
+    const extension = join(root, "bridge.js");
+    const profile = join(root, "profile");
+    await mkdir(sessionDir);
+    for (const name of [command, extension, sessionPath]) await writeFile(name, "");
+    const environment = {
+      PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1", PAPERCLIP_PI_READ_ONLY: "0",
+      PAPERCLIP_PI_LOCAL_EXECUTABLE: command, PAPERCLIP_PI_EXTENSION_PATH: extension,
+      PAPERCLIP_PI_LOCAL_ENVIRONMENT: JSON.stringify({ HOME: root, PATH: "/usr/bin", PI_CODING_AGENT_DIR: profile }),
+      PAPERCLIP_PI_MODULE_GUARD_PATH: "/missing/guard",
+      XDG_DATA_HOME: "/isolated/data", PI_CODING_AGENT_DIR: root,
+    };
+    const launch = createPiLaunchSpec({ cwd: root, sessionPath }, environment);
+    expect(launch.command).toBe(command);
+    expect(launch.args).toEqual([
+      "--mode", "rpc", "--no-approve", "--offline", "-e", extension, "--session-dir", sessionDir, "--session", sessionPath,
+    ]);
+    expect(launch.env).toMatchObject({ HOME: root, PATH: "/usr/bin", PI_CODING_AGENT_DIR: profile });
+    expect(launch.env.XDG_DATA_HOME).toBeUndefined();
+    expect(launch.env.PAPERCLIP_PI_LOCAL_ENVIRONMENT).toBeUndefined();
+    expect(() => createPiLaunchSpec({ cwd: root, sessionPath: extension }, environment)).toThrow("escaped");
+  });
 });

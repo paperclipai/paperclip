@@ -347,6 +347,7 @@ export async function prepareAcpxRuntimeSandbox(input: {
   binding: AcpxRecoveryBinding;
   agent: QualifiedAcpxAgent;
   environment?: NodeJS.ProcessEnv;
+  localPiProfile?: string;
   /** Public operations on the runner-owned Paperclip MCP bridge only. */
   tools?: readonly Readonly<Record<string, unknown>>[];
   providerPolicy?: AcpxProviderRuntimePolicy;
@@ -419,7 +420,7 @@ export async function prepareAcpxRuntimeSandbox(input: {
     join(root, `${input.agent}-home`),
     root,
   );
-  const protectedPaths = Object.freeze([...new Set([physicalRuntimeDirectory, ...(preparedHome ? [preparedHome] : []), ...policy.protectedPaths])]);
+  const protectedPaths = Object.freeze([...new Set([physicalRuntimeDirectory, ...(preparedHome ? [preparedHome] : []), ...(input.localPiProfile ? [input.localPiProfile] : []), ...policy.protectedPaths])]);
   const workspaceRecordPath = join(root, "workspace");
   await writePrivateFile(
     workspaceRecordPath,

@@ -166,7 +166,7 @@ export function agentHarnessVerificationService(db: Db, manager: PluginWorkerMan
     const probed: { account: { connectionId: string; grantId: string } | null } = { account: null };
     try {
       if (target.fallbackChecks.length) throw Object.assign(new Error("The test environment is unavailable"), { code: "test_environment_unavailable" });
-      const input = { companyId: agent.companyId, adapterType: agent.adapterType, config,
+      const input = { companyId: agent.companyId, agentId: agent.id, adapterType: agent.adapterType, config,
         executionTarget: target.executionTarget, environmentName: target.environmentName };
       const result = binding ? await withManagedAiProbe(db, { ...input, agentId: agent.id, responsibleUserId, binding },
         managed => {

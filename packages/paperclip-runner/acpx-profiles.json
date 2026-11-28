@@ -28,7 +28,7 @@
       "agentServerVersion": "0.0.33",
       "agentRuntimePackage": "@earendil-works/pi-coding-agent",
       "agentRuntimeVersion": "1.0.0",
-      "commandDigest": "sha256:42e186b921f36accf3087cf64986a88346dcdb0bdf78c2ef44a2c4f8abd3453a",
+      "commandDigest": "sha256:b3a03978c9348b450f68ec44d18ac0df9b4cc8fdd4440fc35ddbe2ab88e5a474",
       "requiresProviderPolicy": true
     },
     "cursor": {

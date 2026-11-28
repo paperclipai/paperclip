@@ -3962,6 +3962,8 @@ function createCapabilityRunnerdProviderEnvironmentBase(input: {
         input.options.acpxAgent ?? "codex",
       ).env,
       ...(credentialBinding === undefined ? {} : { [ACPX_CREDENTIAL_BINDING_ENV]: credentialBinding }),
+      ...(input.options.acpxAgent === "pi" && input.options.environment?.PAPERCLIP_RUNNER_LOCAL_PI !== undefined
+        ? { PAPERCLIP_RUNNER_LOCAL_PI: input.options.environment.PAPERCLIP_RUNNER_LOCAL_PI } : {}),
       ...(input.options.acpxAgent === "grok" && input.options.environment?.PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET
         ? { PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET: input.options.environment.PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET } : {}),
       ...(input.options.acpxAgent === "antigravity" && input.options.environment?.PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET

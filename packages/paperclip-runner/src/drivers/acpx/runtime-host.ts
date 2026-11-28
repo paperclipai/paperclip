@@ -1,3 +1,4 @@
+import { LOCAL_PI_CONFIGURATION_ENV, resolveLocalPiConfiguration } from "./local-pi-installation.js";
 import { retainAcpxCredentialRefresh } from "./credential-refresh.js";
 import type { AcpxTurnDispatchJournal } from "./turn-dispatch-journal.js";
 import { assertAcpxExecutionAdmission, parseAcpxCandidateStartupAdmission, type AcpxCandidateStartupAdmission } from "./candidate-admission.js";
@@ -416,6 +417,10 @@ export class AcpxRuntimeHost {
       throw new Error("assigned native MCP launch binding is unavailable");
     }
     const profile = resolveQualifiedAcpxProfile(options.agent, options.model);
+    const localPi = options.agent === "pi"
+      ? await resolveLocalPiConfiguration(options.environment?.[LOCAL_PI_CONFIGURATION_ENV])
+      : undefined;
+    if (localPi) assertAcpxExecutionAdmission(profile, options.candidateAdmission);
     if (options.candidateAdmission) {
       assertAcpxExecutionAdmission(profile, options.candidateAdmission);
       options = { ...options, candidateAdmission: parseAcpxCandidateStartupAdmission(options.candidateAdmission, { agent: options.agent, model: options.model, normalizedSessionId: options.normalizedSessionId }) };
@@ -430,7 +435,7 @@ export class AcpxRuntimeHost {
           workingDirectory: options.workingDirectory,
           profile,
           requestedModel: options.model,
-          ...(options.agent === "pi" ? { providerConfigurationDigest: piProviderConfiguration(options.environment)?.digest } : {}),
+          ...(options.agent === "pi" ? { providerConfigurationDigest: piProviderConfiguration(options.environment)?.digest, localPiIdentity: localPi?.identity } : {}),
           permissionMode: options.permissionMode,
           mode: resolveAcpxProviderMode(options.agent, options.mode),
           piThinkingLevel: resolvePiThinkingLevel(options.agent, options.piThinkingLevel),
@@ -532,7 +537,8 @@ export class AcpxRuntimeHost {
           (dependencies.prepareSandbox ?? prepareAcpxRuntimeSandbox)({
             binding,
             agent: options.agent,
-            environment: options.environment,
+            environment: localPi ? { ...options.environment, [LOCAL_PI_CONFIGURATION_ENV]: undefined } : options.environment,
+            localPiProfile: localPi?.environment.PI_CODING_AGENT_DIR,
             tools: options.semanticTools?.tools,
             ...(options.providerPolicy === undefined ? {} : { providerPolicy: {
               ...options.providerPolicy,
@@ -618,6 +624,13 @@ export class AcpxRuntimeHost {
       if (options.agent !== "antigravity") assertAcpxProfileEnvironment(options.agent, sandbox.launchEnvironment);
       admissionStage = "configuration";
       let launchEnvironment = sandbox.launchEnvironment;
+      if (localPi) {
+        launchEnvironment = Object.freeze({
+          ...launchEnvironment,
+          PAPERCLIP_PI_LOCAL_EXECUTABLE: localPi.executable,
+          PAPERCLIP_PI_LOCAL_ENVIRONMENT: JSON.stringify(localPi.environment),
+        });
+      }
       if (swarmRoute) {
         swarmStateDirectory = antigravitySwarmStateDirectory(sandbox.agentHomeDirectory);
         await mkdir(swarmStateDirectory, { recursive: true, mode: 0o700 });
