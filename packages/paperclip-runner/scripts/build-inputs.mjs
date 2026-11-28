@@ -135,6 +135,28 @@ function readPendingRecord(pendingPath) {
   return pending;
 }
 
+export const WINDOWS_PENDING_RECORD_FALLBACK_MS = 6 * 60 * 60 * 1000;
+
+function latestPendingRecord(packageRoot, notBefore) {
+  const directory = buildInputsPendingDirectory(packageRoot);
+  let names;
+  try {
+    names = readdirSync(directory);
+  } catch {
+    return null;
+  }
+  let latest = null;
+  for (const name of names) {
+    if (!name.endsWith(".json")) continue;
+    const pendingPath = path.join(directory, name);
+    const pending = readPendingRecord(pendingPath);
+    const startedAt = pending ? Date.parse(pending.startedAt ?? "") : Number.NaN;
+    if (!Number.isFinite(startedAt) || startedAt < notBefore) continue;
+    if (!latest || startedAt > latest.startedAt) latest = { pending, pendingPath, startedAt };
+  }
+  return latest;
+}
+
 /** Drops pending records of builds that never finished, leaving the one for `buildId`. */
 function prunePendingRecords(packageRoot, buildId, now) {
   const directory = buildInputsPendingDirectory(packageRoot);
@@ -332,6 +354,10 @@ export function recordRunnerBuild({
     pendingPath = buildInputsPendingPath(packageRoot, candidate);
     pending = readPendingRecord(pendingPath);
     if (pending) break;
+  }
+  if (!pending && buildId === null && platform === "win32") {
+    const latest = latestPendingRecord(packageRoot, now().getTime() - WINDOWS_PENDING_RECORD_FALLBACK_MS);
+    if (latest) ({ pending, pendingPath } = latest);
   }
   if (!pending) {
     removeBuildInputsStamp(stampPath);

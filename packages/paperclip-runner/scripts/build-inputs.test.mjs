@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import {
   BUILD_INPUTS_SCHEMA,
   PENDING_RECORD_MAX_AGE_MS,
+  WINDOWS_PENDING_RECORD_FALLBACK_MS,
   assessRunnerBuild,
   beginRunnerBuild,
   buildInputsPendingDirectory,
@@ -336,7 +337,7 @@ test("a build that did not begin, or that left a required output missing, cannot
     // Another build's record is not this build's: a chain that did not begin
     // cannot finish on the strength of one that is still running.
     beginRunnerBuild({ repoRoot, packageRoot, buildId: "other-shell" });
-    assert.throws(() => recordRunnerBuild({ repoRoot, packageRoot }), /no pending build inputs for build /);
+    assert.throws(() => recordRunnerBuild({ repoRoot, packageRoot, platform: "linux" }), /no pending build inputs for build /);
     assert.equal(
       readBuildInputsStamp(buildInputsPendingPath(packageRoot, "other-shell")).digest,
       computeBuildInputsDigest(repoRoot).digest,
@@ -538,5 +539,38 @@ test("two chains run by separate shells at the same time both record", { skip: p
       assert.match((await chain).stdout, new RegExp(`${BUILD_INPUTS_SCHEMA} recorded: `));
       assert.deepEqual(records(), []);
     }
+  });
+});
+
+test("on Windows a build whose shell pid changed between begin and finish records with its newest recent record", async () => {
+  await withRepo(async ({ repoRoot, packageRoot }) => {
+    const platform = "win32";
+    const arch = "x64";
+    for (const output of expectedBuildOutputs(packageRoot, platform)) {
+      await mkdir(path.dirname(output), { recursive: true });
+      if (!existsSync(output)) await writeFile(output, "binary\n");
+    }
+    const started = Date.now();
+    beginRunnerBuild({ repoRoot, packageRoot, platform, arch, buildId: "stale-shell",
+      now: () => new Date(started - WINDOWS_PENDING_RECORD_FALLBACK_MS - 60_000) });
+    beginRunnerBuild({ repoRoot, packageRoot, platform, arch, buildId: "begin-shell", now: () => new Date(started) });
+
+    const record = recordRunnerBuild({ repoRoot, packageRoot, platform, arch, now: () => new Date(started + 1_000) });
+    assert.equal(record.recorded, true);
+    assert.equal(readBuildInputsStamp(buildInputsStampPath(packageRoot)).platform, platform);
+    assert.equal(existsSync(buildInputsPendingPath(packageRoot, "begin-shell")), false, "the finished build left its record behind");
+    assert.equal(existsSync(buildInputsPendingPath(packageRoot, "stale-shell")), true, "the finished build consumed a stale record");
+  });
+});
+
+test("on Windows a build cannot finish with only records older than the fallback window", async () => {
+  await withRepo(async ({ repoRoot, packageRoot }) => {
+    const started = Date.now();
+    beginRunnerBuild({ repoRoot, packageRoot, platform: "win32", arch: "x64", buildId: "stale-shell",
+      now: () => new Date(started - WINDOWS_PENDING_RECORD_FALLBACK_MS - 60_000) });
+    assert.throws(
+      () => recordRunnerBuild({ repoRoot, packageRoot, platform: "win32", arch: "x64", now: () => new Date(started) }),
+      /no pending build inputs for build /,
+    );
   });
 });
