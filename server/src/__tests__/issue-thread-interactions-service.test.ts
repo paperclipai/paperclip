@@ -412,6 +412,22 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       expect(await db.select().from(issueThreadInteractions)).toHaveLength(0);
     });
 
+    it("hands the hook the locked row's project and parent, not anything the caller read earlier", async () => {
+      const fixture = await ownerless({});
+      const [goalRow] = await db.select({ goalId: issues.goalId }).from(issues).where(eq(issues.id, fixture.issueId));
+      const parentId = randomUUID();
+      await db.insert(issues).values({ ...parentIssueRow(parentId, fixture.companyId, goalRow!.goalId!) });
+      await db.update(issues).set({ parentId }).where(eq(issues.id, fixture.issueId));
+      const authorize = vi.fn(async () => undefined);
+      // The caller passes only {id, companyId}: it has no project or parent of its own to offer.
+      await interactionsSvc.create({ id: fixture.issueId, companyId: fixture.companyId },
+        questionCreateInput(fixture.runId), { agentId: fixture.agentId },
+        { authorizeWakeTargetAdoption: authorize });
+      expect(authorize).toHaveBeenCalledWith(expect.objectContaining({
+        issueId: fixture.issueId, parentIssueId: parentId, assigneeAgentId: fixture.agentId, assigneeUserId: null,
+      }));
+    });
+
     it("does not ask for adoption authorization when the issue already has an owner", async () => {
       const fixture = await seedSourceQuestionFixture({});
       const owner = randomUUID();

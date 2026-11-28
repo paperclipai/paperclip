@@ -229,7 +229,13 @@ type CreateInteractionOptions = {
   replayAcceptedInteractionIds?: readonly string[];
   requireAcceptedReplay?: boolean;
   /** Runs before an ownerless issue is assigned to the creating agent. Throw to deny. */
-  authorizeWakeTargetAdoption?: () => Promise<void>;
+  authorizeWakeTargetAdoption?: (scope: {
+    issueId: string;
+    projectId: string | null;
+    parentIssueId: string | null;
+    assigneeAgentId: string;
+    assigneeUserId: null;
+  }) => Promise<void>;
   /** Runs once, in the insert transaction, only when this call created the card (never on an idempotent replay). */
   afterInsertInTransaction?: (tx: Db, row: IssueThreadInteractionRow) => Promise<void>;
 };
@@ -5216,18 +5222,20 @@ export function issueThreadInteractionService(
                 { code: "interaction_wake_target_unbound", issueId: issue.id },
               );
             }
+            // Scope comes from the row locked above, never from a caller's earlier read:
+            // a concurrent move to another project or parent must be what is authorized.
+            const scope = {
+              issueId: issue.id,
+              projectId: issueRow.projectId ?? null,
+              parentIssueId: issueRow.parentId ?? null,
+              assigneeAgentId: actor.agentId,
+              assigneeUserId: null,
+            };
             if (options.authorizeWakeTargetAdoption) {
-              await options.authorizeWakeTargetAdoption();
+              await options.authorizeWakeTargetAdoption(scope);
             } else {
               // No caller-supplied decision: decide here, so no create() caller
               // can adopt an issue without the tasks:assign check.
-              const scope = {
-                issueId: issue.id,
-                projectId: issueRow.projectId ?? null,
-                parentIssueId: issueRow.parentId ?? null,
-                assigneeAgentId: actor.agentId,
-                assigneeUserId: null,
-              };
               const decision = await authorizationService(tx).decide({
                 actor: { type: "agent", agentId: actor.agentId, companyId: issue.companyId, runId: data.sourceRunId ?? null },
                 action: "tasks:assign",

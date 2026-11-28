@@ -2650,15 +2650,22 @@ describe("issue thread interaction routes", () => {
       expect.objectContaining({ authorizeWakeTargetAdoption: expect.any(Function) }),
     );
     // The hook must run the same tasks:assign decision as the issue PATCH route.
-    const options = mockInteractionService.create.mock.calls.at(-1)![3] as { authorizeWakeTargetAdoption: () => Promise<void> };
+    type AdoptionScope = { issueId: string; projectId: string | null; parentIssueId: string | null; assigneeAgentId: string; assigneeUserId: null };
+    const options = mockInteractionService.create.mock.calls.at(-1)![3] as { authorizeWakeTargetAdoption: (scope: AdoptionScope) => Promise<void> };
+    // The scope arrives from the service (the locked issue row), not from the route's earlier read.
+    const lockedScope: AdoptionScope = {
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", projectId: "project-moved-to", parentIssueId: "parent-moved-to",
+      assigneeAgentId: CREATED_AGENT_ID, assigneeUserId: null,
+    };
     mockAccessDecide.mockClear();
-    await options.authorizeWakeTargetAdoption();
+    await options.authorizeWakeTargetAdoption(lockedScope);
     expect(mockAccessDecide).toHaveBeenCalledWith(expect.objectContaining({
       action: "tasks:assign",
-      resource: expect.objectContaining({ assigneeAgentId: CREATED_AGENT_ID, assigneeUserId: null }),
+      resource: expect.objectContaining({ projectId: "project-moved-to", parentIssueId: "parent-moved-to", assigneeAgentId: CREATED_AGENT_ID, assigneeUserId: null }),
+      scope: expect.objectContaining({ projectId: "project-moved-to", parentIssueId: "parent-moved-to" }),
     }));
     mockAccessDecide.mockResolvedValueOnce({ allowed: false, action: "tasks:assign", reason: "denied", explanation: "no assign grant" });
-    await expect(options.authorizeWakeTargetAdoption()).rejects.toMatchObject({ status: 403 });
+    await expect(options.authorizeWakeTargetAdoption(lockedScope)).rejects.toMatchObject({ status: 403 });
   });
 
   it("allows a different in-scope agent run to respond when policy permits", async () => {
