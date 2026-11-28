@@ -1,4 +1,4 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { plugins, pluginState } from "@paperclipai/db";
 import type {
@@ -6,7 +6,7 @@ import type {
   SetPluginState,
   ListPluginState,
 } from "@paperclipai/shared";
-import { notFound } from "../errors.js";
+import { badRequest, notFound } from "../errors.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -131,9 +131,11 @@ export function pluginStateStore(db: Db) {
      */
     set: async (pluginId: string, input: SetPluginState): Promise<void> => {
       await assertPluginExists(pluginId);
+      if (input.value === undefined) throw badRequest("Plugin state value is required. Use null to store JSON null.");
 
       const namespace = input.namespace ?? DEFAULT_NAMESPACE;
       const scopeId = input.scopeId ?? null;
+      const valueJson = input.value === null ? sql`'null'::jsonb` : input.value;
 
       await db
         .insert(pluginState)
@@ -143,7 +145,7 @@ export function pluginStateStore(db: Db) {
           scopeId,
           namespace,
           stateKey: input.stateKey,
-          valueJson: input.value,
+          valueJson,
           updatedAt: new Date(),
         })
         .onConflictDoUpdate({
@@ -155,7 +157,7 @@ export function pluginStateStore(db: Db) {
             pluginState.stateKey,
           ],
           set: {
-            valueJson: input.value,
+            valueJson,
             updatedAt: new Date(),
           },
         });
