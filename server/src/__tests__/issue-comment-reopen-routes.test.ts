@@ -44,6 +44,10 @@ const mockHeartbeatService = vi.hoisted(() => ({
   cancelRun: vi.fn(async (): Promise<unknown> => null),
 }));
 
+const mockTaskWatchdogService = vi.hoisted(() => ({
+  reconcileForIssueAndAncestors: vi.fn(async () => undefined),
+}));
+
 const mockExecutionWorkspaceService = vi.hoisted(() => ({
   getStoredById: vi.fn(async (): Promise<unknown> => null),
   reopenClosedIsolatedExecutionWorkspaceForIssue: vi.fn(),
@@ -248,6 +252,7 @@ vi.mock("../services/index.js", () => ({
   issueService: () => mockIssueService,
   issueThreadInteractionService: () => mockIssueThreadInteractionService,
   issueTreeControlService: () => mockIssueTreeControlService,
+  taskWatchdogService: () => mockTaskWatchdogService,
   logActivity: mockLogActivity,
   projectService: () => ({}),
   routineService: () => mockRoutineService,
@@ -947,6 +952,67 @@ describe("issue comment reopen routes", () => {
         }),
       ),
     );
+  });
+
+  it.each([
+    ["POST comment", "post", "/api/issues/11111111-1111-4111-8111-111111111111/comments", { body: "hello" }],
+    [
+      "PATCH update",
+      "patch",
+      "/api/issues/11111111-1111-4111-8111-111111111111",
+      { comment: "hello", assigneeAgentId: "33333333-3333-4333-8333-333333333333" },
+    ],
+  ] as const)("evaluates the task watchdog only after the %s wake settles", async (_label, method, path, body) => {
+    const issue = makeIssue("done");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) =>
+        makeIssueUpdateReceipt(issue, patch),
+    );
+    const order: string[] = [];
+    let settleWake!: () => void;
+    mockHeartbeatService.wakeup.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          order.push("wake started");
+          settleWake = () => {
+            order.push("wake settled");
+            resolve(undefined);
+          };
+        }),
+    );
+    mockTaskWatchdogService.reconcileForIssueAndAncestors.mockImplementation(async () => {
+      order.push("watchdog evaluated");
+      return undefined;
+    });
+
+    const pending = request(await installActor(createApp()))[method](path).send(body).then((res) => res);
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(mockTaskWatchdogService.reconcileForIssueAndAncestors).not.toHaveBeenCalled();
+
+    settleWake();
+    const res = await pending;
+
+    expect(res.status).toBeLessThan(300);
+    expect(order).toEqual(["wake started", "wake settled", "watchdog evaluated"]);
+  });
+
+  it("still evaluates the task watchdog when the wake fails", async () => {
+    const issue = makeIssue("done");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) =>
+        makeIssueUpdateReceipt(issue, patch),
+    );
+    mockHeartbeatService.wakeup.mockRejectedValue(new Error("wake failed"));
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "hello" });
+
+    expect(res.status).toBe(201);
+    expect(mockTaskWatchdogService.reconcileForIssueAndAncestors).toHaveBeenCalledTimes(1);
   });
 
   it("allows default-open non-assignee POST comments on closed issues without reopening", async () => {
