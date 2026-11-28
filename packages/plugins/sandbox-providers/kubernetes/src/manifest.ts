@@ -81,6 +81,27 @@ const manifest: PaperclipPluginManifestV1 = {
             description:
               "Optional RuntimeClass for pod isolation (e.g. `kata-fc` for Firecracker-backed microVMs). Cluster must have the RuntimeClass installed.",
           },
+          nodeSelector: {
+            type: "object",
+            additionalProperties: { type: "string" },
+            description:
+              "Node labels every agent pod must match (e.g. `{ \"workload\": \"agents\" }`). Use with `tolerations` to keep agent pods on a dedicated node pool.",
+          },
+          tolerations: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                key: { type: "string" },
+                operator: { type: "string", enum: ["Exists", "Equal"] },
+                value: { type: "string" },
+                effect: { type: "string", enum: ["NoSchedule", "PreferNoSchedule", "NoExecute"] },
+                tolerationSeconds: { type: "integer" },
+              },
+              additionalProperties: false,
+            },
+            description: "Tolerations added to every agent pod, for tainted dedicated nodes.",
+          },
           serviceAccountAnnotations: {
             type: "object",
             additionalProperties: { type: "string" },

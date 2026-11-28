@@ -11,6 +11,8 @@ export interface BuildJobManifestInput {
     limits?: { cpu?: string; memory?: string };
   };
   runtimeClassName?: string;
+  nodeSelector?: Record<string, string>;
+  tolerations?: Record<string, unknown>[];
   activeDeadlineSec: number;
   ttlSecondsAfterFinished: number;
   imagePullSecrets?: string[];
@@ -43,6 +45,12 @@ export function buildJobManifest(input: BuildJobManifestInput): Record<string, u
           automountServiceAccountToken: false,
           restartPolicy: "Never",
           ...(input.runtimeClassName ? { runtimeClassName: input.runtimeClassName } : {}),
+          ...(input.nodeSelector && Object.keys(input.nodeSelector).length > 0
+            ? { nodeSelector: { ...input.nodeSelector } }
+            : {}),
+          ...(input.tolerations && input.tolerations.length > 0
+            ? { tolerations: input.tolerations.map((t) => ({ ...t })) }
+            : {}),
           ...(input.imagePullSecrets && input.imagePullSecrets.length > 0
             ? { imagePullSecrets: input.imagePullSecrets.map((name) => ({ name })) }
             : {}),
