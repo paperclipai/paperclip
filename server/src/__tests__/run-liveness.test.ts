@@ -31,6 +31,50 @@ describe("run liveness classifier", () => {
     expect(classification.nextAction).toContain("inspect the repo");
   });
 
+  it("does not credit generic tool events as progress when a task only promises future work", () => {
+    const result = classifyRunLiveness({
+      ...baseInput,
+      resultJson: { summary: "Archive checksum matched. Checkout confirmed. Next: run the contract test and capture the result." },
+      evidence: { workspaceOperationsCreated: 1, toolOrActionEventsCreated: 2 },
+    });
+
+    expect(result.livenessState).toBe("plan_only");
+    expect(result.nextAction).toBe("run the contract test and capture the result.");
+  });
+
+  it("credits follow-up tool evidence despite a saved plan from the previous run", () => {
+    const firstSummary = "Checked the checkout. Next: run tests.";
+    const first = classifyRunLiveness({
+      ...baseInput,
+      resultJson: { summary: firstSummary },
+      evidence: { toolOrActionEventsCreated: 1 },
+    });
+    expect(first.livenessState).toBe("plan_only");
+    expect(first.nextAction).toBe("run tests.");
+
+    const latestEvidenceAt = new Date("2026-04-18T12:00:00Z");
+    const followup = classifyRunLiveness({
+      ...baseInput,
+      continuationAttempt: 1,
+      continuationSummaryBody: firstSummary,
+      resultJson: { summary: "All tests passed." },
+      evidence: { toolOrActionEventsCreated: 1, latestEvidenceAt },
+    });
+    expect(followup.livenessState).toBe("advanced");
+    expect(followup.lastUsefulActionAt).toBe(latestEvidenceAt);
+    expect(followup.nextAction).toBeNull();
+  });
+
+  it("preserves a recorded checkpoint when the report also names future work", () => {
+    const result = classifyRunLiveness({
+      ...baseInput,
+      resultJson: { summary: "Saved the verified checkpoint. Next: run the full test suite." },
+      evidence: { workProductsCreated: 1, toolOrActionEventsCreated: 2 },
+    });
+
+    expect(result.livenessState).toBe("advanced");
+  });
+
   it("classifies empty successful output as empty_response", () => {
     const classification = classifyRunLiveness(baseInput);
 

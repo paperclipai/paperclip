@@ -67,6 +67,7 @@ const DEFAULT_EVIDENCE: RunLivenessEvidenceInput = {
 const PLANNING_ONLY_RE =
   /\b(?:i(?:'ll| will| am going to|'m going to)|let me|i need to|next(?:,| i will| i'll)?|my next step is|the next step is)\s+(?:first\s+)?(?:inspect|check|review|look|investigate|analy[sz]e|open|read|start|begin|work on|implement|fix|test|update|create|add)\b/i;
 const NEXT_STEPS_RE = /^\s*(?:next steps?|plan)\s*:/im;
+const LABELED_NEXT_ACTION_RE = /(?:^|[.!?]\s+)\s*next(?: steps?| action)?\s*:\s*/im;
 const BLOCKER_RE =
   /\b(?:blocked|can't proceed|cannot proceed|unable to proceed|waiting on|need(?:s|ed)? .{0,80}\b(?:approval|access|credential|credentials|secret|api key|token|input|clarification)|requires? .{0,80}\b(?:approval|access|credential|credentials|secret|api key|token|input|clarification))\b/i;
 const NEGATED_BLOCKER_RE = /\b(?:not blocked|no blocker|no blockers|unblocked)\b/i;
@@ -176,7 +177,7 @@ export function declaredBlocker(input: RunLivenessClassificationInput) {
 export function looksLikePlanningOnly(input: RunLivenessClassificationInput) {
   const text = actionabilityText(input);
   if (!text) return false;
-  return PLANNING_ONLY_RE.test(text) || NEXT_STEPS_RE.test(text) || /^\s*next(?: steps?| action)?\s*:/im.test(text);
+  return PLANNING_ONLY_RE.test(text) || NEXT_STEPS_RE.test(text) || LABELED_NEXT_ACTION_RE.test(text);
 }
 
 function normalizeEvidence(evidence: Partial<RunLivenessEvidenceInput> | null | undefined): RunLivenessEvidenceInput {
@@ -256,9 +257,9 @@ function extractNextActionFromText(text: string) {
     const rawLine = lines[i] ?? "";
     if (!rawLine || isNoisyTranscriptLine(rawLine)) continue;
     const line = stripMarkdownListPrefix(rawLine);
-    const labeled = line.match(/^next(?: steps?| action)?\s*:\s*(.*)$/i);
+    const labeled = LABELED_NEXT_ACTION_RE.exec(line);
     if (labeled) {
-      const sameLine = stripMarkdownListPrefix(labeled[1] ?? "");
+      const sameLine = stripMarkdownListPrefix(line.slice(labeled.index + labeled[0].length));
       return sameLine || nextNonNoiseLine(lines, i);
     }
     if (PLANNING_ONLY_RE.test(line)) return line;
@@ -300,7 +301,10 @@ export function classifyRunActionability(input: RunLivenessClassificationInput):
 }
 
 export function classifyRunLiveness(input: RunLivenessClassificationInput): RunLivenessClassification {
-  const evidence = normalizeEvidence(input.evidence);
+  const currentRunPlanningOnly = input.issue && looksLikePlanningOnly({ ...input, continuationSummaryBody: null });
+  const evidence = normalizeEvidence(currentRunPlanningOnly
+    ? { ...input.evidence, toolOrActionEventsCreated: 0 }
+    : input.evidence);
   const continuationAttempt = normalizeContinuationAttempt(input.continuationAttempt);
   const actionability = classifyRunActionability(input);
   const nextAction = extractNextAction(input);
@@ -364,7 +368,7 @@ export function classifyRunLiveness(input: RunLivenessClassificationInput): RunL
     return output("advanced", "Explicit planning mode or a saved plan revision is exempt from plan-only classification");
   }
 
-  if (looksLikePlanningOnly(input) || nextAction) {
+  if (nextAction || looksLikePlanningOnly(input)) {
     if (actionability === "runnable") {
       return output("plan_only", "Run described runnable future work without concrete action evidence", nextAction);
     }
