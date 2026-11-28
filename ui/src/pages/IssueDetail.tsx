@@ -30,6 +30,7 @@ import { AgentAvatar } from "@/components/AgentAvatar";
 import { mergeComposerRunSettings, type ComposerRunSettings } from "@/components/task-chat/composer-run-settings";
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { clearLegacyChatMessageRequests } from "@/lib/chat-message-request";
+import { createUuid } from "@/lib/uuid";
 import { agentChatDraft } from "@/lib/agent-chat-draft";
 import { captureAgentChatMessageSent } from "@/lib/analytics/onboarding-analytics";
 import { trackRecentProject } from "@/lib/recent-projects";
