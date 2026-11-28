@@ -169,6 +169,13 @@ export interface DatabaseClientOptions {
    * parameter (no extra round trip). For dedicated single-purpose pools only.
    */
   statementTimeoutMs?: number;
+  /**
+   * Connection-level `idle_in_transaction_session_timeout` in milliseconds,
+   * sent as a startup parameter (no extra round trip). `0` omits the
+   * parameter: PostgreSQL keeps its default (disabled), and a pooler that
+   * rejects this GUC can connect. Dedicated lock connections also omit it.
+   */
+  idleInTransactionSessionTimeoutMs?: number;
   dedicatedConnectionMax?: number;
   dedicatedConnectionWaitMs?: number;
 }
@@ -183,6 +190,17 @@ export interface DatabaseClientOptions {
 export const DEFAULT_DATABASE_IDLE_TIMEOUT_SECONDS = 60;
 /** `application_name` reported to PostgreSQL unless `DATABASE_APPLICATION_NAME` overrides it. */
 export const DEFAULT_DATABASE_APPLICATION_NAME = "paperclip";
+/**
+ * PostgreSQL aborts a session that stays idle inside an open transaction
+ * after this many milliseconds unless
+ * `DATABASE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS` says otherwise. The
+ * PostgreSQL default is 0 (disabled), so a session that holds row locks and
+ * then waits on the event loop, another pool connection, or a provider call
+ * can block issue inserts and company locks until an operator terminates it.
+ * Set `DATABASE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS=0` to omit the
+ * startup parameter (PostgreSQL's default, and the pooler-safe opt-out).
+ */
+export const DEFAULT_DATABASE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS = 30_000;
 
 function envBoolean(env: NodeJS.ProcessEnv, name: string): boolean | undefined {
   const value = env[name]?.trim().toLowerCase();
@@ -239,6 +257,13 @@ export function databaseClientOptionsFromEnv(env: NodeJS.ProcessEnv = process.en
   if (maxLifetimeSeconds !== undefined) options.maxLifetimeSeconds = maxLifetimeSeconds;
   const applicationName = envNonEmptyString(env, "DATABASE_APPLICATION_NAME");
   if (applicationName !== undefined) options.applicationName = applicationName;
+  const idleInTransactionSessionTimeoutMs = envNonNegativeInteger(
+    env,
+    "DATABASE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS",
+  );
+  if (idleInTransactionSessionTimeoutMs !== undefined) {
+    options.idleInTransactionSessionTimeoutMs = idleInTransactionSessionTimeoutMs;
+  }
   const dedicatedConnectionMax = envPositiveInteger(env, "DATABASE_DEDICATED_CONNECTION_MAX");
   if (dedicatedConnectionMax !== undefined) options.dedicatedConnectionMax = dedicatedConnectionMax;
   const dedicatedConnectionWaitMs = envPositiveInteger(env, "DATABASE_DEDICATED_CONNECTION_WAIT_MS");
@@ -248,16 +273,22 @@ export function databaseClientOptionsFromEnv(env: NodeJS.ProcessEnv = process.en
 
 /**
  * Fills in Paperclip's defaults for the options the caller left unset: idle
- * connections are reaped after `DEFAULT_DATABASE_IDLE_TIMEOUT_SECONDS`, and the
- * pool identifies itself as `DEFAULT_DATABASE_APPLICATION_NAME`. Everything
+ * connections are reaped after `DEFAULT_DATABASE_IDLE_TIMEOUT_SECONDS`, the
+ * pool identifies itself as `DEFAULT_DATABASE_APPLICATION_NAME`, and an idle
+ * transaction is aborted after
+ * `DEFAULT_DATABASE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS`. Everything
  * else stays at the driver default. An explicit value (including
- * `idleTimeoutSeconds: 0`) always wins over the default.
+ * `idleTimeoutSeconds: 0` and `idleInTransactionSessionTimeoutMs: 0`) always
+ * wins over the default. `idleInTransactionSessionTimeoutMs: 0` omits the
+ * startup parameter.
  */
 export function resolveDatabaseClientOptions(options: DatabaseClientOptions): DatabaseClientOptions {
   return {
     ...options,
     idleTimeoutSeconds: options.idleTimeoutSeconds ?? DEFAULT_DATABASE_IDLE_TIMEOUT_SECONDS,
     applicationName: options.applicationName ?? DEFAULT_DATABASE_APPLICATION_NAME,
+    idleInTransactionSessionTimeoutMs:
+      options.idleInTransactionSessionTimeoutMs ?? DEFAULT_DATABASE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS,
   };
 }
 
@@ -271,6 +302,12 @@ export function postgresJsOptions(options: DatabaseClientOptions): Record<string
   const connection: Record<string, string> = {};
   if (options.applicationName !== undefined) connection.application_name = options.applicationName;
   if (options.statementTimeoutMs !== undefined) connection.statement_timeout = String(options.statementTimeoutMs);
+  if (
+    options.idleInTransactionSessionTimeoutMs !== undefined
+    && options.idleInTransactionSessionTimeoutMs > 0
+  ) {
+    connection.idle_in_transaction_session_timeout = String(options.idleInTransactionSessionTimeoutMs);
+  }
   if (Object.keys(connection).length) driverOptions.connection = connection;
   return driverOptions;
 }
@@ -650,6 +687,7 @@ function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: ob
   } else {
     const set: DedicatedConnectionSet = dedicatedConnectionSet(() => createDbClient(url, {
       ...resolved, maxConnections: 1, applicationName: "paperclip-workspace-finalization-lock",
+      idleInTransactionSessionTimeoutMs: 0,
     }, db, set), resolved);
     dedicatedConnectionSets.set(db, set);
     trackClientEnd(db, timeoutSeconds => closeDedicatedDbConnections(db, timeoutSeconds ?? 1));
