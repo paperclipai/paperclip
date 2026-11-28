@@ -54,70 +54,112 @@ function quoteIdentifier(value: string): string {
   return `"${assertIdentifier(value).replaceAll("\"", "\"\"")}"`;
 }
 
-function splitSqlStatements(input: string): string[] {
-  const statements: string[] = [];
-  let start = 0;
-  let quote: "'" | "\"" | null = null;
-  let lineComment = false;
-  let blockComment = false;
+type SqlSegment =
+  | { kind: "code"; text: string }
+  | { kind: "comment"; text: string }
+  | { kind: "string"; text: string; quote: "'" | "\"" };
 
-  for (let i = 0; i < input.length; i += 1) {
+function lexSql(input: string): SqlSegment[] {
+  const segments: SqlSegment[] = [];
+  let code = "";
+  const flush = () => {
+    if (code) segments.push({ kind: "code", text: code });
+    code = "";
+  };
+  let i = 0;
+  while (i < input.length) {
     const char = input[i]!;
     const next = input[i + 1];
-
-    if (lineComment) {
-      if (char === "\n") lineComment = false;
-      continue;
-    }
-    if (blockComment) {
-      if (char === "*" && next === "/") {
-        blockComment = false;
-        i += 1;
-      }
-      continue;
-    }
-    if (quote) {
-      if (char === quote) {
-        if (next === quote) {
-          i += 1;
-        } else {
-          quote = null;
-        }
-      }
-      continue;
-    }
     if (char === "-" && next === "-") {
-      lineComment = true;
-      i += 1;
+      let end = i + 2;
+      while (end < input.length && input[end] !== "\n" && input[end] !== "\r") end += 1;
+      flush();
+      segments.push({ kind: "comment", text: input.slice(i, end) });
+      i = end;
       continue;
     }
     if (char === "/" && next === "*") {
-      blockComment = true;
-      i += 1;
+      let depth = 1;
+      let j = i + 2;
+      while (j < input.length && depth > 0) {
+        if (input[j] === "/" && input[j + 1] === "*") {
+          depth += 1;
+          j += 2;
+        } else if (input[j] === "*" && input[j + 1] === "/") {
+          depth -= 1;
+          j += 2;
+        } else {
+          j += 1;
+        }
+      }
+      if (depth > 0) throw new Error("Plugin SQL contains an unterminated block comment");
+      flush();
+      segments.push({ kind: "comment", text: input.slice(i, j) });
+      i = j;
       continue;
     }
     if (char === "'" || char === "\"") {
-      quote = char;
+      const backslashEscapes = char === "'"
+        && /[eE]/.test(input[i - 1] ?? "")
+        && !/[A-Za-z0-9_$]/.test(input[i - 2] ?? "");
+      let j = i + 1;
+      let closed = false;
+      while (j < input.length) {
+        if (backslashEscapes && input[j] === "\\") {
+          j += 2;
+          continue;
+        }
+        if (input[j] === char) {
+          if (input[j + 1] === char) {
+            j += 2;
+            continue;
+          }
+          closed = true;
+          break;
+        }
+        j += 1;
+      }
+      if (!closed) throw new Error("Plugin SQL contains an unterminated quoted string or identifier");
+      flush();
+      segments.push({ kind: "string", text: input.slice(i, j + 1), quote: char });
+      i = j + 1;
       continue;
     }
-    if (char === ";") {
-      const statement = input.slice(start, i).trim();
-      if (statement) statements.push(statement);
-      start = i + 1;
+    code += char;
+    i += 1;
+  }
+  flush();
+  return segments;
+}
+
+function splitSqlStatements(input: string): string[] {
+  const statements: string[] = [];
+  let current = "";
+  const push = () => {
+    const statement = current.trim();
+    if (statement) statements.push(statement);
+    current = "";
+  };
+  for (const segment of lexSql(input)) {
+    if (segment.kind !== "code") {
+      current += segment.text;
+      continue;
+    }
+    const parts = segment.text.split(";");
+    current += parts[0];
+    for (const part of parts.slice(1)) {
+      push();
+      current = part;
     }
   }
-
-  const trailing = input.slice(start).trim();
-  if (trailing) statements.push(trailing);
+  push();
   return statements;
 }
 
 function stripSqlForKeywordScan(input: string): string {
-  return input
-    .replace(/'([^']|'')*'/g, "''")
-    .replace(/"([^"]|"")*"/g, "\"\"")
-    .replace(/--.*$/gm, "")
-    .replace(/\/\*[\s\S]*?\*\//g, "");
+  return lexSql(input)
+    .map((segment) => segment.kind === "code" ? segment.text : segment.kind === "comment" ? " " : segment.quote + segment.quote)
+    .join("");
 }
 
 function normaliseSql(input: string): string {
@@ -258,7 +300,7 @@ export function validatePluginRuntimeQuery(
   if (!normalized.startsWith("select ") && !normalized.startsWith("with ")) {
     throw new Error("ctx.db.query only allows SELECT statements");
   }
-  if (/\b(insert|update|delete|alter|create|drop|truncate)\b/.test(normalized)) {
+  if (/\b(insert|update|delete|alter|create|drop|truncate|merge|into)\b/.test(normalized)) {
     throw new Error("ctx.db.query cannot contain mutation or DDL keywords");
   }
 
@@ -494,8 +536,8 @@ export function pluginDatabaseService(db: PluginDatabaseRootClient) {
             continue;
           }
 
-          const statements = splitSqlStatements(content);
           try {
+            const statements = splitSqlStatements(content);
             if (statements.length === 0) {
               throw new Error(`Plugin migration ${migrationKey} is empty`);
             }

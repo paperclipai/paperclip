@@ -129,6 +129,102 @@ describe("plugin database SQL validation", () => {
     ).toThrow(/namespace/i);
   });
 
+  it("ignores an apostrophe inside a SQL comment", () => {
+    expect(() =>
+      validatePluginMigrationStatement(
+        "-- this table holds the owner's audit trail\n" +
+          "CREATE TABLE plugin_test.audit (id uuid PRIMARY KEY, op text NOT NULL CHECK (op IN ('a','b')))",
+        "plugin_test",
+      )
+    ).not.toThrow();
+    expect(() =>
+      validatePluginMigrationStatement(
+        "/* the owner's audit trail */ CREATE TABLE plugin_test.audit (op text CHECK (op IN ('a','b')))",
+        "plugin_test",
+      )
+    ).not.toThrow();
+  });
+
+  it("keeps comment markers inside string literals as string content", () => {
+    expect(() =>
+      validatePluginMigrationStatement(
+        "CREATE TABLE plugin_test.notes (body text DEFAULT '-- not a comment')",
+        "plugin_test",
+      )
+    ).not.toThrow();
+    expect(() =>
+      validatePluginMigrationStatement(
+        "CREATE TABLE plugin_test.notes (body text DEFAULT '--') GRANT SELECT ON plugin_test.notes TO PUBLIC",
+        "plugin_test",
+      )
+    ).toThrow(/disallowed/i);
+    expect(() =>
+      validatePluginMigrationStatement(
+        "CREATE TABLE plugin_test.notes (body text DEFAULT '/*') GRANT SELECT ON plugin_test.notes TO PUBLIC",
+        "plugin_test",
+      )
+    ).toThrow(/disallowed/i);
+  });
+
+  it("does not let a quote inside a comment hide a disallowed clause", () => {
+    expect(() =>
+      validatePluginMigrationStatement(
+        "/* owner's note */ CREATE TABLE plugin_test.notes (body text DEFAULT 'x') GRANT SELECT ON plugin_test.notes TO PUBLIC",
+        "plugin_test",
+      )
+    ).toThrow(/disallowed/i);
+  });
+
+  it("ends a line comment at a carriage return, as PostgreSQL does", () => {
+    expect(() =>
+      validatePluginRuntimeQuery("SELECT id INTO plugin_test.copied_issues FROM public.issues", "plugin_test", ["issues"])
+    ).toThrow(/mutation or DDL/i);
+    expect(() =>
+      validatePluginRuntimeQuery(
+        "SELECT id -- note\r INTO plugin_test.copied_issues FROM public.issues",
+        "plugin_test",
+        ["issues"],
+      )
+    ).toThrow();
+  });
+
+  it("treats block comments as nested, as PostgreSQL does", () => {
+    expect(() =>
+      validatePluginRuntimeQuery(
+        "SELECT id FROM plugin_test.rows /* a /* b */ ' */; DELETE FROM public.issues",
+        "plugin_test",
+        ["issues"],
+      )
+    ).toThrow(/exactly one statement/i);
+    expect(() =>
+      validatePluginMigrationStatement(
+        "CREATE TABLE plugin_test.t (id int) /* a /* b */ ' */ GRANT SELECT ON plugin_test.t TO PUBLIC",
+        "plugin_test",
+      )
+    ).toThrow(/disallowed/i);
+    expect(() =>
+      validatePluginMigrationStatement(
+        "/* outer /* inner's note */ still a comment */ CREATE TABLE plugin_test.t (id int)",
+        "plugin_test",
+      )
+    ).not.toThrow();
+  });
+
+  it("rejects an unterminated string or comment", () => {
+    expect(() => validatePluginRuntimeQuery("SELECT 'abc FROM plugin_test.rows", "plugin_test", [])).toThrow(/unterminated/i);
+    expect(() => validatePluginRuntimeQuery("SELECT id FROM plugin_test.rows /* a /* b */", "plugin_test", [])).toThrow(/unterminated/i);
+    expect(() => validatePluginRuntimeQuery("SELECT \"id FROM plugin_test.rows", "plugin_test", [])).toThrow(/unterminated/i);
+  });
+
+  it("reads backslash escapes only in E strings", () => {
+    expect(() =>
+      validatePluginRuntimeQuery("SELECT E'it\\'s' AS v FROM plugin_test.rows", "plugin_test", [])
+    ).not.toThrow();
+    expect(() =>
+      validatePluginRuntimeQuery("SELECT 'a\\' AS v FROM plugin_test.rows", "plugin_test", [])
+    ).not.toThrow();
+  });
+
   it("targets anonymous DO blocks without rejecting do-prefixed aliases", () => {
     expect(() =>
       validatePluginRuntimeQuery(
@@ -672,6 +768,26 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
     await expect(
       pluginDatabaseService(db).applyMigrations(pluginId, pluginManifest, packageRoot),
     ).rejects.toThrow(/public\.plugin_escape|public/i);
+
+    const [migration] = await db
+      .select()
+      .from(pluginMigrations)
+      .where(eq(pluginMigrations.pluginId, pluginId));
+    expect(migration?.status).toBe("failed");
+  });
+
+  it("records a failed migration when the SQL cannot be split", async () => {
+    const pluginManifest = manifest("paperclip.unterminated");
+    const namespace = derivePluginDatabaseNamespace(pluginManifest.id);
+    const packageRoot = await createPluginPackage(
+      pluginManifest,
+      `CREATE TABLE ${namespace}.rows (id uuid PRIMARY KEY); /* never closed`,
+    );
+    const pluginId = await installPluginRecord(pluginManifest);
+
+    await expect(
+      pluginDatabaseService(db).applyMigrations(pluginId, pluginManifest, packageRoot),
+    ).rejects.toThrow(/unterminated/i);
 
     const [migration] = await db
       .select()
