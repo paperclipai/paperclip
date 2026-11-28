@@ -11,6 +11,7 @@ import {
   type ToastTone,
 } from "../context/ToastContext";
 import { cn } from "../lib/utils";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 const toneClasses: Record<ToastTone, string> = {
   info: "border-sky-300 bg-sky-50 text-sky-900 dark:border-sky-500/25 dark:bg-sky-950/60 dark:text-sky-100",
@@ -61,7 +62,7 @@ function AnimatedToast({
         ) : (
           <span className={cn("mt-1 h-2 w-2 shrink-0 rounded-full", toneDotClasses[toast.tone])} />
         )}
-        <div className="min-w-0 flex-1">
+        <div className={cn("min-w-0 flex-1", ANALYTICS_MASK_CLASS)}>
           <p className="text-sm font-semibold leading-5">{toast.title}</p>
           {toast.body && (
             <p className="mt-1 text-xs leading-4 opacity-70">
@@ -113,7 +114,7 @@ export function ToastViewport() {
     <aside
       aria-live="polite"
       aria-atomic="false"
-      className="pointer-events-none fixed bottom-3 left-3 z-(--z-120) w-full max-w-sm px-1"
+      className="pointer-events-none fixed inset-x-3 bottom-(--mobile-nav-overlay-bottom) z-(--z-120) max-w-sm px-1 sm:inset-x-auto sm:left-3 sm:w-full md:bottom-3"
     >
       <ol className="flex w-full flex-col-reverse gap-2">
         {toasts.map((toast) => (

@@ -1,0 +1,230 @@
+{
+  "_source": "agy 1.5.15 session/new on https://daily-cloudcode-pa.googleapis.com, paid Google sign-in, probed 2026-11-24 (no account identifiers)",
+  "sessionId": "s-1",
+  "modes": {
+    "currentModeId": "default",
+    "availableModes": [
+      {
+        "id": "default"
+      },
+      {
+        "id": "accept-edits"
+      },
+      {
+        "id": "auto"
+      },
+      {
+        "id": "plan"
+      }
+    ]
+  },
+  "models": {
+    "currentModelId": "gemini-4-neon-high",
+    "availableModels": [
+      {
+        "modelId": "gemini-4-neon-high",
+        "name": "Gemini 4 Neon (High)"
+      },
+      {
+        "modelId": "gemini-4-neon-xhigh",
+        "name": "Gemini 4 Neon (XHigh)"
+      },
+      {
+        "modelId": "gemini-4-neon-medium",
+        "name": "Gemini 4 Neon (Medium)"
+      },
+      {
+        "modelId": "gemini-4-neon-low",
+        "name": "Gemini 4 Neon (Low)"
+      },
+      {
+        "modelId": "gemini-4-carbon-medium",
+        "name": "Gemini 4 Carbon (Medium)"
+      },
+      {
+        "modelId": "gemini-4-carbon-high",
+        "name": "Gemini 4 Carbon (High)"
+      },
+      {
+        "modelId": "gemini-4-carbon-low",
+        "name": "Gemini 4 Carbon (Low)"
+      },
+      {
+        "modelId": "gemini-4-argon-medium",
+        "name": "Gemini 4 Argon (Medium)"
+      },
+      {
+        "modelId": "gemini-4-argon-high",
+        "name": "Gemini 4 Argon (High)"
+      },
+      {
+        "modelId": "gemini-4-argon-low",
+        "name": "Gemini 4 Argon (Low)"
+      },
+      {
+        "modelId": "gemini-4-hydrogen-high",
+        "name": "Gemini 4 Hydrogen (High)"
+      },
+      {
+        "modelId": "gemini-4-hydrogen-xhigh",
+        "name": "Gemini 4 Hydrogen (XHigh)"
+      },
+      {
+        "modelId": "gemini-4-hydrogen-medium",
+        "name": "Gemini 4 Hydrogen (Medium)"
+      },
+      {
+        "modelId": "gemini-4-hydrogen-low",
+        "name": "Gemini 4 Hydrogen (Low)"
+      },
+      {
+        "modelId": "gemini-pro-orchestrator-neon",
+        "name": "Orchestrator (Neon)"
+      },
+      {
+        "modelId": "gemini-pro-orchestrator",
+        "name": "Orchestrator (Carbon)"
+      },
+      {
+        "modelId": "gemini-pro-orchestrator-argon",
+        "name": "Orchestrator (Argon)"
+      },
+      {
+        "modelId": "gemini-3.8-flash-high",
+        "name": "Gemini 3.8 Flash (High)"
+      },
+      {
+        "modelId": "gemini-3.8-flash-medium",
+        "name": "Gemini 3.8 Flash (Medium)"
+      },
+      {
+        "modelId": "gemini-3.8-flash-low",
+        "name": "Gemini 3.8 Flash (Low)"
+      },
+      {
+        "modelId": "claude-opus-5-5-low",
+        "name": "Claude Opus 5.5 (Low)"
+      },
+      {
+        "modelId": "claude-opus-5-5-medium",
+        "name": "Claude Opus 5.5 (Medium)"
+      },
+      {
+        "modelId": "claude-opus-5-5-high",
+        "name": "Claude Opus 5.5 (High)"
+      },
+      {
+        "modelId": "claude-sonnet-5-5-low",
+        "name": "Claude Sonnet 5.5 (Low)"
+      },
+      {
+        "modelId": "claude-sonnet-5-5-medium",
+        "name": "Claude Sonnet 5.5 (Medium)"
+      },
+      {
+        "modelId": "claude-sonnet-5-5-high",
+        "name": "Claude Sonnet 5.5 (High)"
+      },
+      {
+        "modelId": "gpt-oss-120b-medium",
+        "name": "GPT-OSS 120B (Medium)"
+      }
+    ]
+  },
+  "configOptions": [
+    {
+      "id": "model",
+      "currentValue": "gemini-4-neon",
+      "options": [
+        {
+          "value": "gemini-4-neon",
+          "name": "Gemini 4 Neon"
+        },
+        {
+          "value": "gemini-4-carbon",
+          "name": "Gemini 4 Carbon"
+        },
+        {
+          "value": "gemini-4-argon",
+          "name": "Gemini 4 Argon"
+        },
+        {
+          "value": "gemini-4-hydrogen",
+          "name": "Gemini 4 Hydrogen"
+        },
+        {
+          "value": "gemini-pro-orchestrator-neon",
+          "name": "Orchestrator (Neon)"
+        },
+        {
+          "value": "gemini-pro-orchestrator",
+          "name": "Orchestrator (Carbon)"
+        },
+        {
+          "value": "gemini-pro-orchestrator-argon",
+          "name": "Orchestrator (Argon)"
+        },
+        {
+          "value": "gemini-3.8-flash",
+          "name": "Gemini 3.8 Flash"
+        },
+        {
+          "value": "claude-opus-5-5",
+          "name": "Claude Opus 5.5"
+        },
+        {
+          "value": "claude-sonnet-5-5",
+          "name": "Claude Sonnet 5.5"
+        },
+        {
+          "value": "gpt-oss-120b-medium",
+          "name": "GPT-OSS 120B (Medium)"
+        }
+      ]
+    },
+    {
+      "id": "thought_level",
+      "currentValue": "high",
+      "options": [
+        {
+          "value": "low",
+          "name": "Low"
+        },
+        {
+          "value": "medium",
+          "name": "Medium"
+        },
+        {
+          "value": "high",
+          "name": "High"
+        },
+        {
+          "value": "xhigh",
+          "name": "Extra"
+        }
+      ]
+    },
+    {
+      "id": "mode",
+      "currentValue": "default",
+      "options": [
+        {
+          "value": "default",
+          "name": "Default"
+        },
+        {
+          "value": "accept-edits",
+          "name": "Accept edits"
+        },
+        {
+          "value": "auto",
+          "name": "Auto"
+        },
+        {
+          "value": "plan",
+          "name": "Plan"
+        }
+      ]
+    }
+  ]
+}

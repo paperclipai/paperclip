@@ -53,3 +53,35 @@ it("settles when a module import started by another consumer fails", async () =>
   expect(container.textContent).toBe("Ready");
   expect(fetch).toHaveBeenCalledOnce();
 });
+
+it("does not load agent tabs that have not opted into task side panels", async () => {
+  const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+  client.setQueryData(queryKeys.plugins.uiContributions, [{ ...contribution,
+    slots: [{ type: "detailTab", entityTypes: ["agent"], id: "details", displayName: "Details", exportName: "Details" }],
+  }]);
+  function TaskConsumer() {
+    const { slots } = usePluginSlots({ slotTypes: ["detailTab"], entityType: "agent", taskSidePanel: true });
+    return <span>{slots.length}</span>;
+  }
+  await act(async () => root.render(<QueryClientProvider client={client}><TaskConsumer /></QueryClientProvider>));
+  expect(container.textContent).toBe("0");
+  expect(fetch).not.toHaveBeenCalled();
+});
+
+it("records each plugin module's blob URL with its plugin key for error attribution", async () => {
+  const { readPluginModuleOrigin, __resetPluginModuleOrigins } = await import("@/lib/plugin-module-origins");
+  __resetPluginModuleOrigins();
+  vi.stubGlobal("fetch", vi.fn(async () => new Response("export const Switcher = () => null;")));
+  vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:http://localhost/plugin-module");
+  vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    // jsdom cannot import the blob URL; the loader logs that failure and settles.
+    await ensurePluginContributionLoaded(contribution);
+    expect(readPluginModuleOrigin([
+      { stacktrace: { frames: [{ filename: "blob:http://localhost/plugin-module" }] } },
+    ])).toBe("fixture.navigation");
+  } finally {
+    __resetPluginModuleOrigins();
+  }
+});
