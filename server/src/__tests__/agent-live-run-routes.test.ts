@@ -282,15 +282,26 @@ async function requestApp(
 
 describe("agent live run routes", () => {
   it.each([
-    ["", 200], ["?limit=10&agentId=agent-1&summary=true", 10],
+    ["", 200], [`?limit=10&agentId=${routeAgentId}&summary=true`, 10],
     ["?limit=99999", 1000], ["?limit=invalid", 200], ["?limit=-10", 1],
   ])("bounds company history reads for %s", async (query, limit) => {
     const app = await createApp({});
     const response = await requestApp(app, baseUrl => request(baseUrl).get(`/api/companies/company-1/heartbeat-runs${query}`));
     expect(response.status).toBe(200);
-    expect(mockHeartbeatService.list).toHaveBeenCalledWith("company-1", query.includes("agentId") ? "agent-1" : undefined,
+    expect(mockHeartbeatService.list).toHaveBeenCalledWith("company-1", query.includes("agentId") ? routeAgentId : undefined,
       limit, { summary: query.includes("summary=true") });
     expect(mockRunSecretRedactionRegistry.redactForRuns).toHaveBeenCalled();
+  });
+
+  it.each([
+    "xxxxxxxx-0000",
+    "not-a-uuid",
+    " 11111111-1111-4111-8111-111111111111 ",
+  ])("rejects a malformed agentId query parameter with 400 for %s", async (agentId) => {
+    const app = await createApp({});
+    const response = await requestApp(app, baseUrl => request(baseUrl).get(`/api/companies/company-1/heartbeat-runs?agentId=${encodeURIComponent(agentId)}`));
+    expect(response.status).toBe(400);
+    expect(mockHeartbeatService.list).not.toHaveBeenCalled();
   });
   beforeEach(async () => {
     vi.resetModules();

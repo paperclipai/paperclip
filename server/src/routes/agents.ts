@@ -7263,6 +7263,9 @@ export function agentRoutes(
     assertCompanyAccess(req, companyId);
     if (!(await assertRunTelemetryReadAllowed(req, res, companyId))) return;
     const agentId = req.query.agentId as string | undefined;
+    if (agentId !== undefined && (agentId !== agentId.trim() || !isUuidLike(agentId))) {
+      throw badRequest("Agent ID must be a UUID");
+    }
     const limitParam = req.query.limit as string | undefined;
     const limit = limitParam
       ? Math.max(1, Math.min(HEARTBEAT_RUN_LIST_MAX_LIMIT, parseInt(limitParam, 10) || HEARTBEAT_RUN_LIST_DEFAULT_LIMIT))
