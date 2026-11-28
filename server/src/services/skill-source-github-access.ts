@@ -99,7 +99,11 @@ export function skillSourceGitHubReader(db: Db, companyId: string, actor: Reques
       });
       if (!response.ok) {
         const limited = response.status === 429 || (response.status === 403 && response.headers.get('x-ratelimit-remaining') === '0');
-        const missingRef = response.status === 422 && /^\/repos\/[^/]+\/[^/]+\/commits\/[^/]+$/.test(apiPath);
+        const ref = /^\/repos\/[^/]+\/[^/]+\/commits\/([^/]+)$/.exec(apiPath)?.[1];
+        const missingRef = response.status === 422 && ref !== undefined && await response.json().then((body: unknown) =>
+          body !== null && typeof body === 'object' && 'message' in body
+          && body.message === `No commit found for SHA: ${decodeURIComponent(ref)}`
+        ).catch(() => false);
         const message = missingRef ? 'The tracked GitHub branch or revision is unavailable. Use the repository’s default branch or update its configured ref.'
           : limited ? 'GitHub request limit reached. Try again after the limit resets or use another GitHub connection.'
           : response.status === 404 ? 'Repository, branch, or file is unavailable. Check the URL and GitHub repository access.'
