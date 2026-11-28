@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -455,6 +455,57 @@ function selectSerializedSuites(routeTests, shardIndex, shardCount) {
   return shardFiles.map((file) => byRepoPath.get(file));
 }
 
+function findRetainedPostgresDir(directory) {
+  let entries;
+  try {
+    entries = readdirSync(directory, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  if (entries.some((entry) => entry.isFile() && entry.name === "postmaster.pid")) return directory;
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const found = findRetainedPostgresDir(path.join(directory, entry.name));
+    if (found) return found;
+  }
+  return null;
+}
+
+function removeTestRoot(testRoot) {
+  const retained = findRetainedPostgresDir(testRoot);
+  if (retained) {
+    console.warn(`[test:run] keeping ${testRoot}: it contains a retained PostgreSQL data directory at ${retained}`);
+    return;
+  }
+  const makeWritable = (directory) => {
+    chmodSync(directory, 0o700);
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (entry.isDirectory()) makeWritable(path.join(directory, entry.name));
+    }
+  };
+  try {
+    makeWritable(testRoot);
+    rmSync(testRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  } catch (error) {
+    if (error?.code !== "ENOENT") console.warn(`[test:run] could not remove ${testRoot}: ${error.message}`);
+  }
+}
+
+let stopSignal = null;
+const activeRuns = new Set();
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.once(signal, () => {
+    stopSignal = signal;
+    const children = [...activeRuns].filter((run) => run.child);
+    if (children.length > 0) {
+      for (const run of children) run.child.kill(signal);
+      return;
+    }
+    for (const run of activeRuns) removeTestRoot(run.testRoot);
+    process.kill(process.pid, signal);
+  });
+}
+
 function isolatedTestEnv() {
   invocationIndex += 1;
   const tempRootParent = process.platform === "win32" ? os.tmpdir() : "/tmp";
@@ -484,8 +535,20 @@ function isolatedTestEnv() {
 }
 
 async function runVitest(args, label, exactFiles = false) {
+  if (stopSignal) throw new Error(`stopped by ${stopSignal}`);
   console.log(`\n[test:run] ${label}`);
   const isolated = isolatedTestEnv();
+  const run = { testRoot: isolated.testRoot, child: null };
+  activeRuns.add(run);
+  try {
+    await runVitestInRoot(run, isolated, args, label, exactFiles);
+  } finally {
+    activeRuns.delete(run);
+    removeTestRoot(run.testRoot);
+  }
+}
+
+async function runVitestInRoot(run, isolated, args, label, exactFiles) {
   const { env } = isolated;
   await new Promise((resolve, reject) => {
     const command = exactFiles ? process.execPath : "pnpm";
@@ -495,6 +558,7 @@ async function runVitest(args, label, exactFiles = false) {
       env: invocationEnv("vitest", env),
       stdio: "inherit",
     });
+    run.child = child;
     child.once("error", reject);
     child.once("close", (code, signal) => {
       if (code === 0) resolve();
@@ -973,3 +1037,5 @@ try {
   console.error(`[test:run] ${error.message}`);
   process.exitCode = 1;
 }
+
+if (stopSignal) process.kill(process.pid, stopSignal);

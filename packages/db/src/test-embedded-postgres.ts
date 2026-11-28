@@ -130,7 +130,7 @@ const EMBEDDED_POSTGRES_INITDB_FLAGS = ["--encoding=UTF8", "--locale=C", "--lc-m
 async function createEmbeddedPostgresTestInstance(tempDirPrefix: string) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), tempDirPrefix));
   try {
-    return await createEmbeddedPostgresTestInstanceAt(dataDir);
+    return await createEmbeddedPostgresTestInstanceAt(dataDir, dataDir);
   } catch (error) {
     await cleanupEmbeddedPostgresTestDirs(dataDir);
     throw error;
@@ -140,7 +140,7 @@ async function createEmbeddedPostgresTestInstance(tempDirPrefix: string) {
 // Wraps an embedded-postgres instance around `dataDir`. The caller decides
 // whether the directory still needs `initialise()` (a fresh cluster) or already
 // holds a copied cluster that only needs `start()`.
-async function createEmbeddedPostgresTestInstanceAt(dataDir: string) {
+async function createEmbeddedPostgresTestInstanceAt(dataDir: string, ownedDir: string) {
   const port = await getAvailablePort();
   const EmbeddedPostgres = await getEmbeddedPostgresCtor();
   // Postgres writes the true reason for a failed start to its output, for
@@ -157,7 +157,7 @@ async function createEmbeddedPostgresTestInstanceAt(dataDir: string) {
     initdbFlags: EMBEDDED_POSTGRES_INITDB_FLAGS,
     onLog: (message) => logBuffer.append(message),
     onError: (message) => logBuffer.append(message),
-  }), dataDir);
+  }), dataDir, () => cleanupEmbeddedPostgresTestDirs(ownedDir));
 
   return { dataDir, port, instance, getRecentLogs: () => logBuffer.getRecentLogs() };
 }
@@ -578,7 +578,7 @@ async function startEmbeddedPostgresFromTemplateWithRetry(
       // Postgres refuses a data directory that is group or world accessible.
       fs.chmodSync(dataDir, 0o700);
       applyPostgresConfigOverrides(dataDir, options);
-      created = await createEmbeddedPostgresTestInstanceAt(dataDir);
+      created = await createEmbeddedPostgresTestInstanceAt(dataDir, rootDir);
       await created.instance.start();
       return { port: created.port, dataDir: rootDir, instance: created.instance };
     } catch (error) {
