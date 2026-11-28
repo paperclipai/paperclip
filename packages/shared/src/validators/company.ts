@@ -19,6 +19,7 @@ export const interactionResolverGovernanceSchema = z.object({
   request_confirmation: interactionResolverKindGovernanceSchema.optional(),
   request_checkbox_confirmation: interactionResolverKindGovernanceSchema.optional(),
   request_item_verdicts: interactionResolverKindGovernanceSchema.optional(),
+  connection_intent: interactionResolverKindGovernanceSchema.optional(),
 }).strict().default({});
 
 export const createCompanySchema = z.object({

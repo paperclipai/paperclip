@@ -307,6 +307,16 @@ export const ISSUE_THREAD_INTERACTION_KINDS = [
 ] as const;
 export type IssueThreadInteractionKind = (typeof ISSUE_THREAD_INTERACTION_KINDS)[number];
 
+export const INTERACTION_RESOLVER_GOVERNANCE_KINDS = [
+  "suggest_tasks",
+  "ask_user_questions",
+  "request_confirmation",
+  "request_checkbox_confirmation",
+  "request_item_verdicts",
+  "connection_intent",
+] as const satisfies readonly IssueThreadInteractionKind[];
+export type InteractionResolverGovernanceKind = (typeof INTERACTION_RESOLVER_GOVERNANCE_KINDS)[number];
+
 export const ISSUE_THREAD_INTERACTION_CANONICAL_RESOLVER_POLICIES = [
   "anyone",
   "not_creator",

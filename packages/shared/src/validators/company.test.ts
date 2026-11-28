@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { INTERACTION_RESOLVER_GOVERNANCE_KINDS } from "../constants.js";
 import {
   createCompanySchema,
+  interactionResolverGovernanceSchema,
   updateCompanyBrandingSchema,
   updateCompanySchema,
 } from "./company.js";
@@ -52,6 +54,59 @@ describe("company schemas without the retired settings", () => {
 
   it("requires at least one branding field", () => {
     expect(updateCompanyBrandingSchema.safeParse({}).success).toBe(false);
+  });
+});
+
+describe("interaction resolver governance schema", () => {
+  it("accepts a cap for connection_intent, which the settings UI offers", () => {
+    const parsed = updateCompanySchema.parse({
+      interactionResolverGovernance: {
+        connection_intent: { cap: "human_only" },
+      },
+    });
+
+    expect(parsed.interactionResolverGovernance).toEqual({
+      connection_intent: { cap: "human_only" },
+    });
+  });
+
+  it("accepts governance for every kind the settings panel offers", () => {
+    const governance = Object.fromEntries(
+      INTERACTION_RESOLVER_GOVERNANCE_KINDS.map((kind) => [
+        kind,
+        { defaultPolicy: "anyone", cap: "human_only" },
+      ]),
+    );
+
+    const parsed = updateCompanySchema.parse({ interactionResolverGovernance: governance });
+
+    expect(parsed.interactionResolverGovernance).toEqual(governance);
+  });
+
+  it("declares exactly the governable interaction kinds", () => {
+    expect(Object.keys(interactionResolverGovernanceSchema.unwrap().shape).sort()).toEqual(
+      [...INTERACTION_RESOLVER_GOVERNANCE_KINDS].sort(),
+    );
+  });
+
+  it("rejects governance for a server-authored interaction kind", () => {
+    const result = updateCompanySchema.safeParse({
+      interactionResolverGovernance: {
+        suggest_routine: { cap: "human_only" },
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("still rejects an unknown interaction kind", () => {
+    const result = updateCompanySchema.safeParse({
+      interactionResolverGovernance: {
+        not_a_real_kind: { cap: "human_only" },
+      },
+    });
+
+    expect(result.success).toBe(false);
   });
 });
 
