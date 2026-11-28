@@ -3969,6 +3969,20 @@ async function listIssueBlockerAttentionMap(dbOrTx: any, companyId: string, issu
   return (await readIssueBlockerAttentionBatch(dbOrTx, companyId, issueRows)).attention;
 }
 
+function createIssueBlockerAttentionReader(dbOrTx: any, companyId: string, issueRows: IssueBlockerAttentionInputNode[]) {
+  let batch: ReturnType<typeof readIssueBlockerAttentionBatch> | undefined;
+  const read = () => batch ??= readIssueBlockerAttentionBatch(dbOrTx, companyId, issueRows);
+  return {
+    all: async () => (await read()).attention,
+    forIssue: async (row: IssueBlockerAttentionInputNode) => {
+      if (row.status !== "blocked") return createIssueBlockerAttention();
+      const result = await read();
+      if (result.completeRootIds.has(row.id)) return result.attention.get(row.id);
+      return (await readIssueBlockerAttentionBatch(dbOrTx, companyId, [row])).attention.get(row.id);
+    },
+  };
+}
+
 async function readIssueBlockerAttentionBatch(
   dbOrTx: any,
   companyId: string,
@@ -3985,8 +3999,10 @@ async function readIssueBlockerAttentionBatch(
   }
   const deferredRootIds = new Set<string>(roots.slice(BLOCKER_ATTENTION_MAX_NODES).map(root => root.id));
   let edgeCount = 0, fetchedRows = 0;
-  const result = () => ({ attention: attentionMap, deferredRootIds, nodeCount: nodesById.size, edgeCount, fetchedRows });
-  if (roots.length === 0) return { attention: attentionMap, deferredRootIds, nodeCount: 0, edgeCount, fetchedRows };
+  const result = () => ({ attention: attentionMap, deferredRootIds, nodeCount: nodesById.size, edgeCount, fetchedRows,
+    completeRootIds: new Set([...traversals.values()].filter(traversal => !traversal.truncated).map(traversal => traversal.rootId)),
+  });
+  if (roots.length === 0) return { attention: attentionMap, deferredRootIds, nodeCount: 0, edgeCount, fetchedRows, completeRootIds: new Set<string>() };
 
   const nodesById = new Map<string, IssueBlockerAttentionNode>();
   const edgesByIssueId = new Map<string, IssueBlockerAttentionEdge[]>();
@@ -6030,61 +6046,127 @@ export function blockedInboxReviewWaitIssueIds(
   return [...reached].filter((issueId) => statusById.get(issueId) === "in_review");
 }
 
+const blockedInboxGraphIssueSelect = {
+  id: issues.id,
+  companyId: issues.companyId,
+  identifier: issues.identifier,
+  title: issues.title,
+  status: issues.status,
+  priority: issues.priority,
+  projectId: issues.projectId,
+  goalId: issues.goalId,
+  parentId: issues.parentId,
+  assigneeAgentId: issues.assigneeAgentId,
+  assigneeUserId: issues.assigneeUserId,
+  createdByAgentId: issues.createdByAgentId,
+  createdByUserId: issues.createdByUserId,
+  conversationAgentId: issues.conversationAgentId,
+  conversationUserId: issues.conversationUserId,
+  conversationState: issues.conversationState,
+  executionPolicy: issues.executionPolicy,
+  executionState: issues.executionState,
+  monitorNextCheckAt: issues.monitorNextCheckAt,
+  monitorAttemptCount: issues.monitorAttemptCount,
+  originKind: issues.originKind,
+  originId: issues.originId,
+  updatedAt: issues.updatedAt,
+};
+type BlockedInboxGraphIssue = Pick<IssueRow, keyof typeof blockedInboxGraphIssueSelect>;
+
+function blockedInboxGraphScope(companyId: string, rootIds: string[], recoveryReferenceIds: string[]) {
+  // Follow incoming blockers. Also retain one outgoing hop from the requested
+  // rows: a task blocking another blocked task does not get its own finding.
+  const visibleInCompany = and(eq(issues.companyId, companyId), visibleIssueCondition(), ne(issues.status, "done"));
+  return and(
+    visibleInCompany,
+    or(
+      inArray(issues.originKind, [...BLOCKED_INBOX_RECOVERY_ORIGIN_KINDS]),
+      recoveryReferenceIds.length > 0 ? inArray(issues.id, recoveryReferenceIds) : undefined,
+      sql<boolean>`
+        ${issues.id} IN (
+          WITH RECURSIVE blocker_chain(id) AS (
+            SELECT ${issues.id} FROM ${issues}
+            WHERE ${visibleInCompany} AND ${inArray(issues.id, rootIds)}
+            UNION
+            SELECT ${issues.id} FROM blocker_chain
+            JOIN ${issueRelations} ON ${issueRelations.relatedIssueId} = blocker_chain.id
+            JOIN ${issues} ON ${issues.id} = ${issueRelations.issueId}
+            WHERE ${issueRelations.companyId} = ${companyId}
+              AND ${issueRelations.type} = 'blocks'
+              AND ${visibleInCompany}
+          )
+          SELECT id FROM blocker_chain
+          UNION
+          SELECT ${issueRelations.relatedIssueId} FROM ${issueRelations}
+          WHERE ${issueRelations.companyId} = ${companyId}
+            AND ${issueRelations.type} = 'blocks'
+            AND ${inArray(issueRelations.issueId, rootIds)}
+        )
+      `,
+    ),
+  );
+}
+
 async function listIssueBlockedInboxAttentionMap(
   dbOrTx: any,
   companyId: string,
   issueRows: BlockedInboxIssueRow[],
   readExternalReviewWaits: ExternalReviewWaitReader = createExternalReviewWaitReader(dbOrTx, companyId),
+  readBlockerAttention = createIssueBlockerAttentionReader(dbOrTx, companyId, issueRows).forIssue,
 ): Promise<Map<string, IssueBlockedInboxAttention>> {
-  const rowIssueIds = [...new Set(issueRows.map((row) => row.id))];
+  const attentionRows = issueRows.filter((row) =>
+    row.companyId === companyId && row.status !== "done" && row.status !== "cancelled" && !row.hiddenAt,
+  );
+  const rowIssueIds = [...new Set(attentionRows.map((row) => row.id))];
   const result = new Map<string, IssueBlockedInboxAttention>();
   if (rowIssueIds.length === 0) return result;
 
-  const [graphIssueRows, graphRelationRows, companyAgentRows] =
-    await Promise.all([
-      dbOrTx
-        .select()
-        .from(issues)
-        .where(
-          and(
-            eq(issues.companyId, companyId),
-            visibleIssueCondition(),
-            ne(issues.status, "done"),
-          ),
-        ),
-      dbOrTx
-        .select({
-          companyId: issueRelations.companyId,
-          blockerIssueId: issueRelations.issueId,
-          blockedIssueId: issueRelations.relatedIssueId,
-        })
-        .from(issueRelations)
-        .where(
-          and(
-            eq(issueRelations.companyId, companyId),
-            eq(issueRelations.type, "blocks"),
-          ),
-        ),
-      dbOrTx
-        .select({
-          id: agents.id,
-          companyId: agents.companyId,
-          name: agents.name,
-          role: agents.role,
-          title: agents.title,
-          status: agents.status,
-          reportsTo: agents.reportsTo,
-        })
-        .from(agents)
-        .where(eq(agents.companyId, companyId)),
-    ]);
+  const recoveryReferenceIds = new Set<string>();
+  for (const row of attentionRows) {
+    if (row.originKind === "harness_liveness_escalation") {
+      const parsed = parseIssueGraphLivenessIncidentKey(row.originId);
+      if (parsed?.companyId === companyId) {
+        if (isUuidLike(parsed.issueId)) recoveryReferenceIds.add(parsed.issueId);
+        if (isUuidLike(parsed.leafIssueId)) recoveryReferenceIds.add(parsed.leafIssueId);
+      }
+    } else if (row.originKind === "stranded_issue_recovery" && row.originId && isUuidLike(row.originId)) {
+      recoveryReferenceIds.add(row.originId);
+    }
+  }
 
-  const graphIssues = graphIssueRows as IssueRow[];
-  const graphRelations = graphRelationRows as Array<{
-    companyId: string;
-    blockerIssueId: string;
-    blockedIssueId: string;
-  }>;
+  const [graphIssueRows, companyAgentRows] = await Promise.all([
+    dbOrTx
+      .select({
+        ...blockedInboxGraphIssueSelect,
+        // Keep the outer column qualified in the single-table projection.
+        incomingBlockerIds: sql<string[]>`ARRAY(
+          SELECT ${issueRelations.issueId}
+          FROM ${issueRelations}
+          WHERE ${issueRelations.companyId} = ${companyId}
+            AND ${issueRelations.type} = 'blocks'
+            AND ${issueRelations.relatedIssueId} = "issues"."id"
+        )`,
+      })
+      .from(issues)
+      .where(blockedInboxGraphScope(companyId, rowIssueIds, [...recoveryReferenceIds])),
+    dbOrTx
+      .select({
+        id: agents.id,
+        companyId: agents.companyId,
+        name: agents.name,
+        role: agents.role,
+        title: agents.title,
+        status: agents.status,
+        reportsTo: agents.reportsTo,
+      })
+      .from(agents)
+      .where(eq(agents.companyId, companyId)),
+  ]);
+
+  const graphIssues = graphIssueRows as (BlockedInboxGraphIssue & { incomingBlockerIds: string[] })[];
+  const graphRelations = graphIssues.flatMap((issue) =>
+    issue.incomingBlockerIds.map((blockerIssueId) => ({ companyId, blockerIssueId, blockedIssueId: issue.id })),
+  );
   const companyAgents = companyAgentRows as Array<{
     id: string;
     companyId: string;
@@ -6095,14 +6177,13 @@ async function listIssueBlockedInboxAttentionMap(
     reportsTo: string | null;
   }>;
   const graphIssueIds = graphIssues.map((issue) => issue.id);
-  const issuesById = new Map<string, IssueRow>(
+  const issuesById = new Map<string, BlockedInboxGraphIssue>(
     graphIssues.map((issue) => [issue.id, issue]),
   );
 
   const [
-    activeRunRows,
+    runRows,
     wakeRows,
-    scheduledRetryRows,
     interactionRows,
     approvalRows,
     handoffMap,
@@ -6125,6 +6206,7 @@ async function listIssueBlockedInboxAttentionMap(
               eq(heartbeatRuns.companyId, companyId),
               inArray(heartbeatRuns.status, [
                 ...BLOCKED_INBOX_ACTIVE_RUN_STATUSES,
+                "scheduled_retry",
               ]),
               inArray(
                 sql<string>`coalesce(
@@ -6162,32 +6244,6 @@ async function listIssueBlockedInboxAttentionMap(
               ${agentWakeupRequests.payload} ->> 'taskId',
               ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'issueId',
               ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'taskId'
-            )`,
-                graphIssueIds,
-              ),
-            ),
-          ),
-    graphIssueIds.length === 0
-      ? Promise.resolve([])
-      : dbOrTx
-          .select({
-            companyId: heartbeatRuns.companyId,
-            issueId: sql<string | null>`coalesce(
-              ${heartbeatRuns.contextSnapshot} ->> 'issueId',
-              ${heartbeatRuns.contextSnapshot} ->> 'taskId'
-            )`,
-            agentId: heartbeatRuns.agentId,
-            status: heartbeatRuns.status,
-          })
-          .from(heartbeatRuns)
-          .where(
-            and(
-              eq(heartbeatRuns.companyId, companyId),
-              eq(heartbeatRuns.status, "scheduled_retry"),
-              inArray(
-                sql<string>`coalesce(
-              ${heartbeatRuns.contextSnapshot} ->> 'issueId',
-              ${heartbeatRuns.contextSnapshot} ->> 'taskId'
             )`,
                 graphIssueIds,
               ),
@@ -6236,6 +6292,15 @@ async function listIssueBlockedInboxAttentionMap(
       hydrateLiveness: false,
     }),
   ]);
+
+  const scopedRunRows = runRows as Array<{
+    companyId: string;
+    issueId: string | null;
+    agentId: string | null;
+    status: string;
+  }>;
+  const activeRunRows = scopedRunRows.filter((row) => row.status !== "scheduled_retry");
+  const scheduledRetryRows = scopedRunRows.filter((row) => row.status === "scheduled_retry");
 
   const pendingInteractions = (
     interactionRows as BlockedInboxInteractionRow[]
@@ -6397,16 +6462,7 @@ async function listIssueBlockedInboxAttentionMap(
     ),
   );
 
-  for (const row of issueRows) {
-    if (
-      row.companyId !== companyId ||
-      BLOCKED_INBOX_TERMINAL_STATUSES.includes(
-        row.status as (typeof BLOCKED_INBOX_TERMINAL_STATUSES)[number],
-      ) ||
-      row.hiddenAt
-    ) {
-      continue;
-    }
+  for (const row of attentionRows) {
     const source = issueRef(row);
     const handoff = handoffMap.get(row.id);
     const hasLiveHandoffContinuation = Boolean(
@@ -6643,12 +6699,7 @@ async function listIssueBlockedInboxAttentionMap(
       continue;
     }
 
-    const blockerAttention = await listIssueBlockerAttentionMap(
-      dbOrTx,
-      companyId,
-      [row],
-    );
-    const blockerState = blockerAttention.get(row.id);
+    const blockerState = await readBlockerAttention(row);
     if (
       row.status === "blocked" &&
       (blockerState?.state === "needs_attention" ||
@@ -8905,6 +8956,7 @@ export function issueService(db: Db) {
       );
       // Both attention maps read external review waits for overlapping issues.
       const readExternalReviewWaits = createExternalReviewWaitReader(db, companyId);
+      const readBlockerAttention = createIssueBlockerAttentionReader(db, companyId, withRuns);
       const [
         blockerAttentionByIssueId,
         reviewAttentionByIssueId,
@@ -8912,10 +8964,10 @@ export function issueService(db: Db) {
       ] = filters?.listProjection === "index" && !includeBlockedInboxAttention
         ? [new Map<string, IssueBlockerAttention>(), new Map<string, IssueReviewAttention>(), new Map<string, IssueBlockedInboxAttention>()]
         : await timePhase("attention", () => Promise.all([
-          filters?.listProjection === "index" ? Promise.resolve(new Map<string, IssueBlockerAttention>()) : listIssueBlockerAttentionMap(db, companyId, withRuns),
+          filters?.listProjection === "index" ? Promise.resolve(new Map<string, IssueBlockerAttention>()) : readBlockerAttention.all(),
           filters?.listProjection === "index" ? Promise.resolve(new Map<string, IssueReviewAttention>()) : listIssueReviewAttentionMap(db, companyId, withRuns, readExternalReviewWaits),
           includeBlockedInboxAttention
-            ? listIssueBlockedInboxAttentionMap(db, companyId, withRuns, readExternalReviewWaits)
+            ? listIssueBlockedInboxAttentionMap(db, companyId, withRuns, readExternalReviewWaits, readBlockerAttention.forIssue)
             : Promise.resolve(new Map<string, IssueBlockedInboxAttention>()),
         ]));
 
