@@ -9,6 +9,7 @@ import {
   ASSIGNED_CATALOG_CACHE_BYTES, ASSIGNED_CATALOG_CACHE_ENTRIES, assignedCatalogCacheStats,
   ASSIGNED_SCHEMA_ADMISSION_CACHE_ENTRIES, ASSIGNED_SCHEMA_LISTING_BUDGET_BYTES, assignedSchemaAdmissionCacheSize,
   createAssignedMcpTools, getAssignedMcpGateway, PAPERCLIP_REFUSAL_MAX_CHARACTERS, registerAssignedMcpGateway,
+  RUNNER_TOOL_DESCRIPTION_MAX_BYTES,
 } from "./assigned-mcp-tools.js";
 import { admitToolInputSchema, runnerCodexDynamicToolsFit } from "../../vendor/paperclip-runner/index.js";
 import { startOpenCodeMcpBridge } from "../../vendor/paperclip-runner/testing.js";
@@ -274,6 +275,22 @@ describe("assigned MCP runner tools", () => {
     expect(Buffer.byteLength(JSON.stringify(direct))).toBeLessThan(768 * 1024);
     expect(runnerCodexDynamicToolsFit(direct)).toBe(false);
     expect(assigned.definitions(runnerCodexDynamicToolsFit).map(tool => tool.name)).toEqual([searchName, callName]);
+  });
+
+  it("delivers on demand when one description exceeds the runner's contract limit, and keeps that tool callable", async () => {
+    const large = { ...descriptor("sheets.update_spreadsheet", "write"), description: "x".repeat(20_000) };
+    const f = fixture([descriptor("app.read"), large]);
+    const assigned = await createAssignedMcpTools(f);
+    const fits = vi.fn(() => true);
+    expect(assigned.definitions(fits).map(tool => tool.name)).toEqual([searchName, callName]);
+    const page = await assigned.execute({ tool: searchName, arguments: { query: "update_spreadsheet", limit: 5 } }) as { tools: Array<{ name: string }> };
+    expect(page.tools).toHaveLength(1);
+    await assigned.execute({ tool: callName, arguments: { name: page.tools[0]!.name, arguments: { query: "fixture" } } });
+    expect(f.executeTool).toHaveBeenCalledOnce();
+    const atLimit = fixture([descriptor("app.read"), { ...large, description: "x".repeat(RUNNER_TOOL_DESCRIPTION_MAX_BYTES - "sheets.update_spreadsheet: ".length) }]);
+    const direct = (await createAssignedMcpTools(atLimit)).definitions(fits);
+    expect(direct).toHaveLength(2);
+    expect(direct.map(tool => tool.name)).not.toContain(searchName);
   });
 
   it.each([1, 741])("uses bounded on-demand delivery for %i tools even when the direct catalog fits", async count => {
