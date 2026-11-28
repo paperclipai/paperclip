@@ -1,5 +1,6 @@
 import { recordMcpAttachmentCleanup, type McpAttachmentCleanup } from "./public-mcp/upload-cleanup.js";
 import { assertAgentInteraction } from "./agent-interaction-policy.js";
+import { retryTransientLockContention } from "./transient-lock-contention.js";
 import { instancePublicOrigin, mayContainInventedHostLink, relativizeInventedHostLinks } from "./agent-invented-host-links.js";
 import { currentPluginInteractionOrigin } from "./plugin-interaction-context.js";
 import type { IssueDisplayStatus, IssueInboxArchiveFilter } from "@paperclipai/shared";
@@ -12943,7 +12944,7 @@ export function issueService(db: Db) {
             eq(issues.executionRunId, checkoutRunId),
           )
         : isNull(issues.executionRunId);
-      const updated = await db.transaction(async tx => {
+      const updated = await retryTransientLockContention(() => db.transaction(async tx => {
         await assertAgentInteraction(tx as unknown as Db, {
           companyId: issueCompany.companyId, actorAgentId: agentId, operation: "assign",
           issueId: id, targetAgentId: agentId, lock: true,
@@ -12986,7 +12987,7 @@ export function issueService(db: Db) {
           )
           .returning()
           .then((rows) => rows[0] ?? null);
-      });
+      }));
 
       if (updated) {
         const [enriched] = await withIssueLabels(db, [updated]);
