@@ -149,7 +149,7 @@ import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { withTelemetryCompany } from "../telemetry-company-scope.js";
 import { emitPlanApprovedAfterCommit } from "./product-telemetry.js";
-import { authorizationService } from "./authorization.js";
+import { authorizationDeniedDetails, authorizationService } from "./authorization.js";
 import { isCloudManagedInstance } from "./cloud-instance.js";
 import { resolveDeploymentMode } from "../config-file.js";
 import {
@@ -228,6 +228,14 @@ type CreateInteractionOptions = {
   supersedePendingSiblingInteractions?: boolean;
   replayAcceptedInteractionIds?: readonly string[];
   requireAcceptedReplay?: boolean;
+  /** Runs before an ownerless issue is assigned to the creating agent. Throw to deny. */
+  authorizeWakeTargetAdoption?: (scope: {
+    issueId: string;
+    projectId: string | null;
+    parentIssueId: string | null;
+    assigneeAgentId: string;
+    assigneeUserId: null;
+  }) => Promise<void>;
   /** Runs once, in the insert transaction, only when this call created the card (never on an idempotent replay). */
   afterInsertInTransaction?: (tx: Db, row: IssueThreadInteractionRow) => Promise<void>;
 };
@@ -5080,6 +5088,9 @@ export function issueThreadInteractionService(
       let sourceIdentityContextId: string | null = null;
       let sourceRunContext: Record<string, unknown> | null = null;
       let sourceRunCreatedAt: Date | null = null;
+      // Evidence that the creating agent is actually working this issue; gates
+      // auto-adoption of an ownerless issue below.
+      let sourceRunBoundToIssue = false;
       if (data.sourceRunId) {
         const sourceRun = await db
           .select({
@@ -5096,16 +5107,20 @@ export function issueThreadInteractionService(
         if (!sourceRun || sourceRun.companyId !== issue.companyId) {
           throw unprocessable("sourceRunId must belong to the same company");
         }
+        const snapshot = sourceRun.contextSnapshot ?? {};
+        const boundIssueIds = [
+          sourceRun.nativeIssueId,
+          snapshot.issueId,
+          snapshot.taskId,
+        ].filter((value): value is string => typeof value === "string" && value.length > 0);
+        sourceRunBoundToIssue =
+          boundIssueIds.length > 0 &&
+          boundIssueIds.every((boundIssueId) => boundIssueId === issue.id) &&
+          (!actor.agentId || sourceRun.agentId === actor.agentId);
         if (data.kind === "ask_user_questions") {
           if (actor.agentId && sourceRun.agentId !== actor.agentId) {
             throw unprocessable("sourceRunId must belong to the creating agent");
           }
-          const snapshot = sourceRun.contextSnapshot ?? {};
-          const boundIssueIds = [
-            sourceRun.nativeIssueId,
-            snapshot.issueId,
-            snapshot.taskId,
-          ].filter((value): value is string => typeof value === "string" && value.length > 0);
           if (boundIssueIds.some((boundIssueId) => boundIssueId !== issue.id)) {
             throw unprocessable("sourceRunId must belong to the same issue");
           }
@@ -5156,7 +5171,7 @@ export function issueThreadInteractionService(
               assigneeUserId: normalizedData.addresseeUserId, lock: true });
           }
           const [issueRow] = await tx
-            .select({ executionPolicy: issues.executionPolicy, status: issues.status, assigneeAgentId: issues.assigneeAgentId, assigneeUserId: issues.assigneeUserId, conversationAgentId: issues.conversationAgentId, conversationUserId: issues.conversationUserId, identifier: issues.identifier })
+            .select({ executionPolicy: issues.executionPolicy, projectId: issues.projectId, parentId: issues.parentId, status: issues.status, assigneeAgentId: issues.assigneeAgentId, assigneeUserId: issues.assigneeUserId, conversationAgentId: issues.conversationAgentId, conversationUserId: issues.conversationUserId, identifier: issues.identifier })
             .from(issues)
             .where(
               and(
@@ -5186,6 +5201,69 @@ export function issueThreadInteractionService(
           }
           if (!issueRow || isTerminalIssueStatus(issueRow.status)) {
             throw conflict("Cannot create an interaction on a closed issue");
+          }
+          // A waking interaction on an ownerless issue would never get its
+          // continuation wakeup (every wake site needs assigneeAgentId). Adopt
+          // the creating agent as assignee under the issue row lock taken
+          // above, so concurrent creators serialize. Only an agent whose own
+          // run is bound to this issue qualifies: generic write access to a
+          // visible ownerless issue must not let an agent claim it. Without
+          // that evidence, reject rather than insert a pending card nobody
+          // can ever wake.
+          if (
+            (data.continuationPolicy === "wake_assignee" || data.continuationPolicy === "wake_assignee_on_accept") &&
+            actor.agentId &&
+            !issueRow.assigneeAgentId &&
+            !issueRow.assigneeUserId
+          ) {
+            if (!sourceRunBoundToIssue) {
+              throw unprocessable(
+                "A wake_assignee interaction on an ownerless issue requires sourceRunId bound to this issue, so the continuation wakeup has a live target",
+                { code: "interaction_wake_target_unbound", issueId: issue.id },
+              );
+            }
+            // Scope comes from the row locked above, never from a caller's earlier read:
+            // a concurrent move to another project or parent must be what is authorized.
+            const scope = {
+              issueId: issue.id,
+              projectId: issueRow.projectId ?? null,
+              parentIssueId: issueRow.parentId ?? null,
+              assigneeAgentId: actor.agentId,
+              assigneeUserId: null,
+            };
+            if (options.authorizeWakeTargetAdoption) {
+              await options.authorizeWakeTargetAdoption(scope);
+            } else {
+              // No caller-supplied decision: decide here, so no create() caller
+              // can adopt an issue without the tasks:assign check.
+              const decision = await authorizationService(tx).decide({
+                actor: { type: "agent", agentId: actor.agentId, companyId: issue.companyId, runId: data.sourceRunId ?? null },
+                action: "tasks:assign",
+                resource: { type: "issue", companyId: issue.companyId, ...scope },
+                scope,
+              });
+              if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+            }
+            await tx.update(issues)
+              .set({ assigneeAgentId: actor.agentId, updatedAt: new Date() })
+              .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)));
+            issueRow.assigneeAgentId = actor.agentId;
+            await logActivity(tx as unknown as Db, {
+              companyId: issue.companyId,
+              actorType: "agent",
+              actorId: actor.agentId,
+              agentId: actor.agentId,
+              runId: data.sourceRunId ?? null,
+              action: "issue.updated",
+              entityType: "issue",
+              entityId: issue.id,
+              details: {
+                identifier: issueRow.identifier,
+                assigneeAgentId: actor.agentId,
+                source: "wake_assignee_interaction_adoption",
+                _previous: { assigneeAgentId: null, assigneeUserId: null },
+              },
+            }, postCommitActivityPublications);
           }
           if (data.addresseeUserId) {
             await assertInteractionAddresseeUserAvailable(tx as unknown as Db, issue, issueRow, data.addresseeUserId);

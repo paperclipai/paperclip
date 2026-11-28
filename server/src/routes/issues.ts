@@ -18144,6 +18144,10 @@ export function issueRoutes(
           agentId: actor.agentId,
           userId: actor.actorType === "user" ? actor.actorId : null,
         },
+        {
+          authorizeWakeTargetAdoption: (scope) =>
+            assertCanAssignTasks(req, issue.companyId, scope),
+        },
       );
 
       await logActivity(db, {
