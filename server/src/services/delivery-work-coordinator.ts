@@ -40,6 +40,12 @@ export function createDeliveryWorkCoordinator(input: {
       // Accounting and stop delivery finish already-admitted obligations;
       // they must continue during admission drain, never warm standby.
       runDuringDrain?: boolean;
+      // A warm standby holds every duty back by default, because the work
+      // belongs to the instance that owns it. A duty whose work is a leftover
+      // rather than this instance's own job may opt out of that hold: it has
+      // to be able to run where the instance stands by, because what it
+      // collects is not this instance's to keep.
+      runOnStandby?: boolean;
     }) {
       if (stopped) throw new Error("Delivery coordinator is stopped");
       if (workers.has(queue)) throw new Error(`Delivery worker already registered: ${queue}`);
@@ -61,7 +67,11 @@ export function createDeliveryWorkCoordinator(input: {
         if (workerStopped || running) return;
         scheduler.cancel(queue);
         scheduledAt = null;
-        if (!input.canRun() && !(input.canReconcile?.() ?? false)) { schedule(task.retryMs); return; }
+        if (!input.canRun() && !(input.canReconcile?.() ?? false)) {
+          // A warm standby holds every duty back unless the duty says the
+          // work is a leftover rather than this instance's own job.
+          if (task.runOnStandby !== true) { schedule(task.retryMs); return; }
+        }
         if (!input.canRun() && task.pausePassiveMaintenance && !pendingWork && !dirty &&
             !finishIntent && !databaseWorkPending(input.owner, queue)) {
           // A timer alone must not change the idle generation during a slow
@@ -75,8 +85,10 @@ export function createDeliveryWorkCoordinator(input: {
         const attempt = new AbortController();
         let runFailed = false;
         controller = attempt;
+        const runAllowed = () => input.canRun() || Boolean(task.runDuringDrain && input.canReconcile?.())
+          || (task.runOnStandby === true && !input.canRun() && !(input.canReconcile?.() ?? false));
         running = withDatabaseOperation(`delivery.${queue}`, () => Promise.resolve().then(() => reconcileDatabaseWork(input.owner, queue))
-          .then(() => workerStopped || !(input.canRun() || (task.runDuringDrain && input.canReconcile?.())) ? undefined : task.run(attempt.signal).catch(error => { runFailed = true; throw error; })).then(() => workerStopped ? false : task.hasPending(input.canRun() || Boolean(task.runDuringDrain && input.canReconcile?.()))).then(pending => {
+          .then(() => workerStopped || !runAllowed() ? undefined : task.run(attempt.signal).catch(error => { runFailed = true; throw error; })).then(() => workerStopped ? false : task.hasPending(runAllowed())).then(pending => {
           pendingWork = pending || databaseWorkPending(input.owner, queue);
           if (pendingWork) schedule(task.retryMs);
           else { finishIntent?.(); finishIntent = undefined; }

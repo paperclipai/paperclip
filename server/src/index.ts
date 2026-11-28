@@ -1646,6 +1646,14 @@ async function startServerWithDatabaseTeardown(
     ? registerGatewayCredentialExpiryWork(deliveryWork, app.locals.toolGateway,
       () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready
     : app.locals.toolGateway.cleanupExpiredSessions()).catch((err: unknown) => logger.error({ err }, "startup gateway token cleanup failed"))));
+  // Reap run-scoped MCP gateway tokens whose run is over. The recurring sweep
+  // is a duty on the shared delivery coordinator, so it does not hang off the
+  // heartbeat scheduler. This is the startup reconstruction of that duty: it
+  // runs on every boot, so a run that died with the server is collected in
+  // the same startup instead of waiting for its token's idle marker to pass.
+  trackHeartbeatSchedulerWork(startupTimeline.background("gateway_run_tokens", () => timeStartupRecovery("gateway_run_tokens",
+    () => app.locals.toolGateway.reapGatewayTokensForDeadRuns())
+    .catch((err: unknown) => logger.error({ err }, "startup gateway run token reap failed"))));
   // Provider tasks outlive calls, restarts, and deploys; polling resumes from
   // the rows. Tool calls create tasks whether or not heartbeats are scheduled,
   // so recovery always runs; only waking an agent needs the scheduler.

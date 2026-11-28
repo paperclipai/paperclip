@@ -157,6 +157,7 @@ export const DELIVERY_QUEUES = {
   pluginSchedules: "plugin-schedules",
   pluginLifecycle: "plugin-resource-lifecycle",
   toolAction: "tool-action-receipts",
+  gatewayRunTokens: "gateway-run-tokens",
   terminalWorkspaces: "terminal-workspaces",
   routineExecutionStatus: "routine-execution-status",
   routineSchedules: "routine-schedules",

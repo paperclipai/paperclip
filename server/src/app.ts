@@ -241,7 +241,7 @@ import {
 import { createPluginJobScheduler } from "./services/plugin-job-scheduler.js";
 import { pluginJobStore } from "./services/plugin-job-store.js";
 import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js";
-import { createToolGatewayService } from "./services/tool-gateway.js";
+import { createToolGatewayService, GATEWAY_TOKEN_REAP_INTERVAL_MS } from "./services/tool-gateway.js";
 import { toolAccessService } from "./services/tool-access.js";
 import { chatChannelService } from "./services/chat-channels.js";
 import type { BudgetResumeDelivery } from "./services/budget-resume-continuation.js";
@@ -1367,6 +1367,23 @@ export async function createApp(
     nextRunAt: () => agentLifecycle.nextRunAt(),
   });
   agentLifecycle.setWake(agentLifecycleDelivery.wake);
+  // A run-scoped MCP gateway token lives exactly as long as the run that holds
+  // it. The reaper that enforces that is a duty on the shared coordinator and
+  // not a heartbeat-scheduler task: the scheduler is off on a standby instance
+  // and can be turned off, and neither may leave a finished run's token in
+  // place. The duty is quiet while no run-scoped token exists, and it keeps
+  // running through an idle drain so a drain cannot strand a dead credential.
+  // A warm standby holds the duty back like every other duty, but the token it
+  // would collect is not that instance's to keep: a run that ended on the
+  // primary must not leave its credential behind because the instance that
+  // took over is standing by.
+  deliveryWork.register(DELIVERY_QUEUES.gatewayRunTokens, {
+    retryMs: GATEWAY_TOKEN_REAP_INTERVAL_MS,
+    run: () => toolGateway.reapGatewayTokensForDeadRuns(),
+    hasPending: () => toolGateway.hasOutstandingGatewayRunTokens(),
+    runDuringDrain: true,
+    runOnStandby: true,
+  });
   const clientMirror = startMcpClientMirrorSync(db, deliveryWork, mcpConfig?.origin,{authorizationOrigin:mcpConfig?.authorizationOrigin});
   const unregisterMcpOwners = registerIdleMcpOwners(db, { config: mcpConfig, personal: publicMcpEvents, dot: dotMcpEvents, clientMirrorInstanceId:clientMirror.instanceId });
   startMcpRevocationIndexSync(db, deliveryWork);
