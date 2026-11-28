@@ -1,0 +1,63 @@
+{
+  "schema": "acpx.session.v1",
+  "acpx_record_id": "carried-key",
+  "acp_session_id": "carried-session",
+  "agent_command": "fixture-agent",
+  "cwd": "/fixture/workspace",
+  "name": "carried-key",
+  "created_at": "2026-11-11T08:33:06.784Z",
+  "last_used_at": "2026-11-11T08:33:07.796Z",
+  "last_seq": 0,
+  "last_request_id": "turn-1",
+  "event_log": {
+    "active_path": "/fixture/state/sessions/carried-key.stream.ndjson",
+    "segment_count": 5,
+    "max_segment_bytes": 67108864,
+    "max_segments": 5,
+    "last_write_error": null
+  },
+  "closed": true,
+  "closed_at": "2026-11-11T08:33:07.804Z",
+  "pid": 1,
+  "agent_started_at": "2026-11-11T08:33:06.730Z",
+  "last_prompt_at": "2026-11-11T08:33:06.788Z",
+  "protocol_version": 1,
+  "agent_capabilities": {
+    "loadSession": true
+  },
+  "agent_goal_capability": {
+    "version": 1,
+    "control_method": "_session/goal",
+    "actions": [
+      "set",
+      "clear"
+    ]
+  },
+  "title": null,
+  "messages": [
+    {
+      "User": {
+        "id": "9643e526-b0fc-4126-a6fb-3517837da168",
+        "content": [
+          {
+            "Text": "first turn"
+          }
+        ]
+      }
+    },
+    {
+      "Agent": {
+        "content": [
+          {
+            "Text": "TURN_OK"
+          }
+        ],
+        "tool_results": {}
+      }
+    }
+  ],
+  "updated_at": "2026-11-11T08:33:06.791Z",
+  "cumulative_token_usage": {},
+  "request_token_usage": {},
+  "acpx": {}
+}

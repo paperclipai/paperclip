@@ -35,7 +35,7 @@ Agent access: [companion](../agent-access-map/steering.md).
 
 Open an assigned task (`/issues/:issueId`). Start work, then send follow-ups while
 the agent runs. Use the queued-message controls to edit, reorder, discard,
-steer, or interrupt when offered. After Stop, choose **Send** on a saved queue to explicitly continue it without recreating the messages or attachments. Native steering still requires an active turn; Send after Stop is a separate user decision. Use the composer stop/pause control separately.
+steer, or interrupt when offered. Use the composer stop/pause control separately.
 Both task presentations need attention when changing their shared behavior.
 
 ### `agent-chat`
@@ -65,22 +65,17 @@ unsupported steering without treating an absent capability as a product failure.
 
 ### `task-composer`
 
-Automated: [queued-message UI](../../ui/src/components/task-chat/TaskChatQueuedMessages.test.tsx)
-covers order, failure restoration, unavailable steering, stale revisions, and
-discard acknowledgements. [Queue routes](../../server/src/__tests__/issue-queued-comments-routes.test.ts)
+Automated: [Queue routes](../../server/src/__tests__/issue-queued-comments-routes.test.ts)
 cover durable ordering, authorization, steering acknowledgements, interrupt
 recovery, and concurrent dispatch. [Composer](../../ui/src/components/task-chat/TaskChatComposer.test.tsx)
-covers drafts and uncertain saves.
+covers drafts and uncertain saves. (Mocked `TaskChatQueuedMessages` UI tests were
+removed; verify queued-message UI rendering manually.)
 
-[Task-detail delivery races](../../ui/src/pages/IssueDetail.test.tsx) cover a
-consumed message whose send response and queue snapshot arrive late. A started
+Mocked `IssueDetail` delivery-race UI tests were removed (verify late send-response
+and queue-snapshot races manually). Expected behavior: a started
 run's input receipt removes that message from pending, while a separate unsent
 message stays queued. Admission to a run that has not started is not delivery.
 A later retry of the same message remains visible in its new authoritative queue.
-A queued turn's own starting input stays in history before execution, including
-board messages that reopen a task. Later inputs keep their queue controls and
-full canonical order. A maintenance hold displays its current admission wait;
-drain release and expiry prompt normal admission without a manual retry.
 Receipts retain the primary wake and coalesced source queue IDs. They clear a late
 snapshot even when its target names the preceding run or is null.
 
@@ -190,4 +185,4 @@ Capability ID: `steering/approval-queue`.
 Scope: ui
 Storybook: Answered question/accepted approval delivery waiting, eligible steer/interrupt, failed delivery and fresh-session-only approval.
 Production: Keep response delivery durable and distinct from editable comments; coalesce once, enforce fresh-session restrictions and deduplicate concurrent/retried continuation.
-Sources: Source: [TaskChatQueuedMessages.tsx](../../ui/src/components/task-chat/TaskChatQueuedMessages.tsx), [question-response-delivery.ts](../../server/src/services/question-response-delivery.ts). Tests: [TaskChatQueuedMessages.test.tsx](../../ui/src/components/task-chat/TaskChatQueuedMessages.test.tsx), [question-response-delivery.test.ts](../../server/src/__tests__/question-response-delivery.test.ts), [issue-queued-comments-routes.test.ts](../../server/src/__tests__/issue-queued-comments-routes.test.ts)
+Sources: Source: [TaskChatQueuedMessages.tsx](../../ui/src/components/task-chat/TaskChatQueuedMessages.tsx), [question-response-delivery.ts](../../server/src/services/question-response-delivery.ts). Tests: [question-response-delivery.test.ts](../../server/src/__tests__/question-response-delivery.test.ts), [issue-queued-comments-routes.test.ts](../../server/src/__tests__/issue-queued-comments-routes.test.ts)

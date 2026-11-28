@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "../..",
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "types": ["node"],
+    "typeRoots": ["../../cli/node_modules/@types"]
+  },
+  "include": ["./**/*.ts", "../scale-agents-ramp.ts"]
+}

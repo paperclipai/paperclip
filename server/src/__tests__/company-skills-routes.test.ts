@@ -1,7 +1,9 @@
 import express from "express";
+import { createHash } from "node:crypto";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const mockCaptureRunIdentity = vi.hoisted(() => vi.fn());
 
@@ -43,6 +45,7 @@ const mockCompanySkillService = vi.hoisted(() => ({
   deleteSkill: vi.fn(),
   auditSkill: vi.fn(),
   getById: vi.fn(),
+  getByRouteRef: vi.fn(),
   installUpdate: vi.fn(),
   resetSkill: vi.fn(),
   listTestInputs: vi.fn(),
@@ -76,6 +79,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(),
   cancelRun: vi.fn(),
 }));
+const mockHeartbeatFactory = vi.hoisted(() => vi.fn());
 
 const mockCatalogService = vi.hoisted(() => ({
   listCatalogSkillsOrEmpty: vi.fn(),
@@ -211,7 +215,7 @@ function registerModuleMocks() {
     agentService: () => mockAgentService,
     companySkillService: () => mockCompanySkillService,
     issueService: () => mockIssueService,
-    heartbeatService: () => mockHeartbeatService,
+    heartbeatService: mockHeartbeatFactory,
     logActivity: mockLogActivity,
   }));
 }
@@ -294,7 +298,8 @@ describe("company skill mutation permissions", () => {
     return { companySkillRoutes, errorHandler };
   });
 
-  function createApp(actor: Record<string, unknown>, onResponse?: (res: express.Response) => void) {
+  function createApp(actor: Record<string, unknown>, onResponse?: (res: express.Response) => void, database: any = {},
+    options: { pluginWorkerManager?: PluginWorkerManager } = {}) {
     const { companySkillRoutes, errorHandler } = routeModules.value;
     const app = express();
     app.use(express.json());
@@ -303,13 +308,18 @@ describe("company skill mutation permissions", () => {
       onResponse?.(res);
       next();
     });
-    app.use("/api", companySkillRoutes({} as any));
+    app.use("/api", companySkillRoutes(database, options));
     app.use(errorHandler);
     return app;
   }
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockCompanySkillService.getByRouteRef.mockImplementation(async (companyId: string, ref: string) => {
+      const skill = await mockCompanySkillService.getById(companyId, ref);
+      return skill ? { ...skill, id: ref } : skill;
+    });
+    mockHeartbeatFactory.mockReturnValue(mockHeartbeatService);
     mockCaptureRunIdentity.mockResolvedValue({ run: { responsibleUserId: "validated-owner" } });
     mockSkillSourceService.sourceForSkill.mockResolvedValue(null);
     mockSkillSourceService.importFromUrl.mockImplementation((companyId, source) => mockCompanySkillService.importFromSource(companyId, source));
@@ -715,6 +725,25 @@ describe("company skill mutation permissions", () => {
     mockReflectionCoachMutationGate.assertConsented.mockResolvedValue(undefined);
   });
 
+  it("replays a concurrent identical save committed after the first receipt lookup", async () => {
+    const expectedVersionId = "11111111-1111-4111-8111-111111111111";
+    const input = { path: "SKILL.md", content: "# Saved", expectedVersionId };
+    const receipt = { skillId: "skill-1", path: "SKILL.md", versionId: "22222222-2222-4222-8222-222222222222", studioPath: "/skills/studio/skill-1" };
+    const where = vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([{ details: {
+      fingerprint: createHash("sha256").update(JSON.stringify(input)).digest("hex"), receipt,
+    } }]);
+    const database = { select: () => ({ from: () => ({ where }) }), execute: vi.fn(), transaction: vi.fn() };
+    database.transaction.mockImplementation(callback => callback(database));
+    mockCompanySkillService.getById.mockResolvedValue({ id: "skill-1", sourceType: "managed" });
+    mockCompanySkillService.updateFile.mockRejectedValueOnce(Object.assign(new Error("Skill version changed"), { status: 409 }));
+    const app = createApp(boardActor(), undefined, database);
+    const response = await request(app).patch("/api/companies/company-1/skills/skill-1/files")
+      .send({ ...input, idempotencyKey: "same-save" }).expect(200);
+    expect(response.body).toEqual(receipt);
+    expect(database.execute).toHaveBeenCalledOnce();
+    expect(where).toHaveBeenCalledTimes(2);
+  });
+
   it("allows local board operators to mutate company skills", async () => {
     const res = await request(await createApp(boardActor()))
       .post("/api/companies/company-1/skills/import")
@@ -800,6 +829,32 @@ describe("company skill mutation permissions", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(res.body.error).toBe("Actor is restricted from changing skill configuration.");
     expect(mockCompanySkillService.scanProjectWorkspaces).not.toHaveBeenCalled();
+  });
+
+  it("resolves skill slugs in the skillId param to the canonical skill id", async () => {
+    const skillId = "22222222-2222-4222-8222-222222222222";
+    mockCompanySkillService.getByRouteRef.mockResolvedValue({ id: skillId, slug: "inbox-triage" });
+    const app = await createApp(boardActor("board-user", "session"));
+
+    await request(app)
+      .post("/api/companies/company-1/skills/inbox-triage/audit")
+      .send({})
+      .expect(200);
+
+    expect(mockCompanySkillService.getByRouteRef).toHaveBeenCalledWith("company-1", "inbox-triage");
+    expect(mockCompanySkillService.auditSkill).toHaveBeenCalledWith("company-1", skillId);
+  });
+
+  it("returns 404 when the skillId param does not match any skill", async () => {
+    mockCompanySkillService.getByRouteRef.mockResolvedValue(null);
+    const app = await createApp(boardActor("board-user", "session"));
+
+    await request(app)
+      .post("/api/companies/company-1/skills/missing-skill/audit")
+      .send({})
+      .expect(404);
+
+    expect(mockCompanySkillService.auditSkill).not.toHaveBeenCalled();
   });
 
   it("allows board users with skills:create to create, import, install, update, delete, audit, and reset company skills", async () => {
@@ -1194,7 +1249,7 @@ describe("company skill mutation permissions", () => {
     expect(mockCompanySkillService.installFromCatalog).toHaveBeenCalledWith("company-1", {
       catalogSkillId: "paperclipai:bundled:software-development:review",
       slug: "review",
-    });
+    }, expect.any(Function));
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       companyId: "company-1",
       action: "company.skill_catalog_installed",
@@ -1559,7 +1614,7 @@ describe("company skill mutation permissions", () => {
     expect(mockCompanySkillService.createVersion).toHaveBeenCalledWith("company-1", "skill-1", { label: "v1" }, {
       type: "user",
       userId: "user-1",
-    });
+   }, { publication: expect.objectContaining({ validate: expect.any(Function), afterPublish: expect.any(Function) }) });
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: "company.skill_version_created",
       entityType: "company_skill_version",
@@ -1582,7 +1637,7 @@ describe("company skill mutation permissions", () => {
     }, {
       type: "user",
       userId: "user-1",
-    });
+   }, expect.objectContaining({ validate: expect.any(Function), afterPublish: expect.any(Function) }));
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: "company.skill_file_deleted",
       entityType: "company_skill",
@@ -1621,6 +1676,7 @@ describe("company skill mutation permissions", () => {
         type: "user",
         userId: "user-1",
       },
+      expect.objectContaining({ validate: expect.any(Function), afterPublish: expect.any(Function) }),
     );
 
     await request(app).get("/api/companies/company-1/skills/skill-1/fork-precheck").expect(200);
@@ -1667,6 +1723,7 @@ describe("company skill mutation permissions", () => {
       "company-1",
       "skill-1",
       { name: "Ship PR", slug: "ship-pr" },
+      expect.objectContaining({ validate: expect.any(Function), afterPublish: expect.any(Function) }),
     );
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: "company.skill_renamed",
@@ -1961,6 +2018,7 @@ describe("company skill mutation permissions", () => {
   });
 
   it("creates and cancels skill test runs through hidden issue orchestration", async () => {
+    const pluginWorkerManager = {} as PluginWorkerManager;
     mockCompanySkillService.createTestRun.mockImplementationOnce(async (
       _companyId: string,
       _skillId: string,
@@ -2008,7 +2066,8 @@ describe("company skill mutation permissions", () => {
       };
     });
 
-    const app = await createApp(boardActor());
+    const app = await createApp(boardActor(), undefined, {}, { pluginWorkerManager });
+    expect(mockHeartbeatFactory).toHaveBeenCalledWith(expect.anything(), { pluginWorkerManager });
 
     const created = await request(app)
       .post("/api/companies/company-1/skills/skill-1/test-runs")
@@ -2172,7 +2231,7 @@ describe("company skill mutation permissions", () => {
     expect(res.body).toEqual({
       error: 'Cannot delete skill "Find Skills" while it is still used by Builder, Reviewer. Detach it from those agents first.',
     });
-    expect(mockCompanySkillService.deleteSkill).toHaveBeenCalledWith("company-1", "skill-1");
+    expect(mockCompanySkillService.deleteSkill).toHaveBeenCalledWith("company-1", "skill-1", expect.any(Function), expect.any(Function));
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
 });

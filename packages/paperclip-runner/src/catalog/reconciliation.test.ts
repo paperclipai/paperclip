@@ -20,40 +20,54 @@ describe("canonical semantic-catalog reconciliation authority", () => {
   it("pins the reconciled op-set relationship between the two catalogs", () => {
     const summary = capabilityCatalogReconciliation();
     expect(summary.scenarioCount).toBe(40);
-    expect(summary.liveCount).toBe(57);
-    expect(summary.sharedCount).toBe(28);
-    expect(summary.unionCount).toBe(69);
+    expect(summary.liveCount).toBe(72);
+    expect(summary.sharedCount).toBe(29);
+    expect(summary.unionCount).toBe(83);
     // Any operation added to or removed from either catalog without a
     // reconciliation decision changes these exact sets and fails the gate.
     expect(summary.liveOnly).toEqual([
       "call_api",
+      "create_area",
       "create_case",
       "create_project",
+      "create_responsibility",
       "create_workflow",
+      "delete_area",
+      "delete_responsibility",
+      "file_under_responsibility",
+      "find_responsibilities_for",
       "get_agent",
       "get_agent_instruction_history",
       "get_approval",
       "get_approval_context",
+      "get_responsibility",
       "get_workspace",
       "handoff_case",
       "hire_agent",
       "list_project_repositories",
+      "list_responsibilities",
       "list_workflows",
       "list_workspaces",
       "prepare_repository",
       "read_agent_instructions",
       "read_case",
       "read_workflow",
+      "remove_from_responsibility",
       "restore_agent_instructions",
       "schedule_wake",
       "search_api",
       "select_workspace",
+      "send_chat_message",
       "set_task_monitor",
       "set_task_title",
       "submit_complaint",
       "submit_suggestion",
       "update_agent_instructions",
+      "update_area",
       "update_case",
+      "update_responsibility",
+      "update_routine",
+      "update_skill_details",
       "update_workflow",
     ]);
     expect(summary.scenarioOnly).toEqual([
@@ -63,7 +77,6 @@ describe("canonical semantic-catalog reconciliation authority", () => {
       "list_cases",
       "list_company_skills",
       "list_goals",
-      "list_routines",
       "list_secret_metadata",
       "manage_routine",
       "read_secret_value",
@@ -73,7 +86,7 @@ describe("canonical semantic-catalog reconciliation authority", () => {
   });
 
   it("is the single source both catalogs derive their operation set from", () => {
-    expect(CAPABILITY_CANONICAL_OPERATIONS).toHaveLength(69);
+    expect(CAPABILITY_CANONICAL_OPERATIONS).toHaveLength(83);
     const canonicalIds = new Set(CAPABILITY_CANONICAL_OPERATIONS.map((operation) => operation.operationId));
     // Neither catalog may contain an operation absent from the canonical source.
     for (const tool of SCENARIO_CATALOG) expect(canonicalIds.has(tool.operationId)).toBe(true);
@@ -107,7 +120,7 @@ describe("canonical semantic-catalog reconciliation authority", () => {
   });
 
   it("names placement, claims, task modes, side-effect class, idempotency, redaction, mock mapping, real binding status, and PRP evidence for every operation", () => {
-    expect(CAPABILITY_CANONICAL_CATALOG).toHaveLength(69);
+    expect(CAPABILITY_CANONICAL_CATALOG).toHaveLength(83);
     for (const operation of CAPABILITY_CANONICAL_CATALOG) {
       expect(operation.placement).toMatch(/^(always|optional)_agent_tool$/);
       expect(Array.isArray(operation.requiredClaims)).toBe(true);
@@ -133,8 +146,8 @@ describe("canonical semantic-catalog reconciliation authority", () => {
   it("classifies real binding status so generic_api_request is never product coverage", () => {
     const summary = capabilityCatalogReconciliation();
     expect(summary.byRealBindingStatus).toEqual({
-      live_codex: 56,
-      scenario_mock: 12,
+      live_codex: 71,
+      scenario_mock: 11,
       test_only: 1,
     });
     expect(capabilityCanonicalOperation("generic_api_request")?.realBindingStatus).toBe("test_only");

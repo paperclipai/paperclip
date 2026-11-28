@@ -1,0 +1,60 @@
+---
+description: Keep UI render work proportional to collection size, keep memo inputs stable, and test large-collection paths at realistic size.
+globs: "ui/src/**/*.tsx,ui/src/**/use*.ts"
+alwaysApply: false
+---
+
+# Render work must stay proportional to its data
+
+Applies to components (`ui/src/**/*.tsx`) and hooks (`ui/src/**/use*.ts`) that
+iterate over a collection during render, in a `useMemo`, or in a selector, when
+the collection can be large. Large means hundreds of items or more. Examples are
+catalogs shipped with the app and lists that grow with a company's data, such
+as tasks, runs, agents, connections and activity.
+
+## Why
+
+Render code runs on the main thread, often many times per second while queries
+poll or the user types. Work that is quadratic or worse in collection size
+looks free with test fixtures of a few items. At real size it can freeze the
+tab. Two patterns cause most of these problems:
+
+- **A hidden inner scan.** A loop over one collection calls a helper that scans
+  another collection with `some`, `find`, `filter` or `includes`. Each line looks
+  cheap, but the cost is the product of both sizes, and nesting multiplies again.
+- **A memo that never hits.** A `useMemo` depends on an object, array or `Map`
+  that the component body builds again on every render. The memo then
+  recomputes on every render, so expensive work runs on each keystroke and
+  each poll.
+
+## Requirements
+
+- Do not scan a large collection inside a loop over another large collection.
+  Build a `Set` or `Map` index once, outside the loop, and look items up in it.
+- Normalize keys (slugs, lowercase names, identities) once per item, not inside
+  comparison callbacks.
+- Keep every `useMemo` and `useCallback` dependency referentially stable across
+  renders that change no data. Memoize derived objects, or derive them from
+  query `data`, which TanStack Query keeps structurally shared. `useQueries`
+  returns a new array on every render, so do not use it directly as a
+  dependency.
+- When a change adds or reorders work over a large collection, test that path
+  with realistic data size. Load shipped data with `vi.importActual` instead of
+  a few hand-written items, and turn on every flag or mode that gates the path.
+  Bound the work with a deterministic counter, such as calls to a key
+  normalizer, not with wall-clock time. Make the counter throw above its limit,
+  so a runaway render fails at once instead of stalling the test worker.
+
+## Exceptions
+
+- Small fixed lists, such as status options, tabs or a few providers.
+- A nested loop where both sides are bounded and small, such as one task's
+  comments matched against its attachments.
+
+## Review criteria
+
+- Flag nested iteration where both collections can be large, including an
+  inner call that hides a scan.
+- Flag `useMemo` or `useCallback` dependencies that are rebuilt every render.
+- Flag large-collection paths behind a flag or mode whose only tests use a few
+  fixture items.

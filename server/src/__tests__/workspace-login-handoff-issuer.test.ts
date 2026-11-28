@@ -11,6 +11,7 @@ import {
 import { verifyWorkspaceHandoffTicket } from "../auth/workspace-login-handoff.js";
 import { resolveManagedWorkspaceIdentity } from "../services/managed-workspace-identity.js";
 import { WORKSPACE_HANDOFF_TICKET_QUERY_PARAM } from "../auth/workspace-login-handoff.js";
+import type { probeManagedWorkspaceReadiness } from "../services/managed-workspace-identity.js";
 
 const INSTANCE_ID = "pap-17572-live-workspace-aa11bb22cc33";
 const EXECUTION_WORKSPACE_ID = "ews-live-1";
@@ -56,7 +57,7 @@ function stubDb(input: {
 }
 
 function readyProbe() {
-  return vi.fn(async () => ({
+  return vi.fn(async (_input: Parameters<typeof probeManagedWorkspaceReadiness>[0]) => ({
     ok: true as const,
     readiness: {
       state: "ready" as const,
