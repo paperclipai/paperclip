@@ -186,10 +186,10 @@ importers:
     dependencies:
       '@agentclientprotocol/claude-agent-acp':
         specifier: ^0.73.0
-        version: 0.73.0(patch_hash=wnht4big7mwol7j2skbsa5mefq)(@anthropic-ai/sdk@0.129.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))
+        version: 0.73.0(patch_hash=wnht4big7mwol7j2skbsa5mefq)(@anthropic-ai/sdk@1.9.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))
       '@anthropic-ai/sdk':
-        specifier: 0.129.0
-        version: 0.129.0(zod@4.6.7)
+        specifier: 1.9.0
+        version: 1.9.0(zod@4.6.7)
       '@paperclipai/adapter-utils':
         specifier: workspace:*
         version: link:../../adapter-utils
@@ -511,7 +511,7 @@ importers:
     dependencies:
       '@agentclientprotocol/claude-agent-acp':
         specifier: 0.73.0
-        version: 0.73.0(patch_hash=wnht4big7mwol7j2skbsa5mefq)(@anthropic-ai/sdk@0.129.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))
+        version: 0.73.0(patch_hash=wnht4big7mwol7j2skbsa5mefq)(@anthropic-ai/sdk@1.9.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))
       '@agentclientprotocol/codex-acp':
         specifier: 1.6.2
         version: 1.6.2(patch_hash=ikwowizcryf7a6uamqpmevexvq)
@@ -904,7 +904,7 @@ importers:
         version: 0.5.0
       '@agentclientprotocol/claude-agent-acp':
         specifier: 0.73.0
-        version: 0.73.0(patch_hash=wnht4big7mwol7j2skbsa5mefq)(@anthropic-ai/sdk@0.129.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))
+        version: 0.73.0(patch_hash=wnht4big7mwol7j2skbsa5mefq)(@anthropic-ai/sdk@1.9.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))
       '@agentclientprotocol/codex-acp':
         specifier: 1.6.2
         version: 1.6.2(patch_hash=ikwowizcryf7a6uamqpmevexvq)
@@ -1574,8 +1574,8 @@ packages:
       '@modelcontextprotocol/sdk': ^1.29.0
       zod: ^4.0.0
 
-  '@anthropic-ai/sdk@0.129.0':
-    resolution: {integrity: sha512-MH7LB20kNpGLUpPTe2OG5XvL/KhX8HUO9XyBaFjgFk6TLS4Xjt0VPIuMKywe7POKKPslX+QxSlVok9e+8kG5Nw==}
+  '@anthropic-ai/sdk@1.9.0':
+    resolution: {integrity: sha512-xDu4za3B+rK+5ZI8wLLoosiIuwi1ktZk/3L3KKNahwO50O34H+622hly8JdXzaEerLQDhsqwVzp81Nrw80BYHg==}
     hasBin: true
     peerDependencies:
       zod: ^3.25.0 || ^4.0.0
@@ -8976,8 +8976,8 @@ packages:
     resolution: {integrity: sha512-wPldCk3asibAjQ/kziWQQt1Wh3PgDFpC0XpwclzKcdT1vql6KeYxf5LIt4nlFkUeR8WuphYMKqUA56X4rjbfgQ==}
     engines: {node: '>=10.16.0'}
 
-  standardwebhooks@1.1.1:
-    resolution: {integrity: sha512-bCbX9ZEyFkWPsRz7Bl3NuQUJohmwGSev/yhr7vhaGPlc4AfIrspIRa6cPTBuI1ItmrTDJ4d/S2hCsfe4+vQGnQ==}
+  standardwebhooks@1.3.0:
+    resolution: {integrity: sha512-5W9skHjqAm2dlA9wWvglTP+oX47JX4lFXVk1aJV7+TG1snvTR4QXaVgPscEzvOw9GRreeavMwbqEeL+MGhZHCg==}
 
   statuses@2.0.2:
     resolution: {integrity: sha512-DvEy55V3DB7uknRo+4iOGT5fP1slR8wQohVdknigZPMpMstaKJQWhwiYBACJE3Ul2pTnATihhBYnRhZQHGBiRw==}
@@ -9660,10 +9660,10 @@ snapshots:
 
   '@adobe/css-tools@4.5.0': {}
 
-  '@agentclientprotocol/claude-agent-acp@0.73.0(patch_hash=wnht4big7mwol7j2skbsa5mefq)(@anthropic-ai/sdk@0.129.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))':
+  '@agentclientprotocol/claude-agent-acp@0.73.0(patch_hash=wnht4big7mwol7j2skbsa5mefq)(@anthropic-ai/sdk@1.9.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))':
     dependencies:
       '@agentclientprotocol/sdk': 1.4.0(zod@4.4.3)
-      '@anthropic-ai/claude-agent-sdk': 0.3.328(@anthropic-ai/sdk@0.129.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))(zod@4.4.3)
+      '@anthropic-ai/claude-agent-sdk': 0.3.328(@anthropic-ai/sdk@1.9.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))(zod@4.4.3)
       zod: 4.4.3
     transitivePeerDependencies:
       - '@anthropic-ai/sdk'
@@ -9789,9 +9789,9 @@ snapshots:
   '@anthropic-ai/claude-agent-sdk-win32-x64@0.3.328':
     optional: true
 
-  '@anthropic-ai/claude-agent-sdk@0.3.328(@anthropic-ai/sdk@0.129.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))(zod@4.4.3)':
+  '@anthropic-ai/claude-agent-sdk@0.3.328(@anthropic-ai/sdk@1.9.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))(zod@4.4.3)':
     dependencies:
-      '@anthropic-ai/sdk': 0.129.0(zod@4.6.7)
+      '@anthropic-ai/sdk': 1.9.0(zod@4.6.7)
       '@modelcontextprotocol/sdk': 1.31.0(zod@4.6.7)
       zod: 4.4.3
     optionalDependencies:
@@ -9804,10 +9804,11 @@ snapshots:
       '@anthropic-ai/claude-agent-sdk-win32-arm64': 0.3.328
       '@anthropic-ai/claude-agent-sdk-win32-x64': 0.3.328
 
-  '@anthropic-ai/sdk@0.129.0(zod@4.6.7)':
+  '@anthropic-ai/sdk@1.9.0(zod@4.6.7)':
     dependencies:
+      '@opentelemetry/api': 1.9.1
       json-schema-to-ts: 3.1.1
-      standardwebhooks: 1.1.1
+      standardwebhooks: 1.3.0
     optionalDependencies:
       zod: 4.6.7
 
@@ -17775,7 +17776,7 @@ snapshots:
       cpu-features: 0.0.10
       nan: 2.28.0
 
-  standardwebhooks@1.1.1:
+  standardwebhooks@1.3.0:
     dependencies:
       '@stablelib/base64': 1.0.1
       fast-sha256: 1.3.0
