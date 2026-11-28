@@ -143,6 +143,18 @@ for converting a Legacy agent with `search: true`. Authentication hello probes
 always disable hosted web search because they only verify the selected account
 and model.
 
+### Oversized app-server stdout frames
+
+Native Codex, Cursor Cloud, and OpenCode share a 4 MiB JSON-lines stdout limit.
+When a notification or response exceeds that limit, the Runner keeps the first
+64 KiB of each long string value, adds a marker with the removed byte count,
+records a diagnostic, and continues with the next frame. It preserves the
+top-level method, response id, and JSON shape. An oversized request with both a
+method and id still fails closed because changing its arguments could change the
+requested action. Invalid JSON, non-object JSON, and output that remains over the
+limit also fail closed. ACPX sidecars and the local harness keep their existing
+strict frame policy.
+
 OpenCode requires an explicit `provider/model` before testing or finishing setup.
 An inactive setup draft can be saved before choosing a model. Automatic native
 selection uses `allow` permissions and leaves the lifecycle unset (see "Runner

@@ -24,6 +24,7 @@ use uuid::Uuid;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
+use crate::bounded_json::{read_bounded_json_line, BoundedJsonLine};
 use crate::local_runner::LocalRunnerError;
 
 const PROCESS_OUTPUT_QUEUE_CAPACITY: usize = 256;
@@ -765,6 +766,12 @@ pub(crate) enum ProcessOutput {
     StderrClosed,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OversizedStdoutPolicy {
+    Fail,
+    BoundJsonStrings { retained_string_bytes: usize },
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum BoundedLine {
     Line(String),
@@ -827,10 +834,55 @@ fn forward_bounded_output<R: io::Read + Send + 'static>(
     sender: SyncSender<ProcessOutput>,
     stdout: bool,
     max_line_bytes: usize,
+    oversized_stdout_policy: OversizedStdoutPolicy,
 ) {
     thread::spawn(move || {
         let mut reader = BufReader::new(reader);
         loop {
+            if stdout {
+                if let OversizedStdoutPolicy::BoundJsonStrings {
+                    retained_string_bytes,
+                } = oversized_stdout_policy
+                {
+                    match read_bounded_json_line(&mut reader, max_line_bytes, retained_string_bytes)
+                    {
+                        Ok(BoundedJsonLine::Line(line)) => {
+                            if sender.send(ProcessOutput::Stdout(line)).is_err() {
+                                return;
+                            }
+                            continue;
+                        }
+                        Ok(BoundedJsonLine::Rewritten {
+                            line,
+                            removed_bytes,
+                            truncated_strings,
+                        }) => {
+                            let diagnostic = format!(
+                                "[harness stdout frame exceeded {max_line_bytes} bytes; truncated {removed_bytes} bytes across {truncated_strings} JSON string values]"
+                            );
+                            if sender.send(ProcessOutput::Stderr(diagnostic)).is_err()
+                                || sender.send(ProcessOutput::Stdout(line)).is_err()
+                            {
+                                return;
+                            }
+                            continue;
+                        }
+                        Ok(BoundedJsonLine::TooLong) => {
+                            let _ = sender.send(ProcessOutput::StdoutError(format!(
+                                "harness stdout frame exceeded {max_line_bytes} bytes"
+                            )));
+                            return;
+                        }
+                        Ok(BoundedJsonLine::Eof) => break,
+                        Err(error) => {
+                            let _ = sender.send(ProcessOutput::StdoutError(format!(
+                                "failed to read harness stdout: {error}"
+                            )));
+                            return;
+                        }
+                    }
+                }
+            }
             let output = match read_bounded_line(&mut reader, max_line_bytes) {
                 Ok(BoundedLine::Line(line)) if stdout => ProcessOutput::Stdout(line),
                 Ok(BoundedLine::Line(line)) => ProcessOutput::Stderr(line),
@@ -971,6 +1023,24 @@ impl SupervisedProcess {
         max_line_bytes: usize,
         additional_environment_keys: &[&str],
     ) -> Result<Self, LocalRunnerError> {
+        Self::spawn_with_environment_keys_and_stdout_policy(
+            program,
+            args,
+            shutdown_grace,
+            max_line_bytes,
+            additional_environment_keys,
+            OversizedStdoutPolicy::Fail,
+        )
+    }
+
+    pub(crate) fn spawn_with_environment_keys_and_stdout_policy(
+        program: &Path,
+        args: &[String],
+        shutdown_grace: Duration,
+        max_line_bytes: usize,
+        additional_environment_keys: &[&str],
+        oversized_stdout_policy: OversizedStdoutPolicy,
+    ) -> Result<Self, LocalRunnerError> {
         Self::spawn_command(
             program,
             args,
@@ -979,6 +1049,7 @@ impl SupervisedProcess {
             additional_environment_keys,
             None,
             None,
+            oversized_stdout_policy,
         )
     }
 
@@ -990,6 +1061,26 @@ impl SupervisedProcess {
         additional_environment_keys: &[&str],
         cwd: &Path,
     ) -> Result<Self, LocalRunnerError> {
+        Self::spawn_in_directory_with_environment_keys_and_stdout_policy(
+            program,
+            args,
+            shutdown_grace,
+            max_line_bytes,
+            additional_environment_keys,
+            cwd,
+            OversizedStdoutPolicy::Fail,
+        )
+    }
+
+    pub(crate) fn spawn_in_directory_with_environment_keys_and_stdout_policy(
+        program: &Path,
+        args: &[String],
+        shutdown_grace: Duration,
+        max_line_bytes: usize,
+        additional_environment_keys: &[&str],
+        cwd: &Path,
+        oversized_stdout_policy: OversizedStdoutPolicy,
+    ) -> Result<Self, LocalRunnerError> {
         Self::spawn_command(
             program,
             args,
@@ -998,6 +1089,7 @@ impl SupervisedProcess {
             additional_environment_keys,
             None,
             Some(cwd),
+            oversized_stdout_policy,
         )
     }
 
@@ -1006,6 +1098,22 @@ impl SupervisedProcess {
         shutdown_grace: Duration,
         max_line_bytes: usize,
         additional_environment_keys: &[&str],
+    ) -> Result<Self, LocalRunnerError> {
+        Self::spawn_verified_with_environment_keys_and_stdout_policy(
+            launch,
+            shutdown_grace,
+            max_line_bytes,
+            additional_environment_keys,
+            OversizedStdoutPolicy::Fail,
+        )
+    }
+
+    pub(crate) fn spawn_verified_with_environment_keys_and_stdout_policy(
+        launch: &VerifiedProcessLaunch,
+        shutdown_grace: Duration,
+        max_line_bytes: usize,
+        additional_environment_keys: &[&str],
+        oversized_stdout_policy: OversizedStdoutPolicy,
     ) -> Result<Self, LocalRunnerError> {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
@@ -1020,6 +1128,7 @@ impl SupervisedProcess {
                     .inherit_runtime_executable
                     .then_some(inherited.program.as_path()),
                 None,
+                oversized_stdout_policy,
             );
             #[cfg(target_os = "macos")]
             if let Ok(process) = result.as_mut() {
@@ -1037,6 +1146,7 @@ impl SupervisedProcess {
                 shutdown_grace,
                 max_line_bytes,
                 additional_environment_keys,
+                oversized_stdout_policy,
             );
             Err(LocalRunnerError::invalid(
                 "verified process launch is supported only on Linux and macOS",
@@ -1052,6 +1162,7 @@ impl SupervisedProcess {
         additional_environment_keys: &[&str],
         verified_runtime_executable: Option<&Path>,
         cwd: Option<&Path>,
+        oversized_stdout_policy: OversizedStdoutPolicy,
     ) -> Result<Self, LocalRunnerError> {
         let mut command = Command::new(program);
         if let Some(cwd) = cwd {
@@ -1156,8 +1267,20 @@ impl SupervisedProcess {
             .take()
             .ok_or_else(|| LocalRunnerError::invalid("supervised process stderr was not piped"))?;
         let (sender, output) = mpsc::sync_channel(PROCESS_OUTPUT_QUEUE_CAPACITY);
-        forward_bounded_output(stdout, sender.clone(), true, max_line_bytes.max(1));
-        forward_bounded_output(stderr, sender, false, max_line_bytes.max(1));
+        forward_bounded_output(
+            stdout,
+            sender.clone(),
+            true,
+            max_line_bytes.max(1),
+            oversized_stdout_policy,
+        );
+        forward_bounded_output(
+            stderr,
+            sender,
+            false,
+            max_line_bytes.max(1),
+            OversizedStdoutPolicy::Fail,
+        );
 
         Ok(Self {
             child,
@@ -1500,6 +1623,74 @@ fn exit_fact(status: ExitStatus) -> ProcessExitFact {
             success: status.success(),
             signal: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod oversized_output_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn bounded_json_policy_reports_a_diagnostic_and_forwards_the_next_frame() {
+        let first = format!(
+            r#"{{"method":"item/completed","params":{{"diff":"{}"}}}}"#,
+            "x".repeat(512)
+        );
+        let second = r#"{"method":"turn/completed","params":{}}"#;
+        let (sender, receiver) = mpsc::sync_channel(8);
+        forward_bounded_output(
+            Cursor::new(format!("{first}\n{second}\n")),
+            sender,
+            true,
+            256,
+            OversizedStdoutPolicy::BoundJsonStrings {
+                retained_string_bytes: 16,
+            },
+        );
+
+        let ProcessOutput::Stderr(diagnostic) =
+            receiver.recv_timeout(Duration::from_secs(1)).unwrap()
+        else {
+            panic!("expected a truncation diagnostic");
+        };
+        assert!(diagnostic.contains("truncated 496 bytes across 1 JSON string values"));
+        let ProcessOutput::Stdout(rewritten) =
+            receiver.recv_timeout(Duration::from_secs(1)).unwrap()
+        else {
+            panic!("expected the rewritten frame");
+        };
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&rewritten).unwrap()["method"],
+            "item/completed"
+        );
+        assert!(matches!(
+            receiver.recv_timeout(Duration::from_secs(1)).unwrap(),
+            ProcessOutput::Stdout(line) if line == second
+        ));
+        assert!(matches!(
+            receiver.recv_timeout(Duration::from_secs(1)).unwrap(),
+            ProcessOutput::StdoutClosed
+        ));
+    }
+
+    #[test]
+    fn fail_policy_keeps_oversized_stdout_terminal() {
+        let (sender, receiver) = mpsc::sync_channel(8);
+        forward_bounded_output(
+            Cursor::new(format!("{}\nnext\n", "x".repeat(512))),
+            sender,
+            true,
+            256,
+            OversizedStdoutPolicy::Fail,
+        );
+
+        assert!(matches!(
+            receiver.recv_timeout(Duration::from_secs(1)).unwrap(),
+            ProcessOutput::StdoutError(message)
+                if message == "harness stdout frame exceeded 256 bytes"
+        ));
+        assert!(receiver.recv_timeout(Duration::from_millis(50)).is_err());
     }
 }
 
