@@ -322,6 +322,7 @@ import { awaitFailedChatRetrySourceStop } from "./chat-channels/failed-chat-retr
 import {
   prepareManagedAiRuntime,
   assertManagedAiProjectAuth,
+  managedAiProjectAuthProvider,
 } from "./ai-connection-runtime.js";
 import { aiConnectionBindingSchema, aiRuntimeConnectionBindingSchema, type AiConnectionRouterSelection } from "@paperclipai/shared";
 import { aiConnectionRouterService, AiConnectionPoolExhausted, applyAiConnectionRouterTaskSettings } from "./ai-connection-router.js";
@@ -3114,7 +3115,7 @@ export function heartbeatService(
       });
       if (managedAiRuntime && aiBinding) {
         try {
-          await assertManagedAiProjectAuth({ ...resolvedConfig, cwd: executionWorkspace.cwd }, aiBinding.provider, executionTarget, {
+          await assertManagedAiProjectAuth({ ...resolvedConfig, cwd: executionWorkspace.cwd }, managedAiProjectAuthProvider(resolvedConfig, aiBinding.provider, agent.adapterType), executionTarget, {
             deferRunnerTaskCapabilityCheck: agent.adapterType === "paperclip_runner" && !runOptions.nativeRestartRecovery,
           });
         } catch (error) {

@@ -6,6 +6,11 @@ import { randomUUID } from "node:crypto";
 import { agents, companies, type Db } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
+import {
+  ensureAdapterExecutionTargetDirectory,
+  overrideAdapterExecutionTargetRemoteCwd,
+  resolveAdapterExecutionTargetCwd,
+} from "@paperclipai/adapter-utils/execution-target";
 import type { AdapterEnvironmentCheck, AdapterEnvironmentTestContext, AdapterEnvironmentTestResult } from "@paperclipai/adapter-utils";
 import { parseObject } from "@paperclipai/adapter-utils/server-utils";
 import { aiRoutingHarness, ADAPTER_AUTH_MISSING_CHECK_CODE, AI_CONNECTION_CAPABILITIES, type AiConnectionBinding } from "@paperclipai/shared";
@@ -16,7 +21,7 @@ import { instanceSettingsService } from "./instance-settings.js";
 import { environmentService } from "./environments.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { resolveEnvironmentExecutionTarget } from "./environment-execution-target.js";
-import { prepareManagedAiRuntime, assertManagedAiProjectAuth } from "./ai-connection-runtime.js";
+import { prepareManagedAiRuntime, assertManagedAiProjectAuth, managedAiProjectAuthProvider } from "./ai-connection-runtime.js";
 import { isRunnerRevisionMismatch, runnerRevisionMismatchTestResult } from "./runner-revision-mismatch.js";
 import { aiConnectionService } from "./ai-connections.js";
 import { isAiKeyVerificationFailureCode } from "./ai-api-key-failures.js";
@@ -576,13 +581,36 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
         return { adapterType, status: "fail" as const, testedAt: new Date().toISOString(), checks: [{ code: error instanceof HttpError ? String(asRecord(error.details)?.code ?? "COPILOT_REQUEST_FAILED") : "COPILOT_REQUEST_FAILED", level: "error" as const, message: error instanceof HttpError ? error.message : "Copilot metadata verification failed." }] };
       }
     }
+    const taskOnly = context.executionTarget?.kind === "remote"
+      && context.executionTarget.transport === "sandbox" && context.executionTarget.runnerTask;
+    const projectAuthProvider = managedAiProjectAuthProvider(context.config, binding.provider, adapterType);
+    if (projectAuthProvider === "openai" && !taskOnly) {
+      const cwd = resolveAdapterExecutionTargetCwd(context.executionTarget,
+        typeof context.config.cwd === "string" ? context.config.cwd : undefined, process.cwd());
+      try {
+        await ensureAdapterExecutionTargetDirectory(`ai-auth-probe-${randomUUID()}`, context.executionTarget, cwd, {
+          cwd, env: {}, createIfMissing: true,
+        });
+      } catch (error) {
+        return {
+          adapterType, status: "fail" as const, testedAt: new Date().toISOString(),
+          checks: [{ code: "codex_cwd_invalid", level: "error" as const,
+            message: error instanceof Error ? error.message : "Invalid working directory", detail: cwd }],
+        };
+      }
+      context = {
+        ...context,
+        config: { ...context.config, cwd },
+        executionTarget: overrideAdapterExecutionTargetRemoteCwd(context.executionTarget, cwd),
+      };
+    }
     const target = context.executionTarget;
     // A preconfigured Runner home does not use the managed connection, so run admission refuses it.
     if (adapterType === "paperclip_runner" && context.config.homeMode === "preconfigured"
       && target?.kind === "remote" && target.transport === "sandbox" && target.runnerTask) {
       return pluginRunnerAiConnectionRequiredTestResult(adapterType, true);
     }
-    try { await assertManagedAiProjectAuth(context.config, binding.provider, target); }
+    try { await assertManagedAiProjectAuth(context.config, projectAuthProvider, target); }
     catch (error) {
       if (isRunnerRevisionMismatch(error)) return runnerRevisionMismatchTestResult(adapterType);
       if (error instanceof HttpError || target?.kind !== "remote" || target.transport !== "sandbox" || !target.runnerTask) throw error;
