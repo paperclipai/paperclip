@@ -9,8 +9,10 @@
 import { describe, expect, it } from "vitest";
 import {
   buildSessionFingerprint,
+  buildSessionKey,
   finalizeLaunchEnvironment,
   projectAcpxInheritedHostEnvironment,
+  SESSION_KEY_MAX_ENCODED_LENGTH,
 } from "./execute.js";
 import type {
   LaunchEnvironment,
@@ -259,5 +261,41 @@ describe("acpx identity split and launch environment", () => {
       openai_api_key: "",
       Path: "C:\\explicit\\bin",
     });
+  });
+});
+
+describe("acpx session key length", () => {
+  const COMPANY_ID = "11111111-2222-4333-8444-555555555555";
+  const AGENT_ID = "66666666-7777-4888-9999-aaaaaaaaaaaa";
+  const FINGERPRINT = "0123456789abcdef";
+  const longestFileName = (key: string) => `${encodeURIComponent(key)}.stream.1024.ndjson`;
+
+  it("keeps a key that fits unchanged so its saved session still resumes", () => {
+    const key = buildSessionKey(
+      { companyId: COMPANY_ID, agentId: AGENT_ID, taskKey: "__heartbeat__" },
+      FINGERPRINT,
+    );
+    expect(key).toBe(`paperclip:${COMPANY_ID}:${AGENT_ID}:__heartbeat__:${FINGERPRINT}`);
+    expect(Buffer.byteLength(longestFileName(key))).toBeLessThanOrEqual(143);
+  });
+
+  it("digests a key whose file names would exceed the eCryptfs NAME_MAX", () => {
+    const issueTaskKey = "9b1f1c52-3f43-4f7a-9d55-0a6a1c2b7e10";
+    const summarySlotTaskKey = `summary-slot:${COMPANY_ID}:execution_workspace:${issueTaskKey}:header`;
+    for (const taskKey of [issueTaskKey, summarySlotTaskKey]) {
+      const key = buildSessionKey({ companyId: COMPANY_ID, agentId: AGENT_ID, taskKey }, FINGERPRINT);
+      expect(key).toMatch(/^paperclip:sha256:[0-9a-f]{32}$/);
+      expect(encodeURIComponent(key).length).toBeLessThanOrEqual(SESSION_KEY_MAX_ENCODED_LENGTH);
+      expect(Buffer.byteLength(longestFileName(key))).toBeLessThanOrEqual(143);
+    }
+  });
+
+  it("gives a digested key the same scoping as the full key", () => {
+    const identity = { companyId: COMPANY_ID, agentId: AGENT_ID, taskKey: "9b1f1c52-3f43-4f7a-9d55-0a6a1c2b7e10" };
+    const key = buildSessionKey(identity, FINGERPRINT);
+    expect(buildSessionKey({ ...identity }, FINGERPRINT)).toBe(key);
+    expect(buildSessionKey({ ...identity, taskKey: "0d6c7e4a-6b0e-4f0b-8a51-2f7d5c9e3a11" }, FINGERPRINT)).not.toBe(key);
+    expect(buildSessionKey({ ...identity, agentId: "5f0e8a2b-7c1d-4e3f-9a6b-8d2c4e1f0a93" }, FINGERPRINT)).not.toBe(key);
+    expect(buildSessionKey(identity, "ffffffffffffffff")).not.toBe(key);
   });
 });

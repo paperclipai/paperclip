@@ -577,12 +577,18 @@ export function buildSessionFingerprint(identity: SessionFingerprintIdentity): s
   return shortHash(identity);
 }
 
+const SESSION_FILE_NAME_MAX_BYTES = 143;
+const LONGEST_SESSION_FILE_SUFFIX = ".stream.1024.ndjson";
+export const SESSION_KEY_MAX_ENCODED_LENGTH = SESSION_FILE_NAME_MAX_BYTES - LONGEST_SESSION_FILE_SUFFIX.length;
+
 /**
  * Build the session key from the fingerprint and the outer-key identity. The key
  * form is `paperclip:companyId:agentId:taskKey:fingerprint`.
  */
 export function buildSessionKey(identity: SessionKeyIdentity, fingerprint: string): string {
-  return `paperclip:${identity.companyId}:${identity.agentId}:${identity.taskKey}:${fingerprint}`;
+  const key = `paperclip:${identity.companyId}:${identity.agentId}:${identity.taskKey}:${fingerprint}`;
+  if (encodeURIComponent(key).length <= SESSION_KEY_MAX_ENCODED_LENGTH) return key;
+  return `paperclip:sha256:${createHash("sha256").update(key).digest("hex").slice(0, 32)}`;
 }
 
 // ACPX runs inside the long-lived Paperclip server process. A local child needs
@@ -6018,7 +6024,8 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       const result = await runAttempt(plan);
       const previousSession = parseObject(ctx.runtime.sessionParams);
       if (asString(previousSession.acpSessionId, "") && result.sessionParams?.configFingerprint
-        && previousSession.configFingerprint !== result.sessionParams.configFingerprint) {
+        && (previousSession.configFingerprint !== result.sessionParams.configFingerprint
+          || previousSession.sessionKey !== result.sessionParams.sessionKey)) {
         return { ...result, resultJson: { ...result.resultJson,
           sessionReset: { code: "acpx_session_identity_changed", reason: "The agent configuration or execution identity changed." },
         } };

@@ -2231,6 +2231,33 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(sameEnvNewWake.result.resultJson?.sessionReset).toBeUndefined();
   });
 
+  it("reports a named reset when a session saved under a long key resumes as a digest key", async () => {
+    const root = await makeTempRoot();
+    const config = { agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") };
+    const taskId = `summary-slot:company-1:execution_workspace:${"a".repeat(36)}:header`;
+
+    const current = await runExecutor(config, { context: { taskId, wakeReason: "issue_assigned" } });
+    const savedParams = current.result.sessionParams as Record<string, unknown>;
+    expect(savedParams.sessionKey).toMatch(/^paperclip:sha256:[0-9a-f]{32}$/);
+
+    const previousReleaseParams = {
+      ...savedParams,
+      sessionKey: `paperclip:company-1:agent-1:${taskId}:${String(savedParams.configFingerprint)}`,
+    };
+    const upgraded = await runExecutor(config, {
+      context: { taskId, wakeReason: "comment", wakeCommentId: "c-1" },
+      runtime: { sessionParams: previousReleaseParams },
+    });
+    expect((upgraded.result.sessionParams as Record<string, unknown>).sessionKey).toBe(savedParams.sessionKey);
+    expect(upgraded.result.resultJson?.sessionReset).toMatchObject({ code: "acpx_session_identity_changed" });
+
+    const resumed = await runExecutor(config, {
+      context: { taskId, wakeReason: "comment", wakeCommentId: "c-2" },
+      runtime: { sessionParams: upgraded.result.sessionParams },
+    });
+    expect(resumed.result.resultJson?.sessionReset).toBeUndefined();
+  });
+
   it("keeps rotated run scratch paths out of session identity while retaining user temp overrides", async () => {
     const root = await makeTempRoot();
     const config = { agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") };
