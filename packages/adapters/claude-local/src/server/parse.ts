@@ -391,7 +391,7 @@ function buildClaudeTransientHaystack(input: {
     input.errorMessage ?? "",
     resultText,
     ...parsedErrors,
-    input.stdout ?? "",
+    ...(parsed ? [] : [input.stdout ?? ""]),
     input.stderr ?? "",
   ]
     .join("\n")
@@ -557,7 +557,7 @@ export function isClaudeTransientUpstreamError(input: {
 }): boolean {
   const parsed = input.parsed ?? null;
   // Deterministic failures are handled by their own classifiers.
-  if (parsed && (isClaudeMaxTurnsResult(parsed) || isClaudeUnknownSessionError(parsed) || isClaudePoisonedPreviousMessageIdError(parsed) || isClaudeImageProcessingError(parsed))) {
+  if (parsed && (isClaudeRefusalResult(parsed) || isClaudeMaxTurnsResult(parsed) || isClaudeUnknownSessionError(parsed) || isClaudePoisonedPreviousMessageIdError(parsed) || isClaudeImageProcessingError(parsed))) {
     return false;
   }
   const loginMeta = detectClaudeLoginRequired({
@@ -580,7 +580,7 @@ export function isClaudeProviderQuotaError(input: {
   errorMessage?: string | null;
 }): boolean {
   const parsed = input.parsed ?? null;
-  if (parsed && (isClaudeMaxTurnsResult(parsed) || isClaudeUnknownSessionError(parsed) || isClaudePoisonedPreviousMessageIdError(parsed) || isClaudeImageProcessingError(parsed))) {
+  if (parsed && (isClaudeRefusalResult(parsed) || isClaudeMaxTurnsResult(parsed) || isClaudeUnknownSessionError(parsed) || isClaudePoisonedPreviousMessageIdError(parsed) || isClaudeImageProcessingError(parsed))) {
     return false;
   }
   const loginMeta = detectClaudeLoginRequired({
