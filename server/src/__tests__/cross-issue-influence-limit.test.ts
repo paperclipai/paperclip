@@ -198,11 +198,9 @@ describe("cross-issue influence limit rollout", () => {
     expect(fake.inserted).toEqual([]);
   });
 
-  it("counts writes from an unscoped run instead of rejecting them", async () => {
-    // A timer heartbeat with no checked-out issue has no source issue: every
-    // write it makes is cross-issue by definition. The persisted run row is
-    // still the attribution anchor, so the write spends the cap rather than
-    // failing as run-less.
+  it("refuses an unscoped run with the run-aware denial copy", async () => {
+    // A run with no source issue has a valid run id, so the denial must not
+    // send the caller back to a header it already sent.
     const fake = counterDb(0, { contextSnapshot: {} });
 
     await expect(observeCrossIssueInfluence(fake.db as never, {
@@ -211,31 +209,13 @@ describe("cross-issue influence limit rollout", () => {
       agentId: "33333333-3333-4333-8333-333333333333",
       targetIssueId: "55555555-5555-4555-8555-555555555555",
       kind: "update",
-    })).resolves.toMatchObject({ count: 1, allowed: true });
-    expect(fake.inserted).toEqual([
-      expect.objectContaining({
-        action: "issue.cross_issue_influence_observed",
-        details: expect.objectContaining({ sourceIssueId: null }),
+    })).rejects.toMatchObject({
+      status: 403,
+      details: expect.objectContaining({
+        code: "cross_issue_influence_run_context_required",
+        sanctionedPath: expect.not.stringContaining("Send the `X-Paperclip-Run-Id` header"),
       }),
-    ]);
-  });
-
-  it("still caps an unscoped run once its budget is spent", async () => {
-    const fake = counterDb(CROSS_ISSUE_INFLUENCE_LIMIT, { contextSnapshot: {} });
-
-    await expect(observeCrossIssueInfluence(fake.db as never, {
-      companyId: "22222222-2222-4222-8222-222222222222",
-      runId: "11111111-1111-4111-8111-111111111111",
-      agentId: "33333333-3333-4333-8333-333333333333",
-      targetIssueId: "55555555-5555-4555-8555-555555555555",
-      kind: "comment",
-      now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
-    })).resolves.toMatchObject({
-      allowed: false,
-      count: CROSS_ISSUE_INFLUENCE_LIMIT + 1,
     });
-    expect(fake.inserted).toEqual([
-      expect.objectContaining({ action: "issue.cross_issue_influence_cap_rejected" }),
-    ]);
+    expect(fake.inserted).toEqual([]);
   });
 });
