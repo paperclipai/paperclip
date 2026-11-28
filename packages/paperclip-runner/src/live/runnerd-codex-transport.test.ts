@@ -2548,19 +2548,19 @@ it.each([
 });
 
 it.each([
-  { provider: "acpx" as const, acpxAgent: "pi" as const, closeGraceMs: undefined, drained: true },
-  { provider: "codex" as const, acpxAgent: undefined, closeGraceMs: undefined, drained: false },
-  { provider: "acpx" as const, acpxAgent: "pi" as const, closeGraceMs: 400, drained: false },
-])("keeps Pi stop, remote drain and suspension within a finite close budget ($provider, $closeGraceMs)", async ({ drained, ...options }) => {
+  { provider: "acpx" as const, acpxAgent: "pi" as const, closeGraceMs: undefined, stopMs: 35_200, ackMs: 2_800, drained: true },
+  { provider: "codex" as const, acpxAgent: undefined, closeGraceMs: undefined, stopMs: 5_200, ackMs: 2_800, drained: false },
+  { provider: "codex" as const, acpxAgent: undefined, closeGraceMs: undefined, stopMs: 1_000, ackMs: 5_600, drained: false },
+  { provider: "acpx" as const, acpxAgent: "pi" as const, closeGraceMs: 400, stopMs: 5_200, ackMs: 2_800, drained: false },
+  { provider: "acpx" as const, acpxAgent: "claude" as const, closeGraceMs: undefined, stopMs: 1_000, ackMs: 5_600, drained: true },
+  { provider: "acpx" as const, acpxAgent: "claude" as const, closeGraceMs: undefined, stopMs: 1_000, ackMs: 7_000, drained: false },
+  { provider: "acpx" as const, acpxAgent: "claude" as const, closeGraceMs: 6_000, stopMs: 1_000, ackMs: 5_600, drained: false },
+])("keeps provider drain and suspension within a finite close budget ($provider, $acpxAgent, $closeGraceMs, $ackMs)", async ({ drained, stopMs, ackMs, ...options }) => {
   vi.useFakeTimers();
   try {
     const { preparationDeadline, closeDeadline } = runnerdRecoveryInternals.runnerCloseDeadlines(
       Date.now(), runnerdRecoveryInternals.runnerCloseGraceMs(options),
     );
-    // Native Pi allows thirty seconds for snapshot cleanup and five seconds
-    // for its lifetime fence before the drain acknowledgement round trip.
-    const stopMs = options.provider === "acpx" && options.acpxAgent === "pi"
-      && options.closeGraceMs === undefined ? 35_200 : 5_200;
     await vi.advanceTimersByTimeAsync(stopMs);
     const commands: { commandId: string; status: string; result?: unknown }[] = [];
     const result = runnerdRecoveryInternals.awaitProviderDrainBarrier({
@@ -2573,12 +2573,12 @@ it.each([
         setTimeout(() => {
           command.status = "completed";
           command.result = { result: { retainedEventsDrained: true } };
-        }, 2_800);
+        }, ackMs);
       },
       pump: () => undefined,
-      deadline: Date.now() + Math.min(5_000, Math.max(0, preparationDeadline - Date.now())),
+      deadline: Date.now() + runnerdRecoveryInternals.runnerCloseDrainBudgetMs(options, preparationDeadline),
     });
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(ackMs + 100);
     expect(await result).toBe(drained);
     expect(closeDeadline - preparationDeadline).toBeLessThanOrEqual(2_500);
     expect(runnerdRecoveryInternals.runnerCloseGraceMs(options)).toBeLessThanOrEqual(45_000);
