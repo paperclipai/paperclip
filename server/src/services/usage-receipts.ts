@@ -468,6 +468,7 @@ export async function replayUsageReceipts(db: Db, directory = usageReceiptSpoolP
       await persistUsageReceipt(db, envelopeSchema.parse(JSON.parse(await fs.readFile(file, "utf8"))));
       await fs.rm(file, { force: true }); replayed++;
     } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
       failed++;
       // Rotate failures behind fresh entries without discarding the evidence.
       await fs.rename(file, path.join(directory, `retry-${Date.now()}-${randomUUID()}.json`)).catch(() => undefined);
