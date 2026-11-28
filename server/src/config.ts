@@ -83,6 +83,7 @@ export interface Config extends StorageConfig {
   databaseBackupIntervalMinutes: number;
   databaseBackupRetentionDays: number;
   databaseBackupDir: string;
+  databaseBackupRequireMounted: boolean;
   gitCacheExpirationEnabled: boolean;
   gitBaseExpirationEnabled: boolean;
   gitCacheExpirationDryRun: boolean;
@@ -296,6 +297,13 @@ export function loadConfig(override?: PaperclipConfig | null): Config {
       fileDatabaseBackup?.dir ??
       resolveDefaultBackupDir(),
   );
+  // Fail hard per backup run when the backup directory's volume is not
+  // mounted. Complements a systemd ExecStartPre mountpoint guard: the service
+  // can outlive a lost mount, and without this check the backup layer would
+  // recreate the path on the root filesystem (the backup mkdir is recursive),
+  // refilling the primary disk. Pairs with PAPERCLIP_DB_BACKUP_DIR.
+  const databaseBackupRequireMounted =
+    process.env.PAPERCLIP_DB_BACKUP_REQUIRE_MOUNTED === "true";
   // The terminal-workspace reaper waits this many days after an issue tree
   // becomes terminal before it archives the workspace. A person can reopen the
   // work inside this window. A value of 0 disables the cooldown and restores
@@ -396,6 +404,7 @@ export function loadConfig(override?: PaperclipConfig | null): Config {
     databaseBackupIntervalMinutes,
     databaseBackupRetentionDays,
     databaseBackupDir,
+    databaseBackupRequireMounted,
     gitCacheExpirationEnabled: process.env.PAPERCLIP_GIT_CACHE_EXPIRATION_ENABLED === "true",
     gitBaseExpirationEnabled: process.env.PAPERCLIP_GIT_BASE_EXPIRATION_ENABLED === "true",
     gitCacheExpirationDryRun: process.env.PAPERCLIP_GIT_CACHE_EXPIRATION_DRY_RUN !== "false",

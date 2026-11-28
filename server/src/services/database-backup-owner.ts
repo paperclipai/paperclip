@@ -15,6 +15,7 @@ export function createDatabaseBackupOwner(options: {
   connectionString: string;
   backupDir: string;
   getRetention: () => Promise<BackupRetentionPolicy>;
+  requireMountedBackupDir?: boolean;
   logger: BackupLogger;
 }) {
   let databaseBackupInFlight = false;
@@ -47,6 +48,7 @@ export function createDatabaseBackupOwner(options: {
         retention,
         filenamePrefix: "paperclip",
         verifyBeforePrune: verifyCheckpoint ? verifyIdleDatabaseBackup : undefined,
+        requireMountedBackupDir: options.requireMountedBackupDir,
       });
       if (verifyCheckpoint) {
         if (trigger !== "idle") await clearIdleBackupWakeRequired(options.backupDir);

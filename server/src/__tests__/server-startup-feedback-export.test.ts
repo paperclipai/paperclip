@@ -366,6 +366,7 @@ function buildTestConfig(overrides: Record<string, unknown> = {}) {
     databaseBackupIntervalMinutes: 60,
     databaseBackupRetentionDays: 30,
     databaseBackupDir: "/tmp/paperclip-test-backups",
+    databaseBackupRequireMounted: false,
     serveUi: false,
     uiDevMiddleware: false,
     secretsProvider: "local_encrypted",

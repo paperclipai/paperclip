@@ -974,6 +974,7 @@ async function startServerWithDatabaseTeardown(
     connectionString: activeDatabaseConnectionString,
     backupDir: config.databaseBackupDir,
     getRetention: async () => (await backupSettingsSvc.getGeneral()).backupRetention,
+    requireMountedBackupDir: config.databaseBackupRequireMounted,
     logger,
   });
   const pluginWorkerManager = createPluginWorkerManager();
