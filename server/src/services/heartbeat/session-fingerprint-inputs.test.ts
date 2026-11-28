@@ -175,6 +175,9 @@ describe("session fingerprint keeps sessions across non-thread changes", () => {
     ["wake scheduling", { agentRuntimeConfig: { aiConnection: { mode: "shared", grantId: "grant-1" }, heartbeat: { enabled: true, intervalSec: 300 } } }],
     ["the environment row's update time", withSelectedEnvironment({ configRevisionAt: "2099-02-01T00:00:00.000Z" })],
     ["how the same environment was selected", { environment: { ...(baseInput.environment as object), selectionSource: "issue" } }],
+    ["environment admission capacity", withSelectedEnvironment({}, { capacity: { maxConcurrentRuns: 2 } })],
+    ["fallback environments when placement is unchanged",
+      { agentRuntimeConfig: { ...baseInput.agentRuntimeConfig as object, fallbackEnvironmentIds: ["environment-2"] } }],
     ["the environment's release, log streaming, and RPC timeout settings",
       withSelectedEnvironment({}, { archiveOnRelease: true, streamRunLogs: false, timeoutMs: 30_000 })],
   ])("does not reset for %s", async (_label, next) => {
