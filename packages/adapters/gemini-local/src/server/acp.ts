@@ -1,3 +1,4 @@
+import { resolveExecutionEngineDefault } from "@paperclipai/adapter-utils/execution-engine-defaults";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -61,7 +62,7 @@ function normalizeEngine(value: unknown): GeminiEngineSelection {
   const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
   if (raw === "acp") return { engine: "acp", explicit: true };
   if (raw === "cli") return { engine: "cli", explicit: true };
-  return { engine: "acp", explicit: false };
+  return { engine: resolveExecutionEngineDefault("gemini_local"), explicit: false };
 }
 
 export function resolveGeminiExecutionEngine(config: Record<string, unknown>): GeminiEngineSelection {
