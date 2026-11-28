@@ -265,17 +265,29 @@ export async function waitForSandboxReady(
       name,
     }) as Record<string, unknown>;
 
+    const metadata = (cr.metadata as Record<string, unknown>) ?? {};
     const status = (cr.status as Record<string, unknown>) ?? {};
-    // agent-sandbox v1alpha1 uses status.conditions[type=Ready,status=True],
-    // not status.phase. Fall back to phase for forward-compat.
-    const conditions = Array.isArray(status.conditions) ? status.conditions as Array<Record<string, unknown>> : [];
+    const generation = typeof metadata.generation === "number" ? metadata.generation : undefined;
+
+    // agent-sandbox v1alpha1/v1beta1 uses status.conditions[type=Ready,status=True],
+    // with per-condition observedGeneration; fall back to status.phase.
+    const conditions = Array.isArray(status.conditions)
+      ? (status.conditions as Array<Record<string, unknown>>)
+      : [];
     const readyCondition = conditions.find((c) => c.type === "Ready");
-    const failedCondition = conditions.find((c) => c.type === "Failed" || (c.type === "Ready" && c.status === "False" && typeof c.reason === "string" && /failed/i.test(c.reason)));
+    const failedCondition = conditions.find(
+      (c) =>
+        c.type === "Failed" ||
+        (c.type === "Ready" &&
+          c.status === "False" &&
+          typeof c.reason === "string" &&
+          /failed/i.test(c.reason)),
+    );
     const phase = (status.phase as string) ?? "";
 
-    if (readyCondition?.status === "True" || phase === "Ready") {
-      return mapSandboxPhase(cr);
-    }
+    // Check terminal states before applying observedGeneration guards so
+    // Failed / Terminating sandboxes fail promptly even if an older Ready
+    // condition still carries a stale observedGeneration.
     if (failedCondition?.status === "True" || phase === "Failed") {
       const mapped = mapSandboxPhase(cr);
       throw new Error(
@@ -292,7 +304,22 @@ export async function waitForSandboxReady(
         `Sandbox ${namespace}/${name} is Terminating — cannot wait for Ready`,
       );
     }
-    // Pending — keep polling
+
+    const topLevelStale =
+      generation !== undefined &&
+      typeof status.observedGeneration === "number" &&
+      status.observedGeneration < generation;
+    const readyObsGen =
+      typeof readyCondition?.observedGeneration === "number"
+        ? readyCondition.observedGeneration
+        : undefined;
+    const readyConditionStale =
+      generation !== undefined && readyObsGen !== undefined && readyObsGen < generation;
+
+    if (!topLevelStale && !readyConditionStale && (readyCondition?.status === "True" || phase === "Ready")) {
+      return mapSandboxPhase(cr);
+    }
+    // Pending or stale Ready — keep polling
     await sleep(pollMs);
   }
 
