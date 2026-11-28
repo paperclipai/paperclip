@@ -781,8 +781,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const preparedRuntimeConfig = await prepareCodexRuntimeConfig({
     env: envConfigStrings,
-    codexHome: useSshHostAuth || (configuredCodexHome && !runtimeSkillDigest) ? null : effectiveCodexHome,
+    codexHome: useSshHostAuth || (configuredCodexHome && !configuredHomeIsManaged && !runtimeSkillDigest) ? null : effectiveCodexHome,
   });
+  const runtimeCodexHome = preparedRuntimeConfig.codexHome ?? effectiveCodexHome;
   // Curated allowlist dir staged for the remote `home` asset (see below). Held
   // here so the outer `finally` can remove it on every exit path (teardown and
   // error), never only the happy path.
@@ -807,7 +808,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       await fs.writeFile(path.join(stagedCodexHomeDir, "config.toml"), sshHostHome.config, { mode: 0o600 });
       await fs.writeFile(path.join(stagedCodexHomeDir, ".paperclip-native-config-before"), sshHostHome.config, { mode: 0o600 });
     }
-    const runtimeConfigurationHome = stagedCodexHomeDir ?? effectiveCodexHome;
+    const runtimeConfigurationHome = stagedCodexHomeDir ?? runtimeCodexHome;
     if (ctx.observability) {
       if (useSshHostAuth || isManagedCodexHomePath(process.env, agent.companyId, effectiveCodexHome)) {
         try {
@@ -884,7 +885,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           // the single-use `auth.json`) are dereferenced to bytes. This drops the
           // large runtime state (`sessions/`, `*.sqlite`, `plugins/`, …) that the
           // 4-name denylist missed and that a sandbox run never needs.
-          if (!useSshHostAuth) stagedCodexHomeDir = await stageCodexHomeForSync(effectiveCodexHome, { runId, additionalFiles: observabilityProfile ? [observabilityProfile.filename] : [] });
+          if (!useSshHostAuth) stagedCodexHomeDir = await stageCodexHomeForSync(runtimeCodexHome, { runId, additionalFiles: observabilityProfile ? [observabilityProfile.filename] : [] });
           const prepared = await prepareAdapterExecutionTargetRuntime({
             privateRuntime: useSshHostAuth || Boolean(config.managedAiConnection),
             runId,
@@ -1083,7 +1084,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (useSshHostAuth) {
         if (!sshHostHome) throw new Error("Remote Codex home was not resolved");
         env.CODEX_HOME = sshHostHome.home;
-      } else env.CODEX_HOME = remoteCodexHome ?? effectiveCodexHome;
+      } else env.CODEX_HOME = remoteCodexHome ?? runtimeCodexHome;
       if (ctx.observability && (observabilityProfile || observabilityPreparationFailed)) applyObservabilityEnvironment(env, ctx.observability);
       if (authToken) {
         env.PAPERCLIP_API_KEY = authToken;

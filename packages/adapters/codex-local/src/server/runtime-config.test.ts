@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { prepareCodexRuntimeConfig } from "./runtime-config.js";
+import { prepareCodexRuntimeConfig, resetCodexRuntimeConfigLeasesForTests } from "./runtime-config.js";
 
 const cleanupPaths = new Set<string>();
 
@@ -233,6 +233,92 @@ describe("prepareCodexRuntimeConfig", () => {
     }
   });
 
+  it("keeps provider settings for an overlapping run until the last run cleans up and isolates a provider-less run", async () => {
+    const home = await makeCodexHome();
+    await fs.writeFile(path.join(home, "config.toml"), 'model = "original"\n', "utf8");
+    await fs.writeFile(path.join(home, "auth.json"), '{"OPENAI_API_KEY":"sk-test"}\n', "utf8");
+    const env = { PAPERCLIP_CODEX_PROVIDERS: JSON.stringify(BIFROST_PROVIDERS) };
+    const runA = await prepareCodexRuntimeConfig({ env, codexHome: home });
+    const runB = await prepareCodexRuntimeConfig({ env, codexHome: home });
+    expect(runA.codexHome).toBe(home);
+    expect(runB.codexHome).toBe(home);
+
+    await runA.cleanup();
+    // Run B is still live: its provider routing must survive run A's cleanup,
+    // and an overlapping provider-less prepare must get an isolated home with
+    // the pre-lease original config instead of inheriting or clobbering run B.
+    const providerLess = await prepareCodexRuntimeConfig({ env: {}, codexHome: home });
+    expect(providerLess.codexHome).not.toBe(home);
+    expect(providerLess.codexHome).not.toBeNull();
+    expect(await readConfigToml(providerLess.codexHome!)).toBe('model = "original"\n');
+    expect(await fs.readFile(path.join(providerLess.codexHome!, "auth.json"), "utf8")).toContain("sk-test");
+    expect(await readConfigToml(home)).toContain("[model_providers.bifrost]");
+
+    await providerLess.cleanup();
+    await expect(fs.access(providerLess.codexHome!)).rejects.toThrow();
+    expect(await readConfigToml(home)).toContain("[model_providers.bifrost]");
+
+    await runB.cleanup();
+    expect(await readConfigToml(home)).toBe('model = "original"\n');
+    await expect(fs.access(path.join(home, "config.toml.paperclip-backup"))).rejects.toThrow();
+  });
+
+  it("isolates a provider-less run without creating config.toml when the shared home had none", async () => {
+    const home = await makeCodexHome();
+    const env = { PAPERCLIP_CODEX_PROVIDERS: JSON.stringify(BIFROST_PROVIDERS) };
+    const providerRun = await prepareCodexRuntimeConfig({ env, codexHome: home });
+
+    const providerLess = await prepareCodexRuntimeConfig({ env: {}, codexHome: home });
+    expect(providerLess.codexHome).not.toBe(home);
+    await expect(fs.access(path.join(providerLess.codexHome!, "config.toml"))).rejects.toThrow();
+    expect(await readConfigToml(home)).toContain("[model_providers.bifrost]");
+
+    await providerLess.cleanup();
+    await providerRun.cleanup();
+    await expect(fs.access(path.join(home, "config.toml"))).rejects.toThrow();
+  });
+
+  it("isolates overlapping runs that request different custom providers in the same CODEX_HOME", async () => {
+    const home = await makeCodexHome('model = "original"\n');
+    const runA = await prepareCodexRuntimeConfig({
+      env: { PAPERCLIP_CODEX_PROVIDERS: JSON.stringify(BIFROST_PROVIDERS) },
+      codexHome: home,
+    });
+    const otherProviders = {
+      providers: {
+        gateway2: {
+          name: "Gateway 2",
+          base_url: "http://gateway-two.example.test/v1",
+          env_key: "OPENAI_API_KEY",
+          wire_api: "responses",
+        },
+      },
+      model_provider: "gateway2",
+    };
+    const runB = await prepareCodexRuntimeConfig({
+      env: { PAPERCLIP_CODEX_PROVIDERS: JSON.stringify(otherProviders) },
+      codexHome: home,
+    });
+
+    expect(runA.codexHome).toBe(home);
+    expect(runB.codexHome).not.toBe(home);
+    expect(await readConfigToml(home)).toContain('model_provider = "bifrost"');
+    expect(await readConfigToml(home)).not.toContain("gateway-two.example.test");
+    const runBConfig = await readConfigToml(runB.codexHome!);
+    expect(runBConfig).toContain('model = "original"');
+    expect(runBConfig).toContain('model_provider = "gateway2"');
+    expect(runBConfig).toContain('base_url = "http://gateway-two.example.test/v1"');
+    expect(runBConfig).not.toContain("bifrost");
+
+    await runA.cleanup();
+    expect(await readConfigToml(home)).toBe('model = "original"\n');
+    expect(await readConfigToml(runB.codexHome!)).toContain('model_provider = "gateway2"');
+
+    await runB.cleanup();
+    await expect(fs.access(runB.codexHome!)).rejects.toThrow();
+    expect(await readConfigToml(home)).toBe('model = "original"\n');
+  });
+
   it("reads PAPERCLIP_CODEX_PROVIDERS from process.env when absent from the run env", async () => {
     const home = await makeCodexHome();
     process.env.PAPERCLIP_CODEX_PROVIDERS = JSON.stringify(BIFROST_PROVIDERS);
@@ -342,6 +428,7 @@ describe("prepareCodexRuntimeConfig", () => {
       codexHome: home,
     });
     expect(await readConfigToml(home)).toContain('env_key = "OPENAI_API_KEY"');
+    resetCodexRuntimeConfigLeasesForTests();
 
     const prepared = await prepareCodexRuntimeConfig({ env: {}, codexHome: home });
     expect(prepared.notes.some((n) => n.includes("backup"))).toBe(true);
@@ -383,6 +470,7 @@ describe("prepareCodexRuntimeConfig", () => {
     });
     // Simulate a crash: cleanup never runs, the managed blocks persist.
     void crashed;
+    resetCodexRuntimeConfigLeasesForTests();
     expect(await readConfigToml(home)).toContain("[model_providers.bifrost]");
 
     const prepared = await prepareCodexRuntimeConfig({ env: {}, codexHome: home });
@@ -400,6 +488,7 @@ describe("prepareCodexRuntimeConfig", () => {
       codexHome: home,
     });
     void first; // simulate crash: no cleanup
+    resetCodexRuntimeConfigLeasesForTests();
     const second = await prepareCodexRuntimeConfig({
       env: {
         PAPERCLIP_CODEX_PROVIDERS: JSON.stringify({
@@ -435,5 +524,40 @@ describe("prepareCodexRuntimeConfig", () => {
     );
     const content = await readConfigToml(home);
     expect(content).toBe("model = \"gpt-5.1-codex\"\n");
+  });
+
+  it("keeps the original when two runs prepare the same home at once", async () => {
+    const original = "model = \"gpt-5.1-codex\"\napproval_policy = \"never\"\n";
+    const home = await makeCodexHome(original);
+    const env = { PAPERCLIP_CODEX_PROVIDERS: JSON.stringify(BIFROST_PROVIDERS) };
+    const [first, second] = await Promise.all([
+      prepareCodexRuntimeConfig({ env, codexHome: home }),
+      prepareCodexRuntimeConfig({ env, codexHome: home }),
+    ]);
+
+    const merged = await readConfigToml(home);
+    expect(merged).toContain('approval_policy = "never"');
+    expect(merged).toContain("[model_providers.bifrost]");
+
+    await first.cleanup();
+    expect(await readConfigToml(home)).toContain("[model_providers.bifrost]");
+    await second.cleanup();
+    expect(await readConfigToml(home)).toBe(original);
+  });
+
+  it("releases its hold when preparation fails so later runs still restore the original", async () => {
+    const original = "model = \"gpt-5.1-codex\"\n";
+    const home = await makeCodexHome(original);
+    const backupPath = path.join(home, "config.toml.paperclip-backup");
+    const env = { PAPERCLIP_CODEX_PROVIDERS: JSON.stringify(BIFROST_PROVIDERS) };
+    // A directory where the backup goes makes the backup write fail.
+    await fs.mkdir(backupPath);
+    await expect(prepareCodexRuntimeConfig({ env, codexHome: home })).rejects.toThrow();
+    await fs.rm(backupPath, { recursive: true, force: true });
+
+    const next = await prepareCodexRuntimeConfig({ env, codexHome: home });
+    expect(await readConfigToml(home)).toContain("[model_providers.bifrost]");
+    await next.cleanup();
+    expect(await readConfigToml(home)).toBe(original);
   });
 });

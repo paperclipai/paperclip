@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 type PreparedCodexRuntimeConfig = {
+  codexHome: string | null;
   notes: string[];
   cleanup: () => Promise<void>;
 };
@@ -322,6 +323,86 @@ function configTomlBackupPath(configTomlPath: string): string {
   return `${configTomlPath}.paperclip-backup`;
 }
 
+// Runs sharing one CODEX_HOME can overlap. Each config.toml with merged
+// providers is held by every run that prepared the same merged content; only
+// the last holder restores the original, so an earlier cleanup never removes
+// provider settings a later run still needs.
+// When an overlapping run needs a DIFFERENT config.toml (for example, a
+// provider-less run or a run with different PAPERCLIP_CODEX_PROVIDERS), it gets
+// an isolated per-run home symlinked to the shared home with its own
+// config.toml derived from the pre-lease original, so runs never inherit each
+// other's provider routing or clobber a live run's config.toml.
+type ActiveConfigLease = {
+  holders: number;
+  original: Promise<string | null>;
+  merged: Promise<string>;
+  ready: Promise<void>;
+  written: boolean;
+  configTomlPath: string;
+  backupPath: string;
+  leaseKey: string;
+};
+
+const activeConfigLeases = new Map<string, ActiveConfigLease>();
+const ISOLATED_RUNTIME_HOME_PREFIX = ".paperclip-runtime-home-";
+const OBSERVABILITY_PROFILE_RE = /^paperclip-observability-.*\.config\.toml$/;
+
+/** Test hook: forget live leases, as a crashed server process would. */
+export function resetCodexRuntimeConfigLeasesForTests() {
+  activeConfigLeases.clear();
+}
+
+async function releaseConfigLease(lease: ActiveConfigLease): Promise<void> {
+  lease.holders -= 1;
+  if (lease.holders > 0) return;
+  if (activeConfigLeases.get(lease.leaseKey) === lease) {
+    activeConfigLeases.delete(lease.leaseKey);
+  }
+  if (!lease.written) return;
+  const original = await lease.original;
+  if (original === null) {
+    await fs.rm(lease.configTomlPath, { force: true });
+  } else {
+    await fs.writeFile(lease.configTomlPath, original, "utf8");
+  }
+  await fs.rm(lease.backupPath, { force: true });
+}
+
+async function createIsolatedCodexHome(
+  sourceHome: string,
+  configTomlContent: string | null,
+): Promise<string> {
+  await fs.mkdir(sourceHome, { recursive: true });
+  const isolatedHome = await fs.mkdtemp(path.join(sourceHome, ISOLATED_RUNTIME_HOME_PREFIX));
+  try {
+    await fs.chmod(isolatedHome, 0o700);
+    const entries = await fs.readdir(sourceHome, { withFileTypes: true });
+    for (const entry of entries) {
+      if (
+        entry.name === "config.toml" ||
+        entry.name === "config.toml.paperclip-backup" ||
+        entry.name.startsWith(ISOLATED_RUNTIME_HOME_PREFIX) ||
+        OBSERVABILITY_PROFILE_RE.test(entry.name)
+      ) {
+        continue;
+      }
+      await fs.symlink(
+        path.join(sourceHome, entry.name),
+        path.join(isolatedHome, entry.name),
+      );
+    }
+    if (configTomlContent !== null) {
+      const isolatedConfigPath = path.join(isolatedHome, "config.toml");
+      await fs.writeFile(isolatedConfigPath, configTomlContent, { mode: 0o600 });
+      await fs.chmod(isolatedConfigPath, 0o600);
+    }
+    return isolatedHome;
+  } catch (err) {
+    await fs.rm(isolatedHome, { recursive: true, force: true }).catch(() => {});
+    throw err;
+  }
+}
+
 // Merge custom Codex model providers supplied via PAPERCLIP_CODEX_PROVIDERS
 // into the managed CODEX_HOME's config.toml.
 //
@@ -355,9 +436,29 @@ export async function prepareCodexRuntimeConfig(input: {
   );
 
   if (!parsed) {
-    // Self-heal state left behind by a crashed run (cleanup() never ran).
     if (input.codexHome) {
       const configTomlPath = path.join(input.codexHome, "config.toml");
+      const leaseKey = path.resolve(configTomlPath);
+      const activeLease = activeConfigLeases.get(leaseKey);
+      if (activeLease) {
+        // Another live run holds merged custom providers in this shared home.
+        // Isolate this provider-less run with the pre-lease original config so
+        // it never inherits the live run's provider routing and never clobbers
+        // the shared config.toml.
+        const original = await activeLease.original;
+        const isolatedHome = await createIsolatedCodexHome(input.codexHome, original);
+        return {
+          codexHome: isolatedHome,
+          notes: [
+            ...notes,
+            `Isolated provider-less run in "${isolatedHome}" so it does not inherit active custom model providers from "${configTomlPath}".`,
+          ],
+          cleanup: async () => {
+            await fs.rm(isolatedHome, { recursive: true, force: true });
+          },
+        };
+      }
+      // Self-heal state left behind by a crashed run (cleanup() never ran).
       const reason = notes.length === 0 ? " (PAPERCLIP_CODEX_PROVIDERS is no longer set)" : "";
       const backupPath = configTomlBackupPath(configTomlPath);
       const backup = await readFileOrNull(backupPath);
@@ -367,6 +468,7 @@ export async function prepareCodexRuntimeConfig(input: {
         await fs.writeFile(configTomlPath, backup, "utf8");
         await fs.rm(backupPath, { force: true });
         return {
+          codexHome: input.codexHome,
           notes: [
             ...notes,
             `Restored "${configTomlPath}" from its pre-run backup, removing stale Paperclip-managed model providers left by an interrupted run${reason}.`,
@@ -381,6 +483,7 @@ export async function prepareCodexRuntimeConfig(input: {
         if (stripped !== existing) {
           await fs.writeFile(configTomlPath, stripped, "utf8");
           return {
+            codexHome: input.codexHome,
             notes: [
               ...notes,
               `Removed stale Paperclip-managed model provider blocks from "${configTomlPath}"${reason}.`,
@@ -390,11 +493,12 @@ export async function prepareCodexRuntimeConfig(input: {
         }
       }
     }
-    return { notes, cleanup: async () => {} };
+    return { codexHome: input.codexHome, notes, cleanup: async () => {} };
   }
 
   if (!input.codexHome) {
     return {
+      codexHome: null,
       notes: [
         ...notes,
         "PAPERCLIP_CODEX_PROVIDERS is set but the adapter config explicitly sets env.CODEX_HOME; leaving the user-managed Codex home untouched (no model provider merge).",
@@ -404,36 +508,130 @@ export async function prepareCodexRuntimeConfig(input: {
   }
 
   const configTomlPath = path.join(input.codexHome, "config.toml");
+  const leaseKey = path.resolve(configTomlPath);
   const backupPath = configTomlBackupPath(configTomlPath);
+  const codexHome = input.codexHome;
+  const providerNames = Object.keys(parsed.providers);
+  const buildMergedForOriginal = (original: string | null) => {
+    const base = stripConflictingDefinitions(
+      stripManagedCodexProviderBlocks(original ?? ""),
+      providerNames,
+      parsed.modelProvider !== null,
+    );
+    return buildMergedConfigToml(base, parsed);
+  };
+
+  const existingLease = activeConfigLeases.get(leaseKey);
+  if (existingLease) {
+    existingLease.holders += 1;
+    let released = false;
+    const releaseExistingOnce = async () => {
+      if (released) return;
+      released = true;
+      await releaseConfigLease(existingLease);
+    };
+    try {
+      const original = await existingLease.original;
+      const desiredMerged = buildMergedForOriginal(original);
+      const activeMerged = await existingLease.merged;
+      if (desiredMerged === activeMerged) {
+        await existingLease.ready;
+        return {
+          codexHome,
+          notes: [
+            ...notes,
+            `Merged ${providerNames.length} custom Codex model provider(s) from PAPERCLIP_CODEX_PROVIDERS into "${configTomlPath}": ${providerNames.join(", ")}${
+              parsed.modelProvider ? `; selected model_provider "${parsed.modelProvider}"` : ""
+            }.`,
+          ],
+          cleanup: releaseExistingOnce,
+        };
+      }
+      // Active lease uses different custom providers: isolate this run with its
+      // own merged config.toml derived from the pre-lease original.
+      const isolatedHome = await createIsolatedCodexHome(codexHome, desiredMerged);
+      await releaseExistingOnce();
+      const isolatedConfigPath = path.join(isolatedHome, "config.toml");
+      return {
+        codexHome: isolatedHome,
+        notes: [
+          ...notes,
+          `Merged ${providerNames.length} custom Codex model provider(s) from PAPERCLIP_CODEX_PROVIDERS into isolated "${isolatedConfigPath}": ${providerNames.join(", ")}${
+            parsed.modelProvider ? `; selected model_provider "${parsed.modelProvider}"` : ""
+          }.`,
+        ],
+        cleanup: async () => {
+          await fs.rm(isolatedHome, { recursive: true, force: true });
+        },
+      };
+    } catch (err) {
+      await releaseExistingOnce();
+      throw err;
+    }
+  }
+
+  let resolveMerged!: (value: string) => void;
+  let rejectMerged!: (reason?: unknown) => void;
+  const mergedPromise = new Promise<string>((resolve, reject) => {
+    resolveMerged = resolve;
+    rejectMerged = reject;
+  });
+  let resolveReady!: () => void;
+  let rejectReady!: (reason?: unknown) => void;
+  const readyPromise = new Promise<void>((resolve, reject) => {
+    resolveReady = resolve;
+    rejectReady = reject;
+  });
+  mergedPromise.catch(() => {});
+  readyPromise.catch(() => {});
+
   // A surviving backup from an interrupted run is the true pre-run content;
   // the current config.toml would still carry that run's managed blocks.
-  const original = (await readFileOrNull(backupPath)) ?? (await readFileOrNull(configTomlPath));
-  const providerNames = Object.keys(parsed.providers);
-  const base = stripConflictingDefinitions(
-    stripManagedCodexProviderBlocks(original ?? ""),
-    providerNames,
-    parsed.modelProvider !== null,
-  );
-  await fs.mkdir(input.codexHome, { recursive: true });
-  // Persist the original BEFORE writing the merged file so a run that never
-  // reaches cleanup() can be restored by the next prepare.
-  await fs.writeFile(backupPath, original ?? "", "utf8");
-  await fs.writeFile(configTomlPath, buildMergedConfigToml(base, parsed), "utf8");
+  const lease: ActiveConfigLease = {
+    holders: 1,
+    original: (async () =>
+      (await readFileOrNull(backupPath)) ?? (await readFileOrNull(configTomlPath)))(),
+    merged: mergedPromise,
+    ready: readyPromise,
+    written: false,
+    configTomlPath,
+    backupPath,
+    leaseKey,
+  };
+  activeConfigLeases.set(leaseKey, lease);
+  let released = false;
+  const releaseOnce = async () => {
+    if (released) return;
+    released = true;
+    await releaseConfigLease(lease);
+  };
+
+  try {
+    const original = await lease.original;
+    const mergedContent = buildMergedForOriginal(original);
+    resolveMerged(mergedContent);
+    await fs.mkdir(codexHome, { recursive: true });
+    // Persist the original BEFORE writing the merged file so a run that never
+    // reaches cleanup() can be restored by the next prepare.
+    await fs.writeFile(backupPath, original ?? "", { mode: 0o600 });
+    await fs.writeFile(configTomlPath, mergedContent, { mode: 0o600 });
+    lease.written = true;
+    resolveReady();
+  } catch (err) {
+    rejectMerged(err);
+    rejectReady(err);
+    await releaseOnce();
+    throw err;
+  }
 
   return {
+    codexHome,
     notes: [
       ...notes,
       `Merged ${providerNames.length} custom Codex model provider(s) from PAPERCLIP_CODEX_PROVIDERS into "${configTomlPath}": ${providerNames.join(", ")}${
         parsed.modelProvider ? `; selected model_provider "${parsed.modelProvider}"` : ""
       }.`,
     ],
-    cleanup: async () => {
-      if (original === null) {
-        await fs.rm(configTomlPath, { force: true });
-      } else {
-        await fs.writeFile(configTomlPath, original, "utf8");
-      }
-      await fs.rm(backupPath, { force: true });
-    },
+    cleanup: releaseOnce,
   };
 }
