@@ -10067,12 +10067,29 @@ export function issueService(db: Db) {
       };
     },
 
-    createChild: async (parentIssueId: string, data: IssueChildCreateInput) => db.transaction(async childTx => {
+    createChild: async (
+      parentIssueId: string,
+      data: IssueChildCreateInput,
+    ) => db.transaction(async (childTx) => {
       const childDb = childTx as unknown as Db;
+      // Child creation and an optional parent-blocker relation are one
+      // serialized operation. Recovery locks the same parent row before it
+      // decides that no blocker exists, so it cannot cancel between creation
+      // of a blocking child and insertion of its relation.
+      // Lock order matches `update`: the company privacy-tree lock first, then
+      // the parent row. `create` below takes the same company lock again.
+      const parentCompany = await childDb
+        .select({ companyId: issues.companyId })
+        .from(issues)
+        .where(eq(issues.id, parentIssueId))
+        .then((rows) => rows[0] ?? null);
+      if (!parentCompany) throw notFound("Parent issue not found");
+      await childDb.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${parentCompany.companyId}`}, 0))`);
       const parent = await childDb
         .select()
         .from(issues)
         .where(eq(issues.id, parentIssueId))
+        .for("update")
         .then((rows) => rows[0] ?? null);
       if (!parent) throw notFound("Parent issue not found");
       await assertExecutionTaskParent(childDb, parent.companyId, parent.id);
@@ -10120,6 +10137,10 @@ export function issueService(db: Db) {
         await resolveNewTaskParent(childDb, parent.companyId, parent.id, data.parentDepthPolicy ?? "flatten"),
         data.expectedParentId,
       );
+      if (data.blockParentUntilDone && (parent.status === "done" || parent.status === "cancelled")) {
+        throw conflict("Cannot add a blocking child to a terminal parent issue");
+      }
+
       const [{ childCount }] = await childDb
         .select({ childCount: sql<number>`count(*)::int` })
         .from(issues)
@@ -10214,40 +10235,37 @@ export function issueService(db: Db) {
       });
 
       if (blockParentUntilDone) {
-        await childDb.transaction(async tx => {
-          await tx.select({ id: issues.id }).from(issues).where(and(
-            eq(issues.companyId, parent.companyId), eq(issues.id, parent.id))).for("update");
-          await assertAgentInteraction(tx, { companyId: parent.companyId, actorAgentId: actorAgentId ?? issueData.createdByAgentId,
-            operation: "edit", issueId: parent.id, lock: true });
-          const existingBlockers = await tx
-            .select({ blockerIssueId: issueRelations.issueId })
-            .from(issueRelations)
-            .where(
-              and(
-                eq(issueRelations.companyId, parent.companyId),
-                eq(issueRelations.relatedIssueId, parent.id),
-                eq(issueRelations.type, "blocks"),
-              ),
-            );
-          await syncBlockedByIssueIds(
-            parent.id,
-            parent.companyId,
-            [
-              ...new Set([
-                ...existingBlockers.map((row) => row.blockerIssueId),
-                child.id,
-              ]),
-            ],
-            { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
-            tx,
-          );
+        await assertAgentInteraction(childDb, {
+          companyId: parent.companyId,
+          actorAgentId: actorAgentId ?? issueData.createdByAgentId,
+          operation: "edit",
+          issueId: parent.id,
+          lock: true,
         });
+        const existingBlockers = await childDb
+          .select({ blockerIssueId: issueRelations.issueId })
+          .from(issueRelations)
+          .where(
+            and(
+              eq(issueRelations.companyId, parent.companyId),
+              eq(issueRelations.relatedIssueId, parent.id),
+              eq(issueRelations.type, "blocks"),
+            ),
+          );
         const parentAdjusted = child.parentAdjusted;
-        [child] = await withIssueRelationSummaries(
+        await syncBlockedByIssueIds(
+          parent.id,
           parent.companyId,
-          [child],
+          [
+            ...new Set([
+              ...existingBlockers.map((row) => row.blockerIssueId),
+              child.id,
+            ]),
+          ],
+          { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
           childDb,
         );
+        [child] = await withIssueRelationSummaries(parent.companyId, [child], childDb);
         child = withParentAdjustment(child, parentAdjusted ?? null);
       }
 
@@ -11835,7 +11853,7 @@ export function issueService(db: Db) {
         }
       }
       const isolatedWorkspacesEnabled = (
-        await instanceSettings.getExperimental()
+        await instanceSettingsService(dbOrTx).getExperimental()
       ).enableIsolatedWorkspaces;
       if (options.bindRuntimeSharedWorkspace) {
         const workspaceId = issueData.executionWorkspaceId ?? existing.executionWorkspaceId;
