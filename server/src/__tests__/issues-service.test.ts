@@ -3834,64 +3834,68 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     });
   });
 
-  it("inherits project and strategy, not the realized workspace, from an explicit source issue without creating a parent-child relationship", async () => {
-    const companyId = randomUUID();
-    const projectId = randomUUID();
-    const sourceIssueId = randomUUID();
-    const projectWorkspaceId = randomUUID();
-    const executionWorkspaceId = randomUUID();
+  it.each([true, false])(
+    "inherits project and strategy, not the realized workspace, from an explicit source issue without creating a parent-child relationship (explicit projectId=%s)",
+    async (explicitProjectId) => {
+      const companyId = randomUUID();
+      const projectId = randomUUID();
+      const sourceIssueId = randomUUID();
+      const projectWorkspaceId = randomUUID();
+      const executionWorkspaceId = randomUUID();
 
-    await seedIssueCompany(db, companyId);
-    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+      await seedIssueCompany(db, companyId);
+      await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
 
-    await seedWorkspaceProject(db, companyId, projectId);
+      await seedWorkspaceProject(db, companyId, projectId);
 
-    await db.insert(projectWorkspaces).values({
-      id: projectWorkspaceId,
-      companyId,
-      projectId,
-      name: "Primary workspace",
-    });
+      await db.insert(projectWorkspaces).values({
+        id: projectWorkspaceId,
+        companyId,
+        projectId,
+        name: "Primary workspace",
+      });
 
-    await db.insert(executionWorkspaces).values({
-      id: executionWorkspaceId,
-      companyId,
-      projectId,
-      projectWorkspaceId,
-      mode: "operator_branch",
-      strategyType: "git_worktree",
-      name: "Operator branch",
-      status: "active",
-      providerType: "git_worktree",
-    });
-
-    await db.insert(issues).values({
-      id: sourceIssueId,
-      companyId,
-      projectId,
-      projectWorkspaceId,
-      title: "Source issue",
-      status: "todo",
-      priority: "medium",
-      executionWorkspaceId,
-      executionWorkspacePreference: "reuse_existing",
-      executionWorkspaceSettings: {
+      await db.insert(executionWorkspaces).values({
+        id: executionWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
         mode: "operator_branch",
-      },
-    });
+        strategyType: "git_worktree",
+        name: "Operator branch",
+        status: "active",
+        providerType: "git_worktree",
+      });
 
-    const followUp = await svc.create(companyId, {
-      projectId,
-      title: "Follow-up issue",
-      inheritExecutionWorkspaceFromIssueId: sourceIssueId,
-    });
+      await db.insert(issues).values({
+        id: sourceIssueId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        title: "Source issue",
+        status: "todo",
+        priority: "medium",
+        executionWorkspaceId,
+        executionWorkspacePreference: "reuse_existing",
+        executionWorkspaceSettings: {
+          mode: "operator_branch",
+        },
+      });
 
-    expect(followUp.parentId).toBeNull();
-    expect(followUp.projectWorkspaceId).toBe(projectWorkspaceId);
-    expect(followUp.executionWorkspaceId).toBeNull();
-    expect(followUp.executionWorkspacePreference).toBeNull();
-    expect(JSON.stringify(followUp.executionWorkspaceSettings ?? {})).not.toContain("operator_branch");
-  });
+      const followUp = await svc.create(companyId, {
+        ...(explicitProjectId ? { projectId } : {}),
+        title: "Follow-up issue",
+        inheritExecutionWorkspaceFromIssueId: sourceIssueId,
+      });
+
+      expect(followUp.parentId).toBeNull();
+      expect(followUp.projectId).toBe(projectId);
+      expect(followUp.projectWorkspaceId).toBe(projectWorkspaceId);
+      expect(followUp.executionWorkspaceId).toBeNull();
+      expect(followUp.executionWorkspacePreference).toBeNull();
+      expect(JSON.stringify(followUp.executionWorkspaceSettings ?? {})).not.toContain("operator_branch");
+    },
+  );
 
   it("createChild applies parent defaults, acceptance criteria, an independent workspace, and optional parent blocker chaining", async () => {
     const companyId = randomUUID();
@@ -5261,65 +5265,6 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       mode: "inherit",
       workspaceStrategy: { type: "git_worktree" },
     });
-  });
-
-  it("inherits project and strategy, not the realized workspace, from an explicit source issue without creating a parent-child relationship", async () => {
-    const companyId = randomUUID();
-    const projectId = randomUUID();
-    const sourceIssueId = randomUUID();
-    const projectWorkspaceId = randomUUID();
-    const executionWorkspaceId = randomUUID();
-
-    await seedIssueCompany(db, companyId);
-    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
-
-    await seedWorkspaceProject(db, companyId, projectId);
-
-    await db.insert(projectWorkspaces).values({
-      id: projectWorkspaceId,
-      companyId,
-      projectId,
-      name: "Primary workspace",
-    });
-
-    await db.insert(executionWorkspaces).values({
-      id: executionWorkspaceId,
-      companyId,
-      projectId,
-      projectWorkspaceId,
-      mode: "operator_branch",
-      strategyType: "git_worktree",
-      name: "Operator branch",
-      status: "active",
-      providerType: "git_worktree",
-    });
-
-    await db.insert(issues).values({
-      id: sourceIssueId,
-      companyId,
-      projectId,
-      projectWorkspaceId,
-      title: "Source issue",
-      status: "todo",
-      priority: "medium",
-      executionWorkspaceId,
-      executionWorkspacePreference: "reuse_existing",
-      executionWorkspaceSettings: {
-        mode: "operator_branch",
-      },
-    });
-
-    const followUp = await svc.create(companyId, {
-      title: "Follow-up issue",
-      inheritExecutionWorkspaceFromIssueId: sourceIssueId,
-    });
-
-    expect(followUp.parentId).toBeNull();
-    expect(followUp.projectId).toBe(projectId);
-    expect(followUp.projectWorkspaceId).toBe(projectWorkspaceId);
-    expect(followUp.executionWorkspaceId).toBeNull();
-    expect(followUp.executionWorkspacePreference).toBeNull();
-    expect(JSON.stringify(followUp.executionWorkspaceSettings ?? {})).not.toContain("operator_branch");
   });
 
   it("preserves projectless organization when an update adds workspace linkage", async () => {
