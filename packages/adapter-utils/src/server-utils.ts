@@ -4524,13 +4524,57 @@ export async function ensurePaperclipSkillSymlink(
     .stat(resolvedLinkedPath)
     .then(() => true)
     .catch(() => false);
-  if (linkedPathExists) {
+  const replacesOtherCopy =
+    linkedPathExists &&
+    isOtherCopyOfSameSkill(resolvedLinkedPath, path.resolve(source), path.basename(target));
+  if (linkedPathExists && !replacesOtherCopy) {
     return "skipped";
+  }
+
+  if (replacesOtherCopy) {
+    const tempTarget = `${target}.relink-${process.pid}-${randomUUID()}`;
+    try {
+      await linkSkill(source, tempTarget);
+      await fs.rename(tempTarget, target);
+    } catch (error) {
+      await fs.unlink(tempTarget).catch(() => {});
+      const now = await fs.readlink(target).catch(() => null);
+      if (now && path.resolve(path.dirname(target), now) === path.resolve(source)) {
+        return "repaired";
+      }
+      throw error;
+    }
+    return "repaired";
   }
 
   await fs.unlink(target);
   await linkSkill(source, target);
   return "repaired";
+}
+
+function isOtherCopyOfSameSkill(linkedPath: string, source: string, runtimeName: string): boolean {
+  if (linkedPath === source) return false;
+  const sourceVersion = companySkillVersionLocation(source);
+  const linkedVersion = companySkillVersionLocation(linkedPath);
+  if (sourceVersion && linkedVersion) return sourceVersion.skillDir === linkedVersion.skillDir;
+  if (sourceVersion) return isLiveCompanySkillDir(linkedPath, sourceVersion.companyRoot, runtimeName);
+  if (linkedVersion) return isLiveCompanySkillDir(source, linkedVersion.companyRoot, runtimeName);
+  return false;
+}
+
+function companySkillVersionLocation(dir: string): { skillDir: string; companyRoot: string } | null {
+  const skillDir = path.dirname(dir);
+  const versionsDir = path.dirname(skillDir);
+  if (path.basename(versionsDir) !== "__versions__") return null;
+  return { skillDir, companyRoot: path.dirname(versionsDir) };
+}
+
+function isLiveCompanySkillDir(dir: string, companyRoot: string, runtimeName: string): boolean {
+  if (path.dirname(dir) !== companyRoot) return false;
+  const slug = path.basename(dir);
+  if (!slug || slug.startsWith("__")) return false;
+  if (runtimeName === slug) return true;
+  return runtimeName.startsWith(`${slug}--`) && /^[0-9a-f]{10}$/.test(runtimeName.slice(slug.length + 2));
 }
 
 async function hashSkillDirectory(root: string): Promise<string> {
