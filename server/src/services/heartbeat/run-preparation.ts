@@ -1854,9 +1854,12 @@ export function mergeCoalescedContextSnapshot(
     existingSource?.startsWith("chat:") === true &&
     readNonEmptyString(existing.issueId) !== null &&
     existing.issueId === incoming.issueId &&
-    incomingSource === "native_status_decision" &&
-    readNonEmptyString(incoming.statusDecisionSource) ===
-      "native_status_decision";
+    ((incomingSource === "native_status_decision" &&
+      readNonEmptyString(incoming.statusDecisionSource) ===
+        "native_status_decision") ||
+      (incomingSource === "issue.children_completed" &&
+        readNonEmptyString(incoming.wakeReason) ===
+          "issue_children_completed"));
   const merged: Record<string, unknown> = {
     ...existing,
     ...incoming,

@@ -120,3 +120,115 @@ describe("native status wake context provenance", () => {
     expect(merged.paperclipWake).toBeUndefined();
   });
 });
+
+describe("child completion wake context provenance", () => {
+  const childCompletion = {
+    issueId: "issue-1",
+    taskId: "issue-1",
+    source: "issue.children_completed",
+    wakeReason: "issue_children_completed",
+    completedChildIssueId: "child-1",
+  };
+  const checkedOutSlackContext = {
+    issueId: "issue-1",
+    source: "chat:slack",
+    wakeReason: "External chat message received",
+    wakeCommentIds: ["comment-1"],
+    paperclipHarnessCheckedOut: true,
+    paperclipWake: {
+      issue: { id: "issue-1", status: "in_progress" },
+      commentIds: ["comment-1"],
+      externalChatProvider: "slack",
+      externalChatExecutionBound: false,
+      checkedOutByHarness: true,
+    },
+  };
+  const executionBoundContext = {
+    issueId: "issue-1",
+    source: "chat:telegram",
+    wakeReason: "External chat message received",
+    wakeCommentIds: ["comment-1"],
+    paperclipExternalChatExecutionBound: true,
+    paperclipWake: {
+      issue: { id: "issue-1", status: "in_review" },
+      commentIds: ["comment-1"],
+      externalChatProvider: "telegram",
+      externalChatExecutionBound: true,
+      checkedOutByHarness: false,
+    },
+  };
+
+  it("preserves a verified chat source when a same-issue child completion coalesces into the run", () => {
+    const merged = mergeCoalescedContextSnapshot(
+      {
+        issueId: "issue-1",
+        source: "chat:slack",
+        wakeCommentId: "comment-1",
+        wakeCommentIds: ["comment-1"],
+      },
+      childCompletion,
+    );
+
+    expect(merged).toMatchObject({
+      source: "chat:slack",
+      wakeReason: "issue_children_completed",
+      completedChildIssueId: "child-1",
+      wakeCommentId: "comment-1",
+      wakeCommentIds: ["comment-1"],
+    });
+  });
+
+  it("retains the exact harness checked-out chat wake when a same-issue child completion coalesces", () => {
+    const merged = mergeCoalescedContextSnapshot(
+      checkedOutSlackContext,
+      childCompletion,
+    );
+    expect(merged).toMatchObject(checkedOutSlackContext);
+    expect(merged.completedChildIssueId).toBe("child-1");
+    expect(merged.paperclipWake).toBe(checkedOutSlackContext.paperclipWake);
+    expect(merged.paperclipExternalChatExecutionBound).toBeUndefined();
+  });
+
+  it("retains the exact execution-bound chat wake when a same-issue child completion coalesces", () => {
+    const merged = mergeCoalescedContextSnapshot(
+      executionBoundContext,
+      childCompletion,
+    );
+    expect(merged).toMatchObject(executionBoundContext);
+    expect(merged.completedChildIssueId).toBe("child-1");
+    expect(merged.paperclipWake).toBe(executionBoundContext.paperclipWake);
+  });
+
+  it.each([checkedOutSlackContext, executionBoundContext])(
+    "invalidates the admitted chat wake when a child completion brings new wake comments: %j",
+    (existing) => {
+      const merged = mergeCoalescedContextSnapshot(existing, {
+        ...childCompletion,
+        wakeCommentIds: ["new-comment"],
+      });
+      expect(merged.paperclipWake).toBeUndefined();
+      expect(merged.paperclipExternalChatExecutionBound).toBeUndefined();
+      expect(merged.wakeReason).toBe("issue_children_completed");
+      expect(merged.wakeCommentIds).toEqual(["comment-1", "new-comment"]);
+    },
+  );
+
+  it.each([
+    {
+      ...childCompletion,
+      issueId: "unrelated-issue",
+      taskId: "unrelated-issue",
+    },
+    { ...childCompletion, wakeReason: "issue_commented" },
+  ])(
+    "does not preserve chat provenance for a child completion outside the admitted scope: %j",
+    (incoming) => {
+      const merged = mergeCoalescedContextSnapshot(
+        checkedOutSlackContext,
+        incoming,
+      );
+      expect(merged.source).toBe("issue.children_completed");
+      expect(merged.paperclipWake).toBeUndefined();
+    },
+  );
+});

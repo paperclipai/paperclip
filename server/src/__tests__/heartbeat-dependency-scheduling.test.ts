@@ -194,6 +194,91 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     await tempDb?.cleanup();
   });
 
+  it("admits an API child completion behind the running parent turn and absorbs a repeat into one follow-up", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const childId = randomUUID();
+    let finishParent!: () => void;
+    const parentFinished = new Promise<void>((resolve) => { finishParent = resolve; });
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await parentFinished;
+      await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, issueId));
+      return { exitCode: 0, signal: null, timedOut: false, errorMessage: null,
+        summary: "Waiting for the child.", provider: "test", model: "test-model" };
+    });
+    await db.insert(companies).values({ id: companyId, name: "API child completion",
+      issuePrefix: `N${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false, defaultResponsibleUserId: "responsible-user" });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Parent", role: "engineer",
+      status: "active", adapterType: "codex_local", adapterConfig: {}, permissions: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } } });
+    await db.insert(issues).values([
+      { id: issueId, companyId, title: "Parent of an API-closed child", status: "todo",
+        assigneeAgentId: agentId, responsibleUserId: "responsible-user" },
+      { id: childId, companyId, parentId: issueId, title: "Child closed through the API", status: "done",
+        responsibleUserId: "responsible-user" },
+    ]);
+    // The wake emitted by routes/issues.ts when the last child reaches a terminal status.
+    const childCompletedWake = {
+      source: "automation" as const, triggerDetail: "system" as const, reason: "issue_children_completed",
+      payload: { issueId, completedChildIssueId: childId, childIssueIds: [childId] },
+      requestedByActorType: "user" as const, requestedByActorId: "responsible-user",
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_children_completed",
+        source: "issue.children_completed", completedChildIssueId: childId, childIssueIds: [childId],
+        childIssueSummaries: [{ id: childId, summary: "Child summary written after the turn started." }] },
+    };
+    try {
+      const parentRun = await heartbeat.wakeup(agentId, { source: "assignment", triggerDetail: "system",
+        reason: "issue_assigned", payload: { issueId }, contextSnapshot: { issueId, wakeReason: "issue_assigned" } });
+      expect(parentRun).not.toBeNull();
+      await db.insert(issueComments).values({ companyId, issueId, authorAgentId: agentId,
+        authorType: "agent", createdByRunId: parentRun!.id, body: "Waiting for the child." });
+      expect(await waitForCondition(async () => mockAdapterExecute.mock.calls.length === 1, 30_000)).toBe(true);
+
+      // First wake: not merged into the running turn; it becomes a follow-up (queued run or deferred wake).
+      const first = await heartbeat.wakeup(agentId, childCompletedWake);
+      expect(first?.id).not.toBe(parentRun!.id);
+      const [runningParent] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, parentRun!.id));
+      expect(runningParent!.status).toBe("running");
+      expect(runningParent!.contextSnapshot).not.toMatchObject({ wakeReason: "issue_children_completed" });
+      const followups = async () => {
+        const runs = await db.select().from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "queued"),
+        ));
+        const deferred = await db.select().from(agentWakeupRequests).where(and(
+          eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.status, "deferred_issue_execution"),
+        ));
+        return runs.length + deferred.length;
+      };
+      expect(await followups()).toBe(1);
+
+      // Identical wake right after: absorbed by that follow-up, no second run.
+      await heartbeat.wakeup(agentId, childCompletedWake);
+      expect(await followups()).toBe(1);
+      expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+
+      finishParent();
+      expect(await waitForCondition(async () => mockAdapterExecute.mock.calls.length === 2, 10_000)).toBe(true);
+      await heartbeat.drainActiveRunExecutions();
+      const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+      // Exactly one run carries the child completion (unrelated disposition-repair runs may follow the blocked parent).
+      const childRuns = runs.filter((run) =>
+        (run.contextSnapshot as Record<string, unknown> | null)?.wakeReason === "issue_children_completed");
+      expect(childRuns).toHaveLength(1);
+      const followup = childRuns[0]!;
+      expect(followup.id).not.toBe(parentRun!.id);
+      expect(followup.status).toBe("succeeded");
+      expect(followup.startedAt!.getTime()).toBeGreaterThanOrEqual(
+        (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, parentRun!.id)))[0]!.finishedAt!.getTime());
+      expect(followup.contextSnapshot).toMatchObject({
+        source: "issue.children_completed", completedChildIssueId: childId,
+      });
+    } finally {
+      finishParent();
+    }
+  }, 45_000);
 
   it("keeps blocked descendants idle until their blockers resolve", async () => {
     const companyId = randomUUID();
