@@ -484,6 +484,8 @@ Remote Codex sessions relay assigned app tools through the server's configured
 gateway. Small catalogs are sent directly. When a catalog would exceed the
 runner's 256-operation or 768 KiB contract limit, the server exposes
 `paperclip_search_assigned_tools` and `paperclip_call_assigned_tool` instead.
+The server does the same when one tool description is over the runner's
+16 KiB contract limit.
 Search accepts a `limit` from 1 to 20 and defaults to 5 results per page.
 Use the returned `nextOffset` as `offset` to read the next page. The tool and
 parameter descriptions include these bounds for providers that render numeric
