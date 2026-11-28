@@ -613,6 +613,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
                   startedAt,
                   finishedAt,
                   durationMs,
+                  metadata: result.metadata,
                 };
               } finally {
                 if (span) {
