@@ -1,3 +1,4 @@
+import { assertReportingLineMove } from "./reporting-line-hiring.js";
 import { isDeepStrictEqual } from "node:util";
 import { currentPluginInteractionOrigin } from "./plugin-interaction-context.js";
 import { assertAgentInteraction } from "./agent-interaction-policy.js";
@@ -50,6 +51,7 @@ export async function prepareAgentConfiguration(db: Db, existing: AgentConfigura
   }
   await notifyAttentionRetentionWork(db, { companyId: existing.companyId });
   const id = existing.id;
+  await assertReportingLineMove(db, existing, data.reportsTo, options?.recordRevision?.createdByAgentId);
   const { ensureManager, assertNoCycle, assertCompanyShortnameAvailable, assertBuiltInAgentMetadataMutationAllowed } = agentRecordQueries(db);
   if (existing.status === "pending_approval" && !options?.allowPendingApprovalConfigUpdate) {
     const changedFields = changedPendingApprovalConfigFields(agentRecordQueries(db).normalizeAgentRow(existing), data);

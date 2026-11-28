@@ -77,6 +77,7 @@ export {
   createCompanySchema,
   interactionResolverGovernanceSchema,
   updateCompanySchema,
+  reportingLineHiringPolicySchema,
   updateCompanyBrandingSchema,
   type CreateCompany,
   type UpdateCompany,

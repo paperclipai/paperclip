@@ -130,6 +130,7 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
     defaultDecisionOwnerUserId: companies.defaultDecisionOwnerUserId,
     budgetOwnerUserId: companies.budgetOwnerUserId,
     requireBoardApprovalForNewAgents: companies.requireBoardApprovalForNewAgents,
+    reportingLineHiringPolicy: companies.reportingLineHiringPolicy,
     interactionResolverGovernance: companies.interactionResolverGovernance,
     feedbackDataSharingEnabled: companies.feedbackDataSharingEnabled,
     feedbackDataSharingConsentAt: companies.feedbackDataSharingConsentAt,
@@ -316,7 +317,7 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
     ) => {
       const budgetPublications: ActivityPublication[] = [];
       const result = await db.transaction(async (tx) => {
-        if (data.status !== undefined || data.budgetMonthlyCents !== undefined) {
+        if (data.status !== undefined || data.budgetMonthlyCents !== undefined || data.reportingLineHiringPolicy !== undefined) {
           await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, id)).for("no key update");
         }
         const existing = await getCompanyQuery(tx)

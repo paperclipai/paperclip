@@ -257,3 +257,15 @@ Any other value returns `422`. Only the current content is kept for a save
 record. When a save's content is no longer current, a read of that save returns
 `404` with code `INSTRUCTION_REVISION_CONTENT_NOT_RETAINED`. The save stays in
 the history list.
+
+## Agent hires within a reporting line
+
+When the [hiring restriction](companies.md#hiring-within-reporting-lines) is on, an
+agent with `agents:create` can only hire under itself or a manager below it in the
+org chart. If the request omits `reportsTo`, the new agent reports to the caller.
+An explicit `null` asks for a top-level agent and is unavailable to agent callers
+under this policy.
+
+The same boundary applies to a reporting-line move made by an agent. Both the
+agent being moved and the destination must be within the caller's branch.
+Existing permission and approval checks still apply.

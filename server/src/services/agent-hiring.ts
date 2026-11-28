@@ -1,3 +1,5 @@
+import { assertReportingLineMove, reportingLineForHire } from "./reporting-line-hiring.js";
+import { currentPluginInteractionOrigin } from "./plugin-interaction-context.js";
 import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import { assertNoInitialAgentInteractionPermissions, preserveAgentInteractionPermissions } from "../lib/agent-interaction-permissions.js";
 import { assertEphemeralAgentInstructions } from "./agent-instructions.js";
@@ -24,10 +26,13 @@ import { assertProviderApiPlacementPolicy, isProviderApiSetupDraft, resolveProvi
 
 export async function prepareAgentHire(db: Db, companyId: string, input: CreateAgentData, options?: CreateAgentOptions): Promise<CreateAgentData> {
   assertNoInitialAgentInteractionPermissions(input.permissions);
+  const hiringAgentId = currentPluginInteractionOrigin()?.agentId ?? options?.createdByAgentId;
+  const reportsTo = await reportingLineForHire(db, companyId, input, hiringAgentId);
   await assertAgentInteraction(db, { companyId, actorAgentId: options?.createdByAgentId, actorCompanyId: options?.createdByAgentCompanyId,
     operation: "mention", texts: [JSON.stringify(input), ...(options?.interactionTexts ?? [])], lock: "update" });
   await notifyAttentionRetentionWork(db, { companyId });
   const { runner, ...data } = input;
+  if (reportsTo !== undefined) data.reportsTo = reportsTo;
   const selection = options?.runnerResolved
     ? { adapterType: data.adapterType ?? "process", adapterConfig: isPlainRecord(data.adapterConfig) ? data.adapterConfig : {} }
     : await resolveNewAgentRunnerForCompany(db, companyId, {
@@ -113,9 +118,15 @@ export async function initializeAgentHire(txDb: Db, created: AgentHireRecord, op
   }
 }
 
-export async function prepareAgentHireApproval(txDb: Db, existing: AgentHireRecord, approvedPayload?: Record<string, unknown> | null): Promise<AgentConfigurationPatch> {
+export async function prepareAgentHireApproval(txDb: Db, existing: AgentHireRecord, approvedPayload?: Record<string, unknown> | null,
+  requestedByAgentId?: string | null): Promise<AgentConfigurationPatch> {
   const approvedPatch = approvedPayload ? configPatchFromApprovalPayload(approvedPayload) : {};
   const patch = { ...approvedPatch } as AgentConfigurationPatch;
+  await assertReportingLineMove(txDb, existing, patch.reportsTo, requestedByAgentId);
+  await reportingLineForHire(txDb, existing.companyId, {
+    id: existing.id,
+    reportsTo: patch.reportsTo === undefined ? existing.reportsTo : patch.reportsTo,
+  }, requestedByAgentId);
   const hasApprovedAdapterConfig = Object.prototype.hasOwnProperty.call(patch, "adapterConfig") && isPlainRecord(patch.adapterConfig);
   if (
     Object.prototype.hasOwnProperty.call(patch, "adapterConfig") &&

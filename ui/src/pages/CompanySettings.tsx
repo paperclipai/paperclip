@@ -4,7 +4,9 @@ import { AgentObservabilitySettingsSection } from "../components/observability/A
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  reportingLineHiringPolicySchema,
   type InteractionResolverGovernance,
+  type ReportingLineHiringPolicy,
   type IssueThreadInteractionKind,
 } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
@@ -30,11 +32,14 @@ import {
 } from "../components/InteractionGovernancePanel";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
+  DraftNumberInput,
   Field,
   HintIcon,
   ToggleField,
 } from "../components/agent-config-primitives";
 import { InstanceGeneralSettings } from "./InstanceGeneralSettings";
+
+const defaultReportingLineHiringPolicy = reportingLineHiringPolicySchema.parse({ enabled: false });
 
 export function CompanySettings() {
   const {
@@ -90,6 +95,21 @@ export function CompanySettings() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
     }
+  });
+
+  const boardAccess = useQuery({
+    queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: accessApi.getCurrentBoardAccess,
+    enabled: !!selectedCompanyId,
+  });
+  const boardAuthority = boardAccess.data;
+  const canManageReportingLineHiringPolicy = boardAuthority?.source === "local_implicit" || boardAuthority?.isInstanceAdmin ||
+    boardAuthority?.memberships?.some(member => member.companyId === selectedCompanyId &&
+      member.status === "active" && member.membershipRole === "owner");
+  const reportingLineHiringPolicy = selectedCompany?.reportingLineHiringPolicy ?? defaultReportingLineHiringPolicy;
+  const reportingLineHiringMutation = useMutation({
+    mutationFn: (policy: ReportingLineHiringPolicy) => companiesApi.update(selectedCompanyId!, { reportingLineHiringPolicy: policy }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.companies.all }),
   });
 
   const settingsMutation = useMutation({
@@ -398,6 +418,35 @@ export function CompanySettings() {
             toggleTestId="company-settings-team-approval-toggle"
           />
         </div>
+        {canManageReportingLineHiringPolicy && (
+          <fieldset className="space-y-3" disabled={reportingLineHiringMutation.isPending}>
+            <ToggleField
+              label="Limit hiring to each agent’s reporting line"
+              hint="Agents with hiring permission can only hire under themselves or their reports. The approval setting above still applies."
+              checked={reportingLineHiringPolicy.enabled}
+              onChange={(enabled) => reportingLineHiringMutation.mutate({ ...reportingLineHiringPolicy, enabled })}
+            />
+            {reportingLineHiringPolicy.enabled && (
+              <div className="flex flex-wrap gap-3">
+                <label className="flex items-center gap-2 text-sm">
+                  Maximum reporting depth
+                  <DraftNumberInput className="w-20 rounded-md border bg-background px-2 py-1" min={1} max={1000}
+                    value={reportingLineHiringPolicy.maxDepth} disabled={reportingLineHiringMutation.isPending}
+                    onCommit={(maxDepth) => reportingLineHiringMutation.mutate({ ...reportingLineHiringPolicy, maxDepth })} />
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  Maximum direct reports
+                  <DraftNumberInput className="w-20 rounded-md border bg-background px-2 py-1" min={1} max={1000}
+                    value={reportingLineHiringPolicy.maxDirectReports} disabled={reportingLineHiringMutation.isPending}
+                    onCommit={(maxDirectReports) => reportingLineHiringMutation.mutate({ ...reportingLineHiringPolicy, maxDirectReports })} />
+                </label>
+              </div>
+            )}
+            {reportingLineHiringMutation.error && (
+              <p className="text-xs text-destructive" role="alert">{describeError(reportingLineHiringMutation.error).body}</p>
+            )}
+          </fieldset>
+        )}
       </div>
 
       {/* Decisions */}

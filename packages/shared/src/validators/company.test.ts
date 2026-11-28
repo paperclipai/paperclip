@@ -72,3 +72,14 @@ describe("portability company manifest tolerance", () => {
     expect(parsed.name).toBe("Acme");
   });
 });
+
+describe("reporting-line hiring limits", () => {
+  it("defaults to ten levels and thirty direct reports and accepts explicit limits", () => {
+    for (const limits of [{}, { maxDepth: 6, maxDirectReports: 40 }]) {
+      const parsed = updateCompanySchema.parse({ reportingLineHiringPolicy: { enabled: true, ...limits } });
+      expect(parsed.reportingLineHiringPolicy).toEqual({
+        enabled: true, maxDepth: 10, maxDirectReports: 30, ...limits,
+      });
+    }
+  });
+});

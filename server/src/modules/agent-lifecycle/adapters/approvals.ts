@@ -45,10 +45,16 @@ export function hireApprovalService(db: Db, effects: LifecycleEffects) {
         applied = result.applied;
       }
       const payload = approval?.payload ?? {};
+      const requestedByAgentId = approval?.requestedByAgentId;
       let agentId = typeof target === "string" ? target : typeof payload.agentId === "string" ? payload.agentId : null;
       if (applied && status === "approved") {
         if (agentId) {
-          const activated = await records.activatePendingApproval(agentId, approval ? payload : null, approval ? approval.requestedByUserId : userId);
+          const activated = await records.activatePendingApproval(
+            agentId,
+            approval ? payload : null,
+            approval ? approval.requestedByUserId : userId,
+            { companyId, requestedByAgentId },
+          );
           if (!approval) applied = activated?.activated ?? false;
         } else {
           const created = await records.create(companyId, {
@@ -56,7 +62,8 @@ export function hireApprovalService(db: Db, effects: LifecycleEffects) {
             appearance: payload.appearance == null ? undefined : agentAppearanceSchema.parse(payload.appearance),
             role: String(payload.role ?? "general"),
             title: typeof payload.title === "string" ? payload.title : null,
-            reportsTo: typeof payload.reportsTo === "string" ? payload.reportsTo : null,
+            reportsTo: payload.reportsTo === undefined && requestedByAgentId ? undefined
+              : typeof payload.reportsTo === "string" ? payload.reportsTo : null,
             capabilities: typeof payload.capabilities === "string" ? payload.capabilities : null,
             adapterType: String(payload.adapterType ?? "process"),
             adapterConfig:
@@ -73,7 +80,12 @@ export function hireApprovalService(db: Db, effects: LifecycleEffects) {
             spentMonthlyCents: 0,
             permissions: undefined,
             lastHeartbeatAt: null,
-          }, { runnerResolved: true, createdByUserId: approval!.requestedByAgentId ? null : approval!.requestedByUserId, responsibleUserId: approval!.requestedByUserId });
+          }, {
+            runnerResolved: true,
+            ...(requestedByAgentId ? { createdByAgentId: requestedByAgentId, createdByAgentCompanyId: companyId } : {}),
+            createdByUserId: requestedByAgentId ? null : approval!.requestedByUserId,
+            responsibleUserId: approval!.requestedByUserId,
+          });
           agentId = created.id;
         }
         if (approval && agentId && typeof payload.budgetMonthlyCents === "number" && payload.budgetMonthlyCents > 0) {
