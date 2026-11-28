@@ -312,6 +312,23 @@ up where the last one left off, maintaining conversation context,
 memories, and tool state across heartbeats. The `sessionCodec` validates
 and migrates session state between runs.
 
+### Run token and bound secrets
+
+Paperclip mints a JWT for each `hermes_local` run. `/api/agents/me/secrets`
+accepts only this token.
+
+When Hermes runs tools in a shared gateway, the token does not reach the tool
+shell. Hermes removes secret-shaped names from the client environment, so
+`$PAPERCLIP_API_KEY` in that shell comes from the profile `.env`.
+
+The adapter therefore writes the token to a private file for each run. The
+directory has mode `0700` and the file has mode `0600`. The adapter restores
+the file if it disappears during the run and removes it when the run ends. The
+system prompt overlay gives the agent the path, not the token.
+
+The tools must see the same filesystem as the adapter. A Docker or remote
+terminal backend cannot read this file.
+
 ### Managed instructions and resumed turns
 
 The local adapter reads `instructionsFilePath` on every run. It sends that
