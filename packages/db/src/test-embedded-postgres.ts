@@ -205,6 +205,7 @@ const EMBEDDED_POSTGRES_START_MAX_ATTEMPTS = 5;
 
 export type EmbeddedPostgresTestDatabaseOptions = {
   maxConnections?: number;
+  localOnly?: boolean;
 };
 
 function applyPostgresConfigOverrides(dataDir: string, options?: EmbeddedPostgresTestDatabaseOptions): void {
@@ -645,8 +646,10 @@ async function probeEmbeddedPostgresSupport(): Promise<EmbeddedPostgresTestSuppo
   }
 }
 
-export async function getEmbeddedPostgresTestSupport(): Promise<EmbeddedPostgresTestSupport> {
-  const adminUrl = testPostgresAdminUrl();
+export async function getEmbeddedPostgresTestSupport(
+  { localOnly }: Pick<EmbeddedPostgresTestDatabaseOptions, "localOnly"> = {},
+): Promise<EmbeddedPostgresTestSupport> {
+  const adminUrl = localOnly ? undefined : testPostgresAdminUrl();
   if (adminUrl) {
     await checkTestPostgresAdmin(adminUrl);
     return { supported: true };
@@ -694,7 +697,7 @@ export async function startEmbeddedPostgresTestDatabase(
   tempDirPrefix: string,
   options?: EmbeddedPostgresTestDatabaseOptions,
 ): Promise<EmbeddedPostgresTestDatabase> {
-  const adminUrl = testPostgresAdminUrl();
+  const adminUrl = options?.localOnly ? undefined : testPostgresAdminUrl();
   if (adminUrl) return startTestPostgresDatabase(adminUrl);
   const { port, dataDir, instance, mode } = await startEmbeddedPostgresClusterForSuite(tempDirPrefix, options);
   lastStartMode = mode;
