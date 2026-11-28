@@ -32,7 +32,7 @@ import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
 import * as runnerProbe from "../vendor/paperclip-runner/index.js";
 import * as nativeCodexRunner from "../services/native-runtime/native-codex-runner.js";
 import { testNativeRunnerAuthentication } from "../services/native-runtime/setup-readiness.js";
-import { prepareManagedAiRuntime, withManagedAiProbe, assertManagedAiProjectAuth, isAiConnectionBusy, isAiConnectionIncompatible, managedAiSessionFingerprintConfig } from "../services/ai-connection-runtime.js";
+import { prepareManagedAiRuntime, withManagedAiProbe, assertManagedAiProjectAuth, agentModelDefaults, isAiConnectionBusy, isAiConnectionIncompatible, managedAiSessionFingerprintConfig, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
 import { execute as executeGemini, testEnvironment as testGeminiEnvironment } from "@paperclipai/adapter-gemini-local/server";
 import { toolAccessService } from "../services/tool-access.js";
 import { secretService } from "../services/secrets.js";
@@ -342,6 +342,38 @@ describe("managed AI connections", () => {
         }
       } finally { await runtime.cleanup(); }
     }
+  });
+
+  it("re-applies the agent's CLAUDE_CODE_SUBAGENT_MODEL after managed credential blanking", async () => {
+    const owner = "subagent-model-owner";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    await create(owner, owner);
+    const runtime = await prepareManagedAiRuntime(db, { ...input, responsibleUserId: owner, config: { env: { CLAUDE_CODE_SUBAGENT_MODEL: "sonnet", ANTHROPIC_MODEL: "opus", ANTHROPIC_API_KEY: "stale-agent-key" } } });
+    try {
+      expect(runtime.config.env).toMatchObject({
+        CLAUDE_CODE_SUBAGENT_MODEL: "sonnet",
+        ANTHROPIC_MODEL: "",
+        ANTHROPIC_API_KEY: `fixture-${owner}`,
+      });
+    } finally { await runtime.cleanup(); }
+  });
+
+  it("preserves the agent's CLAUDE_CODE_SUBAGENT_MODEL through managed-run config resolution", async () => {
+    const owner = "subagent-model-resolve-owner";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    await create(owner, owner);
+    const agentEnv = { CLAUDE_CODE_SUBAGENT_MODEL: "sonnet", ANTHROPIC_API_KEY: "stale-agent-key", CUSTOM_VALUE: "x" };
+    const executionRunConfig = { env: { ...stripAiAuthBindings(agentEnv), ...agentModelDefaults(agentEnv) } };
+    const { resolvedConfig } = await resolveExecutionRunAdapterConfig({
+      companyId, agentId, adapterType: "claude_local", managedAiCredentials: true,
+      executionRunConfig, projectEnv: null,
+      secretsSvc: { resolveAdapterConfigForRuntime: vi.fn(async (_companyId: string, config: Record<string, unknown>) => ({ config, secretKeys: new Set<string>(), manifest: [] })) } as never,
+    });
+    expect(resolvedConfig.env).toMatchObject({ CLAUDE_CODE_SUBAGENT_MODEL: "sonnet", CUSTOM_VALUE: "x" });
+    const runtime = await prepareManagedAiRuntime(db, { ...input, responsibleUserId: owner, config: resolvedConfig });
+    try {
+      expect(runtime.config.env).toMatchObject({ CLAUDE_CODE_SUBAGENT_MODEL: "sonnet", ANTHROPIC_API_KEY: `fixture-${owner}` });
+    } finally { await runtime.cleanup(); }
   });
 
   it("uses a vaulted Copilot token with GitHub attribution and refuses revoked or foreign grants", async () => {
