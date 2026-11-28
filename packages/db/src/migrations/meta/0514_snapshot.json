@@ -1,6 +1,6 @@
 {
-  "id": "7adc8220-8196-44a5-94ee-26f8f5c33dee",
-  "prevId": "001ed6d5-4cc4-4f05-91ec-f3031c94bc98",
+  "id": "f2db73cd-6299-4b9c-a5bd-6cf33013c845",
+  "prevId": "bd7706ab-f548-43f0-9dbb-4f1d52d9c135",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -19279,6 +19279,18 @@
           "notNull": true,
           "default": "'[]'::jsonb"
         },
+        "security_override": {
+          "name": "security_override",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "security_override_summary": {
+          "name": "security_override_summary",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "enabled": {
           "name": "enabled",
           "type": "boolean",
@@ -20176,6 +20188,87 @@
         "company_skill_repository_snapshots_company_id_companies_id_fk": {
           "name": "company_skill_repository_snapshots_company_id_companies_id_fk",
           "tableFrom": "company_skill_repository_snapshots",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.company_skill_security_approvals": {
+      "name": "company_skill_security_approvals",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "content_hash": {
+          "name": "content_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "approval": {
+          "name": "approval",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "company_skill_security_approvals_company_content_idx": {
+          "name": "company_skill_security_approvals_company_content_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "content_hash",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "company_skill_security_approvals_company_id_companies_id_fk": {
+          "name": "company_skill_security_approvals_company_id_companies_id_fk",
+          "tableFrom": "company_skill_security_approvals",
           "tableTo": "companies",
           "columnsFrom": [
             "company_id"
@@ -21133,6 +21226,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "security_approval_id": {
+          "name": "security_approval_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -21148,6 +21247,22 @@
           ],
           "isUnique": false,
           "where": "\"company_skill_versions\".\"migration_at\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "company_skill_versions_security_approval_idx": {
+          "name": "company_skill_versions_security_approval_idx",
+          "columns": [
+            {
+              "expression": "security_approval_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"company_skill_versions\".\"security_approval_id\" is not null",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -21317,6 +21432,19 @@
             "id"
           ],
           "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "company_skill_versions_security_approval_id_company_skill_security_approvals_id_fk": {
+          "name": "company_skill_versions_security_approval_id_company_skill_security_approvals_id_fk",
+          "tableFrom": "company_skill_versions",
+          "tableTo": "company_skill_security_approvals",
+          "columnsFrom": [
+            "security_approval_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
           "onUpdate": "no action"
         }
       },
@@ -26296,6 +26424,160 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.document_annotation_comment_reactions": {
+      "name": "document_annotation_comment_reactions",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "comment_id": {
+          "name": "comment_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reaction": {
+          "name": "reaction",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor_type": {
+          "name": "actor_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor_id": {
+          "name": "actor_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "removed_at": {
+          "name": "removed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "document_annotation_comment_reactions_company_comment_idx": {
+          "name": "document_annotation_comment_reactions_company_comment_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "comment_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "document_annotation_comment_reactions_comment_reaction_actor_idx": {
+          "name": "document_annotation_comment_reactions_comment_reaction_actor_idx",
+          "columns": [
+            {
+              "expression": "comment_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "reaction",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "actor_type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "actor_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "document_annotation_comment_reactions_company_id_companies_id_fk": {
+          "name": "document_annotation_comment_reactions_company_id_companies_id_fk",
+          "tableFrom": "document_annotation_comment_reactions",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "document_annotation_comment_reactions_comment_id_document_annotation_comments_id_fk": {
+          "name": "document_annotation_comment_reactions_comment_id_document_annotation_comments_id_fk",
+          "tableFrom": "document_annotation_comment_reactions",
+          "tableTo": "document_annotation_comments",
+          "columnsFrom": [
+            "comment_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "document_annotation_comment_reactions_reaction_chk": {
+          "name": "document_annotation_comment_reactions_reaction_chk",
+          "value": "\"document_annotation_comment_reactions\".\"reaction\" in ('done', 'check', 'thumbs_up', 'question')"
+        },
+        "document_annotation_comment_reactions_actor_type_chk": {
+          "name": "document_annotation_comment_reactions_actor_type_chk",
+          "value": "\"document_annotation_comment_reactions\".\"actor_type\" in ('agent', 'user')"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.document_annotation_comments": {
@@ -36736,6 +37018,62 @@
           ],
           "isUnique": false,
           "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "heartbeat_runs_attention_resumed_idx": {
+          "name": "heartbeat_runs_attention_resumed_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "coalesce(\"issue_id\"::text, \"native_issue_id\"::text,\n        \"context_snapshot\"->>'issueId', \"context_snapshot\"->>'taskId')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"heartbeat_runs\".\"status\" in ('running', 'succeeded')",
+          "concurrently": true,
+          "method": "btree",
+          "with": {}
+        },
+        "heartbeat_runs_attention_history_idx": {
+          "name": "heartbeat_runs_attention_history_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"heartbeat_runs\".\"status\" in ('failed', 'timed_out') or \"heartbeat_runs\".\"error_code\" = 'provider_limit_wait'",
+          "concurrently": true,
           "method": "btree",
           "with": {}
         },
@@ -60159,6 +60497,28 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "tool_call_events_connection_error_idx": {
+          "name": "tool_call_events_connection_error_idx",
+          "columns": [
+            {
+              "expression": "connection_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"tool_call_events\".\"error_message\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -62607,6 +62967,28 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "tool_invocations_connection_error_idx": {
+          "name": "tool_invocations_connection_error_idx",
+          "columns": [
+            {
+              "expression": "connection_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"tool_invocations\".\"error_message\" is not null",
           "concurrently": false,
           "method": "btree",
           "with": {}

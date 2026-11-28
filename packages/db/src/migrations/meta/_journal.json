@@ -3564,6 +3564,34 @@
       "when": 1795635927842,
       "tag": "0510_clear_speedball",
       "breakpoints": true
+    },
+    {
+      "idx": 509,
+      "version": "7",
+      "when": 1795635927843,
+      "tag": "0511_skill_source_security_override",
+      "breakpoints": true
+    },
+    {
+      "idx": 510,
+      "version": "7",
+      "when": 1795635927844,
+      "tag": "0512_skill_version_security_approval",
+      "breakpoints": true
+    },
+    {
+      "idx": 511,
+      "version": "7",
+      "when": 1795635927845,
+      "tag": "0513_skill_source_security_override_summary",
+      "breakpoints": true
+    },
+    {
+      "idx": 512,
+      "version": "7",
+      "when": 1795635927846,
+      "tag": "0514_skill_version_security_approval_index",
+      "breakpoints": true
     }
   ]
 }

@@ -1,7 +1,7 @@
 import path from 'node:path';
 import type { CompanySkillVersionFileInventoryEntry, SkillSourceUpdateDiffFile, SkillSourcePackageMode } from '@paperclipai/shared';
 import { unprocessable } from '../errors.js';
-import { scanGitHubSkillsWithPackageFallback, type GitHubRead, type ScannedSkillSource } from './github-skill-source.js';
+import { scanGitHubSkillsWithPackageFallback, type GitHubRead, type ScannedSkillSource, type SkillScanOptions } from './github-skill-source.js';
 
 // Bounded LCS work for one file, after trimming the shared head and tail of the two files.
 const MAX_DIFF_CELLS = 4_000_000;
@@ -151,19 +151,25 @@ function packageSnapshot(scan: ScannedSkillSource, input: { packageMode?: SkillS
 export type GitHubSkillUpdateDiff = ({ supported: true } & SkillPackageDiff) | { supported: false; reason: string };
 
 export async function diffGitHubSkillUpdate(
-  input: { repositoryUrl: string; packageMode?: SkillSourcePackageMode; skillPath: string; installedCommitSha: string; latestCommitSha: string },
+  input: { repositoryUrl: string; packageMode?: SkillSourcePackageMode; skillPath: string; installedCommitSha: string; latestCommitSha: string;
+    /** The branch the source tracks, so an approval's future-update trust applies as it does on refresh. */
+    trackingRef?: string;
+    /** The source's saved approval, so the latest commit compares like the refresh that would publish it. */
+    securityOverrides?: SkillScanOptions['securityOverrides'];
+    /** The installed version's own approval record, so its admitted files compare as installed. */
+    installedSecurityOverrides?: SkillScanOptions['securityOverrides'] },
   read: GitHubRead,
   signal?: AbortSignal,
 ): Promise<GitHubSkillUpdateDiff> {
-  const snapshotAt = async (commitSha: string) => {
+  const snapshotAt = async (commitSha: string, securityOverrides: SkillScanOptions['securityOverrides']) => {
     signal?.throwIfAborted();
-    const scan = await scanGitHubSkillsWithPackageFallback({ repositoryUrl: input.repositoryUrl, packageMode: input.packageMode, commitSha, onlySkillPath: input.skillPath }, read, { signal });
+    const scan = await scanGitHubSkillsWithPackageFallback({ repositoryUrl: input.repositoryUrl, packageMode: input.packageMode, trackingRef: input.trackingRef, commitSha, onlySkillPath: input.skillPath }, read, { signal, securityOverrides });
     if (scan.commitSha.toLowerCase() !== commitSha.toLowerCase()) throw unprocessable('The source snapshot did not match the requested revision.');
     return packageSnapshot(scan, input);
   };
-  const installed = await snapshotAt(input.installedCommitSha);
+  const installed = await snapshotAt(input.installedCommitSha, input.installedSecurityOverrides);
   if ('partialReason' in installed) return { supported: false, reason: installed.partialReason };
-  const latest = await snapshotAt(input.latestCommitSha);
+  const latest = await snapshotAt(input.latestCommitSha, input.securityOverrides);
   if ('partialReason' in latest) return { supported: false, reason: latest.partialReason };
   signal?.throwIfAborted();
   return { supported: true, ...diffSkillPackageFiles(installed.files, latest.files, { installed: installed.omitted, latest: latest.omitted }) };
