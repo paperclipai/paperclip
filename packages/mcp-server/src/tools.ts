@@ -17,7 +17,7 @@ import {
   upsertIssueDocumentSchema,
   linkIssueApprovalSchema,
 } from "@paperclipai/shared";
-import { PaperclipApiClient } from "./client.js";
+import { PaperclipApiClient, runIdContext } from "./client.js";
 import { formatErrorResponse, formatTextResponse } from "./format.js";
 
 export interface ToolDefinition {
@@ -29,20 +29,30 @@ export interface ToolDefinition {
   }>;
 }
 
+const runIdOverrideSchema = z
+  .string()
+  .guid()
+  .optional()
+  .describe(
+    "Current Paperclip heartbeat run id. Pass it when this MCP server is shared across runs (PAPERCLIP_RUN_ID unset); attributes writes to the run.",
+  );
+
 function makeTool<TSchema extends z.ZodRawShape>(
   name: string,
   description: string,
   schema: z.ZodObject<TSchema>,
   execute: (input: z.infer<typeof schema>) => Promise<unknown>,
 ): ToolDefinition {
+  const toolSchema = "runId" in schema.shape ? schema : schema.extend({ runId: runIdOverrideSchema });
   return {
     name,
     description,
-    schema,
+    schema: toolSchema as z.ZodObject,
     execute: async (input) => {
       try {
-        const parsed = schema.parse(input);
-        return formatTextResponse(await execute(parsed));
+        const { runId, ...rest } = toolSchema.parse(input) as Record<string, unknown> & { runId?: string };
+        const parsed = schema.parse("runId" in schema.shape ? input : rest);
+        return formatTextResponse(await runIdContext.run(runId, () => execute(parsed)));
       } catch (error) {
         return formatErrorResponse(error);
       }

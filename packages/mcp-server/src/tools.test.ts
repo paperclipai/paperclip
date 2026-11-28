@@ -52,6 +52,34 @@ describe("paperclip MCP tools", () => {
     );
   });
 
+  it("uses a per-call runId when the server has no PAPERCLIP_RUN_ID", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new PaperclipApiClient({
+      apiUrl: "http://localhost:3100/api",
+      apiKey: "token-123",
+      companyId: "11111111-1111-1111-1111-111111111111",
+      agentId: "22222222-2222-2222-2222-222222222222",
+      runId: null,
+    } as never);
+    const tool = createToolDefinitions(client).find((t) => t.name === "paperclipUpdateIssue")!;
+    await tool.execute({ issueId: "PAP-1", status: "done", runId: "44444444-4444-4444-4444-444444444444" });
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>)["X-Paperclip-Run-Id"]).toBe("44444444-4444-4444-4444-444444444444");
+    expect(JSON.parse(String(init.body))).not.toHaveProperty("runId");
+  });
+
+  it("per-call runId overrides PAPERCLIP_RUN_ID and does not leak to later calls", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+    const tool = getTool("paperclipUpdateIssue");
+    await tool.execute({ issueId: "PAP-1", status: "done", runId: "55555555-5555-5555-5555-555555555555" });
+    await tool.execute({ issueId: "PAP-1", status: "done" });
+    const h = (i: number) => ((fetchMock.mock.calls[i] as [string, RequestInit])[1].headers as Record<string, string>)["X-Paperclip-Run-Id"];
+    expect(h(0)).toBe("55555555-5555-5555-5555-555555555555");
+    expect(h(1)).toBe("33333333-3333-3333-3333-333333333333");
+  });
+
   it("lists the company skill library with the default company id", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       mockJsonResponse([{ key: "paperclipai/bundled/product/wireframe", name: "wireframe" }]),
