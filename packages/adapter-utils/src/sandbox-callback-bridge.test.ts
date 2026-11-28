@@ -1007,7 +1007,7 @@ describe("sandbox callback bridge", () => {
     expect(requestStep).toBeNull();
   });
 
-  it("serializes remote response writes so stop does not recreate a late orphaned response", async () => {
+  it.each([0, 750])("serializes remote response writes so stop does not recreate a late orphaned response (write delay %ims)", async (writeDelayMs) => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-response-lock-"));
     cleanupDirs.push(rootDir);
 
@@ -1018,6 +1018,19 @@ describe("sandbox callback bridge", () => {
     await writeFile(path.join(localWorkspaceDir, "README.md"), "bridge response lock test\n", "utf8");
 
     const runner = createExecRunner();
+    const execute = runner.execute;
+    let delayedWrites = 0;
+    runner.execute = (input) => {
+      if (writeDelayMs > 0 && input.stdin && input.args?.[1]?.includes(".paperclip-write.lock") && JSON.parse(input.stdin).status === 200) {
+        delayedWrites += 1;
+        const args = [...input.args];
+        const marker = 'if [ -n "$request_path" ] && [ ! -f "$request_path" ]; then';
+        expect(args[1]).toContain(marker);
+        args[1] = args[1].replace(marker, `sleep ${writeDelayMs / 1000}\n${marker}`);
+        return execute({ ...input, args });
+      }
+      return execute(input);
+    };
     const bridgeAsset = await createSandboxCallbackBridgeAsset();
     cleanupFns.push(bridgeAsset.cleanup);
     const prepared = await prepareCommandManagedRuntime(queueRuntimeInput(runner, remoteWorkspaceDir, localWorkspaceDir, bridgeAsset));
@@ -1026,13 +1039,24 @@ describe("sandbox callback bridge", () => {
     const directories = sandboxCallbackBridgeDirectories(queueDir);
     const bridgeToken = createSandboxCallbackBridgeToken();
     const seenRequestIds: string[] = [];
+    const client = createCommandManagedSandboxCallbackBridgeQueueClient({
+      runner,
+      remoteCwd: remoteWorkspaceDir,
+      timeoutMs: 30_000,
+    });
+    const lateResponseWrite = new Promise<{ wrote: boolean }>((resolve, reject) => {
+      const writeResponseFile = client.writeResponseFile!;
+      client.writeResponseFile = (responsePath, body, options) => {
+        const writing = writeResponseFile(responsePath, body, options);
+        if ((JSON.parse(body) as { status: number }).status === 200) {
+          void writing.then(resolve, reject);
+        }
+        return writing;
+      };
+    });
 
     const worker = await startSandboxCallbackBridgeWorker({
-      client: createCommandManagedSandboxCallbackBridgeQueueClient({
-        runner,
-        remoteCwd: remoteWorkspaceDir,
-        timeoutMs: 30_000,
-      }),
+      client,
       queueDir,
       authorizeRequest: async () => null,
       handleRequest: async (request) => {
@@ -1080,7 +1104,8 @@ describe("sandbox callback bridge", () => {
       error: "Bridge worker stopped before request could be handled.",
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await expect(lateResponseWrite).resolves.toEqual({ wrote: false });
+    expect(delayedWrites).toBe(writeDelayMs > 0 ? 1 : 0);
 
     await expect(readdir(directories.responsesDir)).resolves.toEqual([]);
     await expect(
