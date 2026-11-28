@@ -1638,7 +1638,7 @@ fn sensitive_key(key: &str, value: &Value) -> bool {
             | "pretokens"
             | "posttokens"
     ) {
-        return !value.is_number();
+        return !value.is_number() && !value.is_null();
     }
     let credential_name = [
         "value",

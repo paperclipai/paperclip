@@ -1,4 +1,68 @@
 #[test]
+fn compaction_counters_survive_redaction_and_serialized_reload() {
+    let config = config(PathBuf::from("unused"));
+    for (pre_tokens, post_tokens) in [
+        (Value::Null, Value::Null),
+        (json!(100_000), json!(20_000)),
+        (Value::Null, json!(20_000)),
+        (json!(100_000), Value::Null),
+    ] {
+        let mut state = DurableState::new(&config);
+        let payload = json!({
+            "schema": "paperclip.context.compacted.v1",
+            "compactionId": "compaction-1",
+            "reason": "provider",
+            "preTokens": pre_tokens,
+            "postTokens": post_tokens,
+            "sameSession": true
+        });
+        state
+            .enqueue_event(&config, "context.compacted", EventPriority::P1, payload.clone())
+            .unwrap();
+        let reloaded: DurableState =
+            serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+        assert_eq!(reloaded.outbox[0].envelope["payload"]["payload"], payload);
+    }
+}
+
+#[test]
+fn token_counters_preserve_only_numbers_and_null() {
+    for key in [
+        "inputTokens",
+        "outputTokens",
+        "cacheReadTokens",
+        "cacheWriteTokens",
+        "cachedReadTokens",
+        "cachedWriteTokens",
+        "thoughtTokens",
+        "totalTokens",
+        "preTokens",
+        "postTokens",
+        "tokenBudget",
+        "tokensUsed",
+    ] {
+        for value in [Value::Null, json!(0), json!(123)] {
+            let payload = json!({key: value});
+            assert_eq!(sanitize_value(&payload), payload, "{key}");
+        }
+        for value in [
+            json!("credential-tail"),
+            json!({"nested": "credential-tail"}),
+            json!(["credential-tail"]),
+            json!(true),
+        ] {
+            let payload = json!({key: value});
+            assert_eq!(sanitize_value(&payload)[key], "[REDACTED]", "{key}");
+            assert_eq!(
+                sanitize_bounded_display_value(&payload)[key],
+                "[REDACTED]",
+                "{key}"
+            );
+        }
+    }
+}
+
+#[test]
 fn redaction_growth_keeps_a_full_tool_output_inside_its_schema_bound() {
     let mut config = config(PathBuf::from("unused"));
     config.max_outbox_bytes = 1024 * 1024;
