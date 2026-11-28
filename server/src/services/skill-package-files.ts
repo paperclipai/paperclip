@@ -106,7 +106,7 @@ export async function writeSkillPackageArchive(filename: string, files: CompanyS
       await new Promise<void>((resolve, reject) => archive.entry({
         name: `files/${assertSkillSnapshotPath(file.path)}`, type: "file", mode: file.executable ? 0o555 : 0o444,
         mtime: new Date(0), uid: 0, gid: 0,
-      }, skillFileBytes(file), error => error ? reject(error) : resolve()));
+      }, skillFileBytes(file), error => error ? reject(error) : resolve()).once("error", reject));
     }
     archive.finalize();
     await writing;
