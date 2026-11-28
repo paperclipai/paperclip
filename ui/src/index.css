@@ -851,6 +851,12 @@
   h3 {
     text-wrap: balance;
   }
+  select option,
+  select optgroup {
+    background-color: var(--popover);
+    color: var(--popover-foreground);
+  }
+
   /* Prevent double-tap-to-zoom on interactive elements for mobile */
   a,
   button,
