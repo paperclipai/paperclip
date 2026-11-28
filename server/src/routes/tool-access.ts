@@ -1287,8 +1287,13 @@ function connectorEnrollmentPrincipal(req: Request): string {
         label: typeof req.body?.label === "string" ? req.body.label : undefined,
         returnTo,
       });
-    } catch {
-      throw unprocessable("Paperclip Cloud enrollment could not be started", {
+    } catch (error) {
+      const detail = error instanceof Error
+        && error.message.startsWith("Paperclip Cloud")
+        && error.message !== "Paperclip Cloud enrollment is unavailable"
+        ? error.message
+        : null;
+      throw unprocessable(detail ?? "Paperclip Cloud enrollment could not be started", {
         code: "paperclip_cloud_connector_enrollment_failed",
       });
     }

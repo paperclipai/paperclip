@@ -571,6 +571,33 @@ export function isMissingOAuthStateMessage(
     && message.code === "oauth_state_missing";
 }
 
+export function originSupportsCloudConnectorEnrollment(callbackUrl: string): boolean {
+  try {
+    const parsed = new URL(callbackUrl);
+    if (parsed.protocol === "https:") return true;
+    const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    return parsed.protocol === "http:" && (host === "localhost" || host === "127.0.0.1" || host === "::1");
+  } catch {
+    return false;
+  }
+}
+
+export function grantKindForSwitchedMethod(
+  currentGrantKind: ConnectionGrantKind,
+  nextMethod: ConnectionMethodDef | null | undefined,
+  hasRequestedAgent: boolean,
+  reconnectGrantKind: ConnectionGrantKind | null,
+): ConnectionGrantKind {
+  if (
+    !reconnectGrantKind
+    && nextMethod?.grantKinds
+    && !nextMethod.grantKinds.includes(currentGrantKind)
+  ) {
+    return defaultGrantKindFor(nextMethod, hasRequestedAgent);
+  }
+  return currentGrantKind;
+}
+
 export interface ConnectionSetupFlowProps {
   /** Optional settings composed into the standard credential form above its footer. */
   additionalSettings?: ReactNode;
@@ -780,6 +807,7 @@ function StandardConnectionSetupFlow({
   const [curatedOAuthClientSecret, setCuratedOAuthClientSecret] = useState("");
   const [vercelConnector, setVercelConnector] = useState("");
   const [connectionMethodKey, setConnectionMethodKey] = useState(aiConnection && aiConnection.mode !== "responsible_user" ? `ai-${aiConnection.method}` : "");
+  const [explicitMethodChoice, setExplicitMethodChoice] = useState<{ slug: string; key: string } | null>(null);
   const [instructionDraft, setInstructionDraft] = useState<{ slug: string; value: ConnectionAgentInstructions } | null>(null);
   const [configValues, setConfigValues] = useState<Record<string, string | boolean>>({});
   const [pluginSettings, setPluginSettings] = useState<Record<string, unknown>>({});
@@ -1136,6 +1164,7 @@ function StandardConnectionSetupFlow({
       return;
     }
     setEntry(picked);
+    setExplicitMethodChoice(null);
     setGalleryName(picked.name);
     setLinkUrl("");
     setLinkName("");
@@ -1227,10 +1256,17 @@ function StandardConnectionSetupFlow({
     candidate.transport === "runtime_auth" && candidate.ai
     && candidate.key === (connectionMethodKey || requestedMethodKey),
   ));
-  const requestedDefinitionUsesManagedConnector = !selectedCustomOAuth && !selectedRuntimeAuth && Boolean(
-    fullRequestedDefinition?.methods.some((candidate) =>
-      candidate.oauthStrategy === "paperclip_cloud_connector"
-      || candidate.oauthStrategy === "paperclip_id_connector"
+  const currentMethodScopeSlug = entry?.slug ?? requestedAppKey ?? "";
+  const activeExplicitMethodKey = explicitMethodChoice?.slug === currentMethodScopeSlug
+    ? explicitMethodChoice.key
+    : null;
+  const requestedOrExplicitMethodKey = activeExplicitMethodKey ?? (requestedMethodKey || null);
+  const selectedNonManagedMethod = Boolean(
+    requestedOrExplicitMethodKey
+    && fullRequestedDefinition?.methods.some((candidate) =>
+      candidate.key === requestedOrExplicitMethodKey
+      && candidate.oauthStrategy !== "paperclip_cloud_connector"
+      && candidate.oauthStrategy !== "paperclip_id_connector",
     ),
   );
   const entryAdvertisesManagedConnector = Boolean(
@@ -1239,6 +1275,43 @@ function StandardConnectionSetupFlow({
       || candidate.oauthStrategy === "paperclip_id_connector"
     ),
   );
+  const cloudEnrollmentPossibleOnOrigin = Boolean(cloudInstance)
+    || originSupportsCloudConnectorEnrollment(callbackUrlForSetup);
+  const alternateNonManagedMethods = useMemo(() => {
+    const methods = entry?.methods ?? fullRequestedDefinition?.methods ?? [];
+    return methods.filter((candidate) =>
+      candidate.oauthStrategy !== "paperclip_cloud_connector"
+      && candidate.oauthStrategy !== "paperclip_id_connector"
+      && candidate.key !== customOAuthMethod?.key
+      && candidate.transport !== "runtime_auth",
+    );
+  }, [customOAuthMethod?.key, entry?.methods, fullRequestedDefinition?.methods]);
+  const hasDirectNonOAuthMethod = Boolean(
+    (entry ?? fullRequestedDefinition)?.methods.some((candidate) =>
+      candidate.oauthStrategy !== "paperclip_cloud_connector"
+      && candidate.oauthStrategy !== "paperclip_id_connector"
+      && candidate.auth !== "oauth"
+      && candidate.transport !== "runtime_auth",
+    ),
+  );
+  const managedConnectorMethodKey = recommendedManagedConnectorMethod(fullRequestedDefinition)?.key ?? null;
+  const skipManagedEnrollmentForHttpDirectMethod = Boolean(
+    !cloudEnrollmentPossibleOnOrigin
+    && !entryAdvertisesManagedConnector
+    && requestedMethodKey !== managedConnectorMethodKey
+    && activeExplicitMethodKey !== managedConnectorMethodKey
+    && hasDirectNonOAuthMethod,
+  );
+  const requestedDefinitionUsesManagedConnector = !selectedCustomOAuth
+    && !selectedRuntimeAuth
+    && !selectedNonManagedMethod
+    && !skipManagedEnrollmentForHttpDirectMethod
+    && Boolean(
+      fullRequestedDefinition?.methods.some((candidate) =>
+        candidate.oauthStrategy === "paperclip_cloud_connector"
+        || candidate.oauthStrategy === "paperclip_id_connector",
+      ),
+    );
   // Before a self-hosted instance enrolls, the server intentionally withholds
   // platform-managed methods from the advertised gallery. The setup route still
   // needs the managed method's identity model, labels, and defaults because the
@@ -1440,6 +1513,36 @@ function StandardConnectionSetupFlow({
       : "organization"
     : null;
   const fixedGrantKind = reconnectGrantKind ?? existingOAuthGrantKind ?? (requiredAiOwnership === "shared" ? "organization" : null);
+
+  const applySelectedMethod = useCallback((nextMethod: ConnectionMethodDef | null) => {
+    const nextKey = nextMethod?.key ?? "";
+    const nextIsManaged = Boolean(
+      nextMethod
+      && (nextMethod.oauthStrategy === "paperclip_cloud_connector"
+        || nextMethod.oauthStrategy === "paperclip_id_connector"),
+    );
+    const scopeSlug = entry?.slug ?? requestedAppKey ?? "";
+    setExplicitMethodChoice(nextMethod && scopeSlug ? { slug: scopeSlug, key: nextKey } : null);
+    setConnectionMethodKey(nextKey);
+    setOAuthError(null);
+    setAuthorizationFallbackUrl(null);
+    if (!nextIsManaged) setConnectorEnrollmentError(null);
+    const nextGrantKind = grantKindForSwitchedMethod(
+      grantKind,
+      nextMethod,
+      Boolean(requestedAgentId),
+      reconnectGrantKind,
+    );
+    if (nextGrantKind !== grantKind) {
+      setGrantKind(nextGrantKind);
+    }
+    setCredentials({});
+    setCuratedOAuthClientId("");
+    setCuratedOAuthClientSecret("");
+    setVercelConnector("");
+    setConfigValues(defaultMethodConfig(nextMethod));
+    setPluginSettings({});
+  }, [entry?.slug, grantKind, reconnectGrantKind, requestedAgentId, requestedAppKey]);
 
   useEffect(() => {
     if (fixedGrantKind) setGrantKind(fixedGrantKind);
@@ -1886,6 +1989,7 @@ function StandardConnectionSetupFlow({
 
     if (entry?.slug !== requestedEntry.slug) {
       setEntry(requestedEntry);
+      setExplicitMethodChoice(null);
       setGalleryName(requestedEntry.name);
       setLinkUrl("");
       setLinkName("");
@@ -1968,6 +2072,7 @@ function StandardConnectionSetupFlow({
     fullRequestedDefinition,
     requestedAppKey,
     requestedAgentId,
+    requestedDefinitionUsesManagedConnector,
     restoredEnrollmentAccess,
     routeStage,
     zapierSource,
@@ -2456,6 +2561,31 @@ function StandardConnectionSetupFlow({
     )
   );
 
+  const renderFallbackMethods = () => {
+    if (!entry) return null;
+    if (!customOAuthMethod && alternateNonManagedMethods.length === 0) return null;
+    return (
+      <div className="mt-4 flex flex-col items-start gap-2">
+        {customOAuthMethod ? (
+          <Button type="button" variant="link" className="h-auto p-0 text-xs" onClick={() => applySelectedMethod(customOAuthMethod)}>
+            Use your own {entry.name} OAuth app
+          </Button>
+        ) : null}
+        {alternateNonManagedMethods.map((altMethod) => (
+          <Button
+            key={altMethod.key}
+            type="button"
+            variant="link"
+            className="h-auto p-0 text-xs"
+            onClick={() => applySelectedMethod(altMethod)}
+          >
+            Use {altMethod.label || "API key / token"} instead
+          </Button>
+        ))}
+      </div>
+    );
+  };
+
   if (workspaceConsent) return <GoogleWorkspaceServicesDialog
     connection={workspaceConnection}
     initial={workspaceDraft}
@@ -2784,11 +2914,7 @@ function StandardConnectionSetupFlow({
               ? `${entry.name} sign-in through Paperclip Cloud isn’t set up on this instance. Ask your instance administrator to finish the Paperclip Cloud settings.`
               : `This instance is connected to Paperclip, but ${entry.name} sign-in is not currently available. Try again shortly or contact your instance administrator.`}
           </p>
-          {customOAuthMethod ? (
-            <Button type="button" variant="link" className="mt-4 h-auto p-0 text-xs" onClick={() => setConnectionMethodKey(customOAuthMethod.key)}>
-              Use your own {entry.name} OAuth app
-            </Button>
-          ) : null}
+          {renderFallbackMethods()}
           <div className="mt-6 flex items-center justify-between gap-3">
             <Button type="button" variant="ghost" onClick={backToGallery}>Back</Button>
             <Button
@@ -2821,10 +2947,12 @@ function StandardConnectionSetupFlow({
               </div>
             </div>
 
-            {customOAuthMethod ? (
-              <Button type="button" variant="link" className="mt-4 h-auto p-0 text-xs" onClick={() => setConnectionMethodKey(customOAuthMethod.key)}>
-                Use your own {entry.name} OAuth app
-              </Button>
+            {renderFallbackMethods()}
+
+            {!cloudEnrollmentPossibleOnOrigin ? (
+              <InlineBanner tone="warning" className="mt-4">
+                Paperclip Cloud enrollment requires HTTPS (except on localhost). Configure HTTPS or choose another connection method above.
+              </InlineBanner>
             ) : null}
 
             {connectorEnrollmentView.kind === "error" || connectorEnrollmentError ? (
@@ -2891,26 +3019,7 @@ function StandardConnectionSetupFlow({
           onVercelConnectorChange={setVercelConnector}
           vercelConnectAvailability={galleryQuery.data?.credentialSources?.vercelConnect ?? null}
           methodKey={connectionMethodKey}
-          onMethodChange={(nextMethod) => {
-            setConnectionMethodKey(nextMethod?.key ?? "");
-            setOAuthError(null);
-            setAuthorizationFallbackUrl(null);
-            // Capability/auth changes must not broaden the audience selected
-            // on Access (including choices restored after Cloud enrollment).
-            if (
-              !reconnectGrantKind
-              && nextMethod?.grantKinds
-              && !nextMethod.grantKinds.includes(grantKind)
-            ) {
-              setGrantKind(defaultGrantKindFor(nextMethod, Boolean(requestedAgentId)));
-            }
-            setCredentials({});
-            setCuratedOAuthClientId("");
-            setCuratedOAuthClientSecret("");
-            setVercelConnector("");
-            setConfigValues(defaultMethodConfig(nextMethod));
-            setPluginSettings({});
-          }}
+          onMethodChange={applySelectedMethod}
           configValues={configValues}
           onConfigChange={setConfigValues}
           pluginSettings={pluginSettings}
