@@ -63,7 +63,7 @@ function pendingChatAction(kind: ScheduledChatAction) {
   return and(eq(chatActions.kind, kind), status, telegramEligible);
 }
 
-export function dueChatAction(kind: ScheduledChatAction, now = Date.now()) {
+export function dueChatAction(kind: ScheduledChatAction, now: number | ReturnType<typeof sql> = Date.now()) {
   return and(pendingChatAction(kind), lte(chatActionDeadline(kind), now));
 }
 

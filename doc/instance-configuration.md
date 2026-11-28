@@ -57,6 +57,24 @@ Default behavior:
 - `local_trusted`: enabled
 - `authenticated`: disabled
 
+## Chat query compilation reuse
+
+Set `PAPERCLIP_CHAT_IDLE_OPTIMIZATIONS=true` to reuse the compiled
+receipt-reaction and Telegram maintenance candidate queries. Only `true`
+enables it; the default is `false`. Restart after changing it. The startup log
+reports the selected mode.
+
+Each execution reads the database with fresh clock, limit, and action-ID
+parameters. The cache holds compiled query objects, never rows, credentials, or
+authorization decisions. Operations still resolve current credentials and
+permissions.
+
+This option works with the current commit/deadline-driven chat queues. It does
+not change wakeups, retry deadlines, recovery scans, publication ordering,
+receiver discovery, or the `DATABASE_PREPARED_STATEMENTS` driver setting.
+GitHub's scoped workers retain their own service lifetime. Allocation and memory
+savings have not been measured for the current worker implementation.
+
 ## Cloud startup configuration
 
 Cloud stores nonsecret startup choices in a private PostgreSQL singleton.

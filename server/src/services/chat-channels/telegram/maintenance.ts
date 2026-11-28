@@ -1,3 +1,4 @@
+import { createChatQueryExecutor } from "../../chat-query-executor.js";
 import type { EndpointRow, DbTransaction, LifecycleRuntimeFence } from "../runtime-types.js";
 
 import { PROVIDER_EFFECT_STALE_MS, dueChatAction } from "../../chat-action-work.js";
@@ -84,6 +85,7 @@ export function telegramMaintenancePayload(
   return payload as TelegramMaintenancePayload;
 }
 type TelegramMaintenanceOptions = {
+  queryExecutor?: ReturnType<typeof createChatQueryExecutor>;
   endpointRecord: (endpointId: string) => Promise<EndpointRecord | null>;
   runtimeContextForRecord: (record: EndpointRecord) => LifecycleRuntimeFence;
   withCredentialMutationLease: ReturnType<typeof chatCredentialMutationLease>;
@@ -99,6 +101,7 @@ type TelegramMaintenanceOptions = {
 };
 
 export function createTelegramMaintenance(db: Db, options: TelegramMaintenanceOptions) {
+  const idleQueries = options.queryExecutor ?? createChatQueryExecutor(false);
   const { endpointRecord, runtimeContextForRecord, withCredentialMutationLease, resolveCredentials, clearCredentials, runtimeCallbackEndpoint, getWebhookPublicBaseUrl, fetchImpl, runtimeGeneration, credentialFingerprint, redactError, credentialCheckTimeoutMs: PROVIDER_CREDENTIAL_CHECK_TIMEOUT_MS } = options;
 
   let telegramSubscriptionScanAfter: string | null = null;
@@ -649,13 +652,15 @@ export function createTelegramMaintenance(db: Db, options: TelegramMaintenanceOp
     return processPendingTelegramActions(limit);
   }
 
+  const telegramMaintenanceCandidates = idleQueries.query("chat_telegram_maintenance", () => db
+    .select({ id: chatActions.id })
+    .from(chatActions)
+    .where(dueChatAction("telegram_maintenance", sql`${sql.placeholder("now")}`))
+    .orderBy(asc(chatActions.createdAt))
+    .limit(sql.placeholder("limit")));
+
   async function processPendingTelegramActions(limit = 25) {
-    const actions = await db
-      .select({ id: chatActions.id })
-      .from(chatActions)
-      .where(dueChatAction("telegram_maintenance"))
-      .orderBy(asc(chatActions.createdAt))
-      .limit(limit);
+    const actions = await telegramMaintenanceCandidates({ now: Date.now(), limit });
     for (const action of actions) await processTelegramMaintenance(action.id);
     return actions.length;
   }
