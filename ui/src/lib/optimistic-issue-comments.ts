@@ -56,6 +56,7 @@ export function createOptimisticIssueComment(params: {
   issueId: string;
   body: string;
   authorUserId: string | null;
+  clientRequestId?: string | null;
   clientStatus?: OptimisticIssueComment["clientStatus"];
   queueTargetRunId?: string | null;
 }): OptimisticIssueComment {
@@ -72,6 +73,7 @@ export function createOptimisticIssueComment(params: {
     body: params.body,
     presentation: null,
     metadata: null,
+    clientRequestId: params.clientRequestId ?? null,
     clientStatus: params.clientStatus ?? "pending",
     queueTargetRunId: params.queueTargetRunId ?? null,
     createdAt: now,
@@ -128,6 +130,31 @@ export function applyLocalQueuedIssueCommentState<T extends IssueComment>(
   };
 }
 
+function commentReceiptId(comment: Pick<IssueComment, "clientRequestId">): string | null {
+  const requestId = comment.clientRequestId;
+  return typeof requestId === "string" && requestId.length > 0 ? requestId : null;
+}
+
+function matchesOptimisticCommentReceipt(
+  persisted: IssueComment,
+  optimistic: OptimisticIssueComment,
+): boolean {
+  if (persisted.issueId !== optimistic.issueId) return false;
+  if (persisted.authorUserId !== optimistic.authorUserId) return false;
+
+  const optimisticReceipt = commentReceiptId(optimistic);
+  const persistedReceipt = commentReceiptId(persisted);
+  if (optimisticReceipt && persistedReceipt) {
+    return optimisticReceipt === persistedReceipt;
+  }
+
+  return (
+    persisted.authorType === optimistic.authorType &&
+    persisted.body === optimistic.body &&
+    Math.abs(toTimestamp(persisted.createdAt) - toTimestamp(optimistic.createdAt)) <= 60_000
+  );
+}
+
 export function mergeIssueComments(
   comments: IssueComment[] | undefined,
   optimisticComments: OptimisticIssueComment[],
@@ -145,11 +172,7 @@ export function mergeIssueComments(
     // Consume matches one-for-one so repeated identical messages remain valid.
     const matchingPersistedComment = persistedComments.find((persisted) =>
       !reconciledPersistedIds.has(persisted.id) &&
-      persisted.issueId === comment.issueId &&
-      persisted.authorType === comment.authorType &&
-      persisted.authorUserId === comment.authorUserId &&
-      persisted.body === comment.body &&
-      Math.abs(toTimestamp(persisted.createdAt) - toTimestamp(comment.createdAt)) <= 60_000
+      matchesOptimisticCommentReceipt(persisted, comment)
     );
     if (matchingPersistedComment) {
       reconciledPersistedIds.add(matchingPersistedComment.id);

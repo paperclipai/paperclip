@@ -48,6 +48,20 @@ describe("optimistic issue comments", () => {
     expect(comment.clientStatus).toBe("pending");
     expect(comment.authorUserId).toBe("board-1");
     expect(comment.authorAgentId).toBeNull();
+    expect(comment.clientRequestId).toBeNull();
+  });
+
+  it("stamps the send receipt onto the optimistic comment", () => {
+    const comment = createOptimisticIssueComment({
+      companyId: "company-1",
+      issueId: "issue-1",
+      body: "Working on it",
+      authorUserId: "board-1",
+      clientRequestId: "55555555-5555-4555-8555-555555555555",
+    });
+
+    expect(comment.clientRequestId).toBe("55555555-5555-4555-8555-555555555555");
+    expect(comment.id).toMatch(/^optimistic-/);
   });
 
   it("falls back when crypto.randomUUID is unavailable", () => {
@@ -138,6 +152,107 @@ describe("optimistic issue comments", () => {
 
     expect(merged.map((comment) => comment.id)).toEqual(["comment-1"]);
     expect(merged[0]).toMatchObject({ clientId: optimistic.clientId });
+  });
+
+  it("reconciles an optimistic comment by send receipt when body and time differ", () => {
+    const requestId = "55555555-5555-4555-8555-555555555555";
+    const optimistic = createOptimisticIssueComment({
+      companyId: "company-1",
+      issueId: "issue-1",
+      body: "Typed text",
+      authorUserId: "board-1",
+      clientRequestId: requestId,
+    });
+
+    const merged = mergeIssueComments(
+      [{
+        id: "comment-1",
+        companyId: "company-1",
+        issueId: "issue-1",
+        authorAgentId: null,
+        authorUserId: "board-1",
+        body: "Stored text after redaction",
+        authorType: "user",
+        presentation: null,
+        metadata: null,
+        clientRequestId: requestId,
+        createdAt: new Date("2020-01-01T00:00:00.000Z"),
+        updatedAt: new Date("2020-01-01T00:00:00.000Z"),
+      }],
+      [optimistic],
+    );
+
+    expect(merged.map((comment) => comment.id)).toEqual(["comment-1"]);
+    expect(merged[0]).toMatchObject({ clientId: optimistic.clientId, clientRequestId: requestId });
+  });
+
+  it("does not attach another author's receipt with the same request id", () => {
+    const requestId = "55555555-5555-4555-8555-555555555555";
+    const optimistic = createOptimisticIssueComment({
+      companyId: "company-1",
+      issueId: "issue-1",
+      body: "Typed text",
+      authorUserId: "board-1",
+      clientRequestId: requestId,
+    });
+
+    const merged = mergeIssueComments(
+      [{
+        id: "comment-1",
+        companyId: "company-1",
+        issueId: "issue-1",
+        authorAgentId: null,
+        authorUserId: "other-user",
+        body: "Typed text",
+        authorType: "user",
+        presentation: null,
+        metadata: null,
+        clientRequestId: requestId,
+        createdAt: optimistic.createdAt,
+        updatedAt: optimistic.updatedAt,
+      }],
+      [optimistic],
+    );
+
+    expect(merged.map((comment) => comment.id).sort()).toEqual(["comment-1", optimistic.id].sort());
+  });
+
+  it("keeps a second identical send mounted until its own receipt lands", () => {
+    const first = createOptimisticIssueComment({
+      companyId: "company-1",
+      issueId: "issue-1",
+      body: "Same text",
+      authorUserId: "board-1",
+      clientRequestId: "55555555-5555-4555-8555-555555555555",
+    });
+    const second = createOptimisticIssueComment({
+      companyId: "company-1",
+      issueId: "issue-1",
+      body: "Same text",
+      authorUserId: "board-1",
+      clientRequestId: "66666666-6666-4666-8666-666666666666",
+    });
+
+    const merged = mergeIssueComments(
+      [{
+        id: "comment-1",
+        companyId: "company-1",
+        issueId: "issue-1",
+        authorAgentId: null,
+        authorUserId: "board-1",
+        body: "Same text",
+        authorType: "user",
+        presentation: null,
+        metadata: null,
+        clientRequestId: first.clientRequestId,
+        createdAt: first.createdAt,
+        updatedAt: first.updatedAt,
+      }],
+      [first, second],
+    );
+
+    expect(merged.map((comment) => comment.id).sort()).toEqual(["comment-1", second.id].sort());
+    expect(merged.find((comment) => comment.id === "comment-1")).toMatchObject({ clientId: first.clientId });
   });
 
   it("reconciles repeated identical comments one-for-one", () => {
