@@ -1,5 +1,12 @@
 import { agents, heartbeatRuns, costEvents, issues, type Db } from "@paperclipai/db";
-import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, compareCents } from "@paperclipai/shared";
+import {
+  activeHoursWindowSchema,
+  AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  compareCents,
+  isWithinActiveHours,
+  nextActiveHoursStart,
+  type ActiveHoursWindow,
+} from "@paperclipai/shared";
 import { and, eq, gte, lt, notInArray, sql, isNull, inArray, type SQL } from "drizzle-orm";
 import { asBoolean, asNumber, parseObject } from "../../adapters/utils.js";
 import { isHeartbeatWakeOnDemandEnabled } from "../heartbeat-policy.js";
@@ -51,6 +58,16 @@ export function heartbeatTimerPolicyIsWellFormed(agent: typeof agents.$inferSele
   return true;
 }
 
+// null means no window is configured. "invalid" means a window is stored but
+// malformed; the timer treats that as closed instead of silently unrestricted.
+function parseHeartbeatActiveHours(
+  heartbeat: Record<string, unknown>,
+): ActiveHoursWindow | "invalid" | null {
+  if (heartbeat.activeHours === undefined || heartbeat.activeHours === null) return null;
+  const parsed = activeHoursWindowSchema.safeParse(heartbeat.activeHours);
+  return parsed.success ? parsed.data : "invalid";
+}
+
 export function parseHeartbeatPolicy(agent: typeof agents.$inferSelect) {
   const runtimeConfig = parseObject(agent.runtimeConfig);
   const heartbeat = parseObject(runtimeConfig.heartbeat);
@@ -58,6 +75,7 @@ export function parseHeartbeatPolicy(agent: typeof agents.$inferSelect) {
   return {
     enabled: asBoolean(heartbeat.enabled, false),
     intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
+    activeHours: parseHeartbeatActiveHours(heartbeat),
     wakeOnDemand: isHeartbeatWakeOnDemandEnabled(agent),
     maxConcurrentRuns: agent.adapterType === "paperclip_runner" &&
       SINGLE_RUN_RUNNER_PROVIDERS.includes(String(parseObject(agent.adapterConfig).provider))
@@ -143,14 +161,24 @@ export function heartbeatDailyCapFromTotals(policy: TimerPolicy, totals: { runs?
     return { reason: "heartbeat.daily_cost_limit", observed: Number(totals.cost ?? "0"), limit: policy.maxDailyCostCents };
   return null;
 }
+// Outside the active-hours window, wait for the window to open instead of
+// reporting a past deadline that the timer would keep skipping.
+function applyActiveHoursWindow(activeWindow: ActiveHoursWindow | null, deadline: number, now: Date): number | null {
+  if (!activeWindow) return deadline;
+  const earliest = new Date(Math.max(deadline, now.getTime()));
+  if (isWithinActiveHours(activeWindow, earliest)) return deadline;
+  return nextActiveHoursStart(activeWindow, earliest)?.getTime() ?? null;
+}
 export function projectTimerHeartbeatSchedule(agent: TimerAgent, now: Date,
-  input: { actionable: boolean | null; cap: DailyCap }) {
-  const policy = parseHeartbeatPolicy(agent);
-  if (!policy.enabled || policy.intervalSec <= 0 || policy.maxDailyRuns === 0 || policy.maxDailyCostCents === 0)
+  input: { actionable: boolean | null; cap: DailyCap; policy?: TimerPolicy }) {
+  const policy = input.policy ?? parseHeartbeatPolicy(agent);
+  if (!policy.enabled || policy.intervalSec <= 0 || policy.activeHours === "invalid"
+    || policy.maxDailyRuns === 0 || policy.maxDailyCostCents === 0)
     return { deadline: null, policy, actionable: null, cap: null };
   if (input.actionable === false) return { deadline: null, policy, actionable: false, cap: null };
   const dueAt = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime() + policy.intervalSec * 1000;
-  return { deadline: input.cap ? Math.max(dueAt, currentUtcDayWindow(now).end.getTime()) : dueAt,
+  const deadline = input.cap ? Math.max(dueAt, currentUtcDayWindow(now).end.getTime()) : dueAt;
+  return { deadline: applyActiveHoursWindow(policy.activeHours, deadline, now),
     policy, actionable: input.actionable, cap: input.cap };
 }
 
@@ -180,7 +208,8 @@ export function createHeartbeatTimerPolicy(db: Pick<Db, "select">) {
   }
   async function readTimerHeartbeatSchedule(agent: TimerAgent, now = new Date()) {
     const policy = parseHeartbeatPolicy(agent);
-    if (!policy.enabled || policy.intervalSec <= 0 || policy.maxDailyRuns === 0 || policy.maxDailyCostCents === 0)
+    if (!policy.enabled || policy.intervalSec <= 0 || policy.activeHours === "invalid"
+      || policy.maxDailyRuns === 0 || policy.maxDailyCostCents === 0)
       return projectTimerHeartbeatSchedule(agent, now, { actionable: null, cap: null });
     const actionable = policy.skipTimerWhenNoActionableWork ? await hasActionableTimerWork(agent) : null;
     const cap = actionable === false ? null : await getHeartbeatDailyCapBlock(agent, policy, { now });
@@ -190,13 +219,15 @@ export function createHeartbeatTimerPolicy(db: Pick<Db, "select">) {
     if (candidates.length > 10_000) return;
     const allowed = new Set(candidates.map(agent => timerKey(agent.companyId, agent.id)));
     if (allowed.size !== candidates.length) return;
+    const policies = new Map(candidates.map(agent => [agent, parseHeartbeatPolicy(agent)] as const));
+    const policyOf = (agent: TimerAgent) => policies.get(agent)!;
     const eligible = candidates.filter(agent => {
-      const p = parseHeartbeatPolicy(agent);
-      return p.enabled && p.intervalSec > 0 && p.maxDailyRuns !== 0 && p.maxDailyCostCents !== 0;
+      const p = policyOf(agent);
+      return p.enabled && p.intervalSec > 0 && p.activeHours !== "invalid" && p.maxDailyRuns !== 0 && p.maxDailyCostCents !== 0;
     });
-    const runIds = eligible.filter(a => parseHeartbeatPolicy(a).maxDailyRuns !== null).map(a => a.id);
-    const costIds = eligible.filter(a => parseHeartbeatPolicy(a).maxDailyCostCents !== null).map(a => a.id);
-    const actionableIds = eligible.filter(a => parseHeartbeatPolicy(a).skipTimerWhenNoActionableWork).map(a => a.id);
+    const runIds = eligible.filter(a => policyOf(a).maxDailyRuns !== null).map(a => a.id);
+    const costIds = eligible.filter(a => policyOf(a).maxDailyCostCents !== null).map(a => a.id);
+    const actionableIds = eligible.filter(a => policyOf(a).skipTimerWhenNoActionableWork).map(a => a.id);
     const runs = new Map<string, number>(), costs = new Map<string, string>(), actionable = new Set<string>();
     const state: unknown[] = [];
     if (runIds.length) {
@@ -248,8 +279,9 @@ export function createHeartbeatTimerPolicy(db: Pick<Db, "select">) {
     const schedules = new Map<string, ReturnType<typeof projectTimerHeartbeatSchedule>>();
     for (const agent of candidates) {
       checkBudget();
-      const policy = parseHeartbeatPolicy(agent), key = timerKey(agent.companyId, agent.id);
+      const policy = policyOf(agent), key = timerKey(agent.companyId, agent.id);
       schedules.set(agent.id, projectTimerHeartbeatSchedule(agent, now, {
+        policy,
         actionable: policy.skipTimerWhenNoActionableWork ? actionable.has(key) : null,
         cap: heartbeatDailyCapFromTotals(policy, { runs: runs.get(key), cost: costs.get(key) }),
       }));

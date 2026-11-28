@@ -374,6 +374,7 @@ export {
   SELF_SERVE_MCP_CANDIDATES,
   SELF_SERVE_MCP_RESEARCH,
 } from "./self-serve-mcp-research.js";
+export * from "./active-hours.js";
 export * from "./validators/status-card.js";
 export { appDefinitionSchema, appDefinitionsSchema, connectionMethodDefSchema, reviewedToolsSchema, pluginMethodToolsSchema, PLUGIN_CONNECTOR_TOOL_NAME } from "./validators/app-definition.js";
 export { PLUGIN_CONNECTOR_TOOL_DEFAULT_TIMEOUT_MS, PLUGIN_CONNECTOR_TOOL_TIMEOUT_MAX_MS, PLUGIN_CONNECTOR_TOOL_TIMEOUT_MIN_MS } from "./types/app-definition.js";
@@ -1425,9 +1426,11 @@ export type {
   GitWorktreeBranchAncestryVerdict,
   GitWorktreeBranchIncoherenceEvidence,
   GitWorktreeInProgressOperation,
+  HeartbeatActiveHours,
   HeartbeatRun,
   HeartbeatRunEvent,
   HeartbeatRunStatusPhase,
+  HeartbeatTimerPolicy,
   ProviderTraceDebugRequest,
   ProviderTraceDirection,
   ProviderTraceDisposition,
