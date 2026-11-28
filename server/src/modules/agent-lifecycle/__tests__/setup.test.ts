@@ -11,7 +11,7 @@ import { createLifecycleDriver } from "../../../services/agent-lifecycle-driver.
 import { agentRoutes } from "../../../routes/agents.js";
 import { errorHandler } from "../../../middleware/error-handler.js";
 import { createLifecycleStore as createStore } from "../adapters/postgres.js";
-import type { LifecycleAgent } from "../application/ports.js";
+import type { LifecycleAgent, LifecycleDriver } from "../application/ports.js";
 
 const createLifecycleStore = (db: Db) => createStore(db, createAgentLifecycleEffects());
 const support = await getEmbeddedPostgresTestSupport();
@@ -27,7 +27,7 @@ const support = await getEmbeddedPostgresTestSupport();
     companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Setup test", issuePrefix: `S${companyId.slice(0, 7)}` });
   });
-  function worker(runHost: (agent: LifecycleAgent) => Promise<"complete" | "pending"> = async () => "complete") {
+  function worker(runHost: LifecycleDriver["runHost"] = async () => "complete") {
     const work = configureAgentLifecycle(db, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost });
     workers.push(work); return work;
   }

@@ -93,6 +93,16 @@ it("retains the authenticated daemon identity across controller daemon replaceme
   expect(recovered.runnerArtifact).toEqual(runnerArtifact());
   expect(changedRunner).not.toHaveBeenCalled();
 });
+it("retains the admitted provider pack but binds a newly launched daemon to its current bytes", () => {
+  const { input } = fixture();
+  resolveRemoteProviderPackAuthority(input).verified();
+  const currentRunner = { version: "new", digest: "sha256:" + "d".repeat(64) };
+  const continued = resolveRemoteProviderPackAuthority({ ...input, reattach: false, retainProviderPack: true,
+    current: () => manifest("b"), runnerArtifact: () => currentRunner } as Parameters<typeof resolveRemoteProviderPackAuthority>[0]);
+  expect(continued.manifest).toEqual(manifest("a"));
+  expect(continued.runnerArtifact).toEqual(currentRunner);
+  expect(() => continued.select(manifest("b"))).toThrow("cannot replace");
+});
 it.each([{}, { version: "0.0.0", digest: "not-a-sha256" }])("rejects an invalid saved daemon identity: %j", runnerArtifact => {
   const { input, path } = fixture();
   resolveRemoteProviderPackAuthority(input).verified();

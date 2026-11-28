@@ -87,3 +87,30 @@ it("closes a session that connects after the deadline", async () => {
   await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
   expect(onData).not.toHaveBeenCalled();
 });
+
+it.each(["window overflow", "host write failure"])("stops queued frames after %s", async fault => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "archive-stream-window-"));
+  roots.push(root);
+  const destination = path.join(root, "archive.tar");
+  const file = await fs.open(destination, "w");
+  const writeFile = vi.fn(async () => { throw new Error("injected host write failure"); });
+  if (fault === "host write failure") vi.mocked(open).mockResolvedValue({ writeFile, close: () => file.close() } as never);
+  const close = vi.fn(async () => {});
+  openSession.mockImplementation(async (_process, command: string[]) => {
+    const marker = command.join(" ").match(/paperclip-archive-[a-f0-9-]+/)![0];
+    let emit!: (bytes: Uint8Array) => void;
+    return {
+      onData: callback => { emit = callback; queueMicrotask(() => emit(Buffer.from(`${marker}:ready\n`))); },
+      write: () => { queueMicrotask(() => emit(Buffer.from(`${marker}:start\n${"data:Ynl0ZXM=\n".repeat(fault === "window overflow" ? 17 : 16)}`))); },
+      wait: () => new Promise(() => {}), kill: vi.fn(), close,
+    } satisfies DuplexChannelSession;
+  });
+  try {
+    await expect(streamSandboxArchive({ process: {} as never, cwd: "/workspace", archiveScript: "cat source",
+      destination, maxBytes: 1024, timeoutSeconds: 5 })).rejects.toThrow(
+      fault === "window overflow" ? "pending frame limit" : "injected host write failure",
+    );
+    if (fault === "host write failure") expect(writeFile).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
+  } finally { await file.close(); }
+});

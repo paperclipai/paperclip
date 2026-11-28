@@ -3,15 +3,114 @@ export const REMOTE_RUNNER_RECOVERY_ERROR_CODE = "runner_remote_process_identity
 const stages = ["runner_state", "identity_marker", "process_verification"] as const;
 const reasons = [
   "marker_missing", "marker_unsafe", "marker_read_failed", "marker_invalid",
-  "fingerprint_missing", "process_not_running", "process_identity_changed",
+  "fingerprint_missing", "process_not_running", "process_identity_changed", "process_runner_id_missing",
   "fingerprint_unavailable", "process_generation_changed", "probe_timeout",
   "probe_transport_failed", "probe_failed",
   "state_read_failed", "state_invalid",
 ] as const;
 
+const runnerLifecycles = [
+  "connecting", "ready", "backpressure", "reconnecting", "session_opening", "session_open",
+  "turn_starting", "turn_active", "running", "suspended", "recoverable_failure", "reconciliation_required",
+  "provider_exited", "unrecoverable", "fenced", "failed", "completed", "closed",
+  "other", "unavailable",
+] as const;
+
 export interface RemoteRunnerRecoveryDiagnostic {
   stage: typeof stages[number];
   reason: typeof reasons[number];
+  runnerLifecycle?: typeof runnerLifecycles[number];
+  runnerSettled?: boolean;
+  /** Present only as `false`: the controller journal proves no turn command was ever issued. */
+  providerTurnIssued?: false;
+  /** process_not_running: the exited Runner's own recoverable-failure code from its durable state. */
+  runnerRecoverableFailure?: string;
+  /** process_not_running: the last durable state diagnostics, redacted and bounded. */
+  runnerDiagnostics?: string[];
+  /** process_not_running: a redacted tail of the Runner's sandbox-local stderr and exit diagnostic files. */
+  runnerExitEvidence?: string;
+}
+
+/** Bounds for the exit evidence a recovery event carries. */
+export const REMOTE_RUNNER_EXIT_EVIDENCE_MAX_CHARS = 4_096;
+const RUNNER_DIAGNOSTIC_MAX_CHARS = 500;
+const RUNNER_DIAGNOSTIC_COUNT = 4;
+const RECOVERABLE_FAILURE_PATTERN = /^[A-Za-z0-9_.:-]{1,120}$/;
+
+/**
+ * Prints a bounded tail of the exited Runner's sandbox-local exit evidence: the
+ * bounded exit diagnostic runnerd writes itself (`runnerd.stderr.log`) and its
+ * redirected stderr (`runnerd.process-stderr.log`). Each argument is a candidate
+ * diagnostics directory, most specific first; the first that holds either file
+ * is the one read. Read-only; missing or unsafe files print nothing.
+ */
+export const REMOTE_RUNNER_EXIT_EVIDENCE_SCRIPT =
+  'for directory in "$@"; do test -d "$directory" && test ! -L "$directory" || continue; found=""; ' +
+  'for name in runnerd.stderr.log runnerd.process-stderr.log; do file="$directory/$name"; ' +
+  'if test -f "$file" && test ! -L "$file"; then found=1; printf "== %s\\n" "$name"; tail -c 2048 -- "$file"; printf "\\n"; fi; done; ' +
+  'test -z "$found" || exit 0; done; exit 0';
+
+/** The durable reason an exited Runner recorded, redacted and bounded for a run event. */
+export function describeExitedRemoteRunnerReason(state: Record<string, unknown> | null, redact: (text: string) => string):
+  Pick<RemoteRunnerRecoveryDiagnostic, "runnerRecoverableFailure" | "runnerDiagnostics"> {
+  if (!state) return {};
+  const failure = typeof state.recoverableFailure === "string" ? state.recoverableFailure
+    : typeof state.recoverable_failure === "string" ? state.recoverable_failure : null;
+  const diagnostics = Array.isArray(state.diagnostics)
+    ? state.diagnostics.filter((value): value is string => typeof value === "string").slice(-RUNNER_DIAGNOSTIC_COUNT)
+      .map(value => redact(value).slice(-RUNNER_DIAGNOSTIC_MAX_CHARS))
+    : [];
+  return {
+    ...(failure && RECOVERABLE_FAILURE_PATTERN.test(failure) ? { runnerRecoverableFailure: failure } : {}),
+    ...(diagnostics.length ? { runnerDiagnostics: diagnostics } : {}),
+  };
+}
+
+/** The tail of the exit evidence script's output, redacted and bounded; null when there is none. */
+export function boundRemoteRunnerExitEvidence(output: string, redact: (text: string) => string): string | null {
+  // Each file gets its own share of the budget, so a long stderr tail cannot crowd out the exit diagnostic.
+  const sections = redact(output).split(/^(?=== runnerd\.)/m).map(section => section.trim()).filter(Boolean);
+  if (!sections.length) return null;
+  const share = Math.floor(REMOTE_RUNNER_EXIT_EVIDENCE_MAX_CHARS / sections.length) - 1;
+  return sections.map(section => {
+    if (section.length <= share) return section;
+    const header = section.slice(0, section.indexOf("\n") + 1);
+    return header + section.slice(-(share - header.length));
+  }).join("\n");
+}
+
+export function describeExitedRemoteRunner(state: Record<string, unknown>): Pick<RemoteRunnerRecoveryDiagnostic,
+  "runnerLifecycle" | "runnerSettled"> {
+  const lifecycle = state.lifecycle;
+  return {
+    runnerLifecycle: typeof lifecycle !== "string" ? "unavailable"
+      : runnerLifecycles.find(candidate => candidate === lifecycle && candidate !== "other" && candidate !== "unavailable") ?? "other",
+    runnerSettled: Array.isArray(state.outbox) && state.outbox.length === 0 &&
+      state.pendingTerminalDelivery == null && state.pendingProviderCleanup == null && state.warmTransition == null,
+  };
+}
+
+/**
+ * The Runner exits with these codes after it stops its provider and saves its
+ * state, because only a new process with a fresh bootstrap ticket can
+ * reconnect. The replacement continues from the same cursor.
+ */
+const FRESH_BOOTSTRAP_RECOVERABLE_FAILURES = new Set([
+  "lease_expired_requires_bootstrap", "transport_reconnect_deadline_exceeded", "transport_reconnect_grace_exceeded",
+]);
+
+export function exitedRunnerRequestedFreshBootstrap(
+  diagnostic: Pick<RemoteRunnerRecoveryDiagnostic, "runnerLifecycle" | "runnerRecoverableFailure">,
+): boolean {
+  return diagnostic.runnerLifecycle === "recoverable_failure"
+    && FRESH_BOOTSTRAP_RECOVERABLE_FAILURES.has(diagnostic.runnerRecoverableFailure ?? "");
+}
+
+/** The saved state of an exited Runner that asked for a fresh bootstrap, re-read after its exit. */
+export function runnerStateRequestsFreshBootstrap(state: Record<string, unknown>): boolean {
+  return exitedRunnerRequestedFreshBootstrap({ ...describeExitedRemoteRunner(state),
+    ...describeExitedRemoteRunnerReason(state, text => text) })
+    && state.pendingTerminalDelivery == null && state.warmTransition == null;
 }
 
 const transportDiagnostics = new WeakMap<object, RemoteRunnerRecoveryDiagnostic>();
@@ -35,9 +134,24 @@ export class RemoteRunnerRecoveryError extends Error {
 export function readRemoteRunnerRecoveryDiagnostic(value: unknown): RemoteRunnerRecoveryDiagnostic | null {
   if (!value || typeof value !== "object") return null;
   try {
-    const { stage, reason } = value as Record<string, unknown>;
+    const { stage, reason, runnerLifecycle, runnerSettled, providerTurnIssued, runnerRecoverableFailure, runnerDiagnostics,
+      runnerExitEvidence } = value as Record<string, unknown>;
     if (!stages.some(candidate => candidate === stage) || !reasons.some(candidate => candidate === reason)) return null;
-    return { stage, reason } as RemoteRunnerRecoveryDiagnostic;
+    const diagnostics = Array.isArray(runnerDiagnostics)
+      ? runnerDiagnostics.filter((entry): entry is string => typeof entry === "string").slice(-RUNNER_DIAGNOSTIC_COUNT)
+        .map(entry => entry.slice(-RUNNER_DIAGNOSTIC_MAX_CHARS))
+      : [];
+    return {
+      stage, reason,
+      ...(runnerLifecycles.some(candidate => candidate === runnerLifecycle) ? { runnerLifecycle } : {}),
+      ...(typeof runnerSettled === "boolean" ? { runnerSettled } : {}),
+      ...(providerTurnIssued === false ? { providerTurnIssued } : {}),
+      ...(typeof runnerRecoverableFailure === "string" && RECOVERABLE_FAILURE_PATTERN.test(runnerRecoverableFailure)
+        ? { runnerRecoverableFailure } : {}),
+      ...(diagnostics.length ? { runnerDiagnostics: diagnostics } : {}),
+      ...(typeof runnerExitEvidence === "string" && runnerExitEvidence
+        ? { runnerExitEvidence: runnerExitEvidence.slice(-REMOTE_RUNNER_EXIT_EVIDENCE_MAX_CHARS) } : {}),
+    } as RemoteRunnerRecoveryDiagnostic;
   } catch {
     return null;
   }
@@ -92,6 +206,27 @@ function verifyGeneration() {
     process.exit(46);
   }
 }
+function awaitExitingProcess() {
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  const until = Date.now() + 1000;
+  while (Date.now() < until) {
+    let state;
+    try {
+      const stat = fs.readFileSync("/proc/" + pid + "/stat", "utf8");
+      state = stat.slice(stat.lastIndexOf(") ") + 2).trim().split(/\s+/)[0];
+    } catch (error) {
+      if (error.code === "ENOENT") process.exit(45);
+      return;
+    }
+    if (state === "Z" || state === "X" || state === "x") process.exit(45);
+    try { process.kill(Number(pid), 0); }
+    catch (error) {
+      if (error.code === "ESRCH") process.exit(45);
+      return;
+    }
+    Atomics.wait(pause, 0, 0, 50);
+  }
+}
 requireLiveProcess();
 const commandPath = "/proc/" + pid + "/cmdline";
 if (process.platform !== "linux" && !expectedGeneration && !fs.existsSync(commandPath)) process.exit(0);
@@ -105,7 +240,8 @@ catch (error) {
 if (expectedGeneration) verifyGeneration();
 if (!args.includes("--runner-id") || !args.includes(runnerId)) {
   requireLiveProcess();
-  process.exit(44);
+  if (expectedGeneration && args.join("") === "") awaitExitingProcess();
+  process.exit(48);
 }
 ' "$pid" "$expected_runner_id"` + ' "${5:-}"',
 ].join("; ");
@@ -124,6 +260,7 @@ export function remoteRecoveryProbeReason(stage: RemoteRunnerRecoveryDiagnostic[
     if (exitCode === 45) return "process_not_running";
     if (exitCode === 46) return "fingerprint_unavailable";
     if (exitCode === 47) return "process_generation_changed";
+    if (exitCode === 48) return "process_runner_id_missing";
   }
   return "probe_failed";
 }

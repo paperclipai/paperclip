@@ -7,6 +7,8 @@ import { logger } from "../../middleware/logger.js";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import { readProcessStartedAt } from "../hot-restart.js";
+import { currentProcessProbe, type ProcessProbe as OwnerProcessProbe } from "../owner-proof.js";
+import { proveRunProcessGone } from "../run-process-owner.js";
 import { workspaceExportCauses } from "../workspace-recovery-source.js";
 import { nativeWorkspaceFinalizationLockKey } from "./native-workspace-finalization-ownership.js";
 import { NATIVE_WORKSPACE_OWNER_UNVERIFIED } from "./native-workspace-finalization-recovery-state.js";
@@ -65,6 +67,7 @@ type RunRow = {
   process_pid: number | null;
   process_group_id: number | null;
   process_started_at: string | Date | null;
+  process_host_hash: string | null;
   controller_live: boolean;
   owner_present: boolean;
   reference: unknown;
@@ -229,25 +232,33 @@ const defaultProcessProbe: ProcessProbe = {
 };
 
 async function runProcessMayBeLive(
-  tx: Tx,
+  _tx: Tx,
   input: { runId: string; run: RunRow; processProbe: ProcessProbe },
 ): Promise<boolean> {
-  const { run, processProbe } = input;
+  const { run } = input;
   if (run.process_pid === null && run.process_group_id === null) return false;
-  const leases = (await tx.execute(sql`
+  const leases = (await _tx.execute(sql`
     select provider from environment_leases where company_id = ${run.company_id} and heartbeat_run_id = ${input.runId}
   `)) as unknown as Array<{ provider: string }>;
   if (leases.length > 0 && leases.every((lease) => lease.provider !== "local")) return false;
-  if (run.process_group_id !== null && processProbe.mayBeAlive(-run.process_group_id)) return true;
-  if (run.process_pid === null || !processProbe.mayBeAlive(run.process_pid)) return false;
-  if (!run.process_started_at) return true;
-  const observed = await processProbe.startedAt(run.process_pid);
-  return !observed || new Date(observed).getTime() === new Date(run.process_started_at).getTime();
+  const proof = await proveRunProcessGone({
+    processPid: run.process_pid, processGroupId: run.process_group_id,
+    processStartedAt: run.process_started_at ? new Date(run.process_started_at) : null,
+    processHostHash: run.process_host_hash,
+  }, "native_workspace_sync_retention", sharedProbe(input.processProbe));
+  return proof?.verdict !== "gone";
+}
+
+function sharedProbe(probe: ProcessProbe): OwnerProcessProbe | undefined {
+  if (probe === defaultProcessProbe) return undefined;
+  const base = currentProcessProbe();
+  return { ...base, pidExists: probe.mayBeAlive, processGroupExists: (group) => probe.mayBeAlive(-group),
+    readStartedAt: async (pid) => { const value = await probe.startedAt(pid); return value ? new Date(value) : null; } };
 }
 
 async function readRun(tx: Tx, runId: string): Promise<RunRow | undefined> {
   const [run] = (await tx.execute(sql`
-    select company_id, status, finished_at, process_pid, process_group_id, process_started_at,
+    select company_id, status, finished_at, process_pid, process_group_id, process_started_at, process_host_hash,
       (controller_lease_expires_at is not null and controller_lease_expires_at >= now()) as controller_live,
       (runner_profile_json->>'nativeWorkspaceFinalizationOwner' is not null) as owner_present,
       runner_profile_json->'nativeWorkspaceSync' as reference

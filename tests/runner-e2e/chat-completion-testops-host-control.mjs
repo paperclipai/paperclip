@@ -3,19 +3,45 @@ import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parse } from 'yaml';
-import { cases, model, targetSha, workflow } from './chat-completion-testops-contract.mjs';
+import { validateCompanySecretBindingApprovalSource } from './chat-full-catalog-testops-manifest.mjs';
+import { model, catalogDefinition, catalogWorkflow } from './chat-completion-testops-contract.mjs';
+
+export function paidWorker(definition, called) {
+  const path = './.github/workflows/chat-catalog-testops-case.yml';
+  for (const name of ['chat', 'chat_external']) {
+    const job = definition.jobs?.[name];
+    if (job?.uses !== path || job.with?.protocol !== 'streaming-v1'
+      || job.with?.target_sha !== '${{ needs.authorize.outputs.target_sha }}'
+      || job.with?.selection_artifact_id !== '${{ needs.select.outputs.artifact_id }}'
+      || job.with?.selection_sha256 !== '${{ needs.select.outputs.selection_sha256 }}'
+      || JSON.stringify(job.secrets) !== JSON.stringify({ OPENROUTER_API_KEY: '${{ secrets.OPENROUTER_API_KEY }}',
+        ANTHROPIC_API_KEY: '${{ secrets.ANTHROPIC_API_KEY }}', ALLURE_TOKEN: '${{ secrets.ALLURE_TOKEN }}' })) {
+      throw new Error('Workflow caller boundary mismatch');
+    }
+  }
+  if (!called?.on?.workflow_call || Object.keys(called.on).length !== 1
+    || called.jobs?.chat?.environment !== 'runner-e2e-private-paid'
+    || called.jobs?.report?.environment !== 'runner-e2e-private-history'
+    || called.jobs?.upload?.environment !== 'runner-e2e-testops-reporting') throw new Error('Workflow environment boundary mismatch');
+  return called.jobs.chat;
+}
 
 /** A credential-free caller/source control with synthetic IMDS responses.
  * It does not qualify an actual AWS host or make a provider call.
  */
 export async function verifyHostContract(workspace, temporaryRoot, env = process.env) {
   if (env.ALLURE_TOKEN || env.OPENROUTER_API_KEY || !path.isAbsolute(workspace)) throw new Error('Credential-free source control required');
+  const full = env.GITHUB_WORKFLOW_REF === `paperclipai/paperclip/${catalogWorkflow}@refs/heads/master`;
+  const { cases, targetSha, workflow } = catalogDefinition(full ? { catalog: 'full' } : {});
   const source = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workspace, encoding: 'utf8' }).trim();
   if (source !== targetSha) throw new Error('Source control pin mismatch');
   const definition = parse(await readFile(new URL(`../../${workflow}`, import.meta.url), 'utf8'));
-  const paid = definition.jobs.chat.steps.find(step => step.env?.OPENROUTER_API_KEY);
+  // Only the reviewed local callee at the same trusted checkout is read. A
+  // workflow input or another repository/ref cannot supply the worker body.
+  const worker = full ? paidWorker(definition, parse(await readFile(new URL('../../.github/workflows/chat-catalog-testops-case.yml', import.meta.url), 'utf8'))) : definition.jobs.chat;
+  const paid = worker.steps.find(step => step.env?.OPENROUTER_API_KEY);
   if (paid.env.PAPERCLIP_CHAT_COMPLETION_TESTOPS !== 'v1' || paid.env.ALLURE_JOB_RUN_ID !== '${{ inputs.ALLURE_JOB_RUN_ID }}'
-    || !paid.run.includes('--max-automatic-retries 0') || definition.jobs.chat.strategy['max-parallel'] !== 1) throw new Error('Workflow host contract mismatch');
+    || !paid.run.includes('--max-automatic-retries 0') || definition.jobs.chat.strategy['max-parallel'] !== (full ? '${{ fromJSON(needs.select.outputs.parallelism) }}' : 1)) throw new Error('Workflow host contract mismatch');
   const { runnerMatrix } = await import(pathToFileURL(path.join(workspace, 'tests/runner-e2e/catalog.ts')).href);
   const { prepareChatRemoteHost } = await import(pathToFileURL(path.join(workspace, 'tests/runner-e2e/chat-remote-host.ts')).href);
   const root = await realpath(await mkdtemp(path.join(temporaryRoot, 'chat-completion-host-control-')));
@@ -25,7 +51,12 @@ export async function verifyHostContract(workspace, temporaryRoot, env = process
       if (!execution || execution.task.id !== descriptor.scenario || execution.profile.model !== model
         || execution.profile.id !== 'runner-opencode' || execution.environment.id !== 'local'
         || execution.task.expectedRunCount !== descriptor.maximumRuns
-        || (execution.task.minimumExpectedRunCount ?? execution.task.expectedRunCount) !== descriptor.minimumRuns) throw new Error('Pinned source selection mismatch');
+        || (execution.task.minimumExpectedRunCount ?? execution.task.expectedRunCount) !== descriptor.minimumRuns
+        || full && (execution.task.turnTimeoutMs !== descriptor.turnTimeoutMs
+          || execution.task.attemptTimeoutMs.local !== descriptor.attemptTimeoutMs
+          || execution.suite.definitionMetadata?.companyAndAgentBudgetCents !== 500
+          || execution.suite.definitionMetadata?.maximumAttemptsPerCell !== 1)) throw new Error('Pinned source selection mismatch');
+      if (full) validateCompanySecretBindingApprovalSource(descriptor, execution.task);
       const controlEnv = { GITHUB_ACTIONS: 'true', GITHUB_REPOSITORY: 'paperclipai/paperclip', GITHUB_REF: 'refs/heads/master',
         GITHUB_WORKFLOW_REF: `paperclipai/paperclip/${workflow}@refs/heads/master`, GITHUB_RUN_ID: '1', GITHUB_RUN_ATTEMPT: '1',
         PAPERCLIP_RUNNER_E2E_SOURCE_SHA: targetSha, PAPERCLIP_CHAT_COMPLETION_TESTOPS: paid.env.PAPERCLIP_CHAT_COMPLETION_TESTOPS,

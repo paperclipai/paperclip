@@ -1,9 +1,13 @@
 import { constants } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sanitizeAntigravityCredential, verifyAntigravityCredential } from "../../vendor/paperclip-runner/index.js";
+import {
+  GENERATED_ANTIGRAVITY_SWARM_CHANNELS, GENERATED_ANTIGRAVITY_SWARM_CREDENTIAL_FACTS_FIELD, GENERATED_ANTIGRAVITY_SWARM_DEFAULT_CHANNEL,
+  readGeneratedAntigravitySwarmCredentialFacts, sanitizeAntigravityCredential, verifyAntigravityCredential,
+  type GeneratedAntigravitySwarmChannel,
+} from "../../vendor/paperclip-runner/index.js";
 import { readLocalAiCredentialFile } from "../local-ai-credential-file.js";
 import { reconcileRetainedGoogleCleanupForHome, retainGoogleCredentialCleanupForHome, retainGoogleCredentialCleanup, type RetainedGoogleCleanupScope } from "../retained-google-credential-cleanup.js";
 import { withDirectoryMergeLock } from "@paperclipai/adapter-utils/workspace-restore-merge";
@@ -11,6 +15,8 @@ import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-lo
 import { openRunnerWorkspaceFile } from "./runner-api-files.js";
 import type { NativeSession, createRunnerdCodexTransport } from "../../vendor/paperclip-runner/index.js";
 import { bindManagedNativeCredentialTurn } from "./managed-native-credentials.js";
+import { AntigravityConnectionConfigurationError, antigravityConnectionRefusal } from "./antigravity-connection-policy.js";
+import { antigravityReleasePending } from "./antigravity-release.js";
 
 const AUTH_SECRET = "PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET";
 const TOKEN_FILE = "acp_token.json";
@@ -34,19 +40,53 @@ export function bindAntigravityTransportRetirement(bundle: RunnerdTransport): Ru
   return bundle.transport;
 }
 
+/**
+ * The Google channel a trusted /swarm's Antigravity CLI talks to, owned by the
+ * deployment: `provider_default` (the default; Google's daily channel, which
+ * Google's own app and CLI use and which can change with less notice) or
+ * `stable` (Google's stable endpoint, which may offer fewer models).
+ */
+export const ANTIGRAVITY_SWARM_CHANNEL_ENV = "PAPERCLIP_ANTIGRAVITY_SWARM_CHANNEL";
+export function antigravitySwarmChannel(env: NodeJS.ProcessEnv = process.env): GeneratedAntigravitySwarmChannel {
+  const value = env[ANTIGRAVITY_SWARM_CHANNEL_ENV]?.trim().toLowerCase();
+  return (GENERATED_ANTIGRAVITY_SWARM_CHANNELS as readonly string[]).includes(value ?? "")
+    ? value as GeneratedAntigravitySwarmChannel : GENERATED_ANTIGRAVITY_SWARM_DEFAULT_CHANNEL;
+}
+
+/** Same digest as the Runner's antigravityAccountDigest: a one-way, non-identifying account comparison. */
+export function antigravityAccountDigest(email: string): string {
+  return createHash("sha256").update(`paperclip.antigravity-account.v1:${email.trim().toLowerCase()}`, "utf8").digest("hex");
+}
+
 /** Only explicit run credentials may enter Antigravity's isolated runtime. */
 export async function prepareAntigravityRunnerCredentials(input: {
   environment: NodeJS.ProcessEnv;
   remote: boolean;
   managedHome?: string;
   lifecycleMode?: "per_turn" | "warm";
+  /** The connection's Google account; only its digest reaches the Runner. */
+  accountEmail?: string;
 }): Promise<{ environment: NodeJS.ProcessEnv; home: string | null; credential?: string }> {
   const environment = { ...input.environment };
-  for (const key of [AUTH_SECRET, "GEMINI_HOME", "GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_ACCESS_TOKEN"]) delete environment[key];
-  if (environment.GEMINI_API_KEY?.trim()) return { environment, home: null };
-  delete environment.GEMINI_API_KEY;
-  if (input.remote) throw new Error("Google Antigravity subscription authentication is not qualified for remote environments. Select a Google API key or use the Paperclip host.");
-  if (input.lifecycleMode === "warm") throw new Error("Google Antigravity subscription authentication requires turn-by-turn sessions; warm sessions are not qualified.");
+  const apiKey = Boolean(environment.GEMINI_API_KEY?.trim());
+  for (const key of Object.keys(environment)) {
+    if (key === AUTH_SECRET || key.startsWith("GOOGLE_") || (key.startsWith("GEMINI_") && !(apiKey && key === "GEMINI_API_KEY"))) {
+      delete environment[key];
+    }
+  }
+  const releasePending = antigravityReleasePending();
+  // Save and Test refuse these choices first; this is the run-time defense.
+  // While pending, assertAntigravityExecutionAdmissible enforces the operator's
+  // cloud grant separately; remote sign-in remains refused until released.
+  const refusal = antigravityConnectionRefusal({
+    apiKey,
+    remote: input.remote,
+    lifecycleMode: input.lifecycleMode,
+    releasePending,
+    remoteCandidateAdmitted: releasePending && input.remote,
+  });
+  if (refusal) throw new AntigravityConnectionConfigurationError(refusal);
+  if (apiKey) return { environment, home: null };
   const home = input.managedHome?.trim();
   if (!home) throw new Error("Google Antigravity requires a selected managed Google account or Google API key.");
   await reconcileRetainedGoogleCleanupForHome(home);
@@ -56,8 +96,23 @@ export async function prepareAntigravityRunnerCredentials(input: {
   } catch {
     throw new Error("The selected Google Antigravity account is unavailable. Reconnect the Google account, then retry.");
   }
-  environment[AUTH_SECRET] = credential;
+  if (input.remote) {
+    environment[AUTH_SECRET] = credential;
+    return { environment, home, credential };
+  }
+  // Run facts bound to this credential for the swarm route (channel, account
+  // digest). The Runner's credential sanitizer drops them before any write, so
+  // the staged token and its writeback comparison are unchanged.
+  // Facts follow the declared sidecar schema (antigravitySwarmCredentialFacts); the reader proves the shape.
+  const facts = readGeneratedAntigravitySwarmCredentialFacts({ swarmChannel: antigravitySwarmChannel(),
+    ...(input.accountEmail ? { accountSha256: antigravityAccountDigest(input.accountEmail) } : {}) });
+  if (!facts) throw new Error("Antigravity swarm credential facts do not match the sidecar contract");
+  environment[AUTH_SECRET] = JSON.stringify({ ...JSON.parse(credential) as Record<string, unknown>, [GENERATED_ANTIGRAVITY_SWARM_CREDENTIAL_FACTS_FIELD]: facts });
   return { environment, home, credential };
+}
+
+export class AntigravityAccountMismatchError extends Error {
+  constructor() { super("The refreshed Google account does not match the selected connection."); }
 }
 
 /** A changed refresh token must prove the same saved Google identity before
@@ -75,7 +130,7 @@ export async function prepareAntigravityCredentialWriteback(input: {
   if (!input.accountEmail) throw new Error("The Google account identity is unavailable for credential refresh. Reconnect the account.");
   const verified = await verifyAntigravityCredential(input.managedHome);
   if (verified.accountEmail.toLowerCase() !== input.accountEmail.toLowerCase()) {
-    throw new Error("The refreshed Google account does not match the selected connection.");
+    throw new AntigravityAccountMismatchError();
   }
   return verified.credential;
 }
@@ -123,6 +178,8 @@ export function antigravityCredentialTurn(input: {
   managedHome: string;
   runtimeHome: string;
   credential: string;
+  /** Remote Core sandbox runs export and scrub rotated tokens over the sandbox runner. */
+  runtimeStore?: { read: () => Promise<string>; remove: () => Promise<void> };
 }) {
   const runtimeDirectory = join(input.runtimeHome, "antigravity-acp");
   const destination = join(input.managedHome, "antigravity-acp", TOKEN_FILE);
@@ -131,10 +188,14 @@ export function antigravityCredentialTurn(input: {
     copyBack: async () => {
       let serialized: string;
       try {
-        try { serialized = await readLocalAiCredentialFile(join(runtimeDirectory, TOKEN_FILE)); }
-        catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-          serialized = await readLocalAiCredentialFile(join(runtimeDirectory, REFRESH_FILE));
+        if (input.runtimeStore) {
+          serialized = await input.runtimeStore.read();
+        } else {
+          try { serialized = await readLocalAiCredentialFile(join(runtimeDirectory, TOKEN_FILE)); }
+          catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+            serialized = await readLocalAiCredentialFile(join(runtimeDirectory, REFRESH_FILE));
+          }
         }
       } catch (error) {
         // A provider that never started has no refresh to preserve.
@@ -279,6 +340,10 @@ export function antigravityCredentialTurn(input: {
       });
     },
     remove: async () => {
+      if (input.runtimeStore) {
+        await input.runtimeStore.remove();
+        return;
+      }
       const directory = await openRunnerWorkspaceFile(runtimeDirectory, constants.O_RDONLY | constants.O_DIRECTORY)
         .catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; });
       if (!directory) return;

@@ -76,11 +76,15 @@ scenarios:
       - agent-chat/conference-room
       - developer-labs/route-gates
     context: >-
-      Agent Chat or the conference-room experiment is disabled on this target.
+      Agent Chat is always available. The separate Conference Room experiment is off on this
+      target, and its opt-in is not offered in settings, so the board discussion surface is
+      unavailable. The person follows an old Conference Room link.
     query: >-
-      Open a chat with Morgan.
+      Open the conference room so I can talk with Morgan.
     expected_outcome: >-
-      The user sees a clear unavailable-feature or supported alternative path rather than a
-      broken route or a silently created task claiming to be chat. If changing the gate requires
-      an operator, the response identifies that human step without altering instance settings as
-      an ordinary agent.
+      The person does not land on a broken route or a Conference Room that cannot work: the old
+      link opens a working company page and navigation does not offer the Conference Room. The
+      supported alternative, an ordinary chat with Morgan, opens from Chat. The board discussion
+      API refuses while the experiment is off, and nothing creates a task, chat or run that
+      claims to be the conference room. Turning the experiment on is an instance operator
+      decision; an ordinary agent cannot change the instance setting.

@@ -9,6 +9,7 @@ const mockActivityService = vi.hoisted(() => ({
   runsForIssue: vi.fn(),
   issuesForRun: vi.fn(),
   create: vi.fn(),
+  withActorNames: vi.fn(),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -120,6 +121,7 @@ async function requestApp(
 describe("activity routes", () => {
   beforeEach(() => {
     for (const mock of Object.values(mockActivityService)) mock.mockReset();
+    mockActivityService.withActorNames.mockImplementation(async (rows: unknown[]) => rows);
     for (const mock of Object.values(mockHeartbeatService)) mock.mockReset();
     mockHeartbeatService.getRun.mockImplementation(() => {
       throw new Error("Run issue links must use the narrow authorization read");
@@ -210,6 +212,7 @@ describe("activity routes", () => {
     expect(res.status).toBe(200);
     expect(mockAgentActionAuditService.list).toHaveBeenCalledWith({
       companyId: "company-1",
+      dashboardUserId: "user-1",
       actorScope: "all",
       limit: 50,
       caseReadCondition,
@@ -259,6 +262,7 @@ describe("activity routes", () => {
     expect(res.status).toBe(200);
     expect(mockAgentActionAuditService.list).toHaveBeenCalledWith({
       companyId: "company-1",
+      dashboardUserId: "user-1",
       actorScope: "all",
       actorType: "system",
       limit: 50,
@@ -282,6 +286,7 @@ describe("activity routes", () => {
     expect(res.status).toBe(200);
     expect(mockActivityService.list).toHaveBeenCalledWith({
       companyId: "company-1",
+      dashboardUserId: "user-1",
       agentId: undefined,
       entityType: undefined,
       entityId: undefined,
@@ -289,6 +294,31 @@ describe("activity routes", () => {
       readCondition: expect.anything(),
       caseReadCondition,
     });
+  });
+
+  it("rejects malformed agentId filters on company activity lists", async () => {
+    mockActivityService.list.mockResolvedValue([]);
+
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get("/api/companies/company-1/activity?agentId=dc04285a-"),
+    );
+
+    expect(res.status).toBe(400);
+    expect(mockActivityService.list).not.toHaveBeenCalled();
+  });
+
+  it("passes valid agentId filters to company activity lists", async () => {
+    mockActivityService.list.mockResolvedValue([]);
+    const agentId = "dc04285a-1b2c-4d3e-8f90-123456789abc";
+
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(`/api/companies/company-1/activity?agentId=${agentId}`),
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockActivityService.list).toHaveBeenCalledWith(expect.objectContaining({ agentId }));
   });
 
   it("caps requested company activity list limits", async () => {
@@ -302,6 +332,7 @@ describe("activity routes", () => {
     expect(res.status).toBe(200);
     expect(mockActivityService.list).toHaveBeenCalledWith({
       companyId: "company-1",
+      dashboardUserId: "user-1",
       agentId: undefined,
       entityType: "issue",
       entityId: undefined,

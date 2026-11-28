@@ -125,11 +125,17 @@ export function createSetupProbes(db: Db, options: SetupProbesOptions) {
           : null;
         const optionalSlackTest = Boolean(finishOptions?.optionalSlackTestForUser);
         if (optionalSlackTest) {
-          if (!["slack", "github"].includes(endpoint.provider) || !endpoint.setup.webhookVerifiedAt || !endpoint.providerAccountId) {
-            throw conflict("Verify the connection before finishing setup");
+          if (endpoint.provider === "speko") {
+            if (!endpoint.providerAccountId || !endpoint.botExternalId || runtimeGeneration(endpoint.setup) < 1) {
+              throw conflict("Verify the Speko connection before finishing setup");
+            }
+          } else {
+            if (!["slack", "github"].includes(endpoint.provider) || !endpoint.setup.webhookVerifiedAt || !endpoint.providerAccountId) {
+              throw conflict("Verify the connection before finishing setup");
+            }
+            const linked = await findAuthorizedIdentityLink(endpoint, finishOptions!.optionalSlackTestForUser);
+            if (!linked) throw forbidden("Connect your account before finishing setup");
           }
-          const linked = await findAuthorizedIdentityLink(endpoint, finishOptions!.optionalSlackTestForUser);
-          if (!linked) throw forbidden("Connect your account before finishing setup");
         }
         if (!optionalSlackTest) {
           if (
@@ -294,7 +300,7 @@ export function createSetupProbes(db: Db, options: SetupProbesOptions) {
         const expectedGeneration = runtimeGeneration(endpoint.setup);
         await db.transaction(async (tx) => {
           await credentialLease.assertOwned(tx);
-          if (optionalSlackTest) {
+          if (optionalSlackTest && endpoint.provider !== "speko") {
             const linked = await tx.select({ principalId: chatIdentityLinks.principalId }).from(chatIdentityLinks).where(and(
               eq(chatIdentityLinks.endpointId, endpoint.id), eq(chatIdentityLinks.paperclipUserId, finishOptions!.optionalSlackTestForUser), eq(chatIdentityLinks.status, "linked"),
             )).limit(1).then((rows) => rows[0]);

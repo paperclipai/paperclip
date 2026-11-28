@@ -43,7 +43,7 @@ describe.skipIf(!support.supported)("agent-scoped runner qualification", () => {
     await db.insert(authUsers).values({ id: userId, name: "Company owner", email: `${userId}@example.test`, emailVerified: true, createdAt: new Date(), updatedAt: new Date() });
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, membershipRole: "owner", status: "active" });
     await db.insert(principalPermissionGrants).values(grantsForHumanRole("owner").map(grant => ({ ...grant, companyId, principalType: "user" as const, principalId: userId })));
-    await db.insert(environments).values({ id: environmentId, name: `Paperclip Computer ${environmentId}`, driver: "sandbox", status: "active", config: { provider: "daytona", snapshot: "managed-snapshot" } });
+    await db.insert(environments).values({ id: environmentId, name: `Paperclip Sandbox ${environmentId}`, driver: "sandbox", status: "active", config: { provider: "daytona", snapshot: "managed-snapshot", reuseLease: false } });
     await db.insert(agents).values({ id: agentId, companyId, name: "Amy fixture", adapterType: "claude_local", defaultEnvironmentId: environmentId,
       adapterConfig: { model: "claude-opus-5-5", effort: "high", maxTurnsPerRun: 1000, dangerouslySkipPermissions: true } });
     app = express(); app.use(express.json());
@@ -89,7 +89,7 @@ describe.skipIf(!support.supported)("agent-scoped runner qualification", () => {
 
   it("reuses a current native snapshot proof without invalidating it or allocating another probe", async () => {
     await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: { provider: "opencode" } }).where(eq(agents.id, agentId));
-    const config = { provider: "daytona", snapshot: "managed-snapshot" };
+    const config = { provider: "daytona", snapshot: "managed-snapshot", reuseLease: false };
     const fingerprint = fingerprintEnvironmentSandboxProviderConfig(config);
     const saved = (await environmentService(db).getById(environmentId))!;
     const runtime = await resolveEnvironmentDriverConfigForRuntime(db, companyId, saved, { applyCustomImageTemplate: true, readOnlyCustomImageTemplate: true });

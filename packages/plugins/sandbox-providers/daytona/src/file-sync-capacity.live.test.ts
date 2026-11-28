@@ -72,3 +72,48 @@ it.skipIf(!process.env.DAYTONA_API_KEY)("preserves a stopped Daytona workspace a
     await fs.rm(output, { recursive: true, force: true });
   }
 }, 300_000);
+
+it.skipIf(!process.env.DAYTONA_API_KEY)("saves an existing Daytona archive when its download snapshot cannot fit", async () => {
+  const { Daytona } = await import("@daytonaio/sdk");
+  const sandbox = await new Daytona({ apiKey: process.env.DAYTONA_API_KEY }).create({
+    name: `file-capacity-${randomUUID()}`, image: "ubuntu:24.04", user: "root",
+    resources: { cpu: 1, memory: 1, disk: 1 }, autoStopInterval: 5,
+  });
+  const output = await fs.mkdtemp(path.join(os.tmpdir(), "daytona-file-capacity-live-"));
+  const remote = "/tmp/file-capacity-proof", source = `${remote}/captured.pcws`;
+  try {
+    const execute = sandbox.process.executeCommand.bind(sandbox.process);
+    const setup = await execute(`mkdir -p ${remote} && head -c 5242880 /dev/urandom > ${source} && sha256sum ${source}`);
+    expect(setup.exitCode).toBe(0);
+    let expected = setup.result.trim().split(/\s/)[0];
+    const failures: string[] = [];
+    sandbox.process.executeCommand = async (...args: Parameters<typeof execute>) => {
+      if (args[0].includes("cp --")) args[0] = args[0].replace(/'\/tmp\/file-capacity-proof\/\.paperclip-upload-[\w-]+'/g, "/dev/full");
+      const result = await execute(...args);
+      if (result.exitCode !== 0) failures.push(result.result);
+      return result;
+    };
+    const targetPath = path.join(output, "saved.pcws");
+    for (let turn = 0; turn < 2; turn += 1) {
+      await sandbox.stop(); await sandbox.start();
+      if (turn) {
+        const changed = await execute(`printf second >> ${source} && sha256sum ${source}`);
+        expect(changed.exitCode).toBe(0);
+        expected = changed.result.trim().split(/\s/)[0];
+      }
+      await performSyncOut({ sandbox, remoteDir: remote, timeoutSeconds: 120,
+        operations: [{ operationId: "save", files: [{ sourcePath: source, targetPath, kind: "file", mode: 0o600 }] }],
+      });
+      expect(createHash("sha256").update(await fs.readFile(targetPath)).digest("hex")).toBe(expected);
+      expect((await fs.stat(targetPath)).mode & 0o777).toBe(0o600);
+      const retained = await execute(`sha256sum ${source} && find ${remote} -name '.paperclip-upload*'`);
+      expect(retained.result.trim()).toBe(`${expected}  ${source}`);
+    }
+    expect(failures).toHaveLength(2);
+    expect(failures.join("\n")).toContain("No space left on device");
+    console.log("[file-capacity-live] actual stopped/resumed Daytona, ENOSPC, exact archive hashes, cleanup, and second save passed");
+  } finally {
+    await sandbox.delete();
+    await fs.rm(output, { recursive: true, force: true });
+  }
+}, 300_000);

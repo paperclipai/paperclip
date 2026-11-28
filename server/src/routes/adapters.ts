@@ -48,14 +48,15 @@ import type {
 } from "@paperclipai/adapter-utils";
 import { loadExternalAdapterPackage, getUiParserSource, getOrExtractUiParserSource, reloadExternalAdapter } from "../adapters/plugin-loader.js";
 import { logger } from "../middleware/logger.js";
-import { badRequest, forbidden } from "../errors.js";
+import { badRequest, forbidden, HttpError } from "../errors.js";
+import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import { assertExternalAdapterCodeAllowed } from "../services/adapter-code-policy.js";
 import { getHiddenSettings } from "../services/settings-visibility.js";
 import { assertBoardOrgAccess, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import { BUILTIN_ADAPTER_TYPES } from "../adapters/builtin-adapter-types.js";
 import { agentRunnerAvailability, type RunnerTarget } from "../services/agent-runner-selection.js";
 import type { AgentRunnerAvailability } from "@paperclipai/shared";
-import { resolveAntigravityCandidateAdmission } from "../services/native-runtime/acpx-qualification.js";
+import { antigravityCandidateForRunnerTarget } from "../services/native-runtime/antigravity-release.js";
 
 const execFileAsync = promisify(execFile);
 let warnedMalformedAntigravityAdmission = false;
@@ -281,7 +282,17 @@ export function adapterRoutes(options: {
     if (typeof companyId === "string") {
       assertCompanyAccess(_req, companyId);
       if (!options.resolveRunnerTarget) throw badRequest("Scoped adapter discovery is unavailable.");
-      target = await options.resolveRunnerTarget(companyId, typeof environmentId === "string" ? environmentId : undefined);
+      try {
+        target = await options.resolveRunnerTarget(companyId, typeof environmentId === "string" ? environmentId : undefined);
+      } catch (error) {
+        // API controllers do not need a Computer. Keep their catalog visible
+        // when only the implicit managed Computer is unavailable. This target
+        // grants no local execution support to any workspace harness.
+        if (environmentId !== undefined || !(error instanceof HttpError) || error.status !== 422
+          || (error.details as { code?: unknown } | undefined)?.code !== "managed_sandbox_unavailable") throw error;
+        target = { driver: "unavailable", ...((error.details as { executionMode?: unknown }).executionMode === "kubernetes"
+          ? { executionMode: "kubernetes" as const } : {}) };
+      }
     }
     await waitForExternalAdapters();
 
@@ -293,11 +304,11 @@ export function adapterRoutes(options: {
     // One shared implementation, with independent provider rollouts. Explicit
     // adapter-admin disabling still applies to both choices.
 
-    let candidate: ReturnType<typeof resolveAntigravityCandidateAdmission>;
-    if (typeof companyId === "string" && target?.driver === "local") {
+    let candidate: ReturnType<typeof antigravityCandidateForRunnerTarget>;
+    if (typeof companyId === "string" && target) {
       // An expired optional preview must not hide the ordinary adapter catalog.
       // Execution and model discovery still perform strict admission checks.
-      try { candidate = resolveAntigravityCandidateAdmission({ companyId }); }
+      try { candidate = antigravityCandidateForRunnerTarget(companyId, target); }
       catch (error) {
         candidate = undefined;
         // Expiry is ordinary catalog state. Invalid trusted startup JSON needs
