@@ -47,7 +47,7 @@ import {
   type WorkspaceRuntimeServiceStateMap,
 } from "@paperclipai/shared";
 import { and, desc, eq, gte, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
-import { asNumber, asString, parseObject, renderTemplate } from "../adapters/utils.js";
+import { applyAgentNodeEnvDefault, asNumber, asString, parseObject, renderTemplate } from "../adapters/utils.js";
 import { conflict, unprocessable } from "../errors.js";
 import { registerIdleLocalWorkProbe, type IdleLocalWork } from "./idle-local-work.js";
 import { withExecutionWorkspaceLifecycleLock } from "./execution-workspace-lifecycle-lock.js";
@@ -718,6 +718,12 @@ export async function ensureServerWorkspaceLinksCurrent(
   );
 }
 
+// Dev/preview services are development processes: don't let them inherit the
+// server's NODE_ENV=production, which makes installs skip devDependencies and
+// bundlers serve the production React build.
+function buildRuntimeServiceBaseEnv(): NodeJS.ProcessEnv {
+  return applyAgentNodeEnvDefault(sanitizeRuntimeServiceBaseEnv(process.env));
+}
 
 function stableRuntimeServiceId(input: {
   adapterType: string;
@@ -3047,7 +3053,10 @@ function buildWorkspaceCommandEnv(input: {
   agent: ExecutionWorkspaceAgentRef;
   created: boolean;
 }) {
-  const env: NodeJS.ProcessEnv = { ...process.env };
+  // Workspace setup commands routinely run `npm ci` / `npm install`; inheriting
+  // the server's NODE_ENV=production would leave the tree without devDeps before
+  // the agent even starts.
+  const env: NodeJS.ProcessEnv = applyAgentNodeEnvDefault({ ...process.env });
   env.PAPERCLIP_WORKSPACE_CWD = input.worktreePath;
   env.PAPERCLIP_WORKSPACE_PATH = input.worktreePath;
   env.PAPERCLIP_WORKSPACE_WORKTREE_PATH = input.worktreePath;
@@ -3416,7 +3425,7 @@ function buildExecutionWorkspaceCleanupEnv(input: {
   };
   projectWorkspaceCwd?: string | null;
 }) {
-  const env: NodeJS.ProcessEnv = sanitizeRuntimeServiceBaseEnv(process.env);
+  const env: NodeJS.ProcessEnv = buildRuntimeServiceBaseEnv();
   env.PAPERCLIP_WORKSPACE_CWD = input.workspace.cwd ?? "";
   env.PAPERCLIP_WORKSPACE_PATH = input.workspace.cwd ?? "";
   env.PAPERCLIP_WORKSPACE_WORKTREE_PATH =
@@ -5379,7 +5388,7 @@ function resolveWorkspaceCommandExecution(input: {
     input.workspace.cwd,
   );
   const env = {
-    ...sanitizeRuntimeServiceBaseEnv(process.env),
+    ...buildRuntimeServiceBaseEnv(),
     ...input.adapterEnv,
     ...renderRuntimeServiceEnv({
       envConfig: parseObject(input.command.env),
@@ -6540,7 +6549,7 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
     runtimeEnvOverrides[key] = value;
   }
   const env: Record<string, string> = {
-    ...sanitizeRuntimeServiceBaseEnv(process.env),
+    ...buildRuntimeServiceBaseEnv(),
     ...runtimeEnvOverrides,
   } as Record<string, string>;
   // Managed Paperclip worktrees are development environments, so their UI
