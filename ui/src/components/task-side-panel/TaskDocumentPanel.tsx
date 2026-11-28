@@ -9,6 +9,7 @@ import { DocumentAnnotationsCountChip, IssueDocumentAnnotations } from "@/compon
 import { DocumentMarkdownBody } from "@/components/DocumentMarkdownBody";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { queryKeys } from "@/lib/queryKeys";
+import { DocumentMarkdownActions } from "@/components/DocumentMarkdownActions";
 import { documentDisplayTitle } from "@/lib/issue-artifacts";
 import { createIssueDetailPath } from "@/lib/issueDetailBreadcrumb";
 import { Link, useLocation } from "@/lib/router";
@@ -125,6 +126,7 @@ export function TaskDocumentPanel({
             panelOpen={annotationPanelOpen}
             onToggle={() => setAnnotationPanelOpen((open) => !open)}
           /> : <span>· Reviewed version</span>}
+          <DocumentMarkdownActions key={document.latestRevisionId} document={document} />
         </div>
       </header>
       {document.body.trim() ? (
