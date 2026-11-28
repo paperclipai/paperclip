@@ -52,6 +52,7 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
     },
   })),
   listCompanyIds: vi.fn(async () => ["company-1"]),
+  getExperimental: vi.fn(async () => ({ enableIsolatedWorkspaces: true })),
 }));
 const mockRoutineService = vi.hoisted(() => ({
   syncRunStatusForIssue: vi.fn(async () => undefined),
