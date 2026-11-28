@@ -172,6 +172,65 @@ The server sets `Preference-Applied: return=minimal` and returns exactly:
 
 **The PATCH response is the authoritative post-write state. A confirming GET after a 2xx PATCH is unnecessary.**
 
+## Completion Requirements
+
+A project workspace can require evidence before a task is allowed to finish. The
+issue carries that requirement in two fields:
+
+- `completionRequirement`: `"workspace_delivery"` or `null`
+- `completionRequirementRevision`: integer that increments whenever the requirement changes
+
+`"workspace_delivery"` means the task cannot reach `done` without a successful
+delivery attestation recorded for the issue. The check is issue-wide, not tied
+to the completing run: any successful attestation for the same issue, requirement
+revision and repository target satisfies it. The attestation only satisfies the
+declaration it was recorded against, so a changed requirement invalidates an
+older attestation. Only a value that differs from the stored one counts as a
+change: resending the same value neither advances the revision nor invalidates
+an existing attestation.
+
+Company export and import do not carry a workspace's
+`defaultCompletionRequirement` yet, so an imported workspace has no default
+until one is set on it.
+
+**Create.** Omit the field, or send `null`, to inherit the target project
+workspace's `defaultCompletionRequirement`. A concrete value overrides the
+inherit for that issue only.
+
+**Update.** Sending a different `completionRequirement` bumps
+`completionRequirementRevision` in the same write. Send `null` to clear the
+requirement and let the task complete on a claim alone.
+
+**Completion gate.** Moving a `"workspace_delivery"` issue to `done` without a
+satisfying attestation returns `422`:
+
+```json
+{ "error": "Delivery attestation is required to complete this issue",
+  "code": "delivery_attestation_required" }
+```
+
+**Agent keys.** The requirement is the board's contract with the agent, so agent
+keys cannot set it. On create — including
+`POST /api/issues/{issueId}/children` and
+`POST /api/issues/{issueId}/accepted-plan-decompositions` — any supplied value,
+including `null`, returns `403` with code
+`completion_requirement_protected`. On update, a value that differs from the
+stored one returns the same error; resending the value the issue already carries
+is a no-op and neither advances the revision nor returns an error. Board sessions
+and internal callers are unaffected.
+
+**Workspace default.** Set it on the workspace, not per issue:
+
+```http
+PATCH /api/projects/{projectId}/workspaces/{workspaceId}
+{ "defaultCompletionRequirement": "workspace_delivery" }
+```
+
+`POST /api/projects/{projectId}/workspaces` accepts the same field when the
+workspace is created. All of these are board-only: an agent key that supplies
+`defaultCompletionRequirement` — through the workspace routes or embedded in a
+project create — gets `403` with code `completion_requirement_protected`.
+
 ## Checkout (Claim Task)
 
 ```

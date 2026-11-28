@@ -52,6 +52,10 @@ import {
   collectProjectExecutionWorkspaceCommandPaths,
   collectProjectWorkspaceCommandPaths,
 } from "./workspace-command-authz.js";
+import {
+  assertNoAgentCompletionRequirementChange,
+  assertNoAgentCompletionRequirementSupply,
+} from "./completion-requirement-authz.js";
 import { assertCanManageProjectWorkspaceRuntimeServices } from "./workspace-runtime-service-authz.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { appendWithCap } from "../adapters/utils.js";
@@ -412,6 +416,11 @@ export function projectRoutes(db: Db) {
         ...collectProjectWorkspaceCommandPaths(workspace, "workspace"),
       ],
     );
+    assertNoAgentCompletionRequirementSupply(
+      req,
+      workspace?.defaultCompletionRequirement,
+      "the workspace default completion requirement",
+    );
     await assertNoManagedSandboxWorkspacePath(workspace);
     if (projectData.env !== undefined) {
       projectData.env = await secretsSvc.normalizeEnvBindingsForPersistence(
@@ -687,6 +696,11 @@ export function projectRoutes(db: Db) {
       req,
       collectProjectWorkspaceCommandPaths(req.body),
     );
+    assertNoAgentCompletionRequirementSupply(
+      req,
+      req.body?.defaultCompletionRequirement,
+      "the workspace default completion requirement",
+    );
     await assertNoManagedSandboxWorkspacePath(req.body);
     const workspace = await svc.createWorkspace(id, req.body);
     if (!workspace) {
@@ -727,6 +741,12 @@ export function projectRoutes(db: Db) {
       assertNoAgentHostWorkspaceCommandMutation(
         req,
         collectProjectWorkspaceCommandPaths(req.body),
+      );
+      assertNoAgentCompletionRequirementChange(
+        req,
+        req.body,
+        "defaultCompletionRequirement",
+        "the workspace default completion requirement",
       );
       await assertNoManagedSandboxWorkspacePath(req.body);
       const workspaceExists = (await svc.listWorkspaces(id)).some((workspace) => workspace.id === workspaceId);

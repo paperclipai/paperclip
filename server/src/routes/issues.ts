@@ -307,6 +307,7 @@ import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectIssueWorkspaceCommandPaths,
 } from "./workspace-command-authz.js";
+import { assertNoAgentCompletionRequirementSupply } from "./completion-requirement-authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import {
   formatAttachmentSize,
@@ -13379,6 +13380,13 @@ export function issueRoutes(
             }
           : {}),
       };
+    // The completion requirement is the board's contract with the agent. An
+    // agent key must not choose, relax or clear the gate it is meant to satisfy.
+    assertNoAgentCompletionRequirementSupply(
+      req,
+      (rawCreateBody as { completionRequirement?: unknown }).completionRequirement,
+      "the completion requirement",
+    );
     if (createBody.parentId) {
       const parent = await svc.getById(createBody.parentId);
       if (!parent || parent.companyId !== companyId || !(await assertIssueReadAllowed(req, res, parent))) {
@@ -13750,6 +13758,12 @@ export function issueRoutes(
         req,
         collectIssueWorkspaceCommandPaths(req.body),
       );
+      // Children inherit the same completion-gate contract as top-level creates.
+      assertNoAgentCompletionRequirementSupply(
+        req,
+        (req.body as { completionRequirement?: unknown }).completionRequirement,
+        "the completion requirement",
+      );
       const sanitizedBody = await sanitizeIssueCreateAttribution(
         db,
         req,
@@ -14030,6 +14044,11 @@ export function issueRoutes(
       for (const child of req.body.children as Array<
         (typeof req.body.children)[number]
       >) {
+        assertNoAgentCompletionRequirementSupply(
+          req,
+          (child as { completionRequirement?: unknown }).completionRequirement,
+          "the completion requirement",
+        );
         const sanitizedChild = await sanitizeIssueCreateAttribution(
           db,
           req,

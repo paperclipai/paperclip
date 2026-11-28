@@ -3564,6 +3564,13 @@
       "when": 1795635927842,
       "tag": "0510_clear_speedball",
       "breakpoints": true
+    },
+    {
+      "idx": 511,
+      "version": "7",
+      "when": 1795649058784,
+      "tag": "0511_overconfident_exodus",
+      "breakpoints": true
     }
   ]
 }

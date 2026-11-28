@@ -21,6 +21,7 @@ function createProjectWorkspace(overrides: Partial<ProjectWorkspace>): ProjectWo
     sharedWorkspaceKey: overrides.sharedWorkspaceKey ?? null,
     metadata: overrides.metadata ?? null,
     runtimeConfig: overrides.runtimeConfig ?? null,
+    defaultCompletionRequirement: overrides.defaultCompletionRequirement ?? null,
     isPrimary: overrides.isPrimary ?? false,
     runtimeServices: overrides.runtimeServices ?? [],
     createdAt: overrides.createdAt ?? new Date("2026-03-20T00:00:00Z"),

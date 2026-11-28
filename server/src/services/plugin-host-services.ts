@@ -1,4 +1,5 @@
 import { assertAgentInteraction } from "./agent-interaction-policy.js";
+import { assertNoPluginCompletionRequirementSupply } from "./delivery-attestations.js";
 import { currentPluginInteractionOrigin } from "./plugin-interaction-context.js";
 import { projectGitAuthorizationService } from "./project-git-authorization.js";
 import { createLiveEventDelivery } from "../realtime/live-event-delivery.js";
@@ -2146,6 +2147,7 @@ export function buildHostServices(
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         const { actorAgentId, actorUserId, actorRunId, originKind, surfaceVisibility, ...issueInput } = params;
+        assertNoPluginCompletionRequirementSupply(issueInput);
         const normalizedOriginKind = normalizePluginOriginKind(
           surfaceVisibility === "plugin_operation" && !originKind
             ? pluginOperationIssueOriginKind(pluginKey)
@@ -2195,6 +2197,7 @@ export function buildHostServices(
         const existing = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
         await requirePluginReadableIssue(params.issueId, companyId);
         const patch = { ...(params.patch as Record<string, unknown>) };
+        assertNoPluginCompletionRequirementSupply(patch);
         const actorAgentId = typeof patch.actorAgentId === "string" ? patch.actorAgentId : null;
         const actorUserId = typeof patch.actorUserId === "string" ? patch.actorUserId : null;
         const actorRunId = typeof patch.actorRunId === "string" ? patch.actorRunId : null;
