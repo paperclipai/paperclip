@@ -134,7 +134,7 @@ import type { environmentService } from "../environments.js";
 import type { environmentRuntimeService, ProviderResourceDisposition } from "../environment-runtime.js";
 import type { agentInstructionWorkingCopyService } from "../agent-instruction-working-copies.js";
 import type { createHeartbeatRunState } from "./run-state.js";
-import { failedRunRetryBudgetSpent, type HeartbeatRetryDependencies, type createHeartbeatRetries } from "./retries.js";
+import { failedRunRetryBudgetSpent, isPluginSessionRunContext, type HeartbeatRetryDependencies, type createHeartbeatRetries } from "./retries.js";
 import { serverRestartBudgetSpent } from "../execution-recovery-attempt.js";
 import type { CancelRunOptions } from "./run-control.js";
 import { requestRestartInterruptedTurnRetry } from "./restart-interrupted-turn.js";
@@ -2924,6 +2924,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         && run.controllerBootId !== legacyControllerBootId;
       const conversationContinuationEligible = await runUsedConversationAdapter(db, settledRun);
       const shouldRetry =
+        !isPluginSessionRunContext(settledRun.contextSnapshot) &&
         !await pendingCaseHandoffForRun(db, run.id, run.companyId) &&
         // Process loss spends the durable failure retry budget that
         // enqueueProcessLossRetry schedules against. Checking it here

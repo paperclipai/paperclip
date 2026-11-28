@@ -265,6 +265,19 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
   });
 
+  it("never schedules a host retry for a plugin session run", async () => {
+    const runId = randomUUID(), companyId = randomUUID(), agentId = randomUUID();
+    const now = new Date("2026-04-20T12:00:00.000Z");
+    await seedRetryFixture({ runId, companyId, agentId, now, errorCode: "process_lost" });
+    await db.update(heartbeatRuns).set({ contextSnapshot: {
+      taskKey: "plugin:acme.chat:session:s-1",
+      paperclipAgentMessage: { text: "hi", source: "plugin_session", pluginKey: "acme.chat", sessionId: "s-1" },
+    } }).where(eq(heartbeatRuns.id, runId));
+    expect(await heartbeat.scheduleBoundedRetry(runId, { now, random: () => 0 }))
+      .toMatchObject({ outcome: "not_scheduled", reason: expect.stringContaining("Plugin sessions") });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+  });
+
   it("does not repeat a run that filled its sandbox disk on a fresh sandbox of the same size", async () => {
     const runId = randomUUID(), companyId = randomUUID(), agentId = randomUUID();
     const now = new Date("2026-04-20T12:00:00.000Z");
