@@ -1181,6 +1181,16 @@ async function materializeDecisionEffect(input: {
           ),
         );
     }
+    const [existingRun] = await input.tx
+      .select({ resultJson: heartbeatRuns.resultJson })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.id, input.runId),
+          eq(heartbeatRuns.companyId, input.companyId),
+        ),
+      )
+      .for("update");
     await notifyExternalAgentSettlement(input.tx, { companyId: input.companyId, runId: input.runId });
     await notifyInstructionCollection(input.tx, { companyId: input.companyId, runId: input.runId });
     await notifyCancelledWorkspacePreservation(input.tx, { companyId: input.companyId, runId: input.runId });
@@ -1190,6 +1200,21 @@ async function materializeDecisionEffect(input: {
       .update(heartbeatRuns)
       .set({
         status: "cancelled",
+        // Stamp the cancellation with attribution, like every other
+        // run-cancellation write. Without an errorCode and a resultJson
+        // marker the terminalised run is indistinguishable from agent
+        // stranding, and recovery can re-wake an agent that a status
+        // decision deliberately stopped.
+        errorCode: "native_cancelled_continuations",
+        error: "Cancelled by native status decision (cancel_continuations)",
+        resultJson: {
+          ...(existingRun?.resultJson ?? {}),
+          stopReason: "cancelled",
+          cancelledByActorType: "system",
+          cancelledByActorId: "native-status-committer",
+          cancelledWakeRequestIds: wakeRows.map((row) => row.id),
+          cancelledInteractionIds: interactionRows.map((row) => row.id),
+        },
         finishedAt: new Date(),
         updatedAt: new Date(),
       })
@@ -1201,6 +1226,25 @@ async function materializeDecisionEffect(input: {
       )
       .returning();
     if (!run) throw new Error("native_continuation_cancellation_run_missing");
+    await persistActivity(input.tx, {
+      companyId: input.companyId,
+      actorType: "system",
+      actorId: "native-status-committer",
+      action: "heartbeat.cancelled",
+      entityType: "heartbeat_run",
+      entityId: run.id,
+      agentId: run.agentId,
+      runId: run.id,
+      issueId: input.issue.id,
+      details: {
+        source: "native_status_decision",
+        decisionId: input.decisionId,
+        stopReason: "cancelled",
+        errorCode: "native_cancelled_continuations",
+        cancelledWakeRequestIds: wakeRows.map((row) => row.id),
+        cancelledInteractionIds: interactionRows.map((row) => row.id),
+      },
+    });
     input.terminalRunsToEmit?.push(run);
     return {
       effectKind: effect.kind,
