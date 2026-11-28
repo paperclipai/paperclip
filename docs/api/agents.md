@@ -224,6 +224,8 @@ POST /api/agents/{agentId}/config-revisions/{revisionId}/rollback
 
 View and roll back agent configuration changes.
 
+- `GET /api/agents/{agentId}/config-revisions` accepts an optional `limit` query parameter (integer `1..500`) to return only the newest `limit` revisions; omitting `limit` returns the full revision history newest first, and values outside `1..500` or non-integers return `400`.
+
 ### Rename an instruction file
 
 Use `PUT /api/agents/{id}/instructions-bundle/file` with `path`, `renameTo`,
