@@ -1,4 +1,5 @@
 import { sql, type SQL } from "drizzle-orm";
+import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import { activityLog, chatConversations, chatMessageLinks, issueComments, issues, issueThreadInteractions } from "@paperclipai/db";
 import { HUMAN_TASK_ORIGIN_KINDS } from "@paperclipai/shared";
 import { activeIssueInteractionCondition } from "./issue-question-context.js";
@@ -22,6 +23,8 @@ const ISSUE_USER_PARTICIPATION_ACTIVITY_ACTIONS = [
   "issue.child_created",
   "issue.comment_cancelled",
   "issue.document_annotation_comment_added",
+  "issue.document_annotation_comment_reaction_added",
+  "issue.document_annotation_comment_reaction_removed",
   "issue.document_annotation_remapped",
   "issue.document_annotation_thread_created",
   "issue.document_annotation_thread_resolved",
@@ -71,11 +74,18 @@ export function automaticReadRecoveryCleanupCondition() {
   )`;
 }
 
-export function humanCreatedIssueCondition() {
+/**
+ * A task a person created by hand. `table` is `issues` or an alias of it, for a
+ * query that reads the same rule on another row (PAP-768: the instigator walk
+ * of the personal decision history).
+ */
+export function humanCreatedIssueCondition(
+  table: { createdByAgentId: AnyPgColumn; createdByUserId: AnyPgColumn; originKind: AnyPgColumn } = issues,
+) {
   return sql<boolean>`(
-    ${issues.createdByAgentId} IS NULL
-    AND ${issues.createdByUserId} IS NOT NULL
-    AND ${issues.originKind} IN (${sql.join(HUMAN_TASK_ORIGIN_KINDS.map((kind) => sql`${kind}`), sql`, `)})
+    ${table.createdByAgentId} IS NULL
+    AND ${table.createdByUserId} IS NOT NULL
+    AND ${table.originKind} IN (${sql.join(HUMAN_TASK_ORIGIN_KINDS.map((kind) => sql`${kind}`), sql`, `)})
   )`;
 }
 
@@ -134,6 +144,7 @@ export function userParticipationActivityCondition(companyId: string, userId: st
     AND ${activityLog.actorType} = 'user'
     AND ${activityLog.actorId} = ${userId}
     AND NOT ${automaticReadRecoveryCleanupCondition()}
+    AND COALESCE(${activityLog.details}->>'source', '') <> 'needs_you_responsibility_repair'
     AND NOT (
       ${activityLog.action} = 'issue.inbox_touched'
       AND COALESCE(${activityLog.details}->>'source', '') = 'manual_routine_run'
@@ -145,7 +156,7 @@ export function userParticipationActivityCondition(companyId: string, userId: st
   )`;
 }
 
-export function touchedByUserCondition(companyId: string, userId: string) {
+export function touchedByUserCondition(companyId: string, userId: string, directCommentExists?: SQL<boolean>) {
   return sql<boolean>`
     (
       (${issues.createdByUserId} = ${userId} AND ${humanCreatedIssueCondition()})
@@ -157,14 +168,14 @@ export function touchedByUserCondition(companyId: string, userId: string) {
         WHERE ${activityLog.entityId} = ${issues.id}::text
           AND ${userParticipationActivityCondition(companyId, userId)}
       )
-      OR EXISTS (
+      OR ${directCommentExists ?? sql<boolean>`EXISTS (
         SELECT 1
         FROM ${issueComments}
         WHERE ${issueComments.issueId} = ${issues.id}
           AND ${issueComments.companyId} = ${companyId}
           AND ${issueComments.authorUserId} = ${userId}
           AND ${directHumanCommentCondition()}
-      )
+      )`}
     )
   `;
 }

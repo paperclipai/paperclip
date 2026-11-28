@@ -1,3 +1,4 @@
+import { mcpCompanyDeletion } from "./public-mcp/company-deletion.js";
 import { notifyStatusCardEvaluation } from "./status-card-notifications.js";
 import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
@@ -9,6 +10,7 @@ import { notifyInstructionCommit } from "./instruction-commit-notifications.js";
 import { notifyScheduledRetryCancellation } from "./scheduled-retry-cancellation-notifications.js";
 import { notifyChatCompanyConfiguration } from "./chat-channels/configuration-work-notifications.js";
 import { chatCompanyDeletion } from "./chat-channels/company-deletion.js";
+import { createTailscaleCompanyDeletion } from "./connectors/tailscale/deletion.js";
 import { notifyToolConnectionHealth } from "./tool-connection-health-notifications.js";
 import { notifyCompanyRetentionWork } from "./retention-work-notifications.js";
 import { notifyToolReviewChange } from "./tool-review-work-notifications.js";
@@ -19,7 +21,10 @@ import type { Db } from "@paperclipai/db";
 import { eq, inArray } from "drizzle-orm";
 import { createAgentLifecycle, processAgentLifecycle } from "./agent-lifecycle.js";
 import { requestRestorePointDeletion } from "./git-restore-point-ledger.js";
+import { requestCompanyStoredObjectDeletion } from "./tool-access/connections/stored-object-deletion.js";
+import { queueCompanyGoogleRevocations } from "./tool-access/connections/google-pending-revocation.js";
 import { agentLifecycleCompanyDeletion } from "../modules/agent-lifecycle/company-deletion.js";
+import { executionAdmissionCompanyDeletion } from "../modules/execution-admission/company-deletion.js";
 import {
   companies,
   agents,
@@ -60,20 +65,52 @@ import {
   routines,
 } from "@paperclipai/db";
 
+type DeletionTx = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+async function sweepLateActivity(tx: DeletionTx, companyId: string) {
+  await tx.delete(activityLog).where(eq(activityLog.companyId, companyId));
+}
+
+async function lockRunsAndSweepLateActivity(tx: DeletionTx, companyId: string) {
+  await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+    .where(eq(heartbeatRuns.companyId, companyId)).orderBy(heartbeatRuns.id).for("update");
+  await sweepLateActivity(tx, companyId);
+}
+
+async function lockAgentsAndSweepLateActivity(tx: DeletionTx, companyId: string) {
+  await tx.select({ id: agents.id }).from(agents)
+    .where(eq(agents.companyId, companyId)).orderBy(agents.id).for("update");
+  await sweepLateActivity(tx, companyId);
+}
+
+async function lockCompanyAndSweepLateActivity(tx: DeletionTx, companyId: string) {
+  await tx.select({ id: companies.id }).from(companies)
+    .where(eq(companies.id, companyId)).for("update");
+  await sweepLateActivity(tx, companyId);
+}
+
 export async function deleteCompany(db: Db, id: string) {
+  const tailscaleDeletion = createTailscaleCompanyDeletion();
   const lifecycle = createAgentLifecycle(db);
   const companyAgents = await db.select({ id: agents.id }).from(agents).where(eq(agents.companyId, id));
   for (const agent of companyAgents) {
     await lifecycle.terminateAgent(agent.id);
     await processAgentLifecycle(db, agent.id);
   }
-  return withAccountHomeSecretMutationLock(undefined, id, () => db.transaction(async (tx) => {
+  const deleted = await withAccountHomeSecretMutationLock(undefined, id, () => db.transaction(async (tx) => {
         // Exclude accounting writers before taking child locks. KEY SHARE must
-        // remain compatible: native writers can already hold a child row while
-        // saving a company-scoped result. FOR UPDATE would deadlock that save.
+        // remain compatible here: native writers can already hold a child row
+        // while saving a company-scoped result, so FOR UPDATE now would deadlock
+        // that save. Runs, agents and the company row are locked FOR UPDATE only
+        // immediately before each is deleted, where the DELETE needs that
+        // conflicting lock anyway; each lock is followed by a sweep of activity
+        // entries that writers committed after the first sweep.
         const [existing] = await tx.select({ id: companies.id }).from(companies)
           .where(eq(companies.id, id)).for("no key update");
         if (!existing) return null;
+        await requestCompanyStoredObjectDeletion(tx as unknown as Db, id);
+        await queueCompanyGoogleRevocations(tx as unknown as Db, id, "company_deleted");
+        await mcpCompanyDeletion.deleteCompanyData(tx, id);
         await notifyExternalObjectRefresh(tx, id);
         await notifyIssueRecovery(tx, { companyId: id });
         await notifyChatCompanyConfiguration(tx, id);
@@ -117,6 +154,8 @@ export async function deleteCompany(db: Db, id: string) {
         await notifyInstructionCollection(tx, { companyId: id });
         await notifyCancelledWorkspacePreservation(tx, { companyId: id });
         await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: id });
+        await executionAdmissionCompanyDeletion.deleteCompanyData(tx, id);
+        await lockRunsAndSweepLateActivity(tx, id);
         await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, id));
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.companyId, id));
@@ -128,6 +167,7 @@ export async function deleteCompany(db: Db, id: string) {
         await tx.delete(approvalComments).where(eq(approvalComments.companyId, id));
         await notifyCompanyRetentionWork(tx, id);
         await tx.delete(approvals).where(eq(approvals.companyId, id));
+        await tailscaleDeletion.deleteCompanyData(tx, id);
         await tx.delete(companySecrets).where(eq(companySecrets.companyId, id));
         await tx.delete(joinRequests).where(eq(joinRequests.companyId, id));
         await tx.delete(invites).where(eq(invites.companyId, id));
@@ -147,12 +187,16 @@ export async function deleteCompany(db: Db, id: string) {
         await requestRestorePointDeletion(tx, { companyId: id });
         await tx.delete(executionWorkspaces).where(eq(executionWorkspaces.companyId, id));
         await tx.delete(projects).where(eq(projects.companyId, id));
+        await lockAgentsAndSweepLateActivity(tx, id);
         await agentLifecycleCompanyDeletion.deleteCompanyData(tx, id);
         await notifyToolConnectionHealth(tx, id);
+        await lockCompanyAndSweepLateActivity(tx, id);
         const rows = await tx
           .delete(companies)
           .where(eq(companies.id, id))
           .returning();
         return rows[0] ?? null;
       }));
+  await tailscaleDeletion.stopNetworks();
+  return deleted;
 }

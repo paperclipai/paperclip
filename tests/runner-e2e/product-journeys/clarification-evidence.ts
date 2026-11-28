@@ -1,5 +1,6 @@
 import { gradeQuestionResume, questionPath, validResumeQuestionForm, validResumeReferenceForm } from "../question-resume-scoring.js";
 import type { ContinuationCheckpoint } from "../continuation-scoring.js";
+import { includesSubmittedReference } from "../submitted-reference.js";
 import { validateAgentTaskState } from "./agent-flows.js";
 import type { JourneyContext } from "./types.js";
 
@@ -49,7 +50,7 @@ export function gradeClarificationEvidence(context: JourneyContext, issueId: str
   detail: "The owned native agent created and last wrote the document on this exact task and company." },
   { id: "question-document-reloaded", passed: !!document && !!readback && readback.issueId === issueId
     && readback.key === document.key && readback.revisionId === document.latestRevisionId && readback.body === document.body
-    && readback.visibleBody.includes(`Use ${marker}.`) && /\bafternoon\b/i.test(readback.visibleBody),
+    && includesSubmittedReference(readback.visibleBody, marker) && /\bafternoon\b/i.test(readback.visibleBody),
   detail: "The reloaded document must show both saved answers at the independently read revision." },
   { id: "configured-model-and-environment", passed: bound && checkpoints.length === 3 && !!final
     && final.runs.length >= 1 && final.runs.length <= 3 && final.runs.every(run => run.status === "succeeded"),

@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "kind": "offline-synthetic-rendered-artifact-canary",
+  "canonicalScenarioCoverage": false,
+  "backendLaunched": false,
+  "providerCalled": false,
+  "browser": "Chromium",
+  "javascriptEnabled": false,
+  "networkRequests": "aborted",
+  "authenticatedStorage": false,
+  "command": "PAPERCLIP_CHAT_EVAL_RENDERED_ARTIFACT_CANARY=1 node node_modules/vitest/vitest.mjs run --config tests/runner-e2e/vitest.config.ts tests/runner-e2e/chat-catalog-domains/runtime-rendered-artifact.test.ts",
+  "observedAt": "2026-10-26T22:35:01-05:00",
+  "testsPassed": 9,
+  "renderedCases": 8,
+  "outcomes": ["natural-inline-headline-and-link", "natural-button-action", "comment-only-wrong-page-rejected", "display-none-page-rejected", "zero-opacity-heading-rejected", "zero-opacity-action-rejected", "multi-page-navigation-rejected", "tabbed-dashboard-rejected"],
+  "initialOfflineFailure": "Preview context closed before awaiting the returned evaluation promise; fixed with return await before final passing canary.",
+  "note": "Explicit opt-in synthetic browser verification only. Cheap default Vitest skips the Chromium canary. This does not prove a canonical native run or count as a live campaign attempt."
+}

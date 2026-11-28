@@ -8,7 +8,26 @@ import {
   removeControllerArtifactsFromProviderPack,
   removeForeignLibcPackagesFromProviderPack,
   removePnpmStoreEntries,
+  sha256Tree,
 } from "./provider-pack-runtime-tree.mjs";
+
+test("the tree digest of a pack directory keeps its recorded format", () => {
+  // Packs already in images carry digests computed this way, and the server
+  // recomputes them with its own copy of the walk. A change here must be a
+  // deliberate pack contract change.
+  const root = mkdtempSync(join(tmpdir(), "provider-pack-tree-digest-"));
+  try {
+    mkdirSync(join(root, "cli"), { recursive: true });
+    writeFileSync(join(root, "index.js"), "export {};\n");
+    writeFileSync(join(root, "cli", "proxy.cjs"), "module.exports = {};\n");
+    symlinkSync("index.js", join(root, "main.js"));
+    assert.equal(sha256Tree(root), "sha256:01f41c32adc4fae6f04481df39bb22ef6facf49424b8fb77a31d555fd7ff8878");
+    writeFileSync(join(root, "cli", "proxy.cjs"), "module.exports = { changed: true };\n");
+    assert.notEqual(sha256Tree(root), "sha256:01f41c32adc4fae6f04481df39bb22ef6facf49424b8fb77a31d555fd7ff8878");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("image and native producer packs retain identical provider outputs despite different controller artifacts", () => {
   const root = mkdtempSync(join(tmpdir(), "provider-pack-producers-"));

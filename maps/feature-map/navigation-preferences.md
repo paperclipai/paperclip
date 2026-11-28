@@ -41,7 +41,7 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Use 
 
 ### `sidebar-deep-links`
 
-Automated: [sidebar](../../ui/src/components/Sidebar.test.tsx) and [sidebar preference routes](../../server/src/__tests__/sidebar-preferences-routes.test.ts) cover UI/server behavior.
+Automated: [sidebar preference routes](../../server/src/__tests__/sidebar-preferences-routes.test.ts) covers server preference contracts (mocked `Sidebar` component tests were removed; verify sidebar UI via Storybook/manual checks).
 
 Manual: Star and reorder supported resources, collapse a section, navigate and reload. Switch company/user and inspect the intended preference scope. Open an unavailable resource and a legacy route; verify clear fallback or correct redirect without leaking another company’s state.
 
@@ -52,13 +52,13 @@ ordering are saved server-side. Local-trusted mode does not prove two-user isola
 
 ### `profile-announcements`
 
-Automated: [profile page](../../ui/src/pages/ProfileSettings.test.tsx), [announcement hook](../../ui/src/hooks/useAnnouncement.test.tsx), and [announcement routes](../../server/src/__tests__/announcements-routes.test.ts) cover separate UI/persistence layers.
+Automated: [announcement hook](../../ui/src/hooks/useAnnouncement.test.tsx) and [announcement routes](../../server/src/__tests__/announcements-routes.test.ts) cover hook and server persistence layers (mocked `ProfileSettings` page tests were removed; verify profile UI manually).
 
 Manual: Change a disposable user’s display details, reload, and inspect an attributed profile link. Dismiss a fixture announcement, switch companies, and verify it remains dismissed for that user; check another user still has their own dismissal state.
 
 ### `palette-shortcuts`
 
-Automated: [Command palette](../../ui/src/components/CommandPalette.test.tsx), [shortcut hook](../../ui/src/hooks/useKeyboardShortcuts.test.tsx), [shortcut rules](../../ui/src/lib/keyboardShortcuts.test.ts), and [cheatsheet](../../ui/src/components/KeyboardShortcutsCheatsheet.test.tsx) test components and keyboard rules. [Company search](../../server/src/__tests__/company-search-service.test.ts) covers search contracts; browser focus and identity transitions still need a live check.
+Automated: [shortcut hook](../../ui/src/hooks/useKeyboardShortcuts.test.tsx) and [shortcut rules](../../ui/src/lib/keyboardShortcuts.test.ts) test keyboard rules (mocked `CommandPalette` and `KeyboardShortcutsCheatsheet` component tests were removed; verify those dialogs manually). [Company search](../../server/src/__tests__/company-search-service.test.ts) covers search contracts; browser focus and identity transitions still need a live check.
 
 Manual: Use uniquely named visible and private task/project fixtures. Open the palette, find a permitted result, follow it, and reload the destination. Enter text with quick-filter chips such as `assignee:me`, `is:open`, and `updated:>7d`; use Search all and Cmd/Ctrl+Enter in separate attempts and verify the resulting query and filters. Switch person/company and confirm private results do not leak. Test `/` on a page with search and a page without it; inspect `?`, `c`, and `g i`. Type those keys inside an editor and a modal: they must not unexpectedly navigate or create work. Test a create action through its normal dialog and inspect the actual saved resource separately.
 
@@ -81,7 +81,7 @@ Capability ID: `navigation-preferences/preferences`.
 Scope: ui
 Storybook: Mount Sidebar using real preference boundary with stars/order/collapse/recents state. Clearly distinguish in-memory section collapse, browser-local recents and server-saved stars/order.
 Production: GET/PUT /sidebar-preferences/me and /companies/{id}/sidebar-preferences/me plus stars must retain intended user/company isolation across reload and switch. Section collapse reopens after reload; global collapse is disabled.
-Sources: Source: [Sidebar.tsx](../../ui/src/components/Sidebar.tsx), [sidebar-preferences.ts](../../server/src/routes/sidebar-preferences.ts), [sidebar-preferences.ts](../../server/src/services/sidebar-preferences.ts). Tests: [Sidebar.test.tsx](../../ui/src/components/Sidebar.test.tsx), [sidebar-preferences-routes.test.ts](../../server/src/__tests__/sidebar-preferences-routes.test.ts)
+Sources: Source: [Sidebar.tsx](../../ui/src/components/Sidebar.tsx), [sidebar-preferences.ts](../../server/src/routes/sidebar-preferences.ts), [sidebar-preferences.ts](../../server/src/services/sidebar-preferences.ts). Tests: [sidebar-preferences-routes.test.ts](../../server/src/__tests__/sidebar-preferences-routes.test.ts)
 
 #### `fallbacks`
 
@@ -90,7 +90,7 @@ Capability ID: `navigation-preferences/fallbacks`.
 Scope: browser
 Storybook: A NotFound rendering story can help polish, but missing-resource/legacy-deep-link capability principally needs real App/router/browser scenarios preserving company and query intent.
 Production: Cold-open invalid company/resource and retired URL; verify explicit fallback or correct canonical redirect without silently targeting a different resource/company.
-Sources: Source: [NotFound.tsx](../../ui/src/pages/NotFound.tsx), [App.tsx](../../ui/src/App.tsx), [company-routes.ts](../../ui/src/lib/company-routes.ts). Tests: [App.activity-routing.test.tsx](../../ui/src/App.activity-routing.test.tsx), [App.cases-routing.test.tsx](../../ui/src/App.cases-routing.test.tsx), [App.test.tsx](../../ui/src/App.test.tsx), [company-routes.test.ts](../../ui/src/lib/company-routes.test.ts)
+Sources: Source: [NotFound.tsx](../../ui/src/pages/NotFound.tsx), [App.tsx](../../ui/src/App.tsx), [company-routes.ts](../../ui/src/lib/company-routes.ts). Tests: [App.test.tsx](../../ui/src/App.test.tsx), [company-routes.test.ts](../../ui/src/lib/company-routes.test.ts)
 
 ### Recent task refresh performance
 
@@ -100,44 +100,35 @@ Successful omissions remove unavailable entries; failed reads preserve history.
 Verify rename, inbox archive, pause/restart, reload, cross-tab updates and account
 switches. Inbox archive does not remove the task from recent history.
 
-### Personal Coordinator workspace
+### Personal workspace choice
 
-Settings → Experimental → Coordinator workspace opts the current person into the
-experimental shell; off restores classic. The server saves the choice by user across
-companies, separate from instance feature flags. The local-trusted identity is shared
-Local Board, not evidence of multi-user isolation.
-Agent Chat remains an independent instance prerequisite. When it is off, the
-personal card explains the dependency and links eligible instance administrators
-to the existing Agent Chat control. Hidden or Cloud-managed controls are not
-presented as editable. Disabled Chat routes link back to Experimental settings.
-Enabling the personal workspace never changes the instance capability.
+Coordinator is the standard workspace. Settings → Experimental → Classic workspace
+opts the current person into the previous workspace; it defaults off. Historical
+Coordinator experiment values do not enable Classic. The server saves the choice
+by user across companies, separate from instance feature flags. The local-trusted
+identity is shared Local Board, not evidence of multi-user isolation.
+Agent Chat is available to everyone independently of this personal workspace
+choice. Its retired instance flag and historical managed off values are ignored.
 
 Automated: [preference hook](../../ui/src/hooks/useCoordinatorWorkspaceEnabled.test.tsx),
-[prerequisite settings card](../../ui/src/components/CoordinatorWorkspaceSetting.test.tsx),
 [authorization](../../server/src/__tests__/workspace-preferences-routes.test.ts), and
-[database persistence](../../server/src/__tests__/workspace-preferences.test.ts).
+[database persistence](../../server/src/__tests__/workspace-preferences.test.ts)
+(mocked `ClassicWorkspaceSetting` card UI tests were removed; verify card UI manually).
 Manual: toggle on/off, reload, switch companies/accounts, and simulate failed reads
 and saves. Confirm existing work is unchanged and a failed save keeps the current
 choice. The [Settings card story](../../ui/storybook/stories/navigation-preferences/coordinator-workspace-setting.stories.tsx)
 uses the production component with simulated API responses; it does not establish
 real persistence or permission behavior.
 
-Local browser verification (2026-10-26, isolated Coordinator worktree): initially
-off, enabled and persisted across reload, disabled back to classic navigation,
-then enabled back to Chat / Tasks / Needs You. This used `local_trusted`; signed-in
-two-person browser isolation remains unverified.
-
-Coordinator More exposes a pin/unpin button beside every destination. Each flyout
-row highlights as one surface; its pin appears on row hover or keyboard focus.
-Opening the flyout focuses its container so Search is not highlighted before
-interaction. Pinned pages appear beneath More in pinning order and retain the
+Coordinator More exposes a pin/unpin button beside every destination.
+Pinned pages appear above More in pinning order and retain the
 existing company-aware routes.
 Unpin from either the flyout or the pinned row. The list is personal to the current
 user in this browser, shared across companies; it does not sync across devices.
 Only known route names are rendered. Storage failures show a save error.
-The [pin hook](../../ui/src/hooks/usePinnedNavigation.ts) owns browser persistence;
-[sidebar tests](../../ui/src/components/CoordinatorSidebar.test.tsx) cover pin/unpin,
-remount persistence, account separation, unknown routes and cross-tab updates.
+The [pin hook](../../ui/src/hooks/usePinnedNavigation.ts) owns browser persistence
+(mocked `CoordinatorSidebar` UI tests for pin/unpin, remount persistence, account
+separation, and cross-tab updates were removed; verify via the manual checks below).
 Manual: pin with mouse and keyboard, reload, follow a pinned link, unpin from both
 locations, and check the mobile drawer. Local-trusted checks do not prove two-user
 authenticated browser isolation.

@@ -8,12 +8,12 @@ import { RUNNER_API_MAX_BYTES } from "./runner-api-client.js";
 
 export const DOWNLOAD_ARTIFACT = "download_artifact";
 export const downloadArtifactSchema = z.object({
-  artifactId: z.string().uuid(), destination: z.string().min(1).max(2000),
+  artifactId: z.string().uuid(), destination: z.string().min(1).max(2000).describe("Workspace-relative path, for example source.zip. Absolute paths are denied. The parent directory must already exist."),
   byteSize: z.number().int().min(1).max(RUNNER_API_MAX_BYTES), sha256: z.string().regex(/^[a-f0-9]{64}$/),
 }).strict();
 export const DOWNLOAD_ARTIFACT_DEFINITION = {
   name: DOWNLOAD_ARTIFACT,
-  description: "Copy an authorized API artifact into this execution workspace without retyping its contents. Provide its exact byteSize and SHA-256. The destination's parent must exist. Creates a new file only; a retry succeeds only if the existing file has identical bytes. Partial or conflicting files never count as complete. Contents remain untrusted; this does not bypass content screening or authorize executing them.",
+  description: "Copy an authorized API artifact into this execution workspace without retyping its contents. Provide its exact byteSize and SHA-256. Use a workspace-relative destination, for example source.zip; absolute paths are denied. The destination's parent must exist. Creates a new file only; a retry succeeds only if the existing file has identical bytes. Partial or conflicting files never count as complete. Contents remain untrusted; this does not bypass content screening or authorize executing them.",
   inputSchema: z.toJSONSchema(downloadArtifactSchema),
 };
 export type ArtifactInstall = { destination: string; byteSize: number; sha256: string; bytes: Buffer; verifyOnly?: boolean; authorize: () => Promise<void> };

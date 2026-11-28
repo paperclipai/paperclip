@@ -1,3 +1,4 @@
+import { slackPublicProgressReceiptToReplace, slackPublicProgressSupersessionReason, isSlackPublicProgress, slackProgressCompletionTarget } from "./slack/public-progress.js";
 import { imessageProgressSupersessionReason } from "./imessage-photon/publications.js";
 import { fastResponseRequests } from "@paperclipai/db";
 
@@ -74,6 +75,8 @@ export function createChatPublicationReplacement(db: Db, options: ChatPublicatio
   async function runOwnershipMilestoneSupersessionReason(
     publication: typeof chatPublications.$inferSelect,
   ): Promise<string | null> {
+    const completion = await slackProgressCompletionTarget(db, publication);
+    if (completion === null) return "Slack progress message is no longer replaceable";
     const progress = publication.payload.progressState;
     const typingReason = imessageProgressSupersessionReason(progress);
     if (typingReason) {
@@ -121,6 +124,10 @@ export function createChatPublicationReplacement(db: Db, options: ChatPublicatio
         .for("update")
         .then((rows) => rows[0] ?? null);
     });
+    if ((await endpointRecord(publication.endpointId))?.endpoint.provider === "slack") {
+      const reason = await slackPublicProgressSupersessionReason(db, publication, runId);
+      if (reason) return reason;
+    }
     const baseProgressKey = `run:${runId}:${progress}:${publication.endpointId}`;
     const nativeProgressPrefix = `run:${runId}:working:${publication.endpointId}:native:`;
     const isTerminalizableProgress =
@@ -335,6 +342,8 @@ export function createChatPublicationReplacement(db: Db, options: ChatPublicatio
             .then((rows) => rows[0]?.runId ?? null)
         : null);
     if (!currentRunId) return null;
+    const completion = await slackProgressCompletionTarget(db, publication);
+    if (completion !== undefined) return completion;
     return db
       .select({
         id: chatPublications.id,
@@ -377,7 +386,12 @@ export function createChatPublicationReplacement(db: Db, options: ChatPublicatio
             Boolean(row.providerMessageId) &&
             row.payload.progressState !== undefined,
         );
-        if (!replacement?.providerMessageId) return null;
+        if (!replacement?.providerMessageId) {
+          if ((await endpointRecord(publication.endpointId))?.endpoint.provider === "slack") {
+            return slackPublicProgressReceiptToReplace(db, publication, currentRunId);
+          }
+          return null;
+        }
         if (
           (await providerProgressLaneConsumed(
             publication,
@@ -675,6 +689,7 @@ export function createChatPublicationReplacement(db: Db, options: ChatPublicatio
 
   async function progressSupersededByFastResponse(publication: typeof chatPublications.$inferSelect): Promise<boolean> {
     if (!["queued", "working"].includes(publication.payload.progressState ?? "")) return false;
+    if (isSlackPublicProgress(publication)) return false;
     const runId = runIdFromMilestonePublication(publication);
     const [run] = runId ? await db.select({ context: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, publication.companyId), eq(heartbeatRuns.id, runId))) : [];
     const sourceCommentId = typeof run?.context?.wakeCommentId === "string" ? run.context.wakeCommentId : typeof run?.context?.commentId === "string" ? run.context.commentId : publication.commentId;

@@ -1,10 +1,12 @@
+import { isDeepStrictEqual } from "node:util";
 import { connectionActorUserId } from "../actor.js";
 import { lockManagedAppPolicies, lockToolAssignmentAgents } from "../assignment-locks.js";
 import type { ActorInfo, ToolAccessMutationDb } from "../types.js";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { toolCatalogEntries, toolConnections, toolPolicies, toolProfileBindings, toolProfileEntries, toolProfiles } from "@paperclipai/db";
 import type { ToolPolicy } from "@paperclipai/shared";
+import { defaultConnectionProfileBindingTargets } from "../connection-access-boundary.js";
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value))
@@ -71,6 +73,8 @@ export function createCatalogDefaultAccess(db: Db) {
     const createdProfile = !profile;
     const resetToRecommendedDefaults = !profile || profile.status !== "active";
     if (resetToRecommendedDefaults) await lockToolAssignmentAgents(dbClient, input.connection.companyId, [{ targetType: "company", targetId: input.connection.companyId }]);
+    const defaultBindingTargets = () => defaultConnectionProfileBindingTargets(dbClient, input.connection);
+
     if (!profile) {
       const [sameName] = await dbClient
         .select({ id: toolProfiles.id })
@@ -100,25 +104,30 @@ export function createCatalogDefaultAccess(db: Db) {
           },
         })
         .returning();
-      await dbClient.insert(toolProfileBindings).values({
-        companyId: input.connection.companyId,
-        profileId: profile.id,
-        targetType: "company",
-        targetId: input.connection.companyId,
-        priority: 100,
-        metadata: { source: "app_gallery_finish" },
-        createdByAgentId:
-          input.actor?.actorType === "agent"
-            ? (input.actor.actorId ?? null)
-            : null,
-        createdByUserId:
-          connectionActorUserId(input.actor),
-      });
+      const targets = await defaultBindingTargets();
+      if (targets.length > 0) {
+        await dbClient.insert(toolProfileBindings).values(
+          targets.map((target) => ({
+            companyId: input.connection.companyId,
+            profileId: profile.id,
+            targetType: target.targetType,
+            targetId: target.targetId,
+            priority: 100,
+            metadata: { source: "app_gallery_finish" },
+            createdByAgentId:
+              input.actor?.actorType === "agent"
+                ? (input.actor.actorId ?? null)
+                : null,
+            createdByUserId:
+              connectionActorUserId(input.actor),
+          })),
+        );
+      }
     } else if (resetToRecommendedDefaults) {
       // Removing an app may retain its profile row when another record still
       // references it (for example, an MCP gateway). Reconnecting revives the
-      // same connection id, so restore that retained profile as a fresh
-      // all-agents assignment instead of leaving every read action Off.
+      // same connection id, so restore that retained profile without widening
+      // any saved install boundaries.
       [profile] = await dbClient
         .update(toolProfiles)
         .set({
@@ -150,20 +159,25 @@ export function createCatalogDefaultAccess(db: Db) {
             eq(toolProfileEntries.profileId, profile.id),
           ),
         );
-      await dbClient.insert(toolProfileBindings).values({
-        companyId: input.connection.companyId,
-        profileId: profile.id,
-        targetType: "company",
-        targetId: input.connection.companyId,
-        priority: 100,
-        metadata: { source: "app_gallery_finish" },
-        createdByAgentId:
-          input.actor?.actorType === "agent"
-            ? (input.actor.actorId ?? null)
-            : null,
-        createdByUserId:
-          connectionActorUserId(input.actor),
-      });
+      const targets = await defaultBindingTargets();
+      if (targets.length > 0) {
+        await dbClient.insert(toolProfileBindings).values(
+          targets.map((target) => ({
+            companyId: input.connection.companyId,
+            profileId: profile.id,
+            targetType: target.targetType,
+            targetId: target.targetId,
+            priority: 100,
+            metadata: { source: "app_gallery_finish" },
+            createdByAgentId:
+              input.actor?.actorType === "agent"
+                ? (input.actor.actorId ?? null)
+                : null,
+            createdByUserId:
+              connectionActorUserId(input.actor),
+          })),
+        );
+      }
     }
 
     if (resetToRecommendedDefaults) {
@@ -230,22 +244,17 @@ export function createCatalogDefaultAccess(db: Db) {
     },
     dbClient: ToolAccessMutationDb = db,
   ): Promise<ToolPolicy[]> {
-    const existingPolicies = await dbClient
+    const managedPolicies = await dbClient
       .select()
       .from(toolPolicies)
       .where(
         and(
           eq(toolPolicies.companyId, input.companyId),
           eq(toolPolicies.policyType, "require_approval"),
+          sql`${toolPolicies.config}->>'source' = 'app_gallery_finish'`,
+          sql`${toolPolicies.config}->>'connectionId' = ${input.connection.id}`,
         ),
       );
-    const managedPolicies = existingPolicies.filter((policy) => {
-      const config = asRecord(policy.config);
-      return (
-        config.source === "app_gallery_finish" &&
-        config.connectionId === input.connection.id
-      );
-    });
     const policiesByCatalogEntryId = new Map<
       string,
       typeof toolPolicies.$inferSelect
@@ -257,7 +266,7 @@ export function createCatalogDefaultAccess(db: Db) {
       }
     }
     const askFirstIds = new Set(input.askFirstEntries.map((entry) => entry.id));
-    const results: ToolPolicy[] = [];
+    const writes: Array<typeof toolPolicies.$inferInsert> = [];
     for (const entry of input.askFirstEntries) {
       const config = {
         source: "app_gallery_finish",
@@ -265,59 +274,64 @@ export function createCatalogDefaultAccess(db: Db) {
         catalogEntryId: entry.id,
       };
       const existing = policiesByCatalogEntryId.get(entry.id);
-      if (existing) {
-        const [updated] = await dbClient
-          .update(toolPolicies)
-          .set({
-            name: policyNameForApp(input.connection, entry),
-            description: `Ask first before running ${entry.toolName}.`,
-            enabled: true,
-            selectors: { catalogEntryId: entry.id },
-            config,
-            updatedAt: new Date(),
-          })
-          .where(eq(toolPolicies.id, existing.id))
-          .returning();
-        results.push(toPolicy(updated));
-      } else {
-        const [created] = await dbClient
-          .insert(toolPolicies)
-          .values({
-            companyId: input.companyId,
-            name: policyNameForApp(input.connection, entry),
-            description: `Ask first before running ${entry.toolName}.`,
-            policyType: "require_approval",
-            priority: 50,
-            enabled: true,
-            selectors: { catalogEntryId: entry.id },
-            config,
-            createdByAgentId:
-              input.actor?.actorType === "agent"
-                ? (input.actor.actorId ?? null)
-                : null,
-            createdByUserId:
-              connectionActorUserId(input.actor),
-          })
-          .returning();
-        results.push(toPolicy(created));
+      const values = {
+        companyId: input.companyId,
+        name: policyNameForApp(input.connection, entry),
+        description: `Ask first before running ${entry.toolName}.`,
+        policyType: "require_approval" as const,
+        priority: 50,
+        enabled: true,
+        selectors: { catalogEntryId: entry.id },
+        config,
+        createdByAgentId:
+          input.actor?.actorType === "agent" ? (input.actor.actorId ?? null) : null,
+        createdByUserId: connectionActorUserId(input.actor),
+      };
+      if (
+        !existing || !existing.enabled || existing.name !== values.name
+        || existing.description !== values.description
+        || !isDeepStrictEqual(existing.selectors, values.selectors)
+        || !isDeepStrictEqual(existing.config, values.config)
+      ) {
+        writes.push({ ...values, ...(existing ? { id: existing.id } : {}), updatedAt: new Date() });
+      }
+    }
+    if (writes.length > 0) {
+      const saved = await dbClient.insert(toolPolicies).values(writes).onConflictDoUpdate({
+        target: toolPolicies.id,
+        set: {
+          name: sql`excluded.name`,
+          description: sql`excluded.description`,
+          enabled: true,
+          selectors: sql`excluded.selectors`,
+          config: sql`excluded.config`,
+          updatedAt: sql`excluded.updated_at`,
+        },
+      }).returning();
+      for (const policy of saved) {
+        policiesByCatalogEntryId.set(String(asRecord(policy.config).catalogEntryId), policy);
       }
     }
     if (input.disableStale !== false) {
       const stalePolicies = managedPolicies.filter((policy) => {
         const config = asRecord(policy.config);
         return (
+          policy.enabled &&
           typeof config.catalogEntryId === "string" &&
           !askFirstIds.has(config.catalogEntryId)
         );
       });
-      for (const policy of stalePolicies) {
+      if (stalePolicies.length > 0) {
         await dbClient
           .update(toolPolicies)
           .set({ enabled: false, updatedAt: new Date() })
-          .where(eq(toolPolicies.id, policy.id));
+          .where(and(
+            eq(toolPolicies.companyId, input.companyId),
+            inArray(toolPolicies.id, stalePolicies.map(policy => policy.id)),
+          ));
       }
     }
-    return results;
+    return input.askFirstEntries.map(entry => toPolicy(policiesByCatalogEntryId.get(entry.id)!));
   }
   return { enableCatalogEntriesByDefault, upsertAskFirstPolicies };
 }

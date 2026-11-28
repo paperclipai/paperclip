@@ -63,6 +63,40 @@ never persisted or published on the shared company event bus.
 Authorized events still reach cache handling and component subscribers when
 eligibility is false. Lookup failure is logged but does not discard the authorized
 event. Existing task/run privacy checks and payload redaction remain in force.
+Task activity notifications use the task title as their heading. The body names
+the actor and previews the comment or describes the change, including the old
+and new status when available. Markdown in comment previews becomes plain text.
+Updates without a meaningful change stay quiet. Comment-driven updates produce
+one notification with the comment and its changes. Creation notifications name
+the creator. The title is limited to 120 characters and the body to 240.
+
+After task-read authorization, the server adds the persisted task title and a
+closed `notificationDetails` projection of the already-redacted activity. This
+projection allows bounded comment IDs/previews, known status/priority values,
+assignment/change flags, and comment/reopen context. It does not copy arbitrary
+activity details, task descriptions, or raw change receipts. The title uses the
+existing company-scoped identifier lookup. Comment previews read the complete
+non-deleted comment by company, task, and comment ID. Task-registered secrets are
+redacted from the complete title/comment before the preview is shortened, using
+the same task redaction registry as HTTP reads. Titles and comment previews both apply the existing
+pattern-based credential and configured username redaction, including creation
+and update events without a comment. The notification
+path uses the existing task-context indexes in two ordered reads, each limited to
+129 rows. It accepts at most 128 distinct runs, 64 unique secrets and 64 KiB of
+unique encrypted material, with a 16 KiB registry limit per run. Exceeding a limit
+omits free text; the browser can use a previously loaded task title. HTTP history
+reads retain their existing redaction behavior.
+
+Authorized viewers share one identity/redaction promise for the same published
+event. Each viewer still passes its own access check before reading that result.
+The shared result contains redacted text and expires with the event object. Each
+new event reads fresh redaction data; no plaintext secret values are cached.
+Registry reads select only secret metadata, not full run contexts. Missing comments
+and read/redaction failures omit the preview; they never reuse the event snippet.
+If the optional task-identity lookup fails, the event still arrives. The browser uses a cached
+title or `Task`; task identifiers remain in navigation links. Permission-check
+failures do not use this fallback. Older servers can supply cached titles and
+legacy activity details, but unspecified updates remain quiet.
 When an authenticated comment event omits the comment ID, the visible task thread
 refreshes through its authorized HTTP read instead of trying to hydrate the comment.
 Closed sockets cannot deliver stale notifications after account/company changes.

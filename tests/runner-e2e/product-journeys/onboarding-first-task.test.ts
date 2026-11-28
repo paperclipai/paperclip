@@ -292,7 +292,7 @@ describe("Cloud canonical onboarding first task", () => {
     await expect(onboardingFirstTask(f.input)).resolves.toMatchObject({ artifact: { originatingRunId: "child-run" } });
     expect(connectionDelay).toHaveBeenCalledOnce();
   });
-  it.each(["active", "native-recovery", "workspace-replacement"])("waits past an old child blocker while %s remains pending", async mode => {
+  it.each(["active", "native-recovery", "native-recovery-without-successor-field", "workspace-replacement"])("waits past an old child blocker while %s remains pending", async mode => {
     let waiting = true;
     const now = Date.now();
     vi.mocked(connectionDelay).mockImplementation(async () => { waiting = false; });
@@ -306,6 +306,10 @@ describe("Cloud canonical onboarding first task", () => {
       withBoardBlockedChild(state);
       if (mode === "active") Object.assign(state.runs[1]!, { status: "running", finishedAt: null });
       if (mode === "native-recovery") withPendingNativeRecovery(state.runs[1]!, now - 1000, now + 30_000);
+      if (mode === "native-recovery-without-successor-field") {
+        withPendingNativeRecovery(state.runs[1]!, now - 1000, now + 30_000);
+        delete state.runs[1]!.execution.successorRunId;
+      }
     } });
     await expect(onboardingFirstTask(f.input)).resolves.toMatchObject({ artifact: { originatingRunId: "child-run" } });
     expect(connectionDelay).toHaveBeenCalledOnce();
@@ -448,7 +452,6 @@ describe("Cloud canonical onboarding first task", () => {
     ["noninteger attempt", (run: Row) => { run.execution.attempt = 1.5; }],
     ["unexpected ceiling", (run: Row) => { run.execution.maxAttempts = 4; }],
     ["different successor", (run: Row) => { run.execution.successorRunId = "other-run"; }],
-    ["missing successor state", (run: Row) => { delete run.execution.successorRunId; }],
   ] as const)("keeps a failed native run fatal with %s", async (_label, change) => {
     const now = Date.now();
     vi.spyOn(Date, "now").mockReturnValue(now);

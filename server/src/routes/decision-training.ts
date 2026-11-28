@@ -4,6 +4,7 @@ import type { Db } from "@paperclipai/db";
 import { authorizationService, issueReadSqlCondition } from "../services/authorization.js";
 import { validate } from "../middleware/validate.js";
 import { decisionTrainingService, logActivity } from "../services/index.js";
+import { withoutGoogleWorkspaceContent } from "../services/decision-training.js";
 import { assertBoard, assertCompanyAccess, getActorInfo, hasCompanyAccess } from "./authz.js";
 
 const sourceKindSchema = z.enum(["interaction", "approval", "execution_decision"]);
@@ -150,10 +151,11 @@ export function decisionTrainingRoutes(db: Db) {
     assertBoard(req);
     assertCompanyAccess(req, companyId);
     const rows = await svc.list(companyId, { readCondition: await issueReadSqlCondition(db, req.actor) });
+    const states = await withoutGoogleWorkspaceContent(db, companyId, rows.map(({ example }) => example));
     const body = rows
-      .map(({ example }) => JSON.stringify({
+      .map(({ example }, index) => JSON.stringify({
         retentionPolicy: example.retentionPolicy,
-        state: example.snapshot,
+        state: states[index],
         label: { outcome: example.decisionOutcome, notes: example.notes },
       }))
       .join("\n");

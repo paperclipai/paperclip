@@ -143,3 +143,24 @@ then execute exactly one company-scoped five-page pass. Twenty quiet minutes add
 no reads or provider calls. A scheduler control proves an exact object hint and a
 250ms saved deadline still preempt the broad reconstruction. All 76 affected
 external-object, route, and scheduler tests and server types pass.
+
+
+### Read-only idle deadline inspection
+
+The registered external-object service exposes `readIdleSchedule(tx, now, owner)`.
+Its bounded read reuses that service's actual built-in/injected resolver registry
+and current plugin, company and retained-reference eligibility. Shared sleep
+code does not interpret provider terminal states or plugin manifests. Settled
+terminal/unsupported/orphan/never-refresh history is passive; eligible future
+refreshes retain their exact saved deadline. Active or ambiguous refresh claims
+remain blockers even after eligibility removal. Inspection performs no resolver
+call and never rewrites a timestamp.
+
+The supplied registered worker snapshot must be reconciled before and after the
+read with the same revision. Startup, dirty hints, partial reconstruction,
+scoped failures, active execution and stop invalidate that fence. Successfully
+loaded feature state preserves the actual settings owner's overlays; an
+uninitialized gate blocks. Future entries reconstructed from durable rows alone
+do not make the owner dirty during drain. The resulting domain snapshot requires
+shared exact-hold proof/alarm integration before it can authorize host sleep;
+it is not a universal certificate derived from the in-process scheduler.

@@ -18,7 +18,7 @@ describe("Antigravity model catalog scope", () => {
     expect(nativeTaskModelCatalogOptions(agent)).toEqual({ acpxAgent: "antigravity", agentId: agent.id, aiConnection: undefined });
     expect(nativeTaskModelCatalogOptions({ ...agent, adapterConfig: { provider: "acpx", acpxAgent: "claude" } })).toBeUndefined();
   });
-  it("keeps pending Antigravity unavailable even when experimental Runner is enabled", () => {
-    expect(isNewAgentAdapterAllowed("paperclip_runner", { cloud: false, nativeRunnerEnabled: true, runnerProvider: "antigravity" })).toBe(false);
+  it("allows qualified Antigravity without an experimental Runner toggle or candidate grant", () => {
+    expect(isNewAgentAdapterAllowed("paperclip_runner", { cloud: false, nativeRunnerEnabled: false, runnerProvider: "antigravity" })).toBe(true);
   });
 });
