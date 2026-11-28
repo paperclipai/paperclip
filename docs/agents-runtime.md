@@ -4,6 +4,29 @@ Status: User-facing guide
 Last updated: 2026-03-26
 Audience: Operators setting up and running agents in Paperclip
 
+## Instance-wide agent instructions (prototype)
+
+Paperclip can optionally load an instance administrator's Markdown policy on each
+shared prompt selection. Configure the **Paperclip server process** with an
+absolute path to a UTF-8 file no larger than 64 KiB:
+
+```ini
+PAPERCLIP_GLOBAL_INSTRUCTIONS_FILE=/etc/paperclip/global-instructions.md
+```
+
+The policy is included in the shared wake prompt of adapters using
+`selectPaperclipPromptSections`. It is separate from agent-specific
+`AGENTS.md` files and independent of temporary provider homes. Updating the
+policy changes subsequent prompts without rewriting existing agents. A
+configured missing, unreadable, or oversized policy raises an error rather
+than silently dropping the policy.
+
+**Current limitations:** This prototype does not guarantee coverage of every
+adapter/remote execution path; policy delivery should be tested against Codex
+ACP, Claude, and native runners before considering it production-ready.
+Instructions are advisory, not filesystem confinement: explicitly hardcoded
+`/tmp` writes are still possible and require separate sandbox enforcement.
+
 ## 1. What this system does
 
 Agents in Paperclip do not run continuously.  

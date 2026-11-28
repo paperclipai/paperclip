@@ -1,7 +1,7 @@
 import type { ExecutionContinuationEnvelope } from "@paperclipai/shared";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
+import { constants as fsConstants, promises as fs, readFileSync, statSync, type Dirent } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { CONNECTION_INTENT_AGENT_GUIDANCE } from "@paperclipai/shared";
@@ -2273,6 +2273,44 @@ export function selectPaperclipTaskMarkdown(
 }
 
 /**
+ * Optional administrator-owned policy, independent of per-agent instruction
+ * bundles and the isolated CODEX_HOME / CLAUDE_CONFIG_DIR used during runs.
+ *
+ * Loaded from the trusted adapter/server process environment rather than
+ * agent-configured env. A configured policy must fail visibly if unavailable.
+ * This provides guidance, not filesystem enforcement.
+ */
+export function readPaperclipGlobalInstructions(
+  configuredPath = process.env.PAPERCLIP_GLOBAL_INSTRUCTIONS_FILE,
+): string {
+  const file = configuredPath?.trim();
+  if (!file) return "";
+  if (!path.isAbsolute(file)) {
+    throw new Error("PAPERCLIP_GLOBAL_INSTRUCTIONS_FILE must be an absolute path");
+  }
+  let size: number;
+  try {
+    const stat = statSync(file);
+    if (!stat.isFile()) throw new Error("Not a regular file");
+    size = stat.size;
+  } catch (error) {
+    throw new Error(`Cannot read PAPERCLIP_GLOBAL_INSTRUCTIONS_FILE at ${file}`, { cause: error });
+  }
+  if (size > 64 * 1024) {
+    throw new Error("PAPERCLIP_GLOBAL_INSTRUCTIONS_FILE exceeds the 64 KiB limit");
+  }
+  let contents: string;
+  try {
+    contents = readFileSync(file, "utf8").trim();
+  } catch (error) {
+    throw new Error(`Cannot read PAPERCLIP_GLOBAL_INSTRUCTIONS_FILE at ${file}`, { cause: error });
+  }
+  return contents
+    ? `## Instance-wide instructions (Paperclip administrator)\n\n${contents}`
+    : "";
+}
+
+/**
  * Select Paperclip-owned sections together, at the actual provider attempt.
  * Assignment Markdown owns the brief; the wake renderer owns current events.
  * Adapters choose carriers and templates, not a second task/context policy.
@@ -2291,13 +2329,16 @@ export function selectPaperclipPromptSections(
   const taskContextNote = selectPaperclipTaskMarkdown(context, options);
   return {
     taskContextNote,
-    wakePrompt: renderPaperclipWakePrompt(context?.paperclipWake, {
-      resumedSession: options.resumedSession,
-      includeExecutionContract: options.includeExecutionContract,
-      nativeWakeReaderAvailable: options.nativeWakeReaderAvailable,
-      conversationMode: context?.conversationMode === true,
-      suppressIssueDescription: taskContextNote.length > 0,
-    }),
+    wakePrompt: joinPromptSections([
+      readPaperclipGlobalInstructions(),
+      renderPaperclipWakePrompt(context?.paperclipWake, {
+        resumedSession: options.resumedSession,
+        includeExecutionContract: options.includeExecutionContract,
+        nativeWakeReaderAvailable: options.nativeWakeReaderAvailable,
+        conversationMode: context?.conversationMode === true,
+        suppressIssueDescription: taskContextNote.length > 0,
+      }),
+    ]),
   };
 }
 

@@ -27,6 +27,8 @@ import {
   PAPERCLIP_FEEDBACK_SKILL_KEYS,
   refreshPaperclipWorkspaceEnvForExecution,
   renderPaperclipWakePrompt,
+  readPaperclipGlobalInstructions,
+  selectPaperclipPromptSections,
   resolveLegacyPaperclipDesiredSkillNames,
   resolvePaperclipDesiredSkillNames,
   selectPaperclipTaskMarkdown,
@@ -53,6 +55,48 @@ import {
 } from "./test-fixtures/follow-up-after-swarm-wake.js";
 
 const execFile = promisify(execFileCallback);
+
+describe("instance-wide global instructions", () => {
+  it("does nothing when the setting is not configured", () => {
+    expect(readPaperclipGlobalInstructions("")).toBe("");
+  });
+
+  it("rejects relative paths and missing files", () => {
+    expect(() => readPaperclipGlobalInstructions("relative/policy.md")).toThrow("absolute path");
+    expect(() => readPaperclipGlobalInstructions("/no-such-global-instructions-file/policy.md")).toThrow("Cannot read");
+  });
+
+  it("includes an instance policy on fresh and resumed prompt selection, and reads changes", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-global-instructions-"));
+    const file = path.join(dir, "global.md");
+    const previous = process.env.PAPERCLIP_GLOBAL_INSTRUCTIONS_FILE;
+    try {
+      await fs.writeFile(file, "Put scratch files in $PAPERCLIP_RUN_SCRATCH_DIR.\\n", "utf8");
+      process.env.PAPERCLIP_GLOBAL_INSTRUCTIONS_FILE = file;
+      const fresh = selectPaperclipPromptSections({ paperclipWake: {} });
+      const resumed = selectPaperclipPromptSections({ paperclipWake: {} }, { resumedSession: true });
+      expect(fresh.wakePrompt).toContain("Put scratch files in $PAPERCLIP_RUN_SCRATCH_DIR.");
+      expect(resumed.wakePrompt).toContain("Put scratch files in $PAPERCLIP_RUN_SCRATCH_DIR.");
+      await fs.writeFile(file, "Updated administrator policy.\\n", "utf8");
+      expect(selectPaperclipPromptSections({ paperclipWake: {} }).wakePrompt).toContain("Updated administrator policy.");
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_GLOBAL_INSTRUCTIONS_FILE;
+      else process.env.PAPERCLIP_GLOBAL_INSTRUCTIONS_FILE = previous;
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects oversized files", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-global-instructions-"));
+    try {
+      const file = path.join(dir, "large.md");
+      await fs.writeFile(file, "a".repeat(65 * 1024), "utf8");
+      expect(() => readPaperclipGlobalInstructions(file)).toThrow("64 KiB");
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 it("keeps Pi draft models empty and preserves saved native Pi settings", () => {
   expect(normalizePaperclipRunnerAdapterConfig("paperclip_runner", { provider: "acpx", acpxAgent: "pi", model: "" })).toMatchObject({ provider: "acpx", acpxAgent: "pi", model: "" });
