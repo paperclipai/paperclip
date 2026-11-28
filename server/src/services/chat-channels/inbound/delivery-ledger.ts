@@ -183,6 +183,15 @@ const DELIVERY_PROCESSING_STALE_MS = 60_000;
   }
 
   function pendingInboundWakeupCondition(readyOnly = false): SQL {
+    if (!readyOnly) {
+      return sql`(${chatDeliveries.companyId}, ${chatDeliveries.endpointId}, ${chatDeliveries.id}) in (
+        select ${chatActions.companyId}, ${chatActions.endpointId}, ${chatActions.deliveryId}
+        from ${chatActions}
+        where ${chatActions.kind} = 'inbound_wakeup'
+          and ${chatActions.deliveryId} is not null
+          and ${chatActions.status} in ('issued', 'processing')
+      )`;
+    }
     return sql`exists (
       select 1 from ${chatActions}
       where ${chatActions.deliveryId} = ${chatDeliveries.id}
@@ -198,6 +207,36 @@ const DELIVERY_PROCESSING_STALE_MS = 60_000;
         )`
             : sql``
         }
+    )`;
+  }
+
+  /**
+   * IDs of one endpoint's open conversation work: a received, retry or
+   * processing delivery, or a processed delivery whose inbound wake is still
+   * issued or processing. This is the same set as the endpoint filter with
+   * `state in (...) or (state = 'processed' and pendingInboundWakeupCondition())`.
+   *
+   * Each branch starts from a small set (open states, or the endpoint's
+   * pending wake actions). The caller does not scan the endpoint's processed
+   * history or read its `normalized_event` values to find the few open rows.
+   */
+  function openConversationDeliveryIds(endpointId: string): SQL {
+    return sql`(
+      select open_delivery.id
+      from ${chatDeliveries} open_delivery
+      where open_delivery.endpoint_id = ${endpointId}
+        and open_delivery.state in ('received', 'retry', 'processing')
+      union all
+      select woken_delivery.id
+      from ${chatActions} pending_wake
+      join ${chatDeliveries} woken_delivery
+        on woken_delivery.id = pending_wake.delivery_id
+        and woken_delivery.company_id = pending_wake.company_id
+        and woken_delivery.endpoint_id = pending_wake.endpoint_id
+      where pending_wake.endpoint_id = ${endpointId}
+        and pending_wake.kind = 'inbound_wakeup'
+        and pending_wake.status in ('issued', 'processing')
+        and woken_delivery.state = 'processed'
     )`;
   }
 
@@ -238,4 +277,4 @@ const DELIVERY_PROCESSING_STALE_MS = 60_000;
     return { ...normalized, runtimeContext };
   }
 
-export { DELIVERY_PROCESSING_STALE_MS, deliveryContentWasRedacted, setupDestinationActivationSuppressed, normalizedDeliveryThreadId, normalizedLifecycleTargetEventId, normalizedLifecycleEffect, deliveryReady, conversationDeliveryOrder, pendingInboundWakeupCondition, lifecycleRuntimeFence, normalizedLifecycleWithRuntimeFence };
+export { DELIVERY_PROCESSING_STALE_MS, deliveryContentWasRedacted, setupDestinationActivationSuppressed, normalizedDeliveryThreadId, normalizedLifecycleTargetEventId, normalizedLifecycleEffect, deliveryReady, conversationDeliveryOrder, pendingInboundWakeupCondition, openConversationDeliveryIds, lifecycleRuntimeFence, normalizedLifecycleWithRuntimeFence };

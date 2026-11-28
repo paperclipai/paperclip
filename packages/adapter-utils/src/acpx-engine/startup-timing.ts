@@ -51,6 +51,8 @@ export const EXECUTION_PREPARATION_SPAN_ATTRS = {
   runId: "paperclip.task.run.run_id",
   fileCount: "paperclip.execution.fileCount",
   bytes: "paperclip.execution.bytes",
+  catalogEntryCount: "paperclip.execution.catalogEntryCount",
+  connectionCount: "paperclip.execution.connectionCount",
   repositoryCacheOutcome: "paperclip.execution.repositoryCache.outcome",
   repositoryCacheReferenceSupplied: "paperclip.execution.repositoryCache.reference_supplied",
 } as const;
@@ -67,6 +69,8 @@ export const EXECUTION_PREPARATION_SPAN_ATTRS = {
  * command, a path, an argument, or an environment value can never ride a span.
  */
 export const SANDBOX_STARTUP_SPAN_ATTRS = {
+  /** Provider state before a lease start or recovery; the host clamps values. */
+  state: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}state`,
   /** The low-cardinality provider family (through `normalizeProviderFamily`). */
   provider: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}provider`,
   /** The step or execution outcome: `ok`, `skipped`, or `failed`. */

@@ -47,8 +47,8 @@ const {
   resolveCommandForLogs: vi.fn(async () => "ssh://fixture@127.0.0.1:2222/remote/workspace :: opencode"),
   prepareWorkspaceForSshExecution: vi.fn(async () => ({ gitBacked: false })),
   restoreWorkspaceFromSshExecution: vi.fn(async () => undefined),
-  runSshCommand: vi.fn(async () => ({
-    stdout: "/home/agent",
+  runSshCommand: vi.fn(async (_spec?: unknown, command?: string) => ({
+    stdout: command?.includes("mktemp -d") ? "/tmp/paperclip-ssh-runtime.opencode" : "/home/agent",
     stderr: "",
     exitCode: 0,
   })),
@@ -163,6 +163,7 @@ describe("opencode remote execution", () => {
     const workspaceDir = path.join(rootDir, "workspace");
     const alternateWorkspaceDir = path.join(rootDir, "workspace-other");
     const managedRemoteWorkspace = "/remote/workspace/.paperclip-runtime/runs/run-1/workspace";
+    const runtimeRoot = managed ? "/tmp/paperclip-ssh-runtime.opencode" : `${managedRemoteWorkspace}/.paperclip-runtime/opencode`;
     await mkdir(workspaceDir, { recursive: true });
     await mkdir(alternateWorkspaceDir, { recursive: true });
 
@@ -215,6 +216,7 @@ describe("opencode remote execution", () => {
       },
       executionTransport: {
         remoteExecution: {
+          useHostAuth: !managed,
           host: "127.0.0.1",
           port: 2222,
           username: "fixture",
@@ -242,10 +244,10 @@ describe("opencode remote execution", () => {
     expect(prepareWorkspaceForSshExecution).toHaveBeenCalledTimes(1);
     expect(syncDirectoryToSsh).toHaveBeenCalledTimes(2);
     expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({
-      remoteDir: `${managedRemoteWorkspace}/.paperclip-runtime/opencode/xdgConfig`,
+      remoteDir: `${runtimeRoot}/xdgConfig`,
     }));
     expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({
-      remoteDir: `${managedRemoteWorkspace}/.paperclip-runtime/opencode/skills`,
+      remoteDir: `${runtimeRoot}/skills`,
       followSymlinks: true,
     }));
     expect(runSshCommand).toHaveBeenCalledWith(
@@ -265,7 +267,7 @@ describe("opencode remote execution", () => {
     // original target remoteCwd — the per-run subdirectory is layered
     // underneath via XDG/runtime config rather than by switching the cwd.
     expect(modelProbeCall?.[3].env.XDG_CONFIG_HOME).toBe(
-      `${managedRemoteWorkspace}/.paperclip-runtime/opencode/xdgConfig`,
+      `${runtimeRoot}/xdgConfig`,
     );
     expect(modelProbeCall?.[3].remoteExecution?.remoteCwd).toBe("/remote/workspace");
     expect(runCall?.[2].slice(-4)).toEqual(["--dir", managedRemoteWorkspace, "--", "--dir"]);
@@ -274,7 +276,7 @@ describe("opencode remote execution", () => {
       | undefined;
     expect(call?.[3].env.PAPERCLIP_WORKSPACE_CWD).toBe(managedRemoteWorkspace);
     if (managed) {
-      const home = `${managedRemoteWorkspace}/.paperclip-runtime/opencode/managed-auth/run-1`;
+      const home = `${runtimeRoot}/managed-auth/run-1`;
       expect(call?.[3].env.HOME).toBe(home);
       expect(call?.[3].env.XDG_DATA_HOME).toBe(`${home}/data`);
       expect(modelProbeCall?.[3].env.XDG_DATA_HOME).toBe(`${home}/data`);
@@ -299,7 +301,7 @@ describe("opencode remote execution", () => {
     ]);
     expect(call?.[3].env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:4310");
     expect(call?.[3].env.PAPERCLIP_API_BRIDGE_MODE).toBe("queue_v1");
-    expect(call?.[3].env.XDG_CONFIG_HOME).toBe(`${managedRemoteWorkspace}/.paperclip-runtime/opencode/xdgConfig`);
+    expect(call?.[3].env.XDG_CONFIG_HOME).toBe(`${runtimeRoot}/xdgConfig`);
     expect(call?.[3].remoteExecution?.remoteCwd).toBe(managedRemoteWorkspace);
     expect(startAdapterExecutionTargetPaperclipBridge).toHaveBeenCalledTimes(1);
     expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);

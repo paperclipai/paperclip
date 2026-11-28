@@ -1,5 +1,7 @@
 import { DAYTONA_TOOLS, daytonaClient, daytonaRisk, executeDaytonaTool, isCurrentDaytonaCatalogEntry, isDaytonaConnection, isDaytonaToolName } from "./daytona.js";
 import type { NativeCatalogEntry, NativeRestRequest } from "./native-rest-client.js";
+import { ONEPASSWORD_TOOLS, isOnePasswordConnection, isOnePasswordToolName, onePasswordRisk, isCurrentOnePasswordEntry } from "./connectors/onepassword/catalog.js";
+import { callOnePassword, executeOnePasswordTool } from "./connectors/onepassword/client.js";
 import { UNIKRAFT_DEFAULT_METRO, UNIKRAFT_TOOLS, executeUnikraftTool, isCurrentUnikraftCatalogEntry, isUnikraftConnection,
   isUnikraftToolName, unikraftClient, unikraftRisk } from "./connectors/unikraft/client.js";
 
@@ -25,6 +27,12 @@ export type NativeProviderCatalog = {
 };
 
 export const NATIVE_PROVIDER_CATALOGS: readonly NativeProviderCatalog[] = [
+  {
+    slug: "1password", name: "1Password", tools: ONEPASSWORD_TOOLS,
+    isConnection: isOnePasswordConnection, isToolName: isOnePasswordToolName, risk: onePasswordRisk, isCurrentEntry: isCurrentOnePasswordEntry,
+    probe: (_connection, headers) => callOnePassword(headers, "onepassword_list_vaults", {}, 15_000),
+    execute: executeOnePasswordTool,
+  },
   {
     slug: "daytona", name: "Daytona", tools: DAYTONA_TOOLS,
     isConnection: isDaytonaConnection, isToolName: isDaytonaToolName, risk: daytonaRisk, isCurrentEntry: isCurrentDaytonaCatalogEntry,

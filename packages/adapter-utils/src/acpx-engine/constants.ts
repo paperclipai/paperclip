@@ -57,6 +57,17 @@ export const ACP_TOOL_KINDS = [
   "read", "edit", "delete", "move", "search", "execute", "think", "fetch", "switch_mode", "other",
 ] as const;
 
+// Closed labels for how a sandbox agent process session ended. Run failure
+// reports copy only these values.
+export const ACP_PROCESS_TERMINAL_SOURCES = [
+  "remote_event", "input_delivery", "output_poll", "output_stream", "proxy_close",
+] as const;
+
+export const ACP_PROCESS_TERMINAL_SIGNALS = [
+  "SIGHUP", "SIGINT", "SIGQUIT", "SIGILL", "SIGABRT", "SIGFPE", "SIGKILL",
+  "SIGSEGV", "SIGPIPE", "SIGALRM", "SIGTERM", "SIGBUS", "SIGXCPU", "SIGXFSZ",
+] as const;
+
 export const ACPX_ADAPTER_AGENT_IDS = {
   claude_local: "claude",
   codex_local: "codex",

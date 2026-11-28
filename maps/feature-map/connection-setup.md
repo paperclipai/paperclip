@@ -9,6 +9,11 @@ setup from either Apps or a task that needs access. A saved draft, a completed
 provider login, a usable connection, and a resumed task are separate checkpoints.
 Chat channels additionally require an endpoint and linked sender identity.
 
+Google runtime setup offers a Gemini API key or a separate local Antigravity
+browser sign-in. The browser redirect requires no pasted code; setup displays
+the verified Google email before Connect. Connection setup does not qualify the
+pending Antigravity execution profile. See [AI connections](../../doc/connections/AI-CONNECTIONS.md#local-subscription-sign-in).
+
 Feature ID: `connection-setup`.
 
 Agent access: [companion](../agent-access-map/connection-setup.md).
@@ -18,6 +23,10 @@ Settings → Connections. It adds no Apps provider or transport. Credential owne
 and audience rules are the existing connection rules; saving a connection alone
 does not activate the service. See [service configuration](../../doc/prompt-injection-prevention.md).
 
+1Password is available from Apps with a service-account token and an official
+service-account creation link. Its vault access is chosen in 1Password; action
+policies use the ordinary Permissions screen. See [connector notes](../../doc/connections/1PASSWORD.md).
+
 ## Sub-features
 
 - `catalog`: `connection-setup/catalog` — find a provider, inspect its available methods, and open setup;
@@ -26,7 +35,7 @@ does not activate the service. See [service configuration](../../doc/prompt-inje
   an empty explicit selection and company-wide access must not be confused.
 - `credentials`: `connection-setup/credentials` — provider sign-in, key, or generic MCP URL follows its supported
   setup method; credentials are not retained in browser draft storage.
-- `handoff`: `connection-setup/handoff` — provider popup/full-page callback returns to the correct setup
+- `handoff`: `connection-setup/handoff` — provider sign-in opens in a separate tab/window; its callback returns to the correct setup
   host with the original task intent and identity choice intact.
 - `draft-recovery`: `connection-setup/draft-recovery` — cancel, Back, Save & exit, reload, Finish setup, and reconnect
   preserve the exact draft rather than creating duplicate connections.
@@ -54,7 +63,7 @@ catalog setup and a generic endpoint may use different flows.
 ### `task-request`
 
 Open the task's pending connection request and its setup action as the named
-user. Setup can open in a task dialog and may use an OAuth popup. Follow the
+user. Setup can open in a task dialog; provider sign-in always uses a separate window/tab. Follow the
 request's original link if setup falls back to a standalone page.
 
 ### `resume-connection`
@@ -70,6 +79,17 @@ or open `/apps/chat/connect`. Complete that provider's endpoint setup, then
 open its settings (`/apps/chat/:endpointId/settings`). Follow identity linking
 as the intended sender before messaging the agent externally.
 
+### `delegated-configuration`
+
+Ask a standard agent to configure a disposable app or account from its assigned
+task. The agent uses REST or admitted native `search_api` / `call_api`, reuses
+saved accounts and drafts, and returns the exact saved setup link when human
+authentication, consent, credential entry or identity confirmation is required.
+Open that link as the addressed person. Personal ownership stays with that
+person; audit attribution stays with the acting agent. Existing agents retain
+their explicit grants and restrictions. See the [access companion](../agent-access-map/connection-setup.md)
+and [native admission contract](../agent-access-map/README.md#native-rest-transport).
+
 ## Driving it with Playwright and the Paperclip CLI
 
 Preconditions: follow the [baseline](./README.md#before-driving-a-journey).
@@ -81,15 +101,12 @@ do not establish OAuth registration, public callbacks, or production provider ac
 
 ### `apps-catalog`
 
-Automated: [Browse](../../ui/src/pages/apps/Browse.test.tsx),
-[unconnected app](../../ui/src/pages/apps/AppNotConnected.test.tsx), and
-[AppsConnect](../../ui/src/pages/apps/AppsConnect.test.tsx) cover catalog entry,
-access selection, provider-specific method choices, and setup failures with
-mocked APIs. [Connection intents](../../tests/e2e/connection-intents.spec.ts)
-drives store and task setup against one fake provider through a useful continuation:
+Automated: [Connection intents](../../tests/e2e/connection-intents.spec.ts)
+and [chat provider catalog E2E](../../tests/e2e/chat-adapters-ui-providers-catalog.spec.ts)
+drive catalog entry and setup against fake providers through a useful continuation
+(Tailscale admin gating is covered by [TailscaleConnector](../../ui/src/pages/apps/TailscaleConnector.test.tsx)):
 
 ```sh
-pnpm exec vitest run ui/src/pages/apps/Browse.test.tsx ui/src/pages/apps/AppsConnect.test.tsx
 pnpm exec playwright test -c tests/e2e/playwright.config.ts tests/e2e/connection-intents.spec.ts
 ```
 
@@ -177,10 +194,11 @@ task does not grant the right to resolve the request.
 
 ### `resume-connection`
 
-Automated: AppsConnect tests cover exact-draft resume, declined OAuth, reconnect
-lookup failure/retry, response-lost creation, archived connection revival, and
-saved account reuse. [App detail](../../ui/src/pages/apps/AppDetail.test.tsx) covers
-the connection host. These tests do not complete a real provider login.
+Automated: none for mocked UI flows (`AppsConnect` and `AppDetail` component tests
+covering draft resume, declined OAuth, reconnect retry, archived connection revival,
+saved account reuse, and the connection host were removed; rely on
+[Connection intents](../../tests/e2e/connection-intents.spec.ts) and manual checks
+below). None of these checks complete a real provider login.
 
 Manual: leave setup through its footer, reload Apps, choose Finish setup, and
 confirm the same connection is resumed. Decline provider login and recover from
@@ -189,23 +207,49 @@ action afterwards. Count connections before/after to catch accidental duplicates
 
 ### `chat-channel`
 
-Automated: [setup routing](../../ui/src/pages/apps/chat/ChatEndpointSetup.routing.test.tsx),
-[saved setup state](../../ui/src/pages/apps/chat/ChatEndpointSetup.state.test.ts),
-[email setup](../../ui/src/pages/apps/chat/EmailEndpointSetup.test.tsx), and
-[identity confirmation](../../ui/src/pages/apps/chat/ChatIdentityConfirm.test.tsx)
-cover shared UI logic with fixtures. Provider-specific live setup is not implied.
+Automated:
+[saved setup state](../../ui/src/pages/apps/chat/ChatEndpointSetup.state.test.ts)
+covers saved setup-state logic with fixtures (mocked UI tests for setup routing,
+email setup, and identity confirmation were removed; verify those UI flows via
+[chat adapters E2E](../../tests/e2e/chat-adapters-ui-providers.spec.ts) and manual
+checks). Provider-specific live setup is not implied.
 
-[Channel integration](../../server/src/__tests__/chat-channels.integration.test.ts)
+[Telegram draft and progress integration](../../server/src/__tests__/chat-channels/telegram-drafts-and-progress.integration.test.ts)
 also covers bounded Telegram subscription recovery at startup and after committed
 configuration changes, saved retry deadlines, rollback, and parking pending
 repair while an endpoint or connection is inactive. The provider responses are
 fixtures. Settled maintenance leaves no discovery timer or database scans.
+
+GitHub Cloud setup also covers an older empty-queue backoff, concurrent setup and
+background leases, and retry after a Cloud error in the
+[event poller regression](../../server/src/services/github-connection-events.test.ts).
+Channel integration checks that active setup drains its signed ping through the
+normal webhook handler; a forged ping still cannot verify the endpoint. These
+fixtures do not establish live Cloud delivery. For live proof, start a disposable
+App after an idle personal GitHub connection, complete installation, and confirm
+that the same draft advances after authenticating the queued ping.
 
 Manual: complete setup for one named provider, reload endpoint settings, link
 the intended sender, and send a disposable message. Verify one task and a useful
 reply in the originating conversation. Inspect an unlinked sender's denial and
 the endpoint's pause behavior. Repeat independently for each provider at issue;
 Slack setup does not qualify Discord, Telegram, GitHub, email, or iMessage.
+
+### `delegated-configuration`
+
+Automated: [agent-authenticated integration](../../server/src/__tests__/connection-management.integration.test.ts)
+uses production agent creation, persistent keys, run JWTs, native tool bindings,
+human sessions, PostgreSQL and deterministic provider fixtures. It covers saved
+setup, ownership, attribution, scope, trust, work modes and revocation. (verify pending
+choices and consent-picker UI manually.) These are separate from live provider
+setup and model success.
+
+Manual: Have the agent perform authorized setup, then open its saved handoff as
+the addressed person. Reload before completing the required human step; verify
+the same resource, saved access choices, human ownership and acting-agent audit
+remain. Complete the step, verify the exact task continues, and confirm that
+revoked authority or cancelled work prevents continuation. An ordinary bot-token
+repair or an unchanged credential must not complete a signing-key request.
 
 ## Gotchas
 
@@ -228,3 +272,22 @@ Slack setup does not qualify Discord, Telegram, GitHub, email, or iMessage.
 ### Documentation scope: App catalog and connection setup
 
 Provider-specific authentication/revocation, credential-only accounts, and aggregator administrative variants still need their own detailed matrices.
+
+Supabase and Vercel deployment connections (2026-10-22): Apps offers Supabase
+browser sign-in, hosted MCP personal access token, and project-scoped Management
+API methods, plus Vercel's team-scoped access token method. Supabase's optional
+MCP project pin leaves project creation available when unset; the native method
+requires a project and offers Edge Function deployment and selected configuration.
+Vercel supports preview/production deployment, build settings, environment
+variables and existing domain attachment. Personal/shared credential ownership,
+action permissions, reconnect and removal use the regular setup flow. See
+[Supabase](../../doc/connections/SUPABASE.md) and
+[Vercel](../../doc/connections/vercel.md) for method boundaries and qualification.
+
+For these native methods, continue past a successful connection test into an
+actual native agent task: readiness, assigned-tool delivery, and task-card reuse
+must all work. The 2026-10-23 walkthrough exposed and repaired omitted REST
+admission at those boundaries. Verify a served deployment and provider settings,
+not only the catalog action count. Vercel preview requires an existing deployment;
+its provider makes the first deployment production, so an empty-project preview
+must fail before submission and explain the explicit production prerequisite.
