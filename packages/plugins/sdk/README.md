@@ -1607,6 +1607,23 @@ existing permissions. This capability is for trusted execution infrastructure,
 not agent-facing tools or UI. Never expose or persist it. See
 [GitHub identity](../../../doc/execution-github-identity.md#project-authorization-for-background-repository-work).
 
+## Supported adapters
+
+A Runner task driver (`supportsTasks: true`) declares the adapters it runs in
+`supportedAdapters`, for example `["claude_local", "codex_local", "grok_local"]`.
+Support is all or nothing. Listing an adapter means the driver runs it and, when
+Paperclip has a sign-in for that adapter, hosts the whole sign-in: the login PTY
+hooks, plus `onLoginPtyReadCredential` when the sign-in saves a credential file
+(Codex and Grok today). The manifest is rejected when it lists such an adapter
+without `supportsLoginPty` and `creationOperationVersion: 1`. When the running
+worker lacks a method an adapter needs, Core removes that adapter from the
+driver and logs it; it never offers the adapter's runs without its sign-in.
+Core refuses to save or run an unlisted adapter on the driver.
+
+A driver that omits `supportedAdapters` keeps the earlier behavior: any Runner
+harness, Claude sign-in, and Codex sign-in when the worker reads credentials
+back.
+
 ## Login on an existing computer
 
 A driver can use the existing login PTY hooks for a login on a saved agent's
@@ -1622,9 +1639,11 @@ A provider that retries delivery must retain the input identity and bytes, and
 reject reuse of the identity with different input. A failed input call ends the
 Core login; Core does not silently replay an unconfirmed write.
 
-Providers can implement `onLoginPtyReadCredential` to export the fixed Codex
-credential artifact for a bound login lease. The result is
-`{ kind: "codex-auth-json", authJson }`; the request accepts no path or command.
+Providers implement `onLoginPtyReadCredential` to export the credential file
+that a completed sign-in saved in a bound login lease. Core calls it with the
+lease's `loginCommandKey` for sign-ins that save a file. The result is
+`{ kind: "auth-file", content }`, the provider's file as written; the request
+accepts no path or command.
 The worker advertises this optional method only when the hook exists. The host
 must check that method before using this read path, enforce a size limit, and
 keep credential bytes out of logs and public session responses. Existing sandbox

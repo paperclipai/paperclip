@@ -201,7 +201,7 @@ suite("Google sign-in task credential writeback for plugin Runners", () => {
   });
 
   it.each([
-    ["a Codex credential", { type: "codex-auth-json", authJson: "{\"tokens\":{}}" }],
+    ["a Codex credential", { type: "auth-file", provider: "codex", content: "{\"tokens\":{}}" }],
     ["a Gemini API key", { type: "provider-env", provider: "antigravity", environment: { GEMINI_API_KEY: "fixture-gemini" } }],
     ["an invalid sign-in", { type: "provider-env", provider: "antigravity", environment: { [SIGN_IN]: "{\"refresh_token\":\"fixture-refreshed\"}" } }],
   ])("refuses %s as a Google sign-in snapshot without saving or echoing it", async (_name, snapshot) => {

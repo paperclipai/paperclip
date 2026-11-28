@@ -569,3 +569,24 @@ describe("agent environment slot requirements", () => {
     expect(pluginUiSlotDeclarationSchema.safeParse({ ...slot, ...patch }).success).toBe(false);
   });
 });
+
+describe("supported adapters", () => {
+  const taskDriver = { kind: "environment_driver", supportsTasks: true, supportsLoginPty: true, creationOperationVersion: 1 };
+  it("accepts a task driver that hosts the sign-in of every listed adapter", () => {
+    const parsed = pluginManifestV1Schema.parse(buildSandboxProviderManifest({ ...taskDriver,
+      supportedAdapters: ["claude_local", "codex_local", "grok_local", "copilot_runtime", "opencode_local"] }));
+    expect(parsed.environmentDrivers?.[0]?.supportedAdapters).toEqual(["claude_local", "codex_local", "grok_local", "copilot_runtime", "opencode_local"]);
+  });
+  it("rejects an adapter with a Paperclip sign-in on a driver that cannot host it", () => {
+    for (const driver of [{ ...taskDriver, supportsLoginPty: false }, { ...taskDriver, creationOperationVersion: undefined }]) {
+      expect(pluginManifestV1Schema.safeParse(buildSandboxProviderManifest({ ...driver, supportedAdapters: ["grok_local"] })).success).toBe(false);
+    }
+    expect(pluginManifestV1Schema.safeParse(buildSandboxProviderManifest({ ...taskDriver, supportsLoginPty: false,
+      supportedAdapters: ["copilot_runtime", "opencode_local"] })).success).toBe(true);
+  });
+  it("rejects the list outside a Runner task environment driver, and duplicates", () => {
+    expect(pluginManifestV1Schema.safeParse(buildSandboxProviderManifest({ ...taskDriver, kind: "sandbox_provider", supportedAdapters: ["copilot_runtime"] })).success).toBe(false);
+    expect(pluginManifestV1Schema.safeParse(buildSandboxProviderManifest({ ...taskDriver, supportsTasks: false, supportedAdapters: ["copilot_runtime"] })).success).toBe(false);
+    expect(pluginManifestV1Schema.safeParse(buildSandboxProviderManifest({ ...taskDriver, supportedAdapters: ["claude_local", "claude_local"] })).success).toBe(false);
+  });
+});

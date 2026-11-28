@@ -409,13 +409,13 @@ describe("worker configChanged cross-tenant guard", () => {
       async setup() {},
       ...(supported ? { async onLoginPtyReadCredential(input: typeof params) {
         expect(input).toEqual(params);
-        return { kind: "codex-auth-json" as const, authJson: '{"fixture":true}' };
+        return { kind: "auth-file" as const, content: '{"fixture":true}' };
       } } : {}),
     }));
     try {
       const initialized = await worker.initialize() as { supportedMethods: string[] };
       expect(initialized.supportedMethods.includes("loginPtyReadCredential")).toBe(supported);
-      if (supported) expect(await worker.callWorker("loginPtyReadCredential", params)).toEqual({ kind: "codex-auth-json", authJson: '{"fixture":true}' });
+      if (supported) expect(await worker.callWorker("loginPtyReadCredential", params)).toEqual({ kind: "auth-file", content: '{"fixture":true}' });
       else await expect(worker.callWorker("loginPtyReadCredential", params)).rejects.toMatchObject({ code: PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED });
     } finally { worker.stop(); }
   });

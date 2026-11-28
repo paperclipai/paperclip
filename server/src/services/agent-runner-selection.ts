@@ -1,6 +1,6 @@
 import { assertProviderApiPlacementPolicy, managedCursorApiDefaultEnabled, resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
 import type { Db } from "@paperclipai/db";
-import { agentHarnessType, paperclipRunnerProfileForHarness, isEnvironmentDriverSupportedForAdapter, paperclipRunnerSupportsPlatform, type AgentRunnerChoice, type AgentRunnerAvailability } from "@paperclipai/shared";
+import { agentHarnessName, agentHarnessType, paperclipRunnerProfileForHarness, isEnvironmentDriverSupportedForAdapter, paperclipRunnerSupportsPlatform, type AgentRunnerChoice, type AgentRunnerAvailability } from "@paperclipai/shared";
 import { normalizeLegacyRunnerProvider, PAPERCLIP_RUNNER_DEFAULT_MODELS } from "@paperclipai/adapter-utils";
 import { resolveClaudeModel } from "@paperclipai/adapter-claude-local";
 import { DEFAULT_GROK_LOCAL_MODEL } from "@paperclipai/adapter-grok-local";
@@ -18,7 +18,7 @@ import { normalizeClaudeRunnerOptions, type AgentConfigurationWarning } from "@p
 import { usesManagedCloudSandboxImage } from "./sandbox-snapshot-qualification.js";
 import { environmentCustomImageTemplateMatchesBaseConfig } from "./environment-custom-image-runtime.js";
 import type { ExecutionPolicy } from "./execution-allowlist.js";
-import { pluginEnvironmentRunnerTaskDriver } from "./plugin-runner-ai-connection.js";
+import { pluginEnvironmentRunnerTaskDriver, type PluginRunnerTaskWorkers } from "./plugin-runner-ai-connection.js";
 
 export type RunnerTarget = {
   driver: string; platform?: string; architecture?: string; libc?: "glibc" | "musl" | "unknown"; glibcVersion?: string;
@@ -26,6 +26,8 @@ export type RunnerTarget = {
   runnerTasks?: boolean;
   managedCloudImage?: boolean;
   warmTaskVersion?: 1;
+  /** Adapters a Runner task driver declares. Others are unavailable on it; undefined keeps every Runner harness. */
+  supportedAdapters?: string[];
   executionMode?: ExecutionPolicy["executionMode"];
 };
 export const AGENT_RUNNER_SSH_PLATFORM_COMMAND = "uname -s; uname -m; if paperclip_glibc_version=$(getconf GNU_LIBC_VERSION 2>/dev/null) && [ -n \"$paperclip_glibc_version\" ]; then printf 'glibc\\n%s\\n' \"$paperclip_glibc_version\"; else case \"$(ldd --version 2>&1)\" in *musl*) printf 'musl\\n' ;; *) printf 'unknown\\n' ;; esac; fi";
@@ -65,6 +67,12 @@ export function agentRunnerAvailability(harness: string, target: RunnerTarget = 
       defaultRunner: legacy || !supported ? "legacy" : "paperclip" };
   }
   if (target.driver === "unavailable") return { supportedRunners: [], defaultRunner: "legacy" };
+  // The paperclip_runner wrapper carries the ACPX choices that have no adapter
+  // of their own, such as Copilot. Each choice checks the list itself.
+  if (target.runnerTasks && target.supportedAdapters && (harness === "paperclip_runner"
+    ? target.supportedAdapters.length === 0 : !target.supportedAdapters.includes(harness))) {
+    return { supportedRunners: [], defaultRunner: "legacy" };
+  }
   if (target.runnerTasks || target.managedCloudImage) {
     return runnerAdaptersAvailable(harness, target.driver, disabledTypes)
       ? { supportedRunners: target.runnerTasks ? ["paperclip"] : ["paperclip", "legacy"], defaultRunner: "paperclip" }
@@ -378,7 +386,38 @@ function resolveAgentRunner(input: AgentRunnerSelection): { adapterType: string;
   return { adapterType: "paperclip_runner", adapterConfig: config };
 }
 
-export async function resolveNewAgentRunnerForCompany(db: Db, companyId: string, input: AgentRunnerSelection & { defaultEnvironmentId?: string | null }) {
+/**
+ * A Runner task driver that declares its supported adapters runs only those.
+ * Saving an agent with another harness on it fails here, before any run.
+ */
+export async function assertRunnerTaskEnvironmentSupportsHarness(db: Db, companyId: string, input: {
+  adapterType: string; adapterConfig?: Record<string, unknown>; defaultEnvironmentId?: string | null;
+  pluginWorkers?: PluginRunnerTaskWorkers;
+}) {
+  if (input.adapterType !== "paperclip_runner") return;
+  const harness = agentHarnessName(input.adapterType, input.adapterConfig ?? {});
+  // Cursor Cloud runs through its provider API placement, never on the environment.
+  if (harness === "cursor_cloud") return;
+  // Read only the saved environment. Forced execution modes run elsewhere, and
+  // their own environment resolution stays with the run.
+  const { instanceSettingsService } = await import("./instance-settings.js");
+  const { environmentService } = await import("./environments.js");
+  const settings = await instanceSettingsService(db).get();
+  if (settings.general?.executionMode === "kubernetes") return;
+  const environmentId = input.defaultEnvironmentId ?? settings.defaultEnvironmentId;
+  const environment = environmentId ? await environmentService(db).getById(environmentId) : null;
+  if (environment?.driver !== "plugin") return;
+  const driver = await pluginEnvironmentRunnerTaskDriver(db, environment, input.pluginWorkers);
+  if (driver?.supportedAdapters && !driver.supportedAdapters.includes(harness)) {
+    throw unsupportedHarness(harness);
+  }
+}
+
+export async function resolveNewAgentRunnerForCompany(db: Db, companyId: string, input: AgentRunnerSelection & {
+  defaultEnvironmentId?: string | null;
+  /** The running plugin workers. With them, a plugin driver offers only the adapters its worker supports end to end. */
+  pluginWorkers?: PluginRunnerTaskWorkers;
+}) {
   const disabledTypes = await adapterSettingsService(db).getDisabledTypes();
   input = { ...input, disabledTypes };
   const cursor = agentHarnessType(input.adapterType ?? "process", input.adapterConfig) === "cursor_cloud";
@@ -407,20 +446,42 @@ export async function resolveNewAgentRunnerForCompany(db: Db, companyId: string,
     }
   }
   if (!paperclipRunnerProfileForHarness(agentHarnessType(input.adapterType ?? "process", input.adapterConfig))
-    || input.runner === "legacy" || (input.adapterType === "paperclip_runner" && (input.runner === undefined || input.runner === "paperclip"))) return resolveNewAgentRunner(input);
-  const target = await resolveAgentRunnerTargetForCompany(db, companyId, input.defaultEnvironmentId, input.disabledTypes);
-  return resolveNewAgentRunner({ ...input, target });
+    || input.runner === "legacy" || (input.adapterType === "paperclip_runner" && (input.runner === undefined || input.runner === "paperclip"))) {
+    const selected = resolveNewAgentRunner(input);
+    await assertRunnerTaskEnvironmentSupportsHarness(db, companyId, { ...selected, defaultEnvironmentId: input.defaultEnvironmentId, pluginWorkers: input.pluginWorkers });
+    return selected;
+  }
+  const target = await resolveAgentRunnerTargetForCompany(db, companyId, input.defaultEnvironmentId, input.disabledTypes, input.pluginWorkers);
+  const selected = resolveNewAgentRunner({ ...input, target });
+  // A saved Paperclip Runner agent can skip the availability check above, so
+  // check its harness against the target's supported adapters here too.
+  assertRunnerTargetSupportsHarness(target, selected);
+  return selected;
 }
 
-export async function resolveAgentRunnerTargetForCompany(db: Db, companyId: string, defaultEnvironmentId?: string | null, disabledTypes?: string[]): Promise<RunnerTarget> {
+function assertRunnerTargetSupportsHarness(target: RunnerTarget, selected: { adapterType: string; adapterConfig: Record<string, unknown> }) {
+  if (selected.adapterType !== "paperclip_runner" || !target.runnerTasks || !target.supportedAdapters) return;
+  const harness = agentHarnessName(selected.adapterType, selected.adapterConfig);
+  if (!target.supportedAdapters.includes(harness)) throw unsupportedHarness(harness);
+}
+
+function unsupportedHarness(harness: string) {
+  return unprocessable("This environment does not support the selected harness. Choose a supported harness or environment.", {
+    code: "agent_runner_unavailable", harness,
+  });
+}
+
+export async function resolveAgentRunnerTargetForCompany(db: Db, companyId: string, defaultEnvironmentId?: string | null, disabledTypes?: string[],
+  pluginWorkers?: PluginRunnerTaskWorkers): Promise<RunnerTarget> {
   await waitForExternalAdapters();
   const { environment, driver, executionMode } = await resolveAgentRunnerEnvironmentForCompany(db, companyId, defaultEnvironmentId);
   const withPolicy = (value: RunnerTarget): RunnerTarget => ({ ...value, ...(executionMode ? { executionMode } : {}) });
   let target: RunnerTarget = driver === "local" ? localAgentRunnerTarget()
     : { driver };
   if (driver === "plugin" && environment) {
-    const taskDriver = await pluginEnvironmentRunnerTaskDriver(db, environment);
-    if (taskDriver) target = { driver, runnerTasks: true, ...(taskDriver.warmTaskVersion === 1 ? { warmTaskVersion: 1 as const } : {}) };
+    const taskDriver = await pluginEnvironmentRunnerTaskDriver(db, environment, pluginWorkers);
+    if (taskDriver) target = { driver, runnerTasks: true, ...(taskDriver.warmTaskVersion === 1 ? { warmTaskVersion: 1 as const } : {}),
+      ...(taskDriver.supportedAdapters ? { supportedAdapters: taskDriver.supportedAdapters } : {}) };
   }
   if (driver === "sandbox" && environment) {
     if (usesManagedCloudSandboxImage(environment, null)) {

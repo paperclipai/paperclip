@@ -17105,7 +17105,8 @@ async function createRunnerdBackendWithinSessionClaim(
     if ((!adopting || input.remoteWarmRecovery?.portableSourceTaskId) && input.managedAiCredentialWriteback && credentials.accountIdentity) {
       if (!remoteTarget.leaseId) throw new Error("Plugin Runner credential lease unavailable");
       await registerPluginTaskCredentialHandoff(input.db, { companyId: input.execution.binding.companyId, leaseId: remoteTarget.leaseId },
-        credentials.accountIdentity, input.managedAiCredentialWriteback);
+        credentials.accountIdentity, input.managedAiCredentialWriteback,
+        credentials.credential?.type === "auth-file" ? credentials.credential.provider : undefined);
     }
     const taskConfiguredEnvironment = pluginTaskConfiguredEnvironment(input.runnerEnvironment);
     if (description.configuredEnvironmentVersion !== 1 && Object.keys(taskConfiguredEnvironment).length > 0) {
@@ -17121,7 +17122,7 @@ async function createRunnerdBackendWithinSessionClaim(
         normalizedSessionId: nativeSessionKey(input.execution),
         runnerInstanceId: adoptionIdentity?.runnerInstanceId ?? prior?.runnerInstanceId ?? effectiveRunnerInstanceId,
         event,
-        synchronizeCredentials: event.payload.provider === "codex" ? () => syncPluginTaskCredentialHandoff(input.db, {
+        synchronizeCredentials: credentials.credential?.type === "auth-file" && event.payload.provider === credentials.credential.provider ? () => syncPluginTaskCredentialHandoff(input.db, {
           companyId: input.execution.binding.companyId, leaseId: remoteTarget.leaseId!, expectedTaskId: description.taskId,
         }, async accountIdentity => {
           const snapshot = environmentTaskResultSchema.parse(await pluginTask({ kind: "credentials", accountIdentity }, { expectedTaskId: description.taskId }));

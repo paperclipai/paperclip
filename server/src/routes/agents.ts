@@ -16,7 +16,7 @@ import { connectionManagementGuard, connectionRequestContext, connectionRequestU
 import { cancellationRequestId } from "../services/native-runtime/native-cancellation-request.js";
 import { NATIVE_CLEANUP_SETTLING_MESSAGE } from "../services/native-runtime/completed-turn-cleanup.js";
 import { agentHarnessType, isEnvironmentDriverSupportedForAdapter, normalizeClaudeRunnerOptions, type AgentConfigurationWarning, type AgentRunnerChoice } from "@paperclipai/shared";
-import { resolveNewAgentRunnerForCompany } from "../services/agent-runner-selection.js";
+import { assertRunnerTaskEnvironmentSupportsHarness, resolveNewAgentRunnerForCompany } from "../services/agent-runner-selection.js";
 import { PLUGIN_RUNNER_AI_CONNECTION_REQUIRED, pluginEnvironmentRunnerTaskDriver, pluginRunnerAiConnectionRequiredMessage, pluginRunnerAiConnectionRequiredTestResult } from "../services/plugin-runner-ai-connection.js";
 import { agentEnvironmentTestService } from "../services/agent-environment-test.js";
 import { qualifyAgentRunner } from "../services/agent-runner-qualification.js";
@@ -161,7 +161,7 @@ import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { environmentService } from "../services/environments.js";
 
 import { environmentRuntimeService } from "../services/environment-runtime.js";
-import { pluginSupportsLoginPty, resolvePluginEnvironmentDriver, resolvePluginSandboxProviderDriverByKey } from "../services/plugin-environment-driver.js";
+import { pluginDriverLoginAdapters, resolvePluginEnvironmentDriver, resolvePluginSandboxProviderDriverByKey } from "../services/plugin-environment-driver.js";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import type {
   AdapterEnvironmentCheck,
@@ -881,8 +881,8 @@ export function agentRoutes(
       // earlier, so a managed reconciliation can rebind the environment to an
       // unsupported provider between the gate and the acquire; this fails closed
       // before the lease and the pseudo-terminal.
-      assertProviderSupportsLoginPty: (environmentId) =>
-        assertCodexLoginProviderCapability(environmentId),
+      assertProviderSupportsLoginPty: (environmentId, adapterType) =>
+        assertDeviceLoginProviderCapability(environmentId, adapterType),
       // Wire the live Codex pseudo-terminal opener through the plugin worker
       // manager route. The opener sets the sandbox `CODEX_HOME` to the same
       // server-controlled session home the descriptor-bound credential read
@@ -1601,11 +1601,12 @@ export function agentRoutes(
    * capability. It resolves the effective provider from the current environment
    * config, then reads the static capability from the provider plugin manifest. It
    * never checks the provider by name. A missing provider, a missing plugin, a
-   * non-plugin provider, and a provider without the flag all return false. Both
-   * login flows share this resolver, so both gates read the same current
-   * capability.
+   * non-plugin provider, and a provider without the flag all return false. A
+   * plugin environment driver must also host this adapter's sign-in on its
+   * running worker. Both login flows share this resolver, so both gates read the
+   * same current capability.
    */
-  async function resolveProviderSupportsLoginPty(environmentId: string, requireCredentialRead = false): Promise<boolean> {
+  async function resolveProviderSupportsLoginPty(environmentId: string, adapterType: string): Promise<boolean> {
     const environment = await environmentsSvc.getById(environmentId);
     const config =
       environment?.config && typeof environment.config === "object"
@@ -1616,7 +1617,7 @@ export function agentRoutes(
       try {
         const resolved = await resolvePluginEnvironmentDriver({ db, workerManager: options.pluginWorkerManager, config: config as unknown as import("@paperclipai/shared").PluginEnvironmentConfig });
         const methods = options.pluginWorkerManager.getWorker(resolved.plugin.id)?.supportedMethods ?? [];
-        return pluginSupportsLoginPty(resolved.driver, methods, requireCredentialRead);
+        return pluginDriverLoginAdapters(resolved.driver, methods).includes(adapterType);
       } catch { return false; }
     }
     const provider = typeof config.provider === "string" ? config.provider : "";
@@ -1633,7 +1634,7 @@ export function agentRoutes(
    * so no session row, lease, or pseudo-terminal starts.
    */
   async function assertSetupTokenLoginProviderCapability(environmentId: string): Promise<void> {
-    if (!(await resolveProviderSupportsLoginPty(environmentId))) {
+    if (!(await resolveProviderSupportsLoginPty(environmentId, "claude_local"))) {
       throw unprocessable(SETUP_TOKEN_PROVIDER_UNSUPPORTED, {
         code: SETUP_TOKEN_PROVIDER_UNSUPPORTED_CODE,
       });
@@ -1641,15 +1642,15 @@ export function agentRoutes(
   }
 
   /**
-   * Fails closed when the environment provider does not advertise the login
-   * pseudo-terminal capability that the Codex device login needs. It reads the
-   * current provider capability. The Codex route runs it before any session or
+   * Fails closed when the environment provider does not host the device login
+   * for this adapter. It reads the current provider capability. The device
+   * login route runs it before any session or
    * lease state, and the lease-acquisition path runs it again from current runtime
    * state before the provider lease. It fails closed with the fixed, typed error,
    * so no session row, lease, or pseudo-terminal starts.
    */
-  async function assertCodexLoginProviderCapability(environmentId: string): Promise<void> {
-    if (!(await resolveProviderSupportsLoginPty(environmentId, true))) {
+  async function assertDeviceLoginProviderCapability(environmentId: string, adapterType: string): Promise<void> {
+    if (!(await resolveProviderSupportsLoginPty(environmentId, adapterType))) {
       throw unprocessable(DEVICE_LOGIN_PROVIDER_UNSUPPORTED, {
         code: DEVICE_LOGIN_PROVIDER_UNSUPPORTED_CODE,
       });
@@ -3467,6 +3468,7 @@ export function agentRoutes(
           adapterType: type, adapterConfig: adapterConfigForTest,
           runner: testRunner,
           defaultEnvironmentId: requestedEnvironmentId,
+          pluginWorkers: options.pluginWorkerManager,
         });
       type = selection.adapterType;
       adapterConfigForTest = { ...selection.adapterConfig,
@@ -3818,7 +3820,7 @@ export function agentRoutes(
           const targetAgentId = await resolveSandboxLoginTarget(companyId, data.environmentId, {
             agentId: data.agentId, adapterType: data.adapterType, selectComputer: Boolean(data.aiConnection),
           });
-          await assertCodexLoginProviderCapability(data.environmentId);
+          await assertDeviceLoginProviderCapability(data.environmentId, data.adapterType);
           return targetAgentId;
         },
       });
@@ -4466,8 +4468,13 @@ export function agentRoutes(
       );
     }
 
-    const rollbackWarnings = await checkAgentProtectedEnvironmentKeys(db, rollbackAdapterConfig,
-      typeof rollbackConfig.defaultEnvironmentId === "string" ? rollbackConfig.defaultEnvironmentId : null);
+    const rollbackEnvironmentId = typeof rollbackConfig.defaultEnvironmentId === "string" ? rollbackConfig.defaultEnvironmentId : null;
+    // A restored Runner harness must still be one its environment supports.
+    await assertRunnerTaskEnvironmentSupportsHarness(db, existing.companyId, {
+      adapterType: rollbackAdapterType, adapterConfig: rollbackAdapterConfig,
+      defaultEnvironmentId: rollbackEnvironmentId, pluginWorkers: options.pluginWorkerManager,
+    });
+    const rollbackWarnings = await checkAgentProtectedEnvironmentKeys(db, rollbackAdapterConfig, rollbackEnvironmentId);
 
     const actor = getActorInfo(req);
     const updated = await svc.rollbackConfigRevision(id, revisionId, {
@@ -4661,7 +4668,7 @@ export function agentRoutes(
     }
     if (inheritRuntimeFrom === "caller" && hireRunner !== undefined) throw unprocessable("inheritRuntimeFrom=caller cannot be combined with runner");
     let configurationWarnings: AgentConfigurationWarning[] = [];
-    Object.assign(hireInput, await resolveNewAgentRunnerForCompany(db, companyId, { ...hireInput, runner: hireRunner,
+    Object.assign(hireInput, await resolveNewAgentRunnerForCompany(db, companyId, { ...hireInput, runner: hireRunner, pluginWorkers: options.pluginWorkerManager,
       onConfigurationWarnings: warnings => { configurationWarnings = warnings; } }));
     hireInput.adapterType = await assertSelectableAdapterType(hireInput.adapterType, hireInput.adapterConfig, companyId);
     const rawHireAdapterConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
@@ -5012,7 +5019,7 @@ export function agentRoutes(
     assertExternalInstructionsAdmin(req, { id: agentId, companyId, name: createInput.name, adapterConfig: requestedCreateConfig });
     let configurationWarnings: AgentConfigurationWarning[] = [];
     Object.assign(createInput, await resolveNewAgentRunnerForCompany(db, companyId, { ...createInput, runner: createRunner, setupOnly: Boolean(setupId),
-      onConfigurationWarnings: warnings => { configurationWarnings = warnings; } }));
+      pluginWorkers: options.pluginWorkerManager, onConfigurationWarnings: warnings => { configurationWarnings = warnings; } }));
     createInput.adapterType = await assertSelectableAdapterType(createInput.adapterType, createInput.adapterConfig, companyId);
     const rawCreateAdapterConfig = (createInput.adapterConfig ?? {}) as Record<string, unknown>;
     assertProviderTraceSettingTransition(req, createInput.runtimeConfig);
@@ -5750,7 +5757,7 @@ export function agentRoutes(
       Object.assign(patchData, await resolveNewAgentRunnerForCompany(db, existing.companyId, {
         adapterType: convertingPi || convertingGrok ? existing.adapterType : typeof patchData.adapterType === "string" ? patchData.adapterType : existing.adapterType,
         adapterConfig: config, runner: runner ?? "paperclip", setupOnly: existing.lifecycleHolds?.includes("setup"),
-        onConfigurationWarnings: warnings => { configurationWarnings = warnings; },
+        pluginWorkers: options.pluginWorkerManager, onConfigurationWarnings: warnings => { configurationWarnings = warnings; },
         defaultEnvironmentId: hasOwn(patchData, "defaultEnvironmentId") ? patchData.defaultEnvironmentId as string | null : existing.defaultEnvironmentId,
       }));
     }
@@ -5956,6 +5963,12 @@ export function agentRoutes(
           allowedSandboxProviders: allowedSandboxProvidersForAgent(requestedAdapterType),
         },
       );
+      await assertRunnerTaskEnvironmentSupportsHarness(db, existing.companyId, {
+        adapterType: requestedAdapterType,
+        adapterConfig: asRecord(patchData.adapterConfig ?? existing.adapterConfig) ?? {},
+        defaultEnvironmentId: nextDefaultEnvironmentId,
+        pluginWorkers: options.pluginWorkerManager,
+      });
       const protectedKeyWarnings = await checkAgentProtectedEnvironmentKeys(db, patchData.adapterConfig ?? existing.adapterConfig, nextDefaultEnvironmentId);
       configurationWarnings.push(...protectedKeyWarnings.filter(warning => !configurationWarnings.some(existing => existing.field === warning.field)));
     }

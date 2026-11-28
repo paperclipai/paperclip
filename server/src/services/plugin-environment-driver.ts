@@ -23,6 +23,8 @@ import type {
   PluginEnvironmentRealizeWorkspaceResult,
 } from "@paperclipai/plugin-sdk";
 import { unprocessable } from "../errors.js";
+import { logger } from "../middleware/logger.js";
+import { ADAPTER_LOGIN_CREDENTIAL_SOURCE, adapterLoginCommandKey } from "@paperclipai/shared";
 import {
   collectSecretRefPaths,
   parseSecretRefBindingObject,
@@ -147,6 +149,54 @@ export function pluginSupportsLoginPty(
   ].every(method => methods.includes(method));
 }
 
+type AdapterSupportDeclaration = Pick<PluginEnvironmentDriverDeclaration,
+  "supportedAdapters" | "supportsTasks" | "supportsLoginPty" | "creationOperationVersion">;
+
+/**
+ * The adapters a running worker supports end to end, or undefined for a driver
+ * that predates `supportedAdapters`. An adapter stays only when the worker
+ * implements its whole lifecycle: Runner tasks and, when Paperclip has a sign-in
+ * for the adapter, the login pseudo-terminal plus credential read-back for a
+ * sign-in that saves a file. A missing method removes the adapter, never only
+ * its sign-in.
+ */
+export function pluginDriverSupportedAdapters(driver: AdapterSupportDeclaration, methods: readonly string[]): string[] | undefined {
+  if (!driver.supportedAdapters) return undefined;
+  if (driver.supportsTasks !== true || !methods.includes("environmentTask")) return [];
+  return driver.supportedAdapters.filter((adapter) => {
+    const key = adapterLoginCommandKey(adapter);
+    return !key || pluginSupportsLoginPty(driver, methods, ADAPTER_LOGIN_CREDENTIAL_SOURCE[key] === "file");
+  });
+}
+
+/** The adapters whose Paperclip sign-in a running worker hosts. */
+export function pluginDriverLoginAdapters(driver: AdapterSupportDeclaration, methods: readonly string[]): string[] {
+  const supported = pluginDriverSupportedAdapters(driver, methods);
+  if (supported) return supported.filter((adapter) => adapterLoginCommandKey(adapter) !== undefined);
+  // A driver without the list keeps its earlier sign-ins: Claude, and Codex
+  // when its worker reads the saved credential back.
+  if (!pluginSupportsLoginPty(driver, methods)) return [];
+  return ["claude_local", ...(pluginSupportsLoginPty(driver, methods, true) ? ["codex_local"] : [])];
+}
+
+function supportedAdapterFields(pluginKey: string, driver: AdapterSupportDeclaration & { driverKey: string; kind?: string }, methods: readonly string[]) {
+  if (driver.kind !== "environment_driver") return { loginAdapters: [] };
+  const supportedAdapters = pluginDriverSupportedAdapters(driver, methods);
+  if (supportedAdapters) reportUnsupportedAdapters(pluginKey, driver, supportedAdapters);
+  return { ...(supportedAdapters ? { supportedAdapters } : {}), loginAdapters: pluginDriverLoginAdapters(driver, methods) };
+}
+
+const reportedUnsupportedAdapters = new Set<string>();
+function reportUnsupportedAdapters(pluginKey: string, driver: AdapterSupportDeclaration & { driverKey: string }, supported: readonly string[]) {
+  for (const adapter of driver.supportedAdapters ?? []) {
+    const key = `${pluginKey}:${driver.driverKey}:${adapter}`;
+    if (supported.includes(adapter) || reportedUnsupportedAdapters.has(key)) continue;
+    reportedUnsupportedAdapters.add(key);
+    logger.warn({ pluginKey, driverKey: driver.driverKey, adapter },
+      "Plugin environment driver lists an adapter its worker cannot fully support; the adapter is unavailable");
+  }
+}
+
 export interface ReadyPluginEnvironmentDriver {
   pluginId: string;
   pluginKey: string;
@@ -164,7 +214,10 @@ export interface ReadyPluginEnvironmentDriver {
    * matches the acquisition guard, which also verifies the same methods live.
    */
   reusableLeaseMethodsVerified: boolean;
-  supportsCodexLogin?: boolean;
+  /** Adapters the running worker supports end to end; undefined when the driver predates the list. */
+  supportedAdapters?: string[];
+  /** Adapters whose Paperclip sign-in the running worker hosts. */
+  loginAdapters: string[];
   supportsInteractiveSetup?: PluginEnvironmentDriverDeclaration["supportsInteractiveSetup"];
   interactiveSetupConnectionTypes?: PluginEnvironmentDriverDeclaration["interactiveSetupConnectionTypes"];
   supportsTemplateCapture?: PluginEnvironmentDriverDeclaration["supportsTemplateCapture"];
@@ -425,7 +478,7 @@ export async function listReadyPluginEnvironmentDrivers(input: {
           templateConfigBinding: driver.templateConfigBinding,
           supportsTemplateDelete: driver.supportsTemplateDelete,
           supportsLoginPty: driver.kind === "environment_driver" ? pluginSupportsLoginPty(driver, [...workerMethods]) : driver.supportsLoginPty,
-          supportsCodexLogin: pluginSupportsLoginPty(driver, [...workerMethods], true),
+          ...supportedAdapterFields(plugin.pluginKey, driver, [...workerMethods]),
         })),
     );
   }

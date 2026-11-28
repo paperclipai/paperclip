@@ -156,7 +156,7 @@ describe("plugin Runner setup", () => {
           return { kind: "project_auth", taskId: "task", provider: op.provider, configurationId: op.configurationId,
             allowed: !/base_url|model_provider|api_key|env_key/.test(projectConfig) };
         }
-        case "credentials": return { kind: "credentials", taskId: "task", credential: { type: "codex-auth-json", authJson: accountJson } };
+        case "credentials": return { kind: "credentials", taskId: "task", credential: { type: "auth-file", provider: "codex", content: accountJson } };
         case "read_state": return { kind: "state", taskId: "task", state: JSON.parse(await readFile(join(resources.runner_state!, "runner-state.json"), "utf8")) };
         case "archive_state": {
           const path = join(resources.runner_state!, "runner-state.json");
@@ -300,7 +300,7 @@ describe("plugin Runner setup", () => {
       expect(JSON.stringify(operations)).not.toContain("core-secret-not-transferred");
       expect(result.status).toBe(mode === "managed-account" ? "pass" : "fail");
       if (mode === "managed-account") expect(submission).toMatchObject({ credentialIdentity: "selected-revision", accountIdentity: "selected-account",
-        credential: { type: "codex-auth-json", authJson: accountJson } });
+        credential: { type: "auth-file", provider: "codex", content: accountJson } });
       expect(operations.some(op => op.kind === "submit")).toBe(true);
       expect(operations.some(op => op.kind === "stop")).toBe(true);
       expect(stopped).toBe(true);

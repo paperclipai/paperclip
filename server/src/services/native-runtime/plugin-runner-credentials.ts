@@ -1,6 +1,7 @@
 import { realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { copyBackCodexAuth } from "@paperclipai/adapter-codex-local/server";
+import { hasUsableGrokAuthValue, parseGrokAuthPayload } from "@paperclipai/adapter-grok-local/server";
 import {
   ENVIRONMENT_TASK_PROVIDER_CREDENTIAL_KEY_SETS, environmentTaskCredentialSchema,
   type PluginEnvironmentTaskCredential, type PluginEnvironmentTaskCredentialProvider,
@@ -38,13 +39,28 @@ export async function preparePluginRunnerCredentials(input: {
     const authJson = await readLocalAiCredentialFile(hostAuthPath);
     const parsed = JSON.parse(authJson);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Plugin Runner selected credential invalid");
-    const credential = environmentTaskCredentialSchema.parse({ type: "codex-auth-json", authJson });
+    const credential = environmentTaskCredentialSchema.parse({ type: "auth-file", provider: "codex", content: authJson });
     return { ...github, accountIdentity, credential, needsWriteback: !!parsed.tokens,
       onCredentials: async (snapshot: PluginEnvironmentTaskCredential) => {
-        if (snapshot.type !== "codex-auth-json") throw new Error("Plugin Runner credential provider mismatch");
-        await copyBackCodexAuth({ hostAuthPath, readSandboxAuth: async () => Buffer.from(snapshot.authJson), log: () => {} });
+        if (snapshot.type !== "auth-file" || snapshot.provider !== "codex") throw new Error("Plugin Runner credential provider mismatch");
+        await copyBackCodexAuth({ hostAuthPath, readSandboxAuth: async () => Buffer.from(snapshot.content), log: () => {} });
       },
     };
+  }
+  if (input.provider === "grok" && !input.environment.XAI_API_KEY) {
+    // A Grok subscription travels as the saved sign-in file. Its refreshed copy
+    // always returns through the managed account writeback.
+    if (input.environment.XAI_BASE_URL) throw new Error("Plugin Runner does not support the selected provider routing");
+    if (!input.home) throw new Error("Plugin Runner selected credential home unavailable");
+    const content = await readLocalAiCredentialFile(join(await realpath(input.home), "auth.json"));
+    let usable = false;
+    try {
+      const parsed = parseGrokAuthPayload(JSON.parse(content));
+      usable = parsed !== null && hasUsableGrokAuthValue(parsed.value);
+    } catch { /* Do not expose credential bytes through JSON parser errors. */ }
+    if (!usable) throw new Error("Plugin Runner selected credential invalid");
+    return { ...github, accountIdentity, needsWriteback: true,
+      credential: environmentTaskCredentialSchema.parse({ type: "auth-file", provider: "grok", content }) };
   }
   if (input.provider === "claude") {
     if (input.environment.ANTHROPIC_BASE_URL || input.environment.ANTHROPIC_AUTH_TOKEN) {
@@ -58,7 +74,6 @@ export async function preparePluginRunnerCredentials(input: {
     const provider: PluginEnvironmentTaskCredentialProvider = input.provider;
     if (provider === "grok") {
       if (input.environment.XAI_BASE_URL) throw new Error("Plugin Runner does not support the selected provider routing");
-      if (!input.environment.XAI_API_KEY) throw new Error("Plugin Runner supports Grok only with an xAI API key. Grok subscription login is not supported.");
     }
     if (provider === "antigravity") {
       if (input.environment[ANTIGRAVITY_SIGN_IN_ENV]?.trim()) throw new Error("Plugin Runner selected credential unavailable");

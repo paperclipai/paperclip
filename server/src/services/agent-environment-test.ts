@@ -546,7 +546,8 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
     }
     const target = context.executionTarget;
     if (managed.credentialWriteback && target?.kind === "remote" && target.transport === "sandbox" && target.runnerTask && target.leaseId) {
-      await registerPluginTaskCredentialHandoff(db, { companyId: context.companyId, leaseId: target.leaseId }, managed.sessionIdentity, managed.credentialWriteback);
+      await registerPluginTaskCredentialHandoff(db, { companyId: context.companyId, leaseId: target.leaseId }, managed.sessionIdentity, managed.credentialWriteback,
+        binding.provider === "xai" ? "grok" : undefined);
     }
     const result = await probeManagedEnvironment(adapterType, context, binding, managed);
     // A provider rejection invalidates the tested credential generation. A

@@ -75,9 +75,15 @@ The `credential` field has one of these types:
 
 | `type` | Contents | Harness |
 | --- | --- | --- |
-| `codex-auth-json` | `authJson`: the selected Codex `auth.json` | `codex` |
+| `auth-file` | `provider` and `content`: the provider's saved sign-in file, as written | `codex` or `grok` |
 | `claude-env` | `environment`: exactly one of `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` | `claude` |
 | `provider-env` | `provider` and `environment`: one complete variable set for that provider | `grok`, `copilot`, `opencode` or `antigravity` |
+
+An `auth-file` credential is the `auth.json` that the provider's sign-in saved:
+a Codex subscription or API-key account, or a Grok subscription. Install it as
+written in the provider's home. When the provider refreshes it, the `credentials`
+operation returns the refreshed copy in the same form, and Core saves it to the
+account. `ENVIRONMENT_TASK_AUTH_FILE_PROVIDERS` exports the provider list.
 
 A `provider-env` credential contains exactly one of these variable sets and no
 other variable:
@@ -108,8 +114,6 @@ The Runner refuses a Copilot token or a Gemini API key without a matching
 binding. For `antigravity`, the Runner also removes every other `GOOGLE_*` and
 `GEMINI_*` variable before it starts the provider, so a configured variable
 cannot redirect the key.
-Core does not send a Grok subscription login. A Grok agent must use an xAI API
-key in a plugin environment.
 
 For a Google Antigravity agent bound to a Google sign-in, the
 `antigravity` credential carries `PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET`.
@@ -599,6 +603,20 @@ before publishing it. Deliverables additionally verify the caller's expected
 size and digest. Providers without this operation fail closed; Core never falls
 back to reading remote paths on the server. Existing artifact uploads are unchanged.
 
+## Supported adapters
+
+A task driver lists the adapters it runs in `supportedAdapters`. Support is all
+or nothing: a listed adapter that has a Paperclip sign-in (Claude, Codex and
+Grok today) must also be signed in on the driver, so the manifest must declare
+`supportsLoginPty` and `creationOperationVersion: 1`. Core checks the running
+worker for every method each listed adapter needs, including
+`loginPtyReadCredential` for a sign-in that saves a file. It removes an adapter
+whose methods are missing and logs it. Core refuses to save an agent whose
+harness the environment's driver does not list, and the adapter list shows
+that harness as unavailable there. A driver without `supportedAdapters` keeps
+the earlier behavior: every Runner harness, Claude sign-in, and Codex sign-in
+when the worker reads credentials back.
+
 ## Login allocations on an existing computer
 
 A login-capable environment driver can host authorization on a saved agent's
@@ -624,7 +642,8 @@ Inspection by `creationOperation` must return that exact allocation as
 `creationLease`, with its provider ID matching the observation envelope, so a
 lost acquisition reply still reaches the existing cleanup path.
 
-Claude uses the existing setup-token output parser. Codex uses the optional
-`loginPtyReadCredential` hook to read its fixed auth artifact. Both retain the
-existing owner-bound credential completion and durable cleanup. A restart
+Claude uses the existing setup-token output parser. Codex and Grok save an
+`auth.json`, which Core reads with `loginPtyReadCredential` using the
+allocation's command key; the result is `{ kind: "auth-file", content }`. All
+three retain the existing owner-bound credential completion and durable cleanup. A restart
 interrupts an unfinished login; it does not resume the terminal.

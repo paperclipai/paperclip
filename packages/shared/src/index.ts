@@ -2857,6 +2857,14 @@ export {
   supportedSandboxProvidersForAdapter,
 } from "./environment-support.js";
 
+export {
+  ADAPTER_LOGIN_CREDENTIAL_SOURCE,
+  adapterLoginCommandKey,
+  adapterLoginTypes,
+  isAdapterLoginCommandKey,
+} from "./adapter-login.js";
+export type { AdapterLoginCommandKey } from "./adapter-login.js";
+
 export type {
   AdapterEnvironmentSupport,
   EnvironmentCapabilities,

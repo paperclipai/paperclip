@@ -196,6 +196,16 @@ describe("adapter routes", () => {
     expect(pluginRunner).toMatchObject({ type: "paperclip_runner", loaded: true, disabled: false });
     expect(pluginRunner.supportedRunners.length).toBeGreaterThan(0);
     expect(pluginRunner.candidateHarnesses).toBeUndefined();
+    expect(pluginRunner.supportedAdapters).toBeUndefined();
+  });
+  it("offers paperclip_runner with the driver's list when it lists only a wrapper choice", async () => {
+    const response = await request(createApp({}, { resolveRunnerTarget: async () => ({ driver: "plugin", runnerTasks: true, supportedAdapters: ["copilot_runtime"] }) }))
+      .get("/api/adapters?companyId=company-1&environmentId=plugin-tasks");
+    expect(response.status).toBe(200);
+    const pluginRunner = response.body.find((adapter: any) => adapter.type === "paperclip_runner");
+    expect(pluginRunner.supportedRunners.length).toBeGreaterThan(0);
+    expect(pluginRunner.supportedAdapters).toEqual(["copilot_runtime"]);
+    expect(response.body.find((adapter: any) => adapter.type === "claude_local").supportedRunners).toEqual([]);
   });
   it("keeps ordinary adapter discovery available after candidate startup authority expires", async () => {
     mockCandidateForRunnerTarget.mockImplementation(() => { throw new Error("ACPX candidate startup authorization expired"); });

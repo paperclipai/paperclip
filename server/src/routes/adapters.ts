@@ -115,6 +115,8 @@ interface AdapterCapabilities {
 
 interface AdapterInfo extends AgentRunnerAvailability {
   candidateHarnesses?: Array<{ agent: "antigravity"; model: string }>;
+  /** On paperclip_runner: the adapters the target's Runner task driver lists, which bound the wrapper's choices. */
+  supportedAdapters?: string[];
   type: string;
   label: string;
   source: "builtin" | "external";
@@ -195,6 +197,8 @@ function buildAdapterInfo(adapter: ServerAdapterModule, externalRecord: AdapterP
     disabled: disabledSet.has(adapter.type),
     capabilities: buildAdapterCapabilities(adapter),
     ...agentRunnerAvailability(adapter.type, target, [...disabledSet]),
+    ...(adapter.type === "paperclip_runner" && target?.runnerTasks && target.supportedAdapters
+      ? { supportedAdapters: target.supportedAdapters } : {}),
     ...(adapter.acp ? { acp: adapter.acp } : {}),
     overriddenBuiltin: externalRecord ? BUILTIN_ADAPTER_TYPES.has(adapter.type) : undefined,
     overridePaused: BUILTIN_ADAPTER_TYPES.has(adapter.type) ? isOverridePaused(adapter.type) : undefined,

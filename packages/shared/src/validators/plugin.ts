@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { adapterLoginCommandKey } from "../adapter-login.js";
 import {
   PLUGIN_STATUSES,
   PLUGIN_CATEGORIES,
@@ -168,6 +169,7 @@ export const pluginEnvironmentDriverDeclarationSchema = z.object({
   skillKeys: z.array(z.string().min(1).max(100)).max(100).optional(),
   requiresAgent: z.boolean().optional(),
   supportsTasks: z.boolean().optional(),
+  supportedAdapters: z.array(z.string().regex(/^[a-z0-9][a-z0-9_:-]{0,63}$/)).max(64).optional(),
   freshWorkspaceVersion: z.literal(1).optional(),
   creationOperationVersion: z.literal(1).optional(),
   warmTaskVersion: z.literal(1).optional(),
@@ -200,6 +202,25 @@ export const pluginEnvironmentDriverDeclarationSchema = z.object({
   supportsSetupTokenLogin: z.boolean().optional(),
   configSchema: jsonSchemaSchema,
 }).strict().superRefine((driver, ctx) => {
+  if (driver.supportedAdapters) {
+    const adapters = driver.supportedAdapters;
+    if (new Set(adapters).size !== adapters.length) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Supported adapters must be unique", path: ["supportedAdapters"] });
+    }
+    if (driver.kind === "sandbox_provider" || driver.supportsTasks !== true) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Only a Runner task environment driver declares supported adapters", path: ["supportedAdapters"] });
+    }
+    // Support includes sign-in wherever Paperclip offers one, so a driver that
+    // lists such an adapter must host the login pseudo-terminal.
+    const signIns = adapters.filter((adapter) => adapterLoginCommandKey(adapter) !== undefined);
+    if (signIns.length > 0 && ((driver.supportsLoginPty ?? driver.supportsSetupTokenLogin) !== true || driver.creationOperationVersion !== 1)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Supported adapters with a Paperclip sign-in (${signIns.join(", ")}) require supportsLoginPty and creationOperationVersion 1`,
+        path: ["supportedAdapters"],
+      });
+    }
+  }
   // Reject a manifest that carries both the alias and the canonical field with
   // different values. Matching values pass. A single field passes.
   if (

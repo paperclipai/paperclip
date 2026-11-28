@@ -37,6 +37,8 @@ export interface AdapterInfo {
   /** Exact operator-authorized candidates for the requested company and target. */
   candidateHarnesses?: Array<{ agent: "antigravity"; model: string }>;
   supportedRunners?: import("@paperclipai/shared").AgentRunner[];
+  /** On paperclip_runner: the adapters the target's Runner task driver lists. Absent when it lists none. */
+  supportedAdapters?: string[];
   defaultRunner?: import("@paperclipai/shared").AgentRunner;
   type: string;
   label: string;

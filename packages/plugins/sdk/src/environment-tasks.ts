@@ -76,9 +76,17 @@ const providerCredential = z.object({
   }
 });
 
+/**
+ * Providers whose subscription sign-in saves a credential file. The task installs
+ * the file as written in the provider's home and exports its refreshed copy.
+ * A Codex API-key account uses the same file form.
+ */
+export const ENVIRONMENT_TASK_AUTH_FILE_PROVIDERS = ["codex", "grok"] as const;
+export type PluginEnvironmentTaskAuthFileProvider = typeof ENVIRONMENT_TASK_AUTH_FILE_PROVIDERS[number];
+
 /** Only provider authentication is transferred. Paths and executable settings remain provider-owned. */
 export const environmentTaskCredentialSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("codex-auth-json"), authJson: credentialValue }).strict(),
+  z.object({ type: z.literal("auth-file"), provider: z.enum(ENVIRONMENT_TASK_AUTH_FILE_PROVIDERS), content: credentialValue }).strict(),
   z.object({ type: z.literal("claude-env"), environment: claudeCredentialEnvironment }).strict(),
   providerCredential,
 ]);

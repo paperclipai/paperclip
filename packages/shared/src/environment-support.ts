@@ -59,8 +59,11 @@ export interface EnvironmentProviderCapability {
 }
 
 export interface EnvironmentCapabilities {
-  /** Namespaced plugin driver keys that can host a login on a saved agent. */
-  loginPtyDrivers?: Record<string, { supportsLoginPty: boolean; supportsCodexLogin?: boolean }>;
+  /**
+   * Namespaced plugin driver keys that can host a login on a saved agent, with
+   * the adapters whose Paperclip sign-in each running driver hosts.
+   */
+  loginPtyDrivers?: Record<string, { supportsLoginPty: boolean; loginAdapters: string[] }>;
   adapters: AdapterEnvironmentSupport[];
   drivers: Record<EnvironmentDriver, EnvironmentSupportStatus>;
   sandboxProviders: Record<SandboxEnvironmentProvider, EnvironmentProviderCapability>;
@@ -210,7 +213,7 @@ export function environmentSupportsLoginPty(environment: { driver: string; confi
   if (environment.driver === "plugin") {
     const driver = capabilities.loginPtyDrivers?.[`${environment.config.pluginKey}:${environment.config.driverKey}`];
     return driver?.supportsLoginPty === true
-      && (adapterType === undefined || adapterType === "claude_local" || (adapterType === "codex_local" && driver.supportsCodexLogin === true));
+      && (adapterType === undefined ? driver.loginAdapters.length > 0 : driver.loginAdapters.includes(adapterType));
   }
   return false;
 }

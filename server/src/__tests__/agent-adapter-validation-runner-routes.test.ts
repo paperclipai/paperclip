@@ -869,6 +869,32 @@ describe("agent routes adapter validation: runner rollout and upgrades", () => {
     expect(mockAgentService.rollbackConfigRevision).not.toHaveBeenCalled();
   });
 
+  it("refuses a rollback to a Runner harness its environment no longer supports", async () => {
+    const selection = await import("../services/agent-runner-selection.js");
+    const { unprocessable } = await import("../errors.js");
+    const check = vi.spyOn(selection, "assertRunnerTaskEnvironmentSupportsHarness").mockRejectedValue(
+      unprocessable("This environment does not support the selected harness.", { code: "agent_runner_unavailable", harness: "grok_local" }));
+    try {
+      const existing = await mockAgentService.getById();
+      mockAgentService.getById.mockResolvedValue({ ...existing, adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "claude" } });
+      const restored = { provider: "acpx", acpxAgent: "grok", model: "grok-4.7" };
+      mockAgentService.getConfigRevision.mockResolvedValue({
+        afterConfig: { adapterType: "paperclip_runner", adapterConfig: restored, runtimeConfig: {}, defaultEnvironmentId: "computer" },
+      });
+      const app = await createApp();
+      const response = await requestApp(app, (baseUrl) =>
+        request(baseUrl).post(
+          "/api/agents/11111111-1111-4111-8111-111111111111/config-revisions/33333333-3333-4333-8333-333333333333/rollback",
+        ),
+      );
+      expect(response.status, JSON.stringify(response.body)).toBe(422);
+      expect(response.body.details).toMatchObject({ code: "agent_runner_unavailable", harness: "grok_local" });
+      expect(check).toHaveBeenCalledWith(expect.anything(), existing.companyId, expect.objectContaining({
+        adapterType: "paperclip_runner", adapterConfig: restored, defaultEnvironmentId: "computer" }));
+      expect(mockAgentService.rollbackConfigRevision).not.toHaveBeenCalled();
+    } finally { check.mockRestore(); }
+  });
+
   it.each(["rejected", "warned"] as const)("checks a rollback's restored env and environment for protected keys (%s)", async outcome => {
     const existing = await mockAgentService.getById();
     const adapterConfig = { ...(existing.adapterConfig as Record<string, unknown>), env: { DESKTOP_SESSION: { type: "plain", value: "mine" } } };

@@ -262,7 +262,7 @@ databaseSuite("Core plugin Runner task lifecycle", () => {
     const onDispatched = vi.fn(), checkpoint = vi.fn(async () => {}), close = vi.fn(async () => {});
     ingress.connect.mockReturnValue({ ready: Promise.resolve(), close });
     const owner = createPluginRunnerTaskOwner({ taskId: description.taskId, task: target.runnerTask, projectAuthCheckVersion: 1,
-      credentialIdentity: "revision", accountIdentity: "account", credential: { type: "codex-auth-json", authJson: '{"OPENAI_API_KEY":"synthetic-account-key"}' }, projectIds: target.runnerTaskProjectIds ?? [], harness: "codex",
+      credentialIdentity: "revision", accountIdentity: "account", credential: { type: "auth-file", provider: "codex", content: '{"OPENAI_API_KEY":"synthetic-account-key"}' }, projectIds: target.runnerTaskProjectIds ?? [], harness: "codex",
       onSessionRetained: checkpoint, onDispatched, pollMs: 1 });
     const identity = { runnerInstanceId: randomUUID(), environmentLeaseId: acquired.lease.id, runId,
       normalizedSessionId: randomUUID(), turnId: "turn", itemId: "item" };
@@ -277,7 +277,7 @@ databaseSuite("Core plugin Runner task lifecycle", () => {
     }) });
     await expect(runtime.task({ companyId, leaseId: acquired.lease.id, operation: {
       kind: "submit", projectIds: [projectId], preparedLaunchId: prepared.configurationId, bootstrapTicket: "synthetic-ticket",
-      accountIdentity: "account", credential: { type: "codex-auth-json", authJson: '{"OPENAI_API_KEY":"never-transfer-stale-proof"}' },
+      accountIdentity: "account", credential: { type: "auth-file", provider: "codex", content: '{"OPENAI_API_KEY":"never-transfer-stale-proof"}' },
       runner: { protocolMin: 1, protocolMax: 3, harness: "codex", runnerId: identity.runnerInstanceId,
         leaseId: identity.environmentLeaseId, runId: identity.runId, sessionId: identity.normalizedSessionId,
         turnId: identity.turnId, itemId: identity.itemId },

@@ -1,4 +1,4 @@
-import { environmentSupportsLoginPty } from "@paperclipai/shared";
+import { AI_CONNECTION_CAPABILITIES, adapterLoginCommandKey, environmentSupportsLoginPty } from "@paperclipai/shared";
 import { useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type AiProvider, type AiAuthMethod, type AiConnectionLoginIntent } from "@paperclipai/shared";
@@ -76,8 +76,11 @@ function SubscriptionConnectionStep({ companyId, provider, initialMethod, fixedM
   } catch (error) {
     if (!hostedGoogleSignIn) environmentError = describeError(error).body;
   }
+  // The adapter whose Paperclip sign-in saves this provider's subscription.
+  const subscriptionAdapter = AI_CONNECTION_CAPABILITIES[provider].methods.subscription?.adapters[0];
+  const loginAdapter = subscriptionAdapter && adapterLoginCommandKey(subscriptionAdapter) ? subscriptionAdapter : undefined;
   const loginEnvironments = (envs.data ?? []).filter((env) =>
-    env.status === "active" && (env.driver === "local" || (provider !== "google" && environmentSupportsLoginPty(env, caps.data, provider === "openai" ? "codex_local" : provider === "anthropic" ? "claude_local" : "unsupported"))),
+    env.status === "active" && (env.driver === "local" || (loginAdapter !== undefined && environmentSupportsLoginPty(env, caps.data, loginAdapter))),
   );
   // Signing in may use a different environment from later agent execution.
   // Prefer a supported login environment without changing any agent routing.
@@ -86,7 +89,7 @@ function SubscriptionConnectionStep({ companyId, provider, initialMethod, fixedM
     environmentId = loginEnvironments[0]?.id ?? null;
   }
   const environment = envs.data?.find((env) => env.id === environmentId);
-  const canLogin = environmentSupportsLoginPty(environment, caps.data, provider === "openai" ? "codex_local" : provider === "anthropic" ? "claude_local" : "unsupported");
+  const canLogin = loginAdapter !== undefined && environmentSupportsLoginPty(environment, caps.data, loginAdapter);
   const loading = [envs, caps, settings, experimental, general].some((query) => query.isPending) || (provider === "google" && health.isPending) || views.some((view) => view.kind === "reconnecting");
   const loadError = views.find((view) => view.kind === "error");
   const intent: AiConnectionLoginIntent = { provider: provider as AiConnectionLoginIntent["provider"], method: "subscription", name, ownership, agentIds, allAgents, connectionId };

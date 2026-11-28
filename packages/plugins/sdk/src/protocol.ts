@@ -1164,18 +1164,23 @@ export interface PluginLoginPtyInputParams {
   data: string;
 }
 
-/** Read the fixed Codex result of a bound login allocation; never an arbitrary path. */
+/**
+ * Read the credential file that a completed sign-in saved in its bound login
+ * allocation; never an arbitrary path. The host asks only for sign-ins that save
+ * a file (Codex and Grok today), using the same command key that opened the
+ * allocation. The worker returns the provider's file as written.
+ */
 export interface PluginLoginPtyReadCredentialParams {
   driverKey: string;
   companyId: string;
   environmentId: string;
   providerLeaseId: string;
-  loginCommandKey: "codex";
+  loginCommandKey: PluginLoginCommandKey;
 }
 
 export interface PluginLoginPtyReadCredentialResult {
-  kind: "codex-auth-json";
-  authJson: string;
+  kind: "auth-file";
+  content: string;
 }
 
 /** The stop request. It carries the worker session identifier. */

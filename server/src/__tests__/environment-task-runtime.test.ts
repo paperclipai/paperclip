@@ -315,7 +315,7 @@ describe("plugin-provided Runner execution", () => {
   });
   it("requires project validation for the exact configuration, provider, and projects before credential dispatch", async () => {
     const operation = { ...submit, preparedLaunchId: "configuration", accountIdentity: "account",
-      credential: { type: "codex-auth-json" as const, authJson: '{"OPENAI_API_KEY":"never-leak"}' } };
+      credential: { type: "auth-file" as const, provider: "codex" as const, content: '{"OPENAI_API_KEY":"never-leak"}' } };
     const proof = { configurationId: "configuration", provider: "openai", projectIds: [projectId] };
     for (const invalid of [undefined, { ...proof, configurationId: "other" }, { ...proof, provider: "anthropic" }, { ...proof, projectIds: [] }]) {
       const value = row(); Object.assign(value.lease.metadata, { runnerTaskProjectAuthValidation: invalid });
@@ -355,6 +355,28 @@ describe("plugin-provided Runner execution", () => {
     await expect(executeEnvironmentTask(database(validated()).db, denied as never, { companyId: "company", leaseId,
       operation: { ...operation, credential: credentials[harness === "grok" ? "copilot" : "grok"] } })).rejects.toThrow("validation unavailable");
     expect(denied.call).not.toHaveBeenCalled();
+  });
+  it("submits only adapters that the listing driver's worker supports end to end", async () => {
+    const login = ["environmentAcquireLease", "environmentInspectLease", "environmentReleaseLease", "loginPtyOpen", "loginPtyInput", "loginPtyStop", "loginPtyClose"];
+    Object.assign(state.plugin.manifestJson.environmentDrivers[0], { supportsLoginPty: true, creationOperationVersion: 1, supportedAdapters: ["codex_local", "copilot_runtime"] });
+    const validated = (provider: string) => {
+      const value = row();
+      Object.assign(value.lease.metadata, { runnerTaskProjectAuthValidation: { configurationId: "configuration", provider, projectIds: [projectId] } });
+      return value;
+    };
+    const run = (harness: string, methods: string[]) => {
+      const workers = worker(); workers.getWorker.mockReturnValue({ supportedMethods: ["environmentTask", ...methods] });
+      const provider = harness === "codex" ? "openai" : harness;
+      return { workers, result: executeEnvironmentTask(database(validated(provider)).db, workers as never, { companyId: "company", leaseId,
+        operation: { ...submit, runner: { ...submit.runner, harness } } }) };
+    };
+    await expect(run("codex", [...login, "loginPtyReadCredential"]).result).resolves.toMatchObject({ kind: "accepted" });
+    await expect(run("copilot", []).result).resolves.toMatchObject({ kind: "accepted" });
+    for (const [harness, methods] of [["grok", [...login, "loginPtyReadCredential"]], ["codex", login]] as const) {
+      const { workers, result } = run(harness, [...methods]);
+      await expect(result).rejects.toThrow("harness is unavailable");
+      expect(workers.call).not.toHaveBeenCalled();
+    }
   });
   it.each(["allowed", "denied", "wrong-configuration", "wrong-provider", "timeout"])("records only a matching successful project validation (%s)", async mode => {
     const operation = { kind: "check_project_auth" as const, configurationId: "configuration", provider: "openai" as const, projectIds: [projectId] };
@@ -663,6 +685,27 @@ describe("plugin-provided Runner execution", () => {
     expect(JSON.stringify({ ...error, message: error.message })).not.toContain("never-leak-token");
     expect(JSON.stringify({ ...error, message: error.message })).not.toContain("never-leak-variable");
     expect(error.cause).toBeUndefined();
+  });
+  it("resumes a warm task only while its saved harness is still supported", async () => {
+    const login = ["environmentAcquireLease", "environmentInspectLease", "environmentReleaseLease", "loginPtyOpen", "loginPtyInput", "loginPtyStop", "loginPtyClose", "loginPtyReadCredential"];
+    Object.assign(state.plugin.manifestJson.environmentDrivers[0], { supportsLoginPty: true, creationOperationVersion: 1, supportedAdapters: ["codex_local"] });
+    const identity = { runnerInstanceId: "runner", environmentLeaseId: leaseId, runId: "run", normalizedSessionId: "session", turnId: "turn", itemId: "item" };
+    const operation = { kind: "resume" as const, identity, bootstrapTicket: "transient-test-ticket" };
+    const result = { kind: "resume", taskId: "attempt-1", outcome: "resumed" };
+    const resume = (saved: Record<string, unknown>, methods = ["environmentTask", ...login]) => {
+      const value = row(); value.lease.status = "retained"; value.run!.status = "succeeded";
+      Object.assign(value.lease.metadata, saved);
+      const workers = worker(result); workers.getWorker.mockReturnValue({ supportedMethods: methods });
+      return { workers, result: executeEnvironmentTask(database(value).db, workers as never, { companyId: "company", leaseId, operation }) };
+    };
+    await expect(resume({ runnerTaskHarness: "codex" }).result).resolves.toEqual(result);
+    // A lease saved before the harness was recorded keeps resuming.
+    await expect(resume({}).result).resolves.toEqual(result);
+    for (const [saved, methods] of [[{ runnerTaskHarness: "grok" }, undefined], [{ runnerTaskHarness: "codex" }, ["environmentTask"]]] as const) {
+      const { workers, result: resumed } = resume(saved, methods ? [...methods] : undefined);
+      await expect(resumed).rejects.toThrow("harness is unavailable");
+      expect(workers.call).not.toHaveBeenCalled();
+    }
   });
   it("rejects wrong task receipts and sanitizes worker errors", async () => {
     await expect(executeEnvironmentTask(database().db, worker({ kind: "accepted", taskId: "other" }) as never, { companyId: "company", leaseId, operation: submit })).rejects.toThrow("reconcile the same task");

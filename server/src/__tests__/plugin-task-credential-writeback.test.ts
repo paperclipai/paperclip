@@ -55,11 +55,11 @@ suite("durable plugin task credential handoff", () => {
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "manual", status: "running" });
     await db.insert(environmentLeases).values({ id: leaseId, companyId, environmentId, heartbeatRunId: runId, provider: `plugin:${pluginId}:tasks`, providerLeaseId: "fixture-task", status: "active",
       metadata: { driver: "plugin", pluginId, driverKey: "tasks", runnerTaskLease: true, runnerTaskDispatched: dispatched, runnerTaskExecutionStopped: false } });
-    await registerPluginTaskCredentialHandoff(db, { companyId, leaseId }, managed.sessionIdentity, managed.credentialWriteback!);
+    await registerPluginTaskCredentialHandoff(db, { companyId, leaseId }, managed.sessionIdentity, managed.credentialWriteback!, provider);
     // Recovery must not depend on the original controller or its private home.
     await rm(managed.home!, { recursive: true, force: true });
     const calls: string[] = [];
-    let failExport = false, exported: string | null = auth("fixture-refreshed", 2021);
+    let failExport = false, exported: string | null = credential("fixture-refreshed", 2021), exportedProvider: string = provider;
     const workers = { getWorker: () => ({ supportedMethods: ["environmentTask"] }),
       call: async (_plugin: string, _method: string, params: any) => {
         calls.push(params.operation.kind);
@@ -68,7 +68,7 @@ suite("durable plugin task credential handoff", () => {
         if (params.operation.kind === "credentials") {
           expect(params.operation.accountIdentity).toBe(managed.sessionIdentity);
           if (failExport) throw new Error("fixture export unavailable");
-          return { kind: "credentials", taskId: "fixture-task", credential: exported === null ? null : { type: "codex-auth-json", authJson: exported } };
+          return { kind: "credentials", taskId: "fixture-task", credential: exported === null ? null : { type: "auth-file", provider: exportedProvider, content: exported } };
         }
         return { kind: "accepted", taskId: "fixture-task" };
       } } as unknown as PluginWorkerManager;
@@ -79,7 +79,7 @@ suite("durable plugin task credential handoff", () => {
         if (result.kind !== "credentials") throw new Error("Unexpected credential result");
         return result.credential;
       }),
-      exportCredential(value: string | null) { exported = value; },
+      exportCredential(value: string | null, from = provider as string) { exported = value; exportedProvider = from; },
       failExport(value: boolean) { failExport = value; }, credential: () => service.credential(selection!),
       settle: (executionStopObserved = false) => settleDispatchedEnvironmentTask(db, workers, { companyId, id: leaseId }, { executionStopObserved }) };
   }
@@ -95,6 +95,15 @@ suite("durable plugin task credential handoff", () => {
     expect(await f.credential()).toBe(auth("fixture-refreshed", 2021));
     await expect(f.synchronize()).resolves.toBeUndefined();
     expect(f.calls).toHaveLength(4);
+  });
+
+  it("writes a Grok task's refreshed sign-in file back to its account", async () => {
+    const f = await fixture(true, "grok");
+    await expect(f.synchronize()).resolves.toBe("rotated");
+    expect(await f.credential()).toBe(f.accountCredential("fixture-refreshed", 2021));
+    f.exportCredential(auth("fixture-other-provider", 2022), "codex");
+    await expect(f.synchronize()).rejects.toThrow("provider mismatch");
+    expect(await f.credential()).toBe(f.accountCredential("fixture-refreshed", 2021));
   });
 
   it.each(["codex", "grok"] as const)("writes managed %s refreshes without any plugin or invocation home", async provider => {

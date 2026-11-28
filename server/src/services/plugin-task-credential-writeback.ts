@@ -1,11 +1,13 @@
 import { and, eq, sql } from "drizzle-orm";
 import { environmentLeases, type Db } from "@paperclipai/db";
-import { z, type PluginEnvironmentTaskCredential } from "@paperclipai/plugin-sdk";
+import { ENVIRONMENT_TASK_AUTH_FILE_PROVIDERS, z, type PluginEnvironmentTaskAuthFileProvider, type PluginEnvironmentTaskCredential } from "@paperclipai/plugin-sdk";
 import { isDeepStrictEqual } from "node:util";
 import { managedAiCredentialWritebackBindingSchema, syncManagedAiCredentials, syncManagedAntigravityCredential, type ManagedAiCredentialWritebackBinding } from "./managed-ai-credential-writeback.js";
 
 const handoffSchema = z.object({
   accountIdentity: z.string().min(1),
+  /** The provider whose saved sign-in file returns; absent on handoffs recorded before Grok, which are Codex. */
+  provider: z.enum(ENVIRONMENT_TASK_AUTH_FILE_PROVIDERS).optional(),
   binding: managedAiCredentialWritebackBindingSchema,
   state: z.enum(["pending", "complete"]),
   outcome: z.enum(["rotated", "unchanged", "binding_changed", "not_dispatched", "no_credentials", "account_refused"]).optional(),
@@ -25,8 +27,9 @@ export async function registerPluginTaskCredentialHandoff(
   scope: Scope,
   accountIdentity: string,
   binding: ManagedAiCredentialWritebackBinding,
+  provider: PluginEnvironmentTaskAuthFileProvider = "codex",
 ) {
-  const handoff = handoffSchema.parse({ accountIdentity, binding, state: "pending" });
+  const handoff = handoffSchema.parse({ accountIdentity, binding, state: "pending", ...(provider === "codex" ? {} : { provider }) });
   await db.transaction(async tx => {
     const [lease] = await tx.select().from(environmentLeases).where(and(
       eq(environmentLeases.companyId, scope.companyId), eq(environmentLeases.id, scope.leaseId),
@@ -38,7 +41,8 @@ export async function registerPluginTaskCredentialHandoff(
     const saved = lease.metadata[key];
     if (saved) {
       const prior = handoffSchema.parse(saved);
-      if (prior.accountIdentity !== accountIdentity || !isDeepStrictEqual(prior.binding, handoff.binding)) {
+      if (prior.accountIdentity !== accountIdentity || !isDeepStrictEqual(prior.binding, handoff.binding) ||
+          (prior.provider ?? "codex") !== provider) {
         throw new Error("Plugin task credential authority changed");
       }
       return;
@@ -81,11 +85,12 @@ async function writeBackCredentials(
     if (!value) throw new Error("Plugin task credential provider mismatch");
     return value;
   });
-  return syncManagedAiCredentials(db, companyId, handoff.binding, "codex", async () => {
+  const provider = handoff.provider ?? "codex";
+  return syncManagedAiCredentials(db, companyId, handoff.binding, provider, async () => {
     const credential = await fetchCredential(handoff.accountIdentity);
     if (credential === null) return null;
-    if (credential.type !== "codex-auth-json") throw new Error("Plugin task credential provider mismatch");
-    return credential.authJson;
+    if (credential.type !== "auth-file" || credential.provider !== provider) throw new Error("Plugin task credential provider mismatch");
+    return credential.content;
   });
 }
 

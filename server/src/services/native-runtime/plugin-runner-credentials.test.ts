@@ -18,16 +18,16 @@ describe("plugin Runner selected credentials", () => {
     const transfer = await preparePluginRunnerCredentials({ provider: "codex", identity: "revision", accountIdentity: "account", home: directory, environment: {} });
     expect(transfer.accountIdentity).toBe("account");
     expect(transfer.needsWriteback).toBe(true);
-    expect(transfer.credential).toEqual({ type: "codex-auth-json", authJson: JSON.stringify(auth) });
+    expect(transfer.credential).toEqual({ type: "auth-file", provider: "codex", content: JSON.stringify(auth) });
     const refreshed = { ...auth, tokens: { ...auth.tokens, refresh_token: "fixture-rotated" }, last_refresh: "2021-01-01T00:00:00Z" };
-    await transfer.onCredentials!({ type: "codex-auth-json", authJson: JSON.stringify(refreshed) });
+    await transfer.onCredentials!({ type: "auth-file", provider: "codex", content: JSON.stringify(refreshed) });
     expect(JSON.parse(await readFile(join(directory, "auth.json"), "utf8"))).toEqual(refreshed);
   });
   it("transfers a selected API key without requiring refresh authority", async () => {
     const directory = await home({ OPENAI_API_KEY: "fixture-key" });
     const transfer = await preparePluginRunnerCredentials({ provider: "codex", identity: "revision", accountIdentity: "account", home: directory, environment: {} });
     expect(transfer.needsWriteback).toBe(false);
-    expect(transfer.credential).toEqual({ type: "codex-auth-json", authJson: JSON.stringify({ OPENAI_API_KEY: "fixture-key" }) });
+    expect(transfer.credential).toEqual({ type: "auth-file", provider: "codex", content: JSON.stringify({ OPENAI_API_KEY: "fixture-key" }) });
   });
   it("transfers only the selected Claude authentication variable", async () => {
     const transfer = await preparePluginRunnerCredentials({ provider: "claude", identity: "revision", environment: { CLAUDE_CODE_OAUTH_TOKEN: "fixture-oauth", HOME: "/controller/private", OTHER_SECRET: "fixture-unrelated" } });
@@ -140,9 +140,20 @@ describe("plugin Runner provider environment credentials", () => {
     expect(transfer.githubBroker).toEqual({ url: "https://core.example.test", token: "runtime-capability" });
     expect(transfer.credential).toEqual({ type: "provider-env", provider: "grok", environment: { XAI_API_KEY: "fixture-xai" } });
   });
-  it("refuses a Grok subscription, which needs an auth file with refresh and writeback", async () => {
-    await expect(preparePluginRunnerCredentials({ provider: "grok", identity: "revision", home: "/controller/private/provider",
-      environment: blanks })).rejects.toThrow("Grok subscription login is not supported");
+  it("sends a Grok subscription as its saved sign-in file and requires the managed writeback", async () => {
+    const grokAuth = { "https://auth.x.ai::00000000-0000-4000-8000-000000000000": { key: "fixture-key", refresh_token: "fixture-refresh" } };
+    const directory = await home(grokAuth);
+    const transfer = await preparePluginRunnerCredentials({ provider: "grok", identity: "revision", accountIdentity: "account",
+      home: directory, environment: blanks });
+    expect(transfer).toEqual({ accountIdentity: "account", needsWriteback: true,
+      credential: { type: "auth-file", provider: "grok", content: JSON.stringify(grokAuth) } });
+  });
+  it("refuses a Grok subscription without a usable sign-in file", async () => {
+    await expect(preparePluginRunnerCredentials({ provider: "grok", identity: "revision", environment: blanks }))
+      .rejects.toThrow("credential home unavailable");
+    const directory = await home({ "https://auth.x.ai::00000000-0000-4000-8000-000000000000": { key: "fixture-key" } });
+    await expect(preparePluginRunnerCredentials({ provider: "grok", identity: "revision", home: directory, environment: blanks }))
+      .rejects.toThrow("credential invalid");
   });
   it("refuses Grok provider routing that would redirect the key", async () => {
     await expect(preparePluginRunnerCredentials({ provider: "grok", identity: "revision",

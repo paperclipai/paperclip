@@ -197,6 +197,17 @@ export interface PluginEnvironmentDriverDeclaration {
   requiresAgent?: boolean;
   /** Provides Runner execution, resource preparation, and PRP connections via environmentTask. */
   supportsTasks?: boolean;
+  /**
+   * The agent adapters this driver supports, such as `claude_local`,
+   * `codex_local`, or `grok_local`. Support is all or nothing: listing an
+   * adapter means the driver runs it through Runner tasks and, when Paperclip
+   * has a sign-in for the adapter, hosts that sign-in end to end, including
+   * reading a saved credential file back. An unlisted adapter is unavailable on
+   * this driver. A driver that omits the list keeps the earlier behavior: any
+   * Runner harness, Claude sign-in, and Codex sign-in when its worker reads
+   * credentials back. Only task drivers (`supportsTasks`) declare the list.
+   */
+  supportedAdapters?: string[];
   freshWorkspaceVersion?: 1;
   creationOperationVersion?: 1;
   /** Codex task retention and authorized run attachment, version 1. */
