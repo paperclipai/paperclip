@@ -23,7 +23,9 @@ function createSelectChain(rowsForTable: (table: unknown) => unknown[]) {
     from(table: unknown) {
       return {
         where() {
-          return Promise.resolve(rowsForTable(table));
+          return Object.assign(Promise.resolve(rowsForTable(table)), {
+            prepare: () => ({ execute: async () => rowsForTable(table) }),
+          });
         },
       };
     },
@@ -31,7 +33,7 @@ function createSelectChain(rowsForTable: (table: unknown) => unknown[]) {
 }
 
 function createDbState(input: {
-  agent: { id: string; companyId: string; status?: string };
+  agent: { id: string; companyId: string; status?: string; lifecycleHolds?: string[] };
   agentKey?: { id: string; agentId: string; companyId: string; keyHash: string; responsibleUserId?: string | null };
   run?: { id: string; companyId: string; agentId: string; responsibleUserId?: string | null;
     status?: string; contextSnapshot?: Record<string, unknown>; resultJson?: Record<string, unknown> };
@@ -41,6 +43,7 @@ function createDbState(input: {
     id: input.agent.id,
     companyId: input.agent.companyId,
     status: input.agent.status ?? "active",
+    lifecycleHolds: input.agent.lifecycleHolds ?? [],
   };
   const keyRow = input.agentKey
     ? {
@@ -301,6 +304,19 @@ describe("agent auth middleware", () => {
 
     expect(res.status).toBe(401);
     expect(res.body.error).toContain(error);
+  });
+
+  it.each(["key", "jwt"])("rejects unfinished setup authentication with a %s", async kind => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const token = kind === "jwt" ? createLocalAgentJwt(agentId, companyId, "codex_local", randomUUID(), "user-1")! : "pcp_setup-test-token";
+    const { db } = createDbState({
+      agent: { id: agentId, companyId, status: "paused", lifecycleHolds: ["setup"] },
+      ...(kind === "key" ? { agentKey: { id: randomUUID(), agentId, companyId, keyHash: hashToken(token), responsibleUserId: "user-1" } } : {}),
+    });
+    const res = await request(createApp(db, "local_trusted")).get("/actor").set("Authorization", `Bearer ${token}`);
+    expect(res.status).toBe(401);
+    expect(res.body.error).toContain("setup is incomplete");
   });
 
   it("rejects an agent JWT when the agent record belongs to another company", async () => {

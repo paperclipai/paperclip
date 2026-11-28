@@ -6,16 +6,18 @@ navigation: {"section":"Apps, channels, and extensions","sectionOrder":50,"order
 
 Operators install and configure plugins, inspect their status and errors, and use their contributed pages, tools, and managed resources within the plugin’s granted capabilities.
 
+Feature ID: `plugins`.
+
 Implementation: [plugin manager](../../ui/src/pages/PluginManager.tsx), [plugin settings](../../ui/src/pages/PluginSettings.tsx), [plugin page](../../ui/src/pages/PluginPage.tsx).
 
 Agent access: [companion](../agent-access-map/plugins.md).
 
 ## Sub-features
 
-- `installation`: install a trusted test package or local development plugin through supported controls.
-- `configuration`: save validated configuration and inspect activation/failure state.
-- `contributions`: open plugin routes, settings, tools, and contributed resource tabs.
-- `lifecycle`: disable/remove or reload a disposable plugin and observe cleanup.
+- `installation`: `plugins/installation` — install a trusted test package or local development plugin through supported controls.
+- `configuration`: `plugins/configuration` — save validated configuration and inspect activation/failure state.
+- `contributions`: `plugins/contributions` — open plugin routes, settings, tools, and contributed resource tabs.
+- `lifecycle`: `plugins/lifecycle` — disable/remove or reload a disposable plugin and observe cleanup.
 
 ## How to get to it (user POV)
 
@@ -33,13 +35,13 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Use 
 
 ### `plugin-administration`
 
-Automated: [install authorization](../../server/src/__tests__/plugin-install-route-security.test.ts) and [plugin settings](../../ui/src/pages/PluginSettings.test.tsx) cover route/UI contracts.
+Automated: [install authorization](../../server/src/__tests__/plugin-install-route-security.test.ts) covers route contracts (mocked `PluginSettings` UI tests were removed; verify plugin settings UI via Storybook/manual checks).
 
 Manual: Install the fixture, supply its configuration, activate it, and inspect status. Save an invalid configuration and verify a useful error. Disable/remove the disposable plugin and check its tools and managed resources no longer behave as active.
 
 ### `plugin-contribution`
 
-Automated: [static plugin UI](../../server/src/__tests__/plugin-ui-static.test.ts) and [company settings contribution](../../ui/src/pages/CompanySettingsPluginPage.test.tsx) cover serving/host behavior.
+Automated: [static plugin UI](../../server/src/__tests__/plugin-ui-static.test.ts) covers static asset serving (mocked `CompanySettingsPluginPage` UI tests were removed; verify contributed pages via Storybook/manual checks).
 
 Manual: Open the contributed page by navigation and cold deep link, perform a harmless plugin action, and inspect its real outcome. Switch company and test an actor without the capability. Reload with the plugin unavailable and verify the host reports that state.
 
@@ -61,26 +63,34 @@ Manual: Open the contributed page by navigation and cold deep link, perform a ha
 
 #### `installation`
 
+Capability ID: `plugins/installation`.
+
 Scope: ui
 Storybook: Mount PluginManager trusted package and bundled-local choices, pending install, validation/recoverable error and installed status.
 Production: POST /plugins/install on a disposable package; enforce instance install authority, trusted path/package validation and correct version. Package and local install are distinct.
-Sources: Source: [PluginManager.tsx](../../ui/src/pages/PluginManager.tsx), [plugins.ts](../../server/src/routes/plugins.ts), [plugin-install-guard.ts](../../server/src/services/plugin-install-guard.ts). Tests: [plugin-install-route-security.test.ts](../../server/src/__tests__/plugin-install-route-security.test.ts), [plugin-install-autobuild.test.ts](../../server/src/__tests__/plugin-install-autobuild.test.ts), [plugin-routes-authz.test.ts](../../server/src/__tests__/plugin-routes-authz.test.ts)
+Sources: Source: [PluginManager.tsx](../../ui/src/pages/PluginManager.tsx), [plugins.ts](../../server/src/routes/plugins.ts), [plugin-install-guard.ts](../../server/src/services/plugin-install-guard.ts). Tests: [plugin-install-route-security.test.ts](../../server/src/__tests__/plugin-install-route-security.test.ts), [plugin-routes-authz.test.ts](../../server/src/__tests__/plugin-routes-authz.test.ts)
 
 #### `configuration`
+
+Capability ID: `plugins/configuration`.
 
 Scope: ui
 Storybook: Mount PluginSettings valid/invalid schema inputs, saved configuration, pending/failure and unavailable plugin.
 Production: GET/POST /plugins/{id}/config and POST config/test must preserve validation/company scope and deliver saved config to real plugin worker/startup.
-Sources: Source: [PluginSettings.tsx](../../ui/src/pages/PluginSettings.tsx), [plugins.ts](../../server/src/routes/plugins.ts), [plugin-config-validator.ts](../../server/src/services/plugin-config-validator.ts). Tests: [PluginSettings.test.tsx](../../ui/src/pages/PluginSettings.test.tsx), [plugin-config-startup-delivery.test.ts](../../server/src/__tests__/plugin-config-startup-delivery.test.ts), [plugin-routes-authz.test.ts](../../server/src/__tests__/plugin-routes-authz.test.ts)
+Sources: Source: [PluginSettings.tsx](../../ui/src/pages/PluginSettings.tsx), [plugins.ts](../../server/src/routes/plugins.ts), [plugin-config-validator.ts](../../server/src/services/plugin-config-validator.ts). Tests: [plugin-config-startup-delivery.test.ts](../../server/src/__tests__/plugin-config-startup-delivery.test.ts), [plugin-routes-authz.test.ts](../../server/src/__tests__/plugin-routes-authz.test.ts)
 
 #### `contributions`
+
+Capability ID: `plugins/contributions`.
 
 Scope: ui
 Storybook: Mount PluginPage and CompanySettingsPluginPage contributed routes/tabs, loading, missing/unavailable plugin and action failures with a known fixture plugin.
 Production: Serve real static plugin UI; enforce bridge data/action host capabilities and company boundaries; exercise a harmless action and cold deep link.
-Sources: Source: [PluginPage.tsx](../../ui/src/pages/PluginPage.tsx), [CompanySettingsPluginPage.tsx](../../ui/src/pages/CompanySettingsPluginPage.tsx), [plugins.ts](../../server/src/routes/plugins.ts), [plugin-ui-static.ts](../../server/src/routes/plugin-ui-static.ts). Tests: [PluginPage.test.tsx](../../ui/src/pages/PluginPage.test.tsx), [CompanySettingsPluginPage.test.tsx](../../ui/src/pages/CompanySettingsPluginPage.test.tsx), [plugin-ui-static.test.ts](../../server/src/__tests__/plugin-ui-static.test.ts), [plugin-tenant-isolation.test.ts](../../server/src/__tests__/plugin-tenant-isolation.test.ts)
+Sources: Source: [PluginPage.tsx](../../ui/src/pages/PluginPage.tsx), [CompanySettingsPluginPage.tsx](../../ui/src/pages/CompanySettingsPluginPage.tsx), [plugins.ts](../../server/src/routes/plugins.ts), [plugin-ui-static.ts](../../server/src/routes/plugin-ui-static.ts). Tests: [plugin-ui-static.test.ts](../../server/src/__tests__/plugin-ui-static.test.ts), [plugin-tenant-isolation.test.ts](../../server/src/__tests__/plugin-tenant-isolation.test.ts)
 
 #### `lifecycle`
+
+Capability ID: `plugins/lifecycle`.
 
 Scope: ui
 Storybook: Mount PluginManager active/disabled/uninstall/upgrade pending and failures; distinguish operator controls from developer watcher reload.

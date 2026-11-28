@@ -45,6 +45,12 @@ function startFakePostgresServer(): Promise<{ server: net.Server; port: number; 
 describe("closeRegisteredClients", () => {
   let server: net.Server | null = null;
 
+  it("resolves without throwing for a URL `new URL()` rejects, since createDb never registers clients under one", async () => {
+    await expect(closeRegisteredClients("")).resolves.toBeUndefined();
+    await expect(closeRegisteredClients("not a url")).resolves.toBeUndefined();
+    await expect(closeRegisteredClients("", { scope: "database" })).resolves.toBeUndefined();
+  });
+
   afterEach(async () => {
     if (server) await new Promise((resolve) => server!.close(resolve));
     server = null;
@@ -99,6 +105,23 @@ describe("closeRegisteredClients", () => {
 
   it("does nothing when no client is registered for a host and port", async () => {
     await expect(closeRegisteredClients("postgres://test:test@127.0.0.1:1/test")).resolves.toBeUndefined();
+  });
+
+  it("can close one owned database without ending its sibling's clients on the same host", async () => {
+    const started = await startFakePostgresServer();
+    server = started.server;
+    const url = `postgres://test:test@127.0.0.1:${started.port}/first`;
+    const first = createDb(url), sibling = createDb(url.replace(/first$/, "second"));
+    const reservedFirst = await first.$client.reserve(), reservedSibling = await sibling.$client.reserve();
+    try {
+      await closeRegisteredClients(url, { scope: "database" });
+      expect(await reservedFirst`select 1`.catch((error: unknown) => error)).toBeInstanceOf(Error);
+      expect(await reservedSibling`select 1`).toEqual([]);
+    } finally {
+      reservedFirst.release(); reservedSibling.release();
+      await closeRegisteredClients(url);
+      for (const socket of started.backendSockets) socket.destroy();
+    }
   });
 
   it("does not throw when createDb receives a URL that new URL() cannot parse", async () => {

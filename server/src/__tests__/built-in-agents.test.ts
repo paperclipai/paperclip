@@ -266,6 +266,14 @@ describeEmbeddedPostgres("built-in agents", () => {
     ])).toThrow("defaultAdapterType must be allowed");
   });
 
+  it("retains the actual operator on a provisioned existing agent budget", async () => {
+    const companyId = await seedCompany({ requireApproval: false });
+    const svc = builtInAgentService(db);
+    const original = await svc.ensure(companyId, "briefs");
+    await svc.provision(companyId, "briefs", { budgetMonthlyCents: 5000 }, { requestedByUserId: "budget-operator" });
+    expect(await db.select().from(budgetPolicies).where(eq(budgetPolicies.scopeId, original.agentId!))).toMatchObject([{ amount: 5000, createdByUserId: "budget-operator" }]);
+  });
+
   it.each([{ platform: "linux", architecture: "x64" }, { platform: "linux", architecture: "arm64" }, { platform: "darwin", architecture: "arm64" }, { platform: "darwin", architecture: "x64" }])("lazily provisions one agent per company/key and updates the same row on setup ($platform/$architecture)", async ({ platform, architecture }) => {
     runnerTarget.platform = platform;
     runnerTarget.architecture = architecture;
@@ -1025,9 +1033,9 @@ describeEmbeddedPostgres("built-in agents", () => {
     const revisions = agentInstructionRevisionService(db);
     const target = { companyId, agentId: created.agent!.id, entryFile: "AGENTS.md" };
     const history = await revisions.history(target, instructionOperator);
-    expect(history.revisions).toHaveLength(0);
     const current = await revisions.readCurrent(target, instructionOperator);
     expect(current?.content).toBe(resetFile.content);
+    expect(history.revisions[0]).toMatchObject({ contentHash: current!.revision.contentHash, createdAt: current!.revision.createdAt });
   });
 
   it("blocks deleting a built-in agent", async () => {
@@ -1403,8 +1411,8 @@ describeEmbeddedPostgres("built-in agents", () => {
       icon: "sparkles",
       role: "general",
       reportsTo: root.id,
-      adapterType: "claude_local",
-      adapterConfig: { model: "claude-haiku-4-5" },
+      adapterType: "paperclip_runner",
+      adapterConfig: { provider: "acpx", acpxAgent: "claude", model: "claude-haiku-4-5" },
       budgetMonthlyCents: 0,
     });
     expect(state.status).toBe("paused");
