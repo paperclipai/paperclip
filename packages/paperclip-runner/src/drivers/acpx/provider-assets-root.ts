@@ -17,11 +17,23 @@ function assertServerVendorLayout(root: string): void {
   if (!info.isFile() || info.isSymbolicLink() || realpathSync(sidecar) !== sidecar) throw new Error("Runner server vendor sidecar is invalid");
 }
 
+export type RunnerProviderAssetsRootOptions = {
+  providerPackageRoot?: string;
+  providerPackageManifest?: string;
+};
+
 /** Resolve only runner-owned package assets, including descriptor-loaded sidecars. */
-export function resolveRunnerProviderAssetsRoot(moduleUrl: string, provider: NativeProvider): string {
+export function resolveRunnerProviderAssetsRoot(
+  moduleUrl: string,
+  provider: NativeProvider,
+  options?: RunnerProviderAssetsRootOptions,
+): string {
   if (!(NATIVE_ASSET_PROVIDERS as readonly string[]).includes(provider)) throw new Error("Unknown native ACP provider assets");
-  const boundRoot = process.env.PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT;
-  const boundManifest = process.env.PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST;
+  const explicitRoot = options?.providerPackageRoot;
+  const boundRoot = explicitRoot !== undefined ? explicitRoot : process.env.PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT;
+  const boundManifest = explicitRoot !== undefined
+    ? options?.providerPackageManifest
+    : process.env.PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST;
   let packageRoot: string;
   if (boundRoot !== undefined) {
     const root = normalizedAbsolute(boundRoot);

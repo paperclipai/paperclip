@@ -105,6 +105,22 @@ describe("responsibility attainment and status", () => {
     expect(rollup.overdueProjects).toEqual([{ id: "p1", name: "Deck", targetDate: "2026-11-01", daysOverdue: 12 }]);
   });
 
+  it("collects distinct routineAgentIds from non-archived routines only", () => {
+    const work = noWork();
+    work.routines.push(
+      { id: "r1", title: "A", status: "active", assigneeAgentId: "agent-1", lastRunStatus: null, lastRunAt: null, nextRunAt: null },
+      { id: "r2", title: "B", status: "paused", assigneeAgentId: "agent-2", lastRunStatus: null, lastRunAt: null, nextRunAt: null },
+      { id: "r3", title: "C", status: "active", assigneeAgentId: "agent-1", lastRunStatus: null, lastRunAt: null, nextRunAt: null },
+      { id: "r4", title: "D", status: "active", assigneeAgentId: null, lastRunStatus: null, lastRunAt: null, nextRunAt: null },
+      { id: "r5", title: "E", status: "archived", assigneeAgentId: "agent-3", lastRunStatus: null, lastRunAt: null, nextRunAt: null },
+    );
+    const rollup = buildResponsibilityRollup({
+      responsibilityId: "r1", metric: metric(), healthOverride: null, counts: noCounts, work, now: NOW,
+    });
+    expect(rollup.routines).toBe(4);
+    expect(rollup.routineAgentIds).toEqual(["agent-1", "agent-2"]);
+  });
+
   it("lists what an active responsibility is missing", () => {
     expect(missingForActive({ standard: " ", metricName: null, metricTarget: null })).toEqual(["standard", "metricName", "metricTarget"]);
     expect(missingForActive({ standard: "Bar", metricName: "Reply time", metricTarget: 0 })).toEqual([]);

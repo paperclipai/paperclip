@@ -186,10 +186,10 @@ it("immediately triggers check after submitting a hosted Google redirect URL", a
     .mockResolvedValueOnce({ status: "sign_in_required", authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=hosted" })
     .mockResolvedValueOnce({ status: "ready", accountLabel: "hosted.user@example.test" });
   flushSync(() => root.render(<Harness provider="google" hostedRedirect />));
-  await vi.waitFor(() => expect(host.querySelector('input[aria-label="Google redirect URL"]')).not.toBeNull());
+  await vi.waitFor(() => expect(host.querySelector('input[aria-label="Antigravity redirect URL"]')).not.toBeNull());
   expect(api.checkLocalLogin).toHaveBeenCalledTimes(1);
 
-  const input = host.querySelector('input[aria-label="Google redirect URL"]') as HTMLInputElement;
+  const input = host.querySelector('input[aria-label="Antigravity redirect URL"]') as HTMLInputElement;
   flushSync(() => {
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "http://127.0.0.1:41234/?state=hosted&code=abc123");
     input.dispatchEvent(new Event("input", { bubbles: true }));

@@ -11,7 +11,7 @@ import {
   experimentalApiQueries,
 } from "./experimental-api-paths.js";
 import { Router } from "express";
-import { subscriptionPriceSchema, mergeSubscriptionsSchema } from "@paperclipai/shared";
+import { subscriptionPriceSchema, mergeSubscriptionsSchema, CLOUD_TRIAL_INFERENCE_STATUSES, cloudTrialTelemetryEventSchema, migrateCloudTrialAgentsSchema } from "@paperclipai/shared";
 import { z } from "zod";
 import { getHiddenSettings } from "../services/settings-visibility.js";
 import {
@@ -1517,7 +1517,6 @@ const BOARD_ONLY_OPERATIONS = new Set([
   // Cancelling a question is board-only (routes/issues.ts rejects agent actors). Withdraw is not listed here: its
   // route admits the card's creator agent and the task's assignee, so agents withdraw their own pending card there.
   "POST /api/issues/{id}/interactions/{interactionId}/cancel",
-  "POST /api/issues/{id}/retry",
   "GET /api/companies/{companyId}/prompt-injection-prevention",
   "PUT /api/companies/{companyId}/prompt-injection-prevention",
   "GET /api/companies/{companyId}/prompt-injection-prevention/models",
@@ -1549,6 +1548,9 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "DELETE /api/issues/{id}/documents/{key}",
   "GET /api/companies/{companyId}/decisions",
   "GET /api/cloud/stacks",
+  "GET /api/companies/{companyId}/cloud-inference/status",
+  "POST /api/companies/{companyId}/cloud-inference/migrate",
+  "POST /api/companies/{companyId}/cloud-inference/telemetry",
   "GET /api/companies",
   "POST /api/companies",
   "GET /api/companies/stats",
@@ -2149,6 +2151,107 @@ registry.registerPath({
   },
 });
 
+const cloudTrialInferenceStatusSchema = z.object({
+  enabled: z.boolean(),
+  provider: z.literal("openrouter"),
+  status: z.enum(CLOUD_TRIAL_INFERENCE_STATUSES),
+  reason: z.string().optional(),
+  limitUsdCents: z.number().int(),
+  spentUsdCents: z.number().int(),
+  remainingUsdCents: z.number().int(),
+  defaultModel: z.string(),
+  canMigrate: z.boolean(),
+  trialAgentIds: z.array(z.string().uuid()),
+  trialAgents: z.array(
+    z.object({
+      id: z.string().uuid(),
+      name: z.string(),
+      role: z.string(),
+      title: z.string().nullable(),
+    }),
+  ),
+  blockedRun: z
+    .object({
+      runId: z.string().uuid(),
+      agentId: z.string().uuid(),
+      issueId: z.string().uuid().nullable(),
+      failedAt: z.string(),
+    })
+    .nullable(),
+});
+
+const migrateCloudTrialAgentsResultSchema = z.object({
+  migratedCount: z.number().int(),
+  agents: z.array(
+    z.object({
+      agentId: z.string().uuid(),
+      name: z.string(),
+      adapterType: z.string(),
+      runnerProvider: z.string().optional(),
+      acpxAgent: z.string().optional(),
+      model: z.string(),
+    }),
+  ),
+  resumedRunIds: z.array(z.string().uuid()),
+  resumedIssueId: z.string().uuid().nullable(),
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/cloud-inference/status",
+  tags: ["cloud"],
+  summary: "Get Cloud starter inference status for a company",
+  description:
+    "Requires an authenticated board session with access to companyId. Returns starter-inference state, trial-bound agents, and whether the caller can migrate them (canMigrate).",
+  request: {
+    params: z.object({ companyId: z.string().uuid() }),
+    query: z.object({
+      refresh: z.enum(["1", "true"]).optional(),
+    }),
+  },
+  responses: {
+    200: r.ok(cloudTrialInferenceStatusSchema),
+    403: r.forbidden,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/cloud-inference/migrate",
+  tags: ["cloud"],
+  summary: "Migrate Cloud starter trial agents onto a connected model provider",
+  description:
+    "Requires a non-viewer board user with agent_config:update (or setup-draft creator authority) for every target trial agent, plus ownership or connections:configure authority for the selected AI connection.",
+  request: {
+    params: z.object({ companyId: z.string().uuid() }),
+    body: jsonBody(migrateCloudTrialAgentsSchema),
+  },
+  responses: {
+    200: r.ok(migrateCloudTrialAgentsResultSchema),
+    400: r.badRequest,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/cloud-inference/telemetry",
+  tags: ["cloud"],
+  summary: "Record Cloud starter inference onboarding exposure or prompt telemetry",
+  description:
+    "Requires an authenticated board session with access to companyId. Emits Cloud-only PostHog funnel events (no-op on self-hosted instances).",
+  request: {
+    params: z.object({ companyId: z.string().uuid() }),
+    body: jsonBody(cloudTrialTelemetryEventSchema),
+  },
+  responses: {
+    204: { description: "Recorded" },
+    400: r.badRequest,
+    403: r.forbidden,
+  },
+});
+
 registry.registerPath({
   method: "get",
   path: "/api/companies",
@@ -2486,7 +2589,7 @@ registry.registerPath({
   summary: "Create a chat endpoint",
   description:
     "Creates one provider bot endpoint bound permanently to one Paperclip agent. Provider setup and verification happen in later calls. "
-    + "Chat providers need Chat connectors, and GitHub needs GitHub review bots, turned on by an instance admin in Experimental settings at /<prefix>/company/settings/instance/experimental. "
+    + "Experimental chat providers need Chat connectors turned on by an instance admin in Experimental settings at /<prefix>/company/settings/instance/experimental; AgentMail and GitHub are always available. "
     + "While that setting is off, connections_search shows the provider as unavailable and this call is refused; agents cannot change it. Link that page as [Experimental settings](/<prefix>/company/settings/instance/experimental) and reply.",
   request: {
     params: z.object({ companyId: z.string().uuid() }),
@@ -11711,6 +11814,32 @@ registerCurrentRoute({
   body: updateDocumentAnnotationThreadSchema,
 });
 
+registerCurrentRoute({
+  method: "put",
+  path: "/api/issues/{id}/documents/{key}/annotations/{threadId}/comments/{commentId}/reactions/{reaction}",
+  tags: ["issues"],
+  summary: "Add a reaction on a document annotation comment",
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    404: r.notFound,
+  },
+});
+
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/issues/{id}/documents/{key}/annotations/{threadId}/comments/{commentId}/reactions/{reaction}",
+  tags: ["issues"],
+  summary: "Remove a reaction on a document annotation comment",
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    404: r.notFound,
+  },
+});
+
 for (const route of [
   [
     "get",
@@ -11768,6 +11897,32 @@ registerCurrentRoute({
 });
 
 registerCurrentRoute({
+  method: "put",
+  path: "/api/routines/{id}/description/annotations/{threadId}/comments/{commentId}/reactions/{reaction}",
+  tags: ["routines"],
+  summary: "Add a reaction on a routine description annotation comment",
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    404: r.notFound,
+  },
+});
+
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/routines/{id}/description/annotations/{threadId}/comments/{commentId}/reactions/{reaction}",
+  tags: ["routines"],
+  summary: "Remove a reaction on a routine description annotation comment",
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    404: r.notFound,
+  },
+});
+
+registerCurrentRoute({
   method: "get",
   path: "/api/issues/{id}/diagnostics/blockers",
   tags: ["issues"],
@@ -11801,7 +11956,7 @@ registerCurrentRoute({
   tags: ["issues"],
   summary: "Request one durable task retry from current input and preserved results",
   body: taskRetrySchema,
-  responses: { 200: r.ok(), 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+  responses: { 200: r.ok(), 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 429: r.tooManyRequests },
 });
 
 registerCurrentRoute({
@@ -13757,7 +13912,7 @@ const dotInvitationResponseSchema = z.object({
   approvalId: z.string().uuid().nullable(),
   binding: z.object({
     id: z.string().uuid(), status: z.string(), connected: z.boolean(),
-    subscriptionVerified: z.boolean(), hasPendingChallenge: z.boolean(),
+    subscriptionVerified: z.boolean(), subscriptionExpired: z.boolean().optional(), hasPendingChallenge: z.boolean(),
     pairingExpiresAt: z.string().datetime().nullable(), challengeExpiresAt: z.string().datetime().nullable(),
   }).nullable(),
 });

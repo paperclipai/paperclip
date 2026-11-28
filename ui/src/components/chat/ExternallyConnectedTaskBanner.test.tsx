@@ -41,7 +41,7 @@ vi.mock("@/hooks/useDurableSubmit", async (importOriginal) => {
 });
 vi.mock("@/hooks/useChatConnectorsEnabled", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/hooks/useChatConnectorsEnabled")>(),
-  useChatConnectorsEnabled: () => ({ enabled: true, githubEnabled: true, loaded: true }),
+  useChatConnectorsEnabled: () => ({ enabled: true, loaded: true }),
 }));
 
 vi.mock("@/api/chatEndpoints", () => ({

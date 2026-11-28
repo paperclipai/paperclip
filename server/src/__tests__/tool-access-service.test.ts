@@ -1,4 +1,6 @@
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
+import { UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE } from "../services/tool-access/catalog/failures.js";
+import { repairUnsupportedVoiceConnectionHealth } from "../services/tool-access/catalog/health.js";
 const googleSignIn = vi.hoisted(() => ({ cloudHosted: true }));
 vi.mock("../services/google-sign-in-availability.js", () => ({ paperclipGoogleSignInAvailable: () => googleSignIn.cloudHosted }));
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
@@ -24,6 +26,7 @@ import {
   activityLog,
   agents,
   authUsers,
+  chatEndpoints,
   companies,
   companyMemberships,
   companySecretBindings,
@@ -10592,7 +10595,7 @@ describeEmbeddedPostgres("tool access service", () => {
     let gatewayAuthorization: string | null = null;
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
       const href = String(url);
-      if (href === "https://slack.com/api/oauth.v2.access") {
+      if (href === "https://slack.com/api/oauth.v2.user.access") {
         return {
           ok: true,
           status: 200,
@@ -10743,7 +10746,7 @@ describeEmbeddedPostgres("tool access service", () => {
       );
       vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
         const href = String(url);
-        if (href === "https://slack.com/api/oauth.v2.access") {
+        if (href === "https://slack.com/api/oauth.v2.user.access") {
           return {
             ok: true,
             status: 200,
@@ -10896,7 +10899,7 @@ describeEmbeddedPostgres("tool access service", () => {
     ).searchParams.get("state")!;
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
       const href = String(url);
-      if (href === "https://slack.com/api/oauth.v2.access") {
+      if (href === "https://slack.com/api/oauth.v2.user.access") {
         const body = init?.body as URLSearchParams;
         const userAuthorization =
           body.get("code") === "user-authorization-code";
@@ -11221,7 +11224,7 @@ describeEmbeddedPostgres("tool access service", () => {
       );
       vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
         const href = String(url);
-        if (href === "https://slack.com/api/oauth.v2.access") {
+        if (href === "https://slack.com/api/oauth.v2.user.access") {
           const code = (init?.body as URLSearchParams).get("code");
           expect(["personal-code", "personal-reconnect-code"]).toContain(code);
           const reconnecting = code === "personal-reconnect-code";
@@ -11565,7 +11568,7 @@ describeEmbeddedPostgres("tool access service", () => {
     if (mode === "managed") definition.ownershipAvailability = { ...availability, platform_shared: true };
     let discoverNewTool = false;
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
-      if (String(url) === "https://slack.com/api/oauth.v2.access") return mcpHttpResponse(oauthToken("fixture-access-token", "fixture-refresh-token"));
+      if (String(url) === "https://slack.com/api/oauth.v2.user.access") return mcpHttpResponse(oauthToken("fixture-access-token", "fixture-refresh-token"));
       const body = JSON.parse(String(init?.body));
       if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
       return mcpHttpResponse({ jsonrpc: "2.0", id: body.id, result: body.method === "initialize" ? { protocolVersion: "2025-06-18" }
@@ -11649,7 +11652,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const redirectUri = "https://paperclip.example/api/tools/oauth/callback";
     vi.spyOn(globalThis, "fetch").mockImplementation(async url => {
       const href = String(url);
-      if (href === "https://slack.com/api/oauth.v2.access") return mcpHttpResponse(oauthToken("fixture-access-token", "fixture-refresh-token"));
+      if (href === "https://slack.com/api/oauth.v2.user.access") return mcpHttpResponse(oauthToken("fixture-access-token", "fixture-refresh-token"));
       if (href === "https://mcp.slack.com/mcp") return mcpHttpResponse(catalogResponse([{ name: "search_messages", annotations: { readOnlyHint: true } }]));
       throw new Error(`unexpected fetch ${href}`);
     });
@@ -11715,7 +11718,7 @@ describeEmbeddedPostgres("tool access service", () => {
     let discoverNewTool = false;
     vi.spyOn(globalThis, "fetch").mockImplementation(async url => {
       const href = String(url);
-      if (href === "https://slack.com/api/oauth.v2.access") return mcpHttpResponse(oauthToken("fixture-access-token", "fixture-refresh-token"));
+      if (href === "https://slack.com/api/oauth.v2.user.access") return mcpHttpResponse(oauthToken("fixture-access-token", "fixture-refresh-token"));
       if (href === "https://mcp.slack.com/mcp") return mcpHttpResponse(catalogResponse([{ name: "search_messages", annotations: { readOnlyHint: true } }, ...(discoverNewTool ? [{ name: "new_search", annotations: { readOnlyHint: true } }] : [])]));
       throw new Error(`unexpected fetch ${href}`);
     });
@@ -11792,7 +11795,7 @@ describeEmbeddedPostgres("tool access service", () => {
     );
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
       const href = String(url);
-      if (href === "https://slack.com/api/oauth.v2.access") {
+      if (href === "https://slack.com/api/oauth.v2.user.access") {
         return mcpHttpResponse(oauthToken("share-access-token", "share-refresh-token"));
       }
       if (href === "https://mcp.slack.com/mcp") {
@@ -11931,7 +11934,7 @@ describeEmbeddedPostgres("tool access service", () => {
       .spyOn(globalThis, "fetch")
       .mockImplementation(async (url, init) => {
         const href = String(url);
-        if (href === "https://slack.com/api/oauth.v2.access") {
+        if (href === "https://slack.com/api/oauth.v2.user.access") {
           const body = init?.body as URLSearchParams;
           if (body.get("grant_type") === "refresh_token") {
             expect(body.get("refresh_token")).toBe("personal-refresh-token");
@@ -12052,7 +12055,7 @@ describeEmbeddedPostgres("tool access service", () => {
     );
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
       const href = String(url);
-      if (href === "https://slack.com/api/oauth.v2.access") {
+      if (href === "https://slack.com/api/oauth.v2.user.access") {
         const body = init?.body as URLSearchParams;
         if (body.get("grant_type") === "refresh_token") {
           return mcpHttpResponse({
@@ -12263,7 +12266,7 @@ describeEmbeddedPostgres("tool access service", () => {
     let tokenScope: string | null = null;
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
       const href = String(url);
-      if (href === "https://slack.com/api/oauth.v2.access") {
+      if (href === "https://slack.com/api/oauth.v2.user.access") {
         return mcpHttpResponse({
           ok: true,
           access_token: `access-${randomUUID()}`,
@@ -12398,7 +12401,7 @@ describeEmbeddedPostgres("tool access service", () => {
       let refreshScope: string | null = null;
       vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
         const href = String(url);
-        if (href === "https://slack.com/api/oauth.v2.access") {
+        if (href === "https://slack.com/api/oauth.v2.user.access") {
           const body = init?.body as URLSearchParams;
           return body.get("grant_type") === "refresh_token"
             ? slackToken(refreshScope)
@@ -13051,7 +13054,7 @@ describeEmbeddedPostgres("tool access service", () => {
       });
       const startUrl = new URL(connectRes.body.auth.startUrl);
       expect(`${startUrl.origin}${startUrl.pathname}`).toBe(
-        "https://slack.com/oauth/v2/authorize",
+        "https://slack.com/oauth/v2_user/authorize",
       );
       expect(startUrl.searchParams.get("client_id")).toBe("slack-client-id");
       expect(startUrl.searchParams.get("code_challenge_method")).toBe("S256");
@@ -13078,7 +13081,7 @@ describeEmbeddedPostgres("tool access service", () => {
         .spyOn(globalThis, "fetch")
         .mockImplementation(async (url, init) => {
           const href = String(url);
-          if (href === "https://slack.com/api/oauth.v2.access") {
+          if (href === "https://slack.com/api/oauth.v2.user.access") {
             const body = init?.body as URLSearchParams;
             expect(body.get("grant_type")).toBe("authorization_code");
             expect(body.get("code")).toBe("oauth-code");
@@ -13189,6 +13192,114 @@ describeEmbeddedPostgres("tool access service", () => {
       expect(JSON.stringify(connection.config)).not.toContain("refresh-token");
     },
   );
+
+  it("uses Slack user OAuth endpoints even for legacy drafts and propagates allowlisted provider_error without reflecting error_description", async () => {
+    const origin = "https://paperclip.example";
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", origin);
+    const company = await createCompany(db);
+    await grantBoardUser(db, company.id, "board-user", [
+      "tools:manage_connections",
+    ]);
+    const app = createRouteApp(db);
+
+    const connectRes = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .set("Host", "paperclip.example")
+      .set("Origin", origin)
+      .send({
+        galleryKey: "slack",
+        name: "Slack user OAuth",
+        oauthClient: {
+          clientId: "slack-customer-id",
+          clientSecret: "slack-customer-secret",
+        },
+      })
+      .expect(201);
+
+    const initialStartUrl = new URL(connectRes.body.auth.startUrl);
+    expect(`${initialStartUrl.origin}${initialStartUrl.pathname}`).toBe(
+      "https://slack.com/oauth/v2_user/authorize",
+    );
+    expect(initialStartUrl.searchParams.get("scope")?.split(" ")).toContain(
+      "search:read.public",
+    );
+
+    const [existingDraft] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, connectRes.body.connectionId));
+    const legacyOAuth = {
+      ...((existingDraft!.config.oauth as Record<string, unknown>) ?? {}),
+      authorizationUrl: "https://slack.com/oauth/v2/authorize",
+      tokenUrl: "https://slack.com/api/oauth.v2.access",
+    };
+    await db
+      .update(toolConnections)
+      .set({
+        config: { ...existingDraft!.config, oauth: legacyOAuth },
+        transportConfig: { ...existingDraft!.transportConfig, oauth: legacyOAuth },
+      })
+      .where(eq(toolConnections.id, connectRes.body.connectionId));
+
+    const retryStartRes = await request(app)
+      .post(`/api/tools/oauth/${connectRes.body.connectionId}/start`)
+      .set("Host", "paperclip.example")
+      .set("Origin", origin)
+      .send({})
+      .expect(200);
+    const retryUrl = new URL(retryStartRes.body.authorizationUrl);
+    expect(`${retryUrl.origin}${retryUrl.pathname}`).toBe(
+      "https://slack.com/oauth/v2_user/authorize",
+    );
+    const retryState = retryUrl.searchParams.get("state")!;
+
+    const failedCallbackRes = await request(app)
+      .get("/api/tools/oauth/callback")
+      .set("Host", "paperclip.example")
+      .set("Accept", "text/html")
+      .query({
+        state: retryState,
+        error: "invalid_scope",
+        error_description: "Invalid permissions requested (untrusted-canary)",
+      });
+
+    expect(failedCallbackRes.status).toBe(303);
+    const recoveryLocation = new URL(failedCallbackRes.headers.location, origin);
+    expect(recoveryLocation.pathname).toBe(`/${company.issuePrefix}/apps/connect`);
+    expect(recoveryLocation.searchParams.get("source")).toBe("slack");
+    expect(recoveryLocation.searchParams.get("resume")).toBe(connectRes.body.connectionId);
+    expect(recoveryLocation.searchParams.get("oauth")).toBe("denied");
+    expect(recoveryLocation.searchParams.get("code")).toBe("oauth_authorization_denied");
+    expect(recoveryLocation.searchParams.get("provider_error")).toBe("invalid_scope");
+    expect(failedCallbackRes.headers.location).not.toContain("untrusted-canary");
+    expect(failedCallbackRes.headers.location).not.toContain("error_description");
+
+    const unlistedStartRes = await request(app)
+      .post(`/api/tools/oauth/${connectRes.body.connectionId}/start`)
+      .set("Host", "paperclip.example")
+      .set("Origin", origin)
+      .send({})
+      .expect(200);
+    const unlistedState = new URL(unlistedStartRes.body.authorizationUrl).searchParams.get("state")!;
+
+    const unlistedCallbackRes = await request(app)
+      .get("/api/tools/oauth/callback")
+      .set("Host", "paperclip.example")
+      .set("Accept", "text/html")
+      .query({
+        state: unlistedState,
+        error: "evil_unlisted_code",
+        error_description: "unlisted-canary",
+      });
+
+    expect(unlistedCallbackRes.status).toBe(303);
+    const unlistedRecoveryLocation = new URL(unlistedCallbackRes.headers.location, origin);
+    expect(unlistedRecoveryLocation.searchParams.get("oauth")).toBe("denied");
+    expect(unlistedRecoveryLocation.searchParams.get("code")).toBe("oauth_authorization_denied");
+    expect(unlistedRecoveryLocation.searchParams.get("provider_error")).toBeNull();
+    expect(unlistedCallbackRes.headers.location).not.toContain("evil_unlisted_code");
+    expect(unlistedCallbackRes.headers.location).not.toContain("unlisted-canary");
+  });
 
   it("normalizes a direct numeric loopback origin for OAuth when no public URL is configured", async () => {
     vi.stubEnv("PAPERCLIP_PUBLIC_URL", "");
@@ -13581,7 +13692,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
       const href = String(url);
-      if (href === "https://slack.com/api/oauth.v2.access") {
+      if (href === "https://slack.com/api/oauth.v2.user.access") {
         const body = init?.body as URLSearchParams;
         expect(body.get("grant_type")).toBe("authorization_code");
         expect(body.get("code")).toBe("oauth-code");
@@ -14988,7 +15099,7 @@ describeEmbeddedPostgres("tool access service", () => {
     let refreshCallCount = 0;
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
       const href = String(url);
-      if (href === "https://slack.com/api/oauth.v2.access") {
+      if (href === "https://slack.com/api/oauth.v2.user.access") {
         const body = init?.body as URLSearchParams;
         if (body.get("grant_type") === "authorization_code") {
           return {
@@ -15112,7 +15223,7 @@ describeEmbeddedPostgres("tool access service", () => {
       .spyOn(globalThis, "fetch")
       .mockImplementation(async (url) => {
         const href = String(url);
-        if (href === "https://slack.com/api/oauth.v2.access") {
+        if (href === "https://slack.com/api/oauth.v2.user.access") {
           return mcpHttpResponse(oauthToken("expired-access-token", "single-use-refresh-token"));
         }
         if (href === "https://mcp.slack.com/mcp") {
@@ -15140,7 +15251,7 @@ describeEmbeddedPostgres("tool access service", () => {
     let refreshCallCount = 0;
     fetchMock.mockImplementation(async (url, init) => {
       const href = String(url);
-      if (href === "https://slack.com/api/oauth.v2.access") {
+      if (href === "https://slack.com/api/oauth.v2.user.access") {
         const body = init?.body as URLSearchParams;
         expect(body.get("grant_type")).toBe("refresh_token");
         expect(body.get("refresh_token")).toBe("single-use-refresh-token");
@@ -15222,7 +15333,7 @@ describeEmbeddedPostgres("tool access service", () => {
       .spyOn(globalThis, "fetch")
       .mockImplementation(async (url) => {
         const href = String(url);
-        if (href === "https://slack.com/api/oauth.v2.access") {
+        if (href === "https://slack.com/api/oauth.v2.user.access") {
           return mcpHttpResponse(oauthToken("expired-access-token", "submitted-refresh-token"));
         }
         if (href === "https://mcp.slack.com/mcp") {
@@ -15253,7 +15364,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
     fetchMock.mockImplementation(async (url, init) => {
       const href = String(url);
-      if (href === "https://slack.com/api/oauth.v2.access") {
+      if (href === "https://slack.com/api/oauth.v2.user.access") {
         const body = init?.body as URLSearchParams;
         expect(body.get("refresh_token")).toBe("submitted-refresh-token");
         await secretService(db).rotate(refreshRef.secretId, {
@@ -15366,7 +15477,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const tokenRequests: Array<{ url: string; clientId: string | null; clientSecret: string | null }> = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
       const href = String(url);
-      if (href === "https://slack.com/api/oauth.v2.access") {
+      if (href === "https://slack.com/api/oauth.v2.user.access") {
         const body = new URLSearchParams(String(init?.body ?? ""));
         tokenRequests.push({ url: href, clientId: body.get("client_id"), clientSecret: body.get("client_secret") });
         return { ok: true, status: 200, json: async () => ({ access_token: "deployment-access", refresh_token: "deployment-refresh", expires_in: 3600 }) } as Response;
@@ -15385,7 +15496,7 @@ describeEmbeddedPostgres("tool access service", () => {
       redirectUri: "https://paperclip.example/api/tools/oauth/callback",
       actor: { actorType: "user", actorId: userId },
     });
-    expect(tokenRequests).toEqual([{ url: "https://slack.com/api/oauth.v2.access", clientId: "slack-deployment-id", clientSecret: "slack-deployment-secret" }]);
+    expect(tokenRequests).toEqual([{ url: "https://slack.com/api/oauth.v2.user.access", clientId: "slack-deployment-id", clientSecret: "slack-deployment-secret" }]);
   });
 
   it("never sends a deployment OAuth client to a machine-to-machine token endpoint of a custom server", async () => {
@@ -15450,7 +15561,7 @@ describeEmbeddedPostgres("tool access service", () => {
       .spyOn(globalThis, "fetch")
       .mockImplementation(async (url) => {
         const href = String(url);
-        if (href === "https://slack.com/api/oauth.v2.access") {
+        if (href === "https://slack.com/api/oauth.v2.user.access") {
           return {
             ok: true,
             json: async () => ({
@@ -20854,6 +20965,40 @@ describeEmbeddedPostgres("tool access service", () => {
         lastHealthAt: new Date(0),
       })
       .returning();
+    const [voiceApplication] = await db
+      .insert(toolApplications)
+      .values({
+        companyId: company.id,
+        applicationKey: `chat:speko:${randomUUID()}`,
+        name: "Speko voice",
+        type: "chat",
+        status: "active",
+        metadata: { sourceTemplateKey: "speko", purpose: "channel" },
+      })
+      .returning();
+    const [voiceConnection] = await db
+      .insert(toolConnections)
+      .values({
+        companyId: company.id,
+        applicationId: voiceApplication!.id,
+        name: "Speko agent",
+        uid: `chat-speko-${randomUUID()}`,
+        connectionKind: "managed",
+        connectionPurpose: "channel",
+        ownership: "customer",
+        transport: "voice",
+        authKind: "api_key",
+        credentialPolicy: "shared",
+        status: "active",
+        enabled: true,
+        config: { provider: "speko" },
+        transportConfig: {},
+        healthStatus: "healthy",
+        healthMessage: "Connected; conversation test optional",
+        healthCheckedAt: new Date(0),
+        lastHealthAt: new Date(0),
+      })
+      .returning();
     const [pluginApplication] = await db.insert(toolApplications).values({
       companyId: company.id,
       applicationKey: `paperclip_plugin:fixture-${randomUUID()}`,
@@ -20884,7 +21029,10 @@ describeEmbeddedPostgres("tool access service", () => {
       status: "active",
     }));
 
-    const sweep = await service.sweepConnectionHealth({ staleAfterMs: 0, limit: 1 });
+    const scheduledDeadlines = await service.scheduledHealth.load(company.id);
+    expect(scheduledDeadlines.map((deadline) => deadline.id)).toEqual([connection.id]);
+
+    const sweep = await service.sweepConnectionHealth({ staleAfterMs: 0, limit: 5 });
     const [updatedConnection] = await db
       .select()
       .from(toolConnections)
@@ -20893,6 +21041,10 @@ describeEmbeddedPostgres("tool access service", () => {
       .select()
       .from(toolConnections)
       .where(eq(toolConnections.id, chatConnection!.id));
+    const [untouchedVoiceConnection] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, voiceConnection!.id));
 
     const [untouchedPlugin] = await db.select().from(toolConnections)
       .where(eq(toolConnections.id, pluginConnection!.id));
@@ -20916,6 +21068,213 @@ describeEmbeddedPostgres("tool access service", () => {
       healthCheckedAt: new Date(0),
       lastHealthAt: new Date(0),
     });
+    expect(untouchedVoiceConnection).toMatchObject({
+      healthStatus: "healthy",
+      healthMessage: "Connected; conversation test optional",
+      lastError: null,
+      healthCheckedAt: new Date(0),
+      lastHealthAt: new Date(0),
+    });
+  });
+
+  it("repairs active Speko voice connections falsely marked unsupported by the old health sweep without clearing real errors", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const [agent] = await db.insert(agents).values({
+      companyId: company.id,
+      name: "Speko Voice Agent",
+      role: "general",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+    }).returning();
+    const [voiceApplication] = await db.insert(toolApplications).values({
+      companyId: company.id,
+      applicationKey: `chat:speko:${randomUUID()}`,
+      name: "Speko voice",
+      type: "chat",
+      status: "active",
+      metadata: { sourceTemplateKey: "speko", purpose: "channel" },
+    }).returning();
+    const [corruptedVoice] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: voiceApplication!.id,
+      name: "Speko corrupted by old sweep",
+      uid: `chat-speko-${randomUUID()}`,
+      connectionKind: "managed",
+      connectionPurpose: "channel",
+      ownership: "customer",
+      transport: "voice",
+      authKind: "api_key",
+      credentialPolicy: "shared",
+      status: "active",
+      enabled: true,
+      config: { provider: "speko" },
+      transportConfig: {},
+      healthStatus: "error",
+      healthMessage: UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE,
+      lastError: UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE,
+      healthCheckedAt: new Date(0),
+      lastHealthAt: new Date(0),
+    }).returning();
+    await db.insert(chatEndpoints).values({
+      companyId: company.id,
+      connectionId: corruptedVoice!.id,
+      provider: "speko",
+      publicId: `speko-${randomUUID()}`,
+      status: "active",
+      assignedAgentId: agent!.id,
+      healthMessage: "Connected; conversation test optional",
+    });
+    const [realErrorVoice] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: voiceApplication!.id,
+      name: "Speko real error",
+      uid: `chat-speko-${randomUUID()}`,
+      connectionKind: "managed",
+      connectionPurpose: "channel",
+      ownership: "customer",
+      transport: "voice",
+      authKind: "api_key",
+      credentialPolicy: "shared",
+      status: "active",
+      enabled: true,
+      config: { provider: "speko" },
+      transportConfig: {},
+      healthStatus: "error",
+      healthMessage: "Speko API key rejected",
+      lastError: "Speko API key rejected",
+      healthCheckedAt: new Date(0),
+      lastHealthAt: new Date(0),
+    }).returning();
+    await db.insert(chatEndpoints).values({
+      companyId: company.id,
+      connectionId: realErrorVoice!.id,
+      provider: "speko",
+      publicId: `speko-${randomUUID()}`,
+      status: "active",
+      assignedAgentId: agent!.id,
+      healthMessage: "Speko API key rejected",
+      lastError: "Speko API key rejected",
+    });
+    const [endpointErrorVoice] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: voiceApplication!.id,
+      name: "Speko endpoint error",
+      uid: `chat-speko-${randomUUID()}`,
+      connectionKind: "managed",
+      connectionPurpose: "channel",
+      ownership: "customer",
+      transport: "voice",
+      authKind: "api_key",
+      credentialPolicy: "shared",
+      status: "active",
+      enabled: true,
+      config: { provider: "speko" },
+      transportConfig: {},
+      healthStatus: "error",
+      healthMessage: UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE,
+      lastError: UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE,
+      healthCheckedAt: new Date(0),
+      lastHealthAt: new Date(0),
+    }).returning();
+    await db.insert(chatEndpoints).values({
+      companyId: company.id,
+      connectionId: endpointErrorVoice!.id,
+      provider: "speko",
+      publicId: `speko-${randomUUID()}`,
+      status: "active",
+      assignedAgentId: agent!.id,
+      healthMessage: "Speko webhook failed",
+      lastError: "Speko webhook failed",
+    });
+
+    // Scheduled load repairs only the false unsupported-transport error and returns no voice deadlines.
+    expect(await service.scheduledHealth.load(company.id)).toEqual([]);
+    const [repaired] = await db.select().from(toolConnections).where(eq(toolConnections.id, corruptedVoice!.id));
+    expect(repaired).toMatchObject({
+      healthStatus: "healthy",
+      healthMessage: "Connected; conversation test optional",
+      lastError: null,
+    });
+    const [preservedRealError] = await db.select().from(toolConnections).where(eq(toolConnections.id, realErrorVoice!.id));
+    expect(preservedRealError).toMatchObject({
+      healthStatus: "error",
+      healthMessage: "Speko API key rejected",
+      lastError: "Speko API key rejected",
+    });
+    const [preservedEndpointError] = await db.select().from(toolConnections).where(eq(toolConnections.id, endpointErrorVoice!.id));
+    expect(preservedEndpointError).toMatchObject({
+      healthStatus: "error",
+      healthMessage: UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE,
+    });
+
+    // sweepConnectionHealth also repairs corrupted active Speko voice connections without probing them.
+    await db.update(toolConnections).set({
+      healthStatus: "error",
+      healthMessage: UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE,
+      lastError: UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE,
+    }).where(eq(toolConnections.id, corruptedVoice!.id));
+    expect(await service.sweepConnectionHealth({ staleAfterMs: 0, limit: 5 })).toMatchObject({ checked: 0, healthy: 0, failed: 0 });
+    const [repairedBySweep] = await db.select().from(toolConnections).where(eq(toolConnections.id, corruptedVoice!.id));
+    expect(repairedBySweep).toMatchObject({
+      healthStatus: "healthy",
+      healthMessage: "Connected; conversation test optional",
+      lastError: null,
+    });
+
+    // Manual health check on a voice connection also self-heals instead of throwing 422.
+    await db.update(toolConnections).set({
+      healthStatus: "error",
+      healthMessage: UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE,
+      lastError: UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE,
+    }).where(eq(toolConnections.id, corruptedVoice!.id));
+    const manual = await service.checkHealth(corruptedVoice!.id);
+    expect(manual.connection).toMatchObject({
+      healthStatus: "healthy",
+      healthMessage: "Connected; conversation test optional",
+      lastError: null,
+    });
+
+    // Multi-batch repair drains beyond a single batch size.
+    const [secondCorruptedVoice] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: voiceApplication!.id,
+      name: "Speko second corrupted",
+      uid: `chat-speko-${randomUUID()}`,
+      connectionKind: "managed",
+      connectionPurpose: "channel",
+      ownership: "customer",
+      transport: "voice",
+      authKind: "api_key",
+      credentialPolicy: "shared",
+      status: "active",
+      enabled: true,
+      config: { provider: "speko" },
+      transportConfig: {},
+      healthStatus: "error",
+      healthMessage: UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE,
+      lastError: UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE,
+      healthCheckedAt: new Date(0),
+      lastHealthAt: new Date(0),
+    }).returning();
+    await db.insert(chatEndpoints).values({
+      companyId: company.id,
+      connectionId: secondCorruptedVoice!.id,
+      provider: "speko",
+      publicId: `speko-${randomUUID()}`,
+      status: "active",
+      assignedAgentId: agent!.id,
+      healthMessage: "Connected",
+    });
+    await db.update(toolConnections).set({
+      healthStatus: "error",
+      healthMessage: UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE,
+      lastError: UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE,
+    }).where(eq(toolConnections.id, corruptedVoice!.id));
+    expect(await repairUnsupportedVoiceConnectionHealth(db, { companyId: company.id, batchSize: 1 })).toBe(2);
+    const [repairedSecond] = await db.select().from(toolConnections).where(eq(toolConnections.id, secondCorruptedVoice!.id));
+    expect(repairedSecond).toMatchObject({ healthStatus: "healthy", healthMessage: "Connected", lastError: null });
   });
 
   it("enriches listConnections with lastUsedAt from the most recent tool-call event", async () => {

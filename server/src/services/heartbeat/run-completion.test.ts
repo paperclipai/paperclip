@@ -46,6 +46,7 @@ import { createHeartbeatRunState, getAdapterSessionCodec } from "./run-state.js"
 import { buildEffectiveRunSessionConfigMetadata } from "./workspaces.js";
 import { createHeartbeatRunCompletion, type CompleteHeartbeatRunInput, type FailHeartbeatRunInput, type HeartbeatRunCompletionDependencies } from "./run-completion.js";
 import { createHeartbeatAgentStatus } from "./agent-status.js";
+import { createHeartbeatRetries } from "./retries.js";
 import { prepareNativeHeartbeatRun } from "../native-runtime/prepare-native-run.js";
 import { buildNativeCompletionContract } from "../native-runtime/completion-contracts.js";
 import { readPendingNativeRunStop } from "../native-runtime/native-cancellation-request.js";
@@ -1118,6 +1119,19 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       expect(failed).toMatchObject({ status: "failed", errorCode: "adapter_failed", error: refusal });
       expect(failed.resultJson).not.toHaveProperty("nativeExactResumeRefusal");
     });
+
+    it("persists safe closed-enum pluginTaskError metadata on failed runs without leaking worker text", async () => {
+      const f = await fixture({ runtimeMode: "native" });
+      const err = Object.assign(
+        new Error("Plugin-provided Runner execution operation unavailable; reconcile the same task before retrying"),
+        { pluginTaskError: { operation: "read_state", rpcErrorCode: "timeout", errorCode: "runner_revision_mismatch" } },
+      );
+      await f.completion.failRun(f.failure(err));
+      const failed = await read(f.run.id);
+      expect(failed.resultJson).toMatchObject({
+        pluginTaskError: { operation: "read_state", rpcErrorCode: "timeout", errorCode: "runner_revision_mismatch" },
+      });
+    });
   });
 
   it("persists a project denial without provider work or an automatic retry", async () => {
@@ -1966,5 +1980,170 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(f.deps.setWakeupStatus).not.toHaveBeenCalled();
     expect(f.deps.releaseIssueExecutionAndPromote).not.toHaveBeenCalled();
     expect(f.deps.finalizeAgentStatus).not.toHaveBeenCalled();
+  });
+
+  it("routes hermes_gateway shutdown interruptions through failed transient retry while keeping deliberate cancels cancelled", async () => {
+    const { mapFinalResultForTest } = await import("@paperclipai/hermes-paperclip-adapter/gateway/server");
+
+    const fShutdown = await fixture({}, `HG${randomUUID().slice(0, 6)}`);
+    const [hermesAgent] = await db.update(agents).set({ adapterType: "hermes_gateway" })
+      .where(eq(agents.id, fShutdown.agent.id)).returning();
+    const shutdownResult = mapFinalResultForTest({
+      terminal: {
+        runId: "hermes-shutdown-1",
+        status: "cancelled",
+        payload: { status: "cancelled", error: "Gateway shutdown interrupted the run." },
+      },
+      outputChunks: [],
+      sessionKey: "session-shutdown",
+      strategy: "issue",
+    });
+    await fShutdown.completion.completeRun({
+      ...fShutdown.input,
+      agent: hermesAgent!,
+      adapterResult: shutdownResult,
+    });
+    expect(await read(fShutdown.run.id)).toMatchObject({
+      status: "failed",
+      errorCode: "hermes_gateway_run_failed",
+      resultJson: {
+        status: "interrupted",
+        gateway_status: "cancelled",
+        errorFamily: "transient_upstream",
+        conversationContinuation: "continue_conversation_v1",
+      },
+    });
+    expect(fShutdown.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(
+      expect.objectContaining({ id: fShutdown.run.id, status: "failed" }),
+      hermesAgent,
+    );
+
+    const fCancel = await fixture({}, `HC${randomUUID().slice(0, 6)}`);
+    const [hermesCancelAgent] = await db.update(agents).set({ adapterType: "hermes_gateway" })
+      .where(eq(agents.id, fCancel.agent.id)).returning();
+    const cancelResult = mapFinalResultForTest({
+      terminal: {
+        runId: "hermes-cancel-1",
+        status: "cancelled",
+        payload: { status: "cancelled", error: "Stopped by operator." },
+      },
+      outputChunks: [],
+      sessionKey: "session-cancel",
+      strategy: "issue",
+    });
+    await fCancel.completion.completeRun({
+      ...fCancel.input,
+      agent: hermesCancelAgent!,
+      adapterResult: cancelResult,
+    });
+    expect(await read(fCancel.run.id)).toMatchObject({
+      status: "cancelled",
+      resultJson: { status: "cancelled" },
+    });
+    expect(fCancel.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+
+    const { hasConversationContinuationPolicy } = await import("../conversation-continuation.js");
+    const { legacyExecutionNeedsReconciliation } = await import("../legacy-execution-recovery.js");
+
+    const fUnconfirmedTimeout = await fixture({}, `HU${randomUUID().slice(0, 6)}`);
+    const [hermesUnconfirmedAgent] = await db.update(agents).set({ adapterType: "hermes_gateway" })
+      .where(eq(agents.id, fUnconfirmedTimeout.agent.id)).returning();
+    await fUnconfirmedTimeout.completion.completeRun({
+      ...fUnconfirmedTimeout.input,
+      agent: hermesUnconfirmedAgent!,
+      adapterResult: {
+        exitCode: 1,
+        signal: null,
+        timedOut: true,
+        errorCode: "hermes_gateway_timeout",
+        errorMessage: "Hermes gateway run timed out after 300s.",
+        provider: "hermes_gateway",
+        resultJson: { run_id: "hermes-timeout-unconfirmed", status: "timeout" },
+      },
+    });
+    const unconfirmedPersisted = await read(fUnconfirmedTimeout.run.id);
+    expect(unconfirmedPersisted?.status).toBe("timed_out");
+    expect(hasConversationContinuationPolicy(unconfirmedPersisted?.resultJson)).toBe(false);
+    expect(legacyExecutionNeedsReconciliation(unconfirmedPersisted!)).toBe(true);
+
+    const fConfirmedTimeout = await fixture({}, `HT${randomUUID().slice(0, 6)}`);
+    const [hermesConfirmedAgent] = await db.update(agents).set({ adapterType: "hermes_gateway" })
+      .where(eq(agents.id, fConfirmedTimeout.agent.id)).returning();
+    await fConfirmedTimeout.completion.completeRun({
+      ...fConfirmedTimeout.input,
+      agent: hermesConfirmedAgent!,
+      adapterResult: {
+        exitCode: 1,
+        signal: null,
+        timedOut: true,
+        errorCode: "hermes_gateway_timeout",
+        errorMessage: "Hermes gateway run timed out after 300s.",
+        provider: "hermes_gateway",
+        resultJson: { run_id: "hermes-timeout-confirmed", status: "cancelled" },
+      },
+    });
+    const confirmedPersisted = await read(fConfirmedTimeout.run.id);
+    expect(confirmedPersisted?.status).toBe("timed_out");
+    expect(hasConversationContinuationPolicy(confirmedPersisted?.resultJson)).toBe(true);
+    expect(legacyExecutionNeedsReconciliation(confirmedPersisted!)).toBe(false);
+
+    // Ambiguous outbound POST /v1/runs HTTP 429/5xx responses do not prove non-dispatch
+    // (a proxy or redirect may have created the remote run), so they fail closed without
+    // stamping conversationContinuation and keep legacyExecutionNeedsReconciliation true.
+    for (const [tag, errorCode, reason] of [
+      ["H4", "hermes_gateway_rate_limited", "rate_limited"],
+      ["H5", "hermes_gateway_upstream_error", "remote_unavailable"],
+    ] as const) {
+      const fCreateErr = await fixture({}, `${tag}${randomUUID().slice(0, 6)}`);
+      const [hermesCreateAgent] = await db.update(agents).set({ adapterType: "hermes_gateway" })
+        .where(eq(agents.id, fCreateErr.agent.id)).returning();
+      const unreachable = () => { throw new Error("retry scheduling passed the reconciliation gate"); };
+      const realRetries = createHeartbeatRetries(db, {
+        hasCaseHandoffForRun: async () => false,
+        getAgent: unreachable, getRun: unreachable, resolveSessionBeforeForWakeup: unreachable,
+        resolveResponsibleUserIdForRunContext: unreachable, getAgentInvokability: unreachable,
+        appendRunEvent: unreachable, escalatePlanApprovalResumeFailureNeedsAttention: unreachable,
+        recordPlanApprovalResumeFailureRetry: unreachable, setRunStatusIfRunning: unreachable,
+        setWakeupStatus: unreachable, releaseIssueExecutionAndPromote: unreachable, finalizeAgentStatus: unreachable,
+        getWorktreeExecutionCutoff: unreachable, applyRunDispatchPostCommitEffects: unreachable,
+        runDispatch: { nextScheduledRetryAt: unreachable, evaluateScheduledRetryGate: unreachable,
+          promoteDueScheduledRetries: unreachable, promoteScheduledRetry: unreachable },
+      });
+      fCreateErr.deps.scheduleBoundedRetryForRun.mockImplementation((run, agent, opts) =>
+        realRetries.scheduleBoundedRetryForRun(run, agent, opts));
+      await fCreateErr.completion.completeRun({
+        ...fCreateErr.input,
+        agent: hermesCreateAgent!,
+        adapterResult: {
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          errorCode,
+          errorFamily: "transient_upstream",
+          errorMessage: `Hermes gateway ${reason}`,
+          provider: "hermes_gateway",
+          resultJson: {
+            connectionFailure: {
+              schemaVersion: 1,
+              provider: "hermes_gateway",
+              operation: "create_run",
+              reason,
+            },
+          },
+        },
+      });
+      const createErrPersisted = await read(fCreateErr.run.id);
+      expect(createErrPersisted?.status).toBe("failed");
+      expect(hasConversationContinuationPolicy(createErrPersisted?.resultJson)).toBe(false);
+      expect(legacyExecutionNeedsReconciliation(createErrPersisted!)).toBe(true);
+      const retryOutcomes = await Promise.all(
+        fCreateErr.deps.scheduleBoundedRetryForRun.mock.results.map(result => result.value),
+      );
+      expect(retryOutcomes).toEqual(retryOutcomes.map(() => expect.objectContaining({
+        outcome: "not_scheduled", errorCode: "legacy_execution_requires_reconciliation",
+      })));
+      expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+        .where(eq(heartbeatRuns.retryOfRunId, fCreateErr.run.id))).toEqual([]);
+    }
   });
 });

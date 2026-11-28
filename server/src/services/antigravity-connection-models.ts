@@ -1,6 +1,6 @@
 import type { Db } from "@paperclipai/db";
 import { antigravityApiKeyModels, type AiConnectionBinding } from "@paperclipai/shared";
-import { AntigravityModelDiscoveryCleanupError, discoverAntigravityModels } from "../vendor/paperclip-runner/index.js";
+import { AntigravityModelDiscoveryCleanupError, AntigravityRuntimeUnavailableError, discoverAntigravityModels } from "../vendor/paperclip-runner/index.js";
 import { unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { prepareManagedAiRuntime } from "./ai-connection-runtime.js";
@@ -43,6 +43,10 @@ export async function antigravityConnectionModels(db: Db, input: {
     if (typeof home !== "string" || !home) throw unprocessable("The selected Google runtime account is unavailable.");
     try { return (await discoverAntigravityModels(home)).models; }
     catch (error) {
+      if (error instanceof AntigravityRuntimeUnavailableError) {
+        logger.warn({ companyId: input.companyId, code: error.code }, "Antigravity model discovery runtime is unavailable");
+        throw unprocessable("This server does not have the current Google Antigravity runtime, so Google account models cannot load. Use a Google API key instead, or update Paperclip on this server.", { code: error.code });
+      }
       if (error instanceof AntigravityModelDiscoveryCleanupError) {
         // The native owner retains the live child and immutable command lease.
         // Keep this selected credential home until that owner proves retirement.

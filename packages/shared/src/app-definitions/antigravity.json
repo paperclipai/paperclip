@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
-  "slug": "google",
-  "name": "Google Antigravity and Gemini",
-  "description": "Connect Google Antigravity accounts or Gemini API keys for your agents.",
+  "slug": "antigravity",
+  "name": "Antigravity",
+  "description": "Connect Antigravity accounts or Gemini API keys for your agents.",
   "categories": [
     "ai"
   ],
   "branding": {
-    "logoUrl": "/brands/apps/google.svg"
+    "logoUrl": "/brands/apps/antigravity.svg"
   },
   "urlPatterns": [
     "https://generativelanguage.googleapis.com/*"
@@ -15,7 +15,7 @@
   "methods": [
     {
       "key": "ai-subscription",
-      "label": "Google Antigravity sign-in",
+      "label": "Antigravity sign-in",
       "purpose": "ai",
       "transport": "runtime_auth",
       "auth": "oauth",
@@ -30,13 +30,13 @@
       "ownershipModes": [
         "customer"
       ],
-      "whenToUse": "Sign in to Google Antigravity on this local execution host.",
-      "guidanceMd": "Uses a separate Google runtime sign-in for this connection. Google Drive and other tool permissions are separate.",
+      "whenToUse": "Sign in to Antigravity for your agents.",
+      "guidanceMd": "Uses a separate Antigravity runtime sign-in for this connection. Google Drive and other tool permissions are separate.",
       "riskTier": "S3"
     },
     {
       "key": "ai-api_key",
-      "label": "Google Gemini API key",
+      "label": "Gemini API key",
       "purpose": "ai",
       "transport": "runtime_auth",
       "auth": "api_key",

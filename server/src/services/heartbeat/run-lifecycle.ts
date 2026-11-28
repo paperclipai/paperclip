@@ -60,7 +60,7 @@ import {
 import { connectionIntentService } from "../connection-intents.js";
 import {
   CONVERSATION_CONTINUATION_POLICY,
-  isConversationAdapter,
+  isConversationContinuationEligible,
 } from "../conversation-continuation.js";
 import { terminalizeLegacyExecution } from "../legacy-execution-recovery.js";
 import { retryTransientLockContention } from "../transient-lock-contention.js";
@@ -2957,7 +2957,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
       parseObject(result?.executionCancellation).state === "acknowledged";
     return options?.conversationContinuationEligible !== false && outcome !== "succeeded" &&
       (outcome !== "cancelled" || cancellationAcknowledged) &&
-      isConversationAdapter(agent.adapterType)
+      isConversationContinuationEligible(agent.adapterType, result)
       ? { ...result, conversationContinuation: CONVERSATION_CONTINUATION_POLICY }
       : result;
   }
@@ -3174,9 +3174,16 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
           return null;
         })
       : null;
+    const githubConnectionRequest = !authRepair?.interactionId && (run.status === "failed" || run.status === "succeeded")
+      ? await connectionIntentService(db).requestForRunGitHubAuthFailure(run.id, resultJson).catch(() => {
+          logger.warn({ runId: run.id }, "Could not attach GitHub connection request after unconfigured git auth failure");
+          return null;
+        })
+      : null;
     const classification = classifyRunLiveness({
       ...await buildRunLivenessInput(run, resultJson),
       authenticationRepairRequested: Boolean(authRepair?.interactionId),
+      githubConnectionRequested: Boolean(githubConnectionRequest?.interactionId),
     });
     return db
       .update(heartbeatRuns)

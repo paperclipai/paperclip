@@ -15,6 +15,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ConnectivityProvider, createConnectivityStore } from "@/lib/connectivity";
 import { INITIAL_TRANSCRIPT_REVEAL_BUDGET_MS, TaskChatThread } from "./TaskChatThread";
 import { IssueChatThread } from "./IssueChatThread";
+import { TaskChatAgentIdentity, TaskTranscriptAgents } from "./task-chat/TaskChatBubble";
 import type {
   Agent,
   IssueDocument,
@@ -183,6 +184,21 @@ async function settleThreadLayout() {
     expect(container.querySelector('[data-testid="task-chat-thread"] > [aria-busy="false"]')).not.toBeNull();
   });
 }
+
+it("opens the agent's chat from a task and settings from the direct chat", () => {
+  const agent = { id: "agent-id", name: "Mira Vale", urlKey: "mira-vale-2" } as Agent;
+  const identity = <TaskChatAgentIdentity agentName={agent.name} agent={agent} />;
+  const link = () => container.querySelector("a")?.getAttribute("href");
+
+  render(<TaskTranscriptAgents.Provider value={new Map([[agent.id, agent]])}>{identity}</TaskTranscriptAgents.Provider>);
+  expect(link()).toBe("/chats/mira-vale-2");
+
+  render(<TaskTranscriptAgents.Provider value={new Map()}>{identity}</TaskTranscriptAgents.Provider>);
+  expect(link()).toBe("/chats/agent-id");
+
+  render(identity);
+  expect(link()).toBe("/agents/agent-id/overview");
+});
 
 describe.each(["legacy", "native"] as const)("historical %s system status", (runtimeMode) => {
   const run = (id: string, status: string, minute: number) => ({

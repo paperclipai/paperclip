@@ -8,9 +8,14 @@ import { agentHarnessType, agentRunner } from "@paperclipai/shared";
 import { adaptersApi, type AdapterInfo } from "../api/adapters";
 import { healthApi } from "@/api/health";
 import { describeError } from "@/api/errors";
-import { LocalProviderLoginInstructions } from "./AdapterLoginChrome";
+import {
+  LocalProviderLoginInstructions,
+  useLocalLoginPrimaryAction,
+  type LocalLoginPrimaryAction,
+} from "./AdapterLoginChrome";
 import { useLocalAiLogin } from "./ai-connections/useLocalAiLogin";
 import { aiConnectionsApi } from "@/api/ai-connections";
+import { cloudInferenceApi } from "@/api/cloud-inference";
 import { aiProviderForAdapter } from "./ai-connections/AiConnectionField";
 import { useConnectionModelsState } from "./ai-connections/useConnectionModels";
 import type { AiConnectionBinding } from "@paperclipai/shared";
@@ -31,7 +36,7 @@ import type {
   Environment,
   InstanceSettings,
 } from "@paperclipai/shared";
-import { AGENT_ROLES, AGENT_ROLE_LABELS, ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
+import { AGENT_ROLES, AGENT_ROLE_LABELS, ADAPTER_AUTH_MISSING_CHECK_CODE, resolveCloudTrialModel } from "@paperclipai/shared";
 import { AdapterLoginPanel, ModelDropdown } from "./AgentConfigForm";
 import {
   CONNECT_SOURCE_NAMES,
@@ -65,6 +70,46 @@ type ConnectPhase =
   | "unwindCard"
   | "unwindRoom"
   | "unwindRow";
+
+function resolveOnboardingConnectCta(input: {
+  setupError: boolean;
+  retryLogin: boolean;
+  connectProgress: string | null;
+  adapterEnvLoading: boolean;
+  connectPhase: ConnectPhase;
+  hasSubmitLoginCode: boolean;
+  adapterType: string;
+  connectStepNeedsLogin: boolean;
+  connectSourceLabel: string;
+  connectAuthUrl: string | null;
+  localLoginAction: LocalLoginPrimaryAction;
+  connectDisabled: boolean;
+}): { label: string; icon: FooterPrimaryIcon; disabled: boolean } {
+  if (input.setupError) return { label: "Retry", icon: "arrow", disabled: false };
+  if (input.retryLogin) return { label: "Retry sign-in", icon: "arrow", disabled: false };
+  if (input.connectProgress) {
+    return { label: input.adapterEnvLoading ? "Testing…" : input.connectProgress, icon: "spinner", disabled: true };
+  }
+  if ((input.connectPhase === "ready" || input.connectPhase === "waiting") && input.hasSubmitLoginCode) {
+    return { label: "Submit code", icon: "arrow", disabled: false };
+  }
+  if (input.connectPhase === "waiting") {
+    return { label: input.adapterType === "codex_local" ? "Waiting for auth…" : "Waiting for code…", icon: "spinner", disabled: true };
+  }
+  if (input.connectPhase === "connecting") return { label: "Connecting", icon: "spinner", disabled: true };
+  if (input.connectPhase !== "ready") return { label: "Next", icon: "arrow", disabled: true };
+  if (input.connectStepNeedsLogin) {
+    return { label: `Sign in to ${input.connectSourceLabel}`, icon: "none", disabled: !input.connectAuthUrl };
+  }
+  if (input.localLoginAction) {
+    return {
+      label: input.localLoginAction.label,
+      icon: input.localLoginAction.icon,
+      disabled: input.localLoginAction.disabled,
+    };
+  }
+  return { label: "Connect", icon: "arrow", disabled: input.connectDisabled };
+}
 import { secretsApi } from "../api/secrets";
 import { Label } from "./ui/label";
 import { Input } from "./ui/input";
@@ -151,6 +196,7 @@ import {
   Check,
   Loader2,
   ChevronDown,
+  Sparkles,
 } from "lucide-react";
 
 type Step = 0 | 1 | 2 | 3 | 4 | 5;
@@ -954,6 +1000,78 @@ function OnboardingWizardInner({
     queryFn: () => instanceSettingsApi.getExperimental(),
     enabled: effectiveOnboardingOpen && step >= 3 && step <= 5,
   });
+  const cloudTrialInferenceEnabled = experimentalSettingsForLogin?.enableCloudTrialInference === true;
+  const { data: cloudTrialStatus } = useQuery({
+    queryKey: queryKeys.cloudInference.status(createdCompanyId ?? "__none__"),
+    queryFn: () => cloudInferenceApi.getStatus(createdCompanyId!),
+    enabled: effectiveOnboardingOpen && step === 4 && Boolean(createdCompanyId) && cloudTrialInferenceEnabled,
+  });
+  const canUseCloudTrialStarter =
+    cloudTrialInferenceEnabled &&
+    Boolean(cloudTrialStatus) &&
+    (cloudTrialStatus?.status === "not_issued" || cloudTrialStatus?.status === "active");
+  const [startingCloudTrial, setStartingCloudTrial] = useState(false);
+  const trackedTrialExposureCompaniesRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!effectiveOnboardingOpen || step !== 4 || !createdCompanyId) return;
+    if (trackedTrialExposureCompaniesRef.current.has(createdCompanyId)) return;
+    trackedTrialExposureCompaniesRef.current.add(createdCompanyId);
+    void cloudInferenceApi
+      .trackTelemetry(createdCompanyId, {
+        event: "onboarding_exposure",
+        surface: "onboarding_wizard",
+      })
+      .catch(() => {
+        // Best-effort analytics must never interrupt onboarding.
+      });
+  }, [effectiveOnboardingOpen, step, createdCompanyId]);
+
+  async function handleStartWithCloudTrial() {
+    if (!createdCompanyId || startingCloudTrial || loading) return;
+    setStartingCloudTrial(true);
+    setError(null);
+    try {
+      const hireName = agentName.trim() || AGENT_ROLE_LABELS[agentRole];
+      const trialModel = resolveCloudTrialModel(cloudTrialStatus?.defaultModel);
+      await setupSave.current.catch(() => {});
+      const hire = await agentsApi.hire(createdCompanyId, {
+        ...(setupAgentId ? { setupAgentId } : {}),
+        name: hireName,
+        appearance: agentAppearance,
+        role: agentRole,
+        ...(restoredSetup?.companyId === createdCompanyId ? { reportsTo: restoredSetup.reportsTo } : {}),
+        adapterType: "paperclip_runner",
+        adapterConfig: {
+          provider: "opencode",
+          model: trialModel,
+        },
+        onboardingFirstAgent: true,
+        ...(restoredSetup?.companyId === createdCompanyId && restoredSetup.defaultEnvironmentId
+          ? { defaultEnvironmentId: resolvedLoginEnvironmentId }
+          : {}),
+        runtimeConfig: {
+          ...buildNewAgentRuntimeConfig({ heartbeatEnabled: false }),
+          cloudTrialInference: true,
+        },
+      });
+      if (hire.approval) {
+        await approvalsApi.approve(
+          hire.approval.id,
+          "Approved during onboarding starter-credit setup.",
+        );
+        queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(createdCompanyId) });
+      }
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(createdCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.cloudInference.status(createdCompanyId) });
+      setCreatedAgentId(hire.agent.id);
+      setStep(5);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not start right away");
+    } finally {
+      setStartingCloudTrial(false);
+    }
+  }
   const loginEnvironmentResolution = useMemo(() => {
     try {
       return { environmentId: resolveAdapterTestEnvironmentId({
@@ -1539,35 +1657,46 @@ function OnboardingWizardInner({
    * easing width so those changes read as one control rather than four.
    */
   const connectSourceLabel = CONNECT_SOURCE_NAMES[adapterType] ?? adapterType;
-  const connectCta: { label: string; icon: FooterPrimaryIcon; disabled: boolean } =
-    setupError ? { label: "Retry", icon: "arrow", disabled: false }
-      : retryLogin ? { label: "Retry sign-in", icon: "arrow", disabled: false } : connectProgress
-      ? { label: adapterEnvLoading ? "Testing…" : connectProgress, icon: "spinner", disabled: true }
-      : (connectPhase === "ready" || connectPhase === "waiting") && submitLoginCode
-      ? { label: "Submit code", icon: "arrow", disabled: false }
-      : connectPhase === "waiting"
-      ? { label: adapterType === "codex_local" ? "Waiting for auth…" : "Waiting for code…", icon: "spinner", disabled: true }
-      : connectPhase === "connecting"
-        ? { label: "Connecting", icon: "spinner", disabled: true }
-        : connectPhase === "ready"
-          ? connectStepNeedsLogin
-            ? {
-                label: `Sign in to ${connectSourceLabel}`,
-                icon: "none",
-                disabled: !connectAuthUrl,
-              }
-            : {
-                label: "Connect",
-                icon: "arrow",
-                disabled:
-                  !connectStepReady || connectStepLoggingIn || (credentialMode === "api" && !apiKey.trim() && !selectedApiKey && !restoredApiCredential && !managedBindingForStep()),
-              }
-          : // Nothing is chosen on arrival, and the row is what chooses. Until
-            // it has been answered the button has nothing to do.
-            { label: "Next", icon: "arrow", disabled: true };
+  const localLoginPrimary = useLocalLoginPrimaryAction({
+    enabled:
+      sourcePicked &&
+      connectPhase === "ready" &&
+      canUseLocalLogin &&
+      Boolean(managedProvider) &&
+      credentialMode === "subscription" &&
+      !hasSavedSubscription &&
+      !managedBindingForStep() &&
+      connectStepHasNoSandbox &&
+      !connectStepNeedsLogin,
+    adapterType,
+    login: localLogin,
+    onBeforeRetry: () => {
+      autoConnectStartedRef.current = false;
+      setError(null);
+    },
+  });
+  const localLoginAction = localLoginPrimary.action;
+  const connectCta = resolveOnboardingConnectCta({
+    setupError,
+    retryLogin: Boolean(retryLogin),
+    connectProgress,
+    adapterEnvLoading,
+    connectPhase,
+    hasSubmitLoginCode: Boolean(submitLoginCode),
+    adapterType,
+    connectStepNeedsLogin,
+    connectSourceLabel,
+    connectAuthUrl,
+    localLoginAction,
+    connectDisabled:
+      !connectStepReady ||
+      connectStepLoggingIn ||
+      (credentialMode === "api" && !apiKey.trim() && !selectedApiKey && !restoredApiCredential && !managedBindingForStep()),
+  });
 
   function unwindConnectStep() {
     localLogin.cancel();
+    localLoginPrimary.resetSubmitting();
     dismissedLoginResumes.current.add(loginResumeKey);
     if (createdCompanyId) {
       void queryClient.cancelQueries({ queryKey: queryKeys.agents.activeLoginSession(createdCompanyId, adapterType) });
@@ -1626,6 +1755,7 @@ function OnboardingWizardInner({
       openConnectAuthorization();
       return;
     }
+    if (localLoginPrimary.runPrimary()) return;
     // The hold owns the hire once "Connecting" is showing. That now starts at
     // the paste, before the credential exists, so Cmd+Enter here would hire
     // against a source with nothing to run on.
@@ -2733,7 +2863,7 @@ function OnboardingWizardInner({
         step === 4 &&
         agentName.trim() &&
         connectStepReady &&
-        (retryLogin || submitLoginCode || !connectStepLoggingIn)
+        (retryLogin || submitLoginCode || Boolean(localLoginAction && !localLoginAction.disabled) || !connectStepLoggingIn)
       )
         handleConnectStepPrimary();
       else if (step === 5) handleLaunchToChat();
@@ -3069,6 +3199,44 @@ function OnboardingWizardInner({
               {/* Step 4: Connect a model — adapter + model + env check (capsule above) */}
               {step === 4 && (
                 <motion.div key="step-4" {...stepContentMotion} exit={stepHandoff ? stepContentMotion.exit : undefined} className="space-y-8">
+                  {canUseCloudTrialStarter && connectPhase === "idle" && (
+                    <div className="rounded-xl border border-border bg-card p-4 shadow-xs space-y-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2">
+                            <Sparkles className="size-4 text-primary" />
+                            <span className="text-sm font-semibold text-foreground">
+                              Start right away
+                            </span>
+                            <Badge variant="secondary" className="rounded-full text-xs">
+                              {resolveCloudTrialModel(cloudTrialStatus?.defaultModel).split("/").pop() ?? "Starter"}
+                            </Badge>
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            Try Paperclip right away without connecting an account. We’ll ask you to connect a model provider when it’s time to continue.
+                          </p>
+                        </div>
+                        <Button
+                          size="sm"
+                          onClick={handleStartWithCloudTrial}
+                          disabled={startingCloudTrial || loading}
+                          className="shrink-0"
+                        >
+                          {startingCloudTrial ? (
+                            <>
+                              <Loader2 className="size-3.5 mr-1.5 animate-spin" />
+                              Starting…
+                            </>
+                          ) : (
+                            <>
+                              Start free
+                              <ArrowRight className="size-3.5 ml-1.5" />
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                   <div>
                     <ModelSourceTiles
                       label="Model source"
@@ -3194,6 +3362,7 @@ function OnboardingWizardInner({
                         }} />}
                         {!selectedApiKey && !hasGatewaySelection && !connectionModels && <OnboardingCardField
                           label="API key"
+                          description={managedProvider ? `This will be your default ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} account.` : undefined}
                           placeholder="Enter API key here"
                           masked
                           // The card is the answer to the tile just pressed, so
@@ -3207,7 +3376,6 @@ function OnboardingWizardInner({
                           }}
                           onSubmit={() => handleConnectStepPrimary()}
                         />}
-                        {managedProvider && !selectedApiKey && !hasGatewaySelection && !connectionModels && <p className="text-xs text-muted-foreground">This will be your default {CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} account.</p>}
                         {hasGatewaySelection && (gatewayLookupFailed ? <>
                           <p role="alert" className="text-sm text-destructive">Your saved gateway connection could not be loaded. Retry to choose a model and connect your agent.</p>
                           <Button type="button" variant="outline" disabled={loading || adapterEnvLoading} onClick={() => { void connectionModelState.refresh(); }}>
@@ -3332,7 +3500,12 @@ function OnboardingWizardInner({
                       />
                     ) : hasSavedSubscription || localLogin.status === "ready" ? null : connectStepHasNoSandbox ? (
                       canUseLocalLogin && managedProvider ? (
-                        <LocalProviderLoginInstructions adapterType={adapterType} hostedRedirect={googleHostedRedirect} login={{ ...localLogin, retry: () => { autoConnectStartedRef.current = false; setError(null); localLogin.retry(); } }} />
+                        <LocalProviderLoginInstructions
+                          adapterType={adapterType}
+                          hostedRedirect={googleHostedRedirect}
+                          {...localLoginPrimary.instructionsProps}
+                          login={{ ...localLogin, retry: () => { autoConnectStartedRef.current = false; setError(null); localLogin.retry(); } }}
+                        />
                       ) : browserSignInUnavailable ? <p role="status" className="text-xs text-muted-foreground">This environment does not support browser sign-in. Go back to use an API key or choose another model.</p> : null
                     ) : null}
                   </motion.div>

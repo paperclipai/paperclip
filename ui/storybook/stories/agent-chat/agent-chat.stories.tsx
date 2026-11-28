@@ -119,3 +119,10 @@ export const Coordinator: Story = {
     },
   },
 };
+
+export const AgentChatMobile: Story = {
+  name: "19 · Mobile",
+  args: { scenario: "returning" },
+  globals: { viewport: { value: "mobile", isRotated: false } },
+  parameters: { layout: "fullscreen", waitForViewport: true },
+};

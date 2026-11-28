@@ -85,7 +85,7 @@ const CAPTURE_FAILURE_CHECK = `const captureFailure=${remoteWorkspaceCaptureFail
 // structured fields from remoteWorkspaceFailureDetail. Anything else is dropped.
 const SANDBOX_CAPTURE_CAUSE = /^remote_workspace_capture_failed: stage=(?:helper|archive|publish)(?: (?:helper_)?(?:code|exit|signal|syscall|killed|program|name|reason)=[A-Za-z0-9_]{1,64}){0,16}$/;
 // The sandbox inventory script's own refusal: a fixed token or an errno code.
-const READONLY_INVENTORY_FAILURE = /^remote_workspace_readonly_capture_(?:unsafe|budget|fs_e[a-z0-9]{2,15})$/;
+const READONLY_INVENTORY_FAILURE = /^remote_workspace_readonly_capture_(?:unsafe|budget|git_storage_limit|git_storage_guard_unavailable|fs_e[a-z0-9]{2,15})$/;
 // Setup scripts name the step they were in plus closed, structured fields. A
 // reason is only a script's own snake_case refusal code; Git output selects a
 // fixed label and is never copied. The server drops anything outside this grammar.
@@ -623,7 +623,8 @@ export async function captureReadOnlyWorkspaceArchive(input: {
       : message === "remote_workspace_readonly_capture_changed" ? "source_changed"
         : message === "remote_workspace_readonly_capture_budget" ? "budget_exceeded"
           : message === REMOTE_WORKSPACE_SANDBOX_DISK_FULL ? "disk_full"
-            : /^remote_workspace_(?:readonly_capture|archive)_(fs_e[a-z0-9]{2,15})$/.exec(message)?.[1]
+            : /^remote_workspace_readonly_capture_(git_storage_limit|git_storage_guard_unavailable)$/.exec(message)?.[1]
+              ?? /^remote_workspace_(?:readonly_capture|archive)_(fs_e[a-z0-9]{2,15})$/.exec(message)?.[1]
               ?? (error instanceof RemoteWorkspaceOperationTimeoutError ? "timed_out" : "operation_failed");
     const { label, code } = sandboxProviderFailureLabel(error);
     throw new Error(`remote_workspace_readonly_capture_failed: stage=${stage} reason=${reason} transport=${label}${code ? ` code=${code}` : ""}`);

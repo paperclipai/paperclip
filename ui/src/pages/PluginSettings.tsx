@@ -129,7 +129,7 @@ export function PluginSettings() {
     setBreadcrumbs([
       { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
       { label: "Settings", href: "/company/settings" },
-      { label: "Plugins", href: "/company/settings/instance/plugins" },
+      { label: "System plugins", href: "/company/settings/instance/plugins" },
       { label: plugin?.manifestJson?.displayName ?? plugin?.packageName ?? "Plugin Details" },
     ]);
   }, [selectedCompany?.name, setBreadcrumbs, companyPrefix, plugin]);

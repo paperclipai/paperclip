@@ -203,7 +203,10 @@ async function createConnectionThroughUi(input: ConnectionFlowInput, agentURL: s
       (mode === "bedrock" && connection.routing?.region !== input.settings.route?.region)) throw new ConnectionFailure("saved_routing_mismatch");
   } else if (connection.provider !== harness.provider) throw new ConnectionFailure("saved_provider_mismatch");
   // Navigate away and return through the normal list: proof includes durable UI state.
-  await page.goto(`${api.origin}/${company.issuePrefix}/apps`, { waitUntil: "domcontentloaded" });
+  await page.goto(`${api.origin}/${company.issuePrefix}/apps?source=installed`, { waitUntil: "domcontentloaded" });
+  // Installed lists plugins as tiles; search by account name, then open the plugin page that lists its accounts.
+  await page.getByPlaceholder("Search plugins…").fill(connection.name);
+  await page.locator('[role="listitem"][data-connected="true"] h3 button').first().click();
   await expect(page.getByText(connection.name, { exact: true }).first()).toBeVisible();
   await page.reload({ waitUntil: "domcontentloaded" });
   await expect(page.getByText(connection.name, { exact: true }).first()).toBeVisible();

@@ -11,7 +11,7 @@ function rollup(overrides: Record<string, unknown> = {}) {
   return {
     health: "on_track", computedHealth: "on_track", healthOverridden: false, metric: null,
     statusSentence: "12 of 20 investors contacted, 60% of target", workSummary: [{ text: "2 tasks blocked" }],
-    projects: 1, routines: 2, openTasks: 3, blockedTasks: 2, agentTasks: 1, userTasks: 2, doneTasks: 4,
+    projects: 1, routines: 2, routineAgentIds: [], openTasks: 3, blockedTasks: 2, agentTasks: 1, userTasks: 2, doneTasks: 4,
     nextDueAt: null, overdueProjects: [], ...overrides,
   };
 }

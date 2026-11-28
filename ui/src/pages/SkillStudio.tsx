@@ -1254,8 +1254,8 @@ function SkillSwitcher({
       onValueChange={(value) => {
         if (value !== skill?.id) onSelectSkill(value);
       }}
-      triggerClassName="h-8 w-64 border-0 bg-transparent px-0 text-base font-semibold shadow-none hover:bg-accent md:w-80"
-      contentClassName="w-80"
+      triggerClassName="h-8 w-64 max-w-full border-0 bg-transparent px-0 text-base font-semibold shadow-none hover:bg-accent md:w-80"
+      contentClassName="w-80 max-w-(--sz-calc-4)"
       contentWidth="auto"
       renderValue={(option) => option?.label ?? skill?.name ?? emptyLabel}
       renderOption={(option, { selected }) => (

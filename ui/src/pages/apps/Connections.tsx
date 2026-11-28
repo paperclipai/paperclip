@@ -47,7 +47,7 @@ import {
   type AppGalleryDisplayEntry,
 } from "./app-definition-display";
 import { useReviewCount } from "./useReviewCount";
-import { connectionNameForCredentialPolicy, connectionTypeLabel } from "./connection-identity";
+import { connectionNameForCredentialPolicy, connectionTypeLabel, isConnectionAvailableToAgents } from "./connection-identity";
 import {
   ConnectionOwnerIdentity,
   connectionDisplayNameForOwner,
@@ -132,7 +132,7 @@ export function Connections() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Connectors", href: "/apps" },
+      { label: "Plugins", href: "/apps" },
       { label: "Connections" },
     ]);
     return () => setBreadcrumbs([]);
@@ -262,9 +262,7 @@ export function Connections() {
       const logoUrl = appDefinitionLogoUrl(resolvedGalleryEntry);
       const brandKey = appSourceSlug ?? application.name;
       const darkLogoUrl = appDefinitionDarkLogoUrl(resolvedGalleryEntry);
-      const agentAvailableConnectionCount = appConnections.filter(
-        (connection) => connection.status === "active" && connection.enabled,
-      ).length;
+      const agentAvailableConnectionCount = appConnections.filter(isConnectionAvailableToAgents).length;
       if (appConnections.length === 0) {
         return [{
           application,
@@ -298,7 +296,7 @@ export function Connections() {
           remainingAgentAvailableConnectionCount: Math.max(
             0,
             agentAvailableConnectionCount -
-              (connection.status === "active" && connection.enabled ? 1 : 0),
+              (isConnectionAvailableToAgents(connection) ? 1 : 0),
           ),
           status: statusFor(application, [connection]),
           actionCount: actionCountByConnection.get(`app:${connection.id}`) ?? 0,
@@ -407,7 +405,7 @@ export function Connections() {
             </button>
           )}
 
-          <div className={cn("overflow-hidden rounded-lg border border-border", ANALYTICS_MASK_CLASS)}>
+          <div className={cn("max-w-full overflow-x-auto rounded-lg border border-border", ANALYTICS_MASK_CLASS)}>
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border bg-muted/40 text-left text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">

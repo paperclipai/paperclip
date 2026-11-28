@@ -30,6 +30,7 @@ import { useSidebar } from "../context/SidebarContext";
 import { queryKeys } from "../lib/queryKeys";
 import { useDialogActions } from "../context/DialogContext";
 import { useIssueExternalObjectSummaries } from "../hooks/useIssueExternalObjects";
+import { useIssueUpdatedFilterNow } from "../hooks/useIssueUpdatedFilterNow";
 import {
   applyIssueFilters,
   countActiveIssueFilters,
@@ -1030,13 +1031,15 @@ export function Inbox() {
     externalObjectSummaryByIssueId,
     externalObjectSummariesReady: externalObjectSummariesReady && !externalObjectSummariesLoading,
   }), [externalObjectSummariesLoading, externalObjectSummariesReady, externalObjectSummaryByIssueId]);
+  const mineUpdatedNow = useIssueUpdatedFilterNow(mineIssues, issueFilters.updatedWithin);
+  const touchedUpdatedNow = useIssueUpdatedFilterNow(touchedIssues, issueFilters.updatedWithin);
   const visibleMineIssues = useMemo(
-    () => applyIssueFilters(mineIssues, issueFilters, currentUserId, false, liveIssueIds, issueFilterContext),
-    [mineIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext],
+    () => applyIssueFilters(mineIssues, issueFilters, currentUserId, false, liveIssueIds, issueFilterContext, mineUpdatedNow),
+    [mineIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext, mineUpdatedNow],
   );
   const visibleTouchedIssues = useMemo(
-    () => applyIssueFilters(touchedIssues, issueFilters, currentUserId, false, liveIssueIds, issueFilterContext),
-    [touchedIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext],
+    () => applyIssueFilters(touchedIssues, issueFilters, currentUserId, false, liveIssueIds, issueFilterContext, touchedUpdatedNow),
+    [touchedIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext, touchedUpdatedNow],
   );
   const unreadTouchedIssues = useMemo(
     () => visibleTouchedIssues.filter((issue) => issue.isUnreadForMe),
@@ -2315,6 +2318,8 @@ export function Inbox() {
         <div className="flex flex-wrap items-center justify-between gap-2">
         <Tabs value={tab} onValueChange={(value) => navigate(`/inbox/${value}`)}>
           <PageTabBar
+            value={tab}
+            onValueChange={(value) => navigate(`/inbox/${value}`)}
             items={[
               {
                 value: "mine",
@@ -2454,7 +2459,7 @@ export function Inbox() {
                 type="button"
                 variant="outline"
                 size="icon"
-                className={cn("hidden h-8 w-8 shrink-0 sm:inline-flex", nestingEnabled && "bg-accent")}
+                className={cn("inline-flex h-8 w-8 shrink-0", nestingEnabled && "bg-accent")}
                 onClick={toggleNesting}
                 title={nestingEnabled ? "Disable parent-child nesting" : "Enable parent-child nesting"}
               >
@@ -2723,7 +2728,8 @@ export function Inbox() {
                               <button
                                 type="button"
                                 data-slot="icon-button"
-                                className="hidden w-4 shrink-0 items-center justify-center sm:inline-flex"
+                                className="inline-flex w-4 shrink-0 items-center justify-center"
+                                aria-label={isExpanded ? "Collapse sub-tasks" : "Expand sub-tasks"}
                                 onClick={(event) => {
                                   event.preventDefault();
                                   event.stopPropagation();
@@ -2738,7 +2744,7 @@ export function Inbox() {
                               // collapse chevron. (The unread mark-read dot has
                               // its own reserved leading slot in IssueRow, to the
                               // left of this spacer.)
-                              <span className="hidden w-4 shrink-0 sm:block" />
+                              <span className="block w-4 shrink-0" />
                             )
                           ) : null}
                           <InboxIssueMetaLeading

@@ -496,6 +496,7 @@ export {
   isSystemIssueDocumentKey,
   ISSUE_REFERENCE_SOURCE_KINDS,
   DOCUMENT_ANNOTATION_THREAD_STATUSES,
+  DOCUMENT_ANNOTATION_COMMENT_REACTIONS,
   DOCUMENT_ANNOTATION_ANCHOR_STATES,
   DOCUMENT_ANNOTATION_ANCHOR_CONFIDENCES,
   EXTERNAL_OBJECT_STATUS_CATEGORIES,
@@ -706,6 +707,7 @@ export {
   type SystemIssueDocumentKey,
   type IssueReferenceSourceKind,
   type DocumentAnnotationThreadStatus,
+  type DocumentAnnotationCommentReactionName,
   type DocumentAnnotationAnchorState,
   type DocumentAnnotationAnchorConfidence,
   type ExternalObjectStatusCategory,
@@ -1160,6 +1162,8 @@ export type {
   DocumentAnnotationAnchorSelector,
   DocumentAnnotationAnchorSnapshot,
   DocumentAnnotationComment,
+  DocumentAnnotationCommentReactionActor,
+  DocumentAnnotationCommentReactionSummary,
   DocumentAnnotationTextPositionSelector,
   DocumentAnnotationTextQuoteSelector,
   DocumentAnnotationThread,
@@ -2114,6 +2118,7 @@ export {
   type UpdateProjectWorkspace,
   projectExecutionWorkspacePolicySchema,
   createDocumentAnnotationCommentSchema,
+  documentAnnotationCommentReactionSchema,
   createDocumentAnnotationThreadSchema,
   documentAnnotationAnchorConfidenceSchema,
   documentAnnotationAnchorSelectorSchema,
@@ -2368,6 +2373,10 @@ export {
   attentionTransferSchema,
   type AttentionClose,
   type AttentionTransfer,
+  ENV_VAR_NAME_RE,
+  looksLikeCredentialToken,
+  SECRET_SHAPED_ENV_NAME_ERROR,
+  SECRET_SHAPED_ACCESS_ALIAS_ERROR,
   envBindingPlainSchema,
   envBindingSecretRefSchema,
   envBindingUserSecretRefSchema,
@@ -3158,3 +3167,4 @@ export * from "./mcp-skills.js";
 export type { TailscaleConnection, TailscaleDeviceLogin } from "./types/tailscale.js";
 export * from "./agent-setup-progress.js";
 export { antigravitySwarmAvailable, antigravitySwarmWorkModeAllows, isAntigravityAgent, parseLeadingUserCommand, SWARM_REQUEST_MAX_CHARS, type LeadingUserCommand } from "./leading-user-command.js";
+export * from "./cloud-inference.js";

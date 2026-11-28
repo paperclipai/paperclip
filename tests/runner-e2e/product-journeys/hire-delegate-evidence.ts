@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 import { createRequire } from "node:module";
 import { applyCompanyPrefix } from "../../../ui/src/lib/company-routes.js";
 import { parseIssueReferenceFromHref, remarkLinkIssueReferences } from "../../../ui/src/lib/issue-reference.js";
+import { includesSubmittedReference } from "../submitted-reference.js";
 import { JourneyError } from "./types.js";
 import { isPendingNativeRecovery } from "./workspace-deferral.js";
 
@@ -206,7 +207,7 @@ export function assertHireDocument(scope: HireScope, task: Row, document: Row, r
   const revision = revisions.find(row => row.id === document.latestRevisionId);
   if (task.companyId !== scope.companyId || task.assigneeAgentId !== hiredId || task.status !== "done" || task.projectId !== scope.projectId
     || work.length !== 1 || work[0]?.status !== "succeeded" || document.issueId !== task.id || document.companyId !== scope.companyId
-    || document.key === "plan" || !document.body?.includes(marker) || !revision || revision.body !== document.body
+    || document.key === "plan" || !includesSubmittedReference(document.body, marker) || !revision || revision.body !== document.body
     || revision.createdByAgentId !== hiredId || revision.createdByRunId !== work[0]?.id) {
     throw new JourneyError("failed", "hired_document_provenance_mismatch");
   }

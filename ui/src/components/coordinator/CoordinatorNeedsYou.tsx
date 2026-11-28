@@ -3,7 +3,7 @@ import { InboxRunHistory } from "./InboxRunHistory";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useCallback, useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, ArrowUpRight, ChevronDown, FileText, Image as ImageIcon, Loader2 } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, ChevronDown, FileText, Image as ImageIcon, Loader2, X } from "lucide-react";
 import { LayoutGroup, motion, useReducedMotion } from "motion/react";
 import { attentionCardType, type AttentionCloseMode, type AttentionItem, type AttentionPersonalView } from "@paperclipai/shared";
 import { accessApi } from "@/api/access";
@@ -14,12 +14,12 @@ import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { usePanel } from "@/context/PanelContext";
 import { useSidebar } from "@/context/SidebarContext";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
-import { useAttentionBadge, useAttentionCloseActions, useAttentionEveryoneView, useAttentionViewFeed, useClaimAttentionItem, useDismissAttentionReceipt } from "@/hooks/useAttentionViews";
+import { useAttentionCloseActions, useAttentionEveryoneAccess, useAttentionViewFeed, useClaimAttentionItem, useDismissAttentionReceipt } from "@/hooks/useAttentionViews";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
-import { COORDINATOR_ASSIGNEE_PARAM, COORDINATOR_RECENT_DECISION_MS, DEFAULT_DECISION_HISTORY_SCOPE, coordinatorAssignee, coordinatorAssigneeTarget, coordinatorAudienceKey, coordinatorCardDetail, coordinatorCardTitle, recentDecisionReceipts, type CoordinatorAssignee } from "@/lib/coordinator-attention";
+import { COORDINATOR_ASSIGNEE_PARAM, COORDINATOR_RECENT_DECISION_MS, DEFAULT_DECISION_HISTORY_SCOPE, coordinatorAssignee, coordinatorAssigneeNeedsEveryone, coordinatorAssigneeTarget, coordinatorAudienceKey, coordinatorCardDetail, coordinatorCardTitle, loadNeedsYouToolbar, needsYouToolbarStorageKey, openingCoordinatorAssignee, recentDecisionReceipts, saveNeedsYouToolbar, type CoordinatorAssignee, type NeedsYouGroup, type NeedsYouToolbar } from "@/lib/coordinator-attention";
 import { attentionDetailLine, isInlineResolvable } from "@/lib/attention";
-import { ATTENTION_VIEW_PARAM, attentionAudienceLineNamesResponders, parseAttentionView } from "@/lib/attention-views";
+import { ATTENTION_VIEW_PARAM, EMPTY_ATTENTION_VIEW_COUNTS, attentionAudienceLineNamesResponders, parseAttentionView } from "@/lib/attention-views";
 import { splitArchivedAttentionItems, splitStaleAttentionItems } from "@/lib/attention-close";
 import { attentionEvidenceToShow, attentionObligationEvidence, foldAttentionObligations, inboxCardMatchesFilters, inboxProjectOptions } from "@/lib/attention-obligations";
 import { buildCompanyUserLabelMap } from "@/lib/company-members";
@@ -37,6 +37,7 @@ import { InboxFilter } from "@/components/InboxFilter";
 import { ToolbarSearch } from "@/components/ToolbarSearch";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { parseCssTimeMs } from "@/components/task-chat/motion-tokens";
 import { timeAgo } from "@/lib/timeAgo";
 import { CoordinatorDecisionReceipt as Receipt } from "./CoordinatorDecisionReceipt";
@@ -48,8 +49,6 @@ import { NeedsYouAudience, NeedsYouReceiptCard, NeedsYouRequester, NeedsYouTaskL
 import { CoordinatorNeedsYouSidePanel, needsYouReviewTab, needsYouReviewTabId, needsYouTabArtifact, type NeedsYouReviewPayload } from "./CoordinatorNeedsYouSidePanel";
 import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 import { cn } from "@/lib/utils";
-
-type Group = "type" | "none" | "task" | "agent" | "project";
 
 const inboxFolders = [
   { value: "needs", label: "Needs you", description: "Review open requests and decide what happens next." },
@@ -93,30 +92,44 @@ export function CoordinatorNeedsYou() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const deepLinkDecisionId = searchParams.get("decisionId");
-  // For you is the default; the other views live in the URL (PAP-749 Rule 3).
-  // Everyone opens for a board member only (PAP-768).
-  const everyone = useAttentionEveryoneView(selectedCompanyId);
-  const view = parseAttentionView(searchParams.get(ATTENTION_VIEW_PARAM), { everyone });
+  const toolbarKey = needsYouToolbarStorageKey(selectedCompanyId, userId);
+  const [toolbarState, setToolbarState] = useState(() => ({ key: toolbarKey, toolbar: loadNeedsYouToolbar(toolbarKey) }));
+  const toolbar = toolbarState.key === toolbarKey ? toolbarState.toolbar : loadNeedsYouToolbar(toolbarKey);
+  useEffect(() => {
+    setToolbarState(current => current.key === toolbarKey ? current : { key: toolbarKey, toolbar: loadNeedsYouToolbar(toolbarKey) });
+  }, [toolbarKey]);
+  const keepToolbar = (patch: Partial<NeedsYouToolbar>) => {
+    setToolbarState({ key: toolbarKey, toolbar: { ...toolbar, ...patch } });
+    saveNeedsYouToolbar(toolbarKey, { ...loadNeedsYouToolbar(toolbarKey), ...patch });
+  };
+  const clearToolbarFilters = useCallback(() => setToolbarState(current => ({ key: toolbarKey,
+    toolbar: { ...(current.key === toolbarKey ? current.toolbar : loadNeedsYouToolbar(toolbarKey)), agentId: "", project: null } })), [toolbarKey]);
+  const folder = searchParams.get("folder");
+  const historyOpen = folder === "history";
+  const waitingOpen = folder === "waiting";
+  const { everyone, settled: everyoneSettled } = useAttentionEveryoneAccess(selectedCompanyId);
+  const requestedView = searchParams.get(ATTENTION_VIEW_PARAM) || null;
+  const awaitingEveryone = !waitingOpen && !everyoneSettled
+    && (requestedView ? requestedView === "all" : coordinatorAssigneeNeedsEveryone(openingCoordinatorAssignee(toolbar.assignee, true)));
+  const mayOpenEveryone = everyone || awaitingEveryone;
+  const opening = coordinatorAssigneeTarget(openingCoordinatorAssignee(toolbar.assignee, mayOpenEveryone), userId);
+  const view = requestedView ? parseAttentionView(requestedView, { everyone: mayOpenEveryone }) : opening.view;
   // Everyone can be narrowed to one person (PAP-775); the person lives in the URL too.
-  const forUserId = view === "all" ? searchParams.get(COORDINATOR_ASSIGNEE_PARAM) : null;
-  const setView = useCallback((next: typeof view, person: string | null = null) => setSearchParams(current => {
+  const forUserId = waitingOpen || view !== "all" ? null : requestedView ? searchParams.get(COORDINATOR_ASSIGNEE_PARAM) : opening.forUserId;
+  const setView = useCallback((next: typeof view | null, person: string | null = null) => setSearchParams(current => {
     const params = new URLSearchParams(current);
     params.delete("folder");
-    if (next === "mine") params.delete(ATTENTION_VIEW_PARAM); else params.set(ATTENTION_VIEW_PARAM, next);
+    if (next) params.set(ATTENTION_VIEW_PARAM, next); else params.delete(ATTENTION_VIEW_PARAM);
     if (person) params.set(COORDINATOR_ASSIGNEE_PARAM, person); else params.delete(COORDINATOR_ASSIGNEE_PARAM);
     return params;
   }, { replace: true }), [setSearchParams]);
   const assignee = coordinatorAssignee(view, forUserId);
   const reducedMotion = useReducedMotion();
   const [query, setQuery] = useState("");
-  const [agentFilter, setAgentFilter] = useState("");
-  const [projectFilter, setProjectFilter] = useState("");
-  const [groupBy, setGroupBy] = useState<Group>("type");
-  const folder = searchParams.get("folder");
-  const historyOpen = folder === "history";
-  const waitingOpen = folder === "waiting";
+  const [waitingFilters, setWaitingFilters] = useState({ agentId: "", projectId: "" });
   const changeFolder = (next: "needs" | "waiting" | "history") => {
-    setQuery(""); setAgentFilter(""); setProjectFilter("");
+    setQuery("");
+    setWaitingFilters({ agentId: "", projectId: "" });
     setSearchParams(current => {
       const params = new URLSearchParams(current);
       params.delete(ATTENTION_VIEW_PARAM); params.delete(COORDINATOR_ASSIGNEE_PARAM);
@@ -136,10 +149,11 @@ export function CoordinatorNeedsYou() {
   const [staleOpen, setStaleOpen] = useState(false);
   const [snoozedOpen, setSnoozedOpen] = useState(true);
   useEffect(() => { setSettling([]); setSavedIds(new Map()); setStaleOpen(false); setSnoozedOpen(true); }, [selectedCompanyId, userId, view, folder]);
+  useEffect(() => { setWaitingFilters({ agentId: "", projectId: "" }); }, [selectedCompanyId, userId, folder]);
   const archivedView = view === "archived";
   const [renderLimit, setRenderLimit] = useState(40);
   // Keyed by person and view; the For you key is the one the badge reads.
-  const feed = useAttentionViewFeed(selectedCompanyId, waitingOpen ? "waiting" : view);
+  const feed = useAttentionViewFeed(selectedCompanyId, waitingOpen ? "waiting" : view, { enabled: waitingOpen || !awaitingEveryone });
   useEffect(() => {
     setSavedIds(current => {
       const pending = new Map([...current].filter(([, hidden]) => hidden.closed || hidden.version === feed.dataUpdatedAt));
@@ -148,7 +162,7 @@ export function CoordinatorNeedsYou() {
   }, [feed.dataUpdatedAt]);
   const feedView = useQueryView(feed);
   const feedWaiting = feedView.kind === "loading" || feedView.kind === "reconnecting";
-  const { viewCounts } = useAttentionBadge(selectedCompanyId);
+  const viewCounts = feed.data?.viewCounts ?? EMPTY_ATTENTION_VIEW_COUNTS;
   const claim = useClaimAttentionItem(selectedCompanyId);
   const receiptActions = useDismissAttentionReceipt(selectedCompanyId);
   const directory = useQuery({ queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!), queryFn: () => accessApi.listUserDirectory(selectedCompanyId!), enabled: !!selectedCompanyId });
@@ -177,6 +191,10 @@ export function CoordinatorNeedsYou() {
   const recent = useQuery({ queryKey: [...queryKeys.attention(selectedCompanyId!), "history", "recent", DEFAULT_DECISION_HISTORY_SCOPE],
     queryFn: () => attentionApi.history(selectedCompanyId!, { limit: 100, scope: DEFAULT_DECISION_HISTORY_SCOPE, since: new Date(Date.now() - COORDINATOR_RECENT_DECISION_MS).toISOString() }), enabled: !!selectedCompanyId, refetchOnWindowFocus: true });
   const agentMap = useMemo(() => new Map((agentQuery.data ?? []).map((agent) => [agent.id, agent])), [agentQuery.data]);
+  const activeAgentId = waitingOpen ? waitingFilters.agentId : toolbar.agentId;
+  const agentFilter = agentMap.has(activeAgentId) ? activeAgentId : "";
+  const projectFilter = waitingOpen ? waitingFilters.projectId : toolbar.project?.id ?? "";
+  const groupBy = toolbar.groupBy;
   const recentItems = useMemo(() => recentDecisionReceipts(recent.data?.items ?? [], now), [recent.data, now]);
   const settlingIds = useMemo(() => new Set(settling.map(item => `${item.sourceKind}:${item.subject.id}`)), [settling]);
   // One card for each obligation (PAP-749 Rule 11): evidence folds into its
@@ -224,7 +242,7 @@ export function CoordinatorNeedsYou() {
     }
     // A saved decision link takes precedence over local toolbar filters and the
     // rendering window. Consume it only after its actual card has mounted.
-    if (query || agentFilter || projectFilter) { setQuery(""); setAgentFilter(""); setProjectFilter(""); return; }
+    if (query || toolbar.agentId || projectFilter) { setQuery(""); clearToolbarFilters(); return; }
     if (forUserId) { setView("all"); return; }
     if (staleItems.some(item => item.sourceKind === "decision" && item.subject.id === deepLinkDecisionId)) setStaleOpen(true);
     const index = currentItems.findIndex(item => item.sourceKind === "decision" && item.subject.id === deepLinkDecisionId);
@@ -234,20 +252,37 @@ export function CoordinatorNeedsYou() {
     card.focus({ preventScroll: true });
     card.scrollIntoView({ block: "center", behavior: reducedMotion ? "auto" : "smooth" });
     setSearchParams(current => { const next = new URLSearchParams(current); next.delete("decisionId"); return next; }, { replace: true });
-  }, [deepLinkDecisionId, selectedCompanyId, pendingItems, currentItems, staleItems, feedWaiting, everyone, view, query, agentFilter, projectFilter, forUserId, setView, renderLimit, reducedMotion, setSearchParams]);
-  const projects = useMemo(() => inboxProjectOptions(obligations, pendingItems, recentItems),
-    [obligations, pendingItems, recentItems]);
+  }, [deepLinkDecisionId, selectedCompanyId, pendingItems, currentItems, staleItems, feedWaiting, everyone, view, query, toolbar.agentId, projectFilter, forUserId, setView, clearToolbarFilters, renderLimit, reducedMotion, setSearchParams]);
+  const keptProjectId = waitingOpen ? undefined : toolbar.project?.id;
+  const keptProjectName = waitingOpen ? undefined : toolbar.project?.name;
+  const projects = useMemo(() => {
+    const entries = inboxProjectOptions(obligations, pendingItems, recentItems);
+    if (keptProjectId && !entries.some(([id]) => id === keptProjectId)) {
+      return [...entries, [keptProjectId, keptProjectName || "Unnamed project"] as const];
+    }
+    return entries;
+  }, [obligations, pendingItems, recentItems, keptProjectId, keptProjectName]);
+  const chooseAgent = (agentId: string) => waitingOpen
+    ? setWaitingFilters(current => ({ ...current, agentId }))
+    : keepToolbar({ agentId });
+  const chooseProject = (id: string) => waitingOpen
+    ? setWaitingFilters(current => ({ ...current, projectId: id }))
+    : keepToolbar({ project: id ? { id, name: projects.find(([projectId]) => projectId === id)?.[1] ?? "Unnamed project" } : null });
   // Assigned to you, everyone the viewer may see, one person, no owner yet, or company alerts.
   const assigneeOptions = useMemo(() => {
     const people = [...userLabelMap].filter(([id]) => id !== userId).sort(([, a], [, b]) => a.localeCompare(b));
     return [
       { value: "me" as CoordinatorAssignee, label: "Assigned to you" },
-      ...(everyone ? [{ value: "all" as CoordinatorAssignee, label: "All assignees" }, ...people.map(([id, name]) => ({ value: `user:${id}` as CoordinatorAssignee, label: name }))] : []),
+      ...(mayOpenEveryone ? [{ value: "all" as CoordinatorAssignee, label: "All assignees" }, ...people.map(([id, name]) => ({ value: `user:${id}` as CoordinatorAssignee, label: name }))] : []),
       { value: "unassigned" as CoordinatorAssignee, label: "No owner yet" },
       { value: "company" as CoordinatorAssignee, label: "Company alerts" },
     ];
-  }, [userLabelMap, userId, everyone]);
-  const chooseAssignee = (value: CoordinatorAssignee) => { const target = coordinatorAssigneeTarget(value, userId); setView(target.view, target.forUserId); };
+  }, [userLabelMap, userId, mayOpenEveryone]);
+  const chooseAssignee = (value: CoordinatorAssignee) => {
+    const target = coordinatorAssigneeTarget(value, userId);
+    keepToolbar({ assignee: value });
+    setView(target.view, target.forUserId);
+  };
   const showHistory = () => changeFolder("history");
   // Cards whose artifact can open beside them: the + launcher lists these.
   const reviewable = useMemo(() => pendingItems.filter(item => !!needsYouArtifact(item)), [pendingItems]);
@@ -255,15 +290,18 @@ export function CoordinatorNeedsYou() {
   const showReview = useCallback((item: AttentionItem, artifact?: NeedsYouArtifact | null) => {
     openReviewTab(needsYouReviewTab(item, artifact));
     setReviewPanelOpen(true);
-    setPanelVisible(true);
-  }, [openReviewTab, setPanelVisible]);
+    if (!isMobile) setPanelVisible(true);
+  }, [isMobile, openReviewTab, setPanelVisible]);
   // The frame's close control hides the panel; its tabs come back with the next Review.
-  useEffect(() => { if (!panelVisible) setReviewPanelOpen(false); }, [panelVisible]);
+  useEffect(() => { if (!isMobile && !panelVisible) setReviewPanelOpen(false); }, [isMobile, panelVisible]);
   // A resolved or closed card's tabs close with it.
   useEffect(() => {
     const open = new Set(pendingItems.map(item => item.id));
     for (const tab of reviewTabs.tabs) if (!open.has(tab.payload.itemId)) closeReviewTab(tab.id);
   }, [pendingItems, reviewTabs.tabs, closeReviewTab]);
+  useEffect(() => {
+    if (isMobile && reviewPanelOpen && reviewTabs.tabs.length === 0) setReviewPanelOpen(false);
+  }, [isMobile, reviewPanelOpen, reviewTabs.tabs.length]);
   useEffect(() => { setBreadcrumbs([{ label: "Inbox" }]); }, [setBreadcrumbs]);
   useEffect(() => {
     setSettling([]); setReviewPanelOpen(false); resetReviewTabs({ tabs: [], activeTabId: null }); setNow(Date.now()); closePanel();
@@ -310,9 +348,9 @@ export function CoordinatorNeedsYou() {
     const phase = !receipt ? "pending" : ["cancelled", "expired"].includes(receipt.outcome) ? "closed" : "resolved";
     const refetchAll = () => { void feed.refetch(); void recent.refetch(); };
     // Focus (PAP-770, PAP-775 IA5): a card about an artifact opens it beside the card.
-    const artifact = isMobile ? null : needsYouArtifact(item);
+    const artifact = needsYouArtifact(item);
     // The card stays highlighted while any of its artifacts is open beside it (UI9).
-    const panelOpen = !isMobile && reviewPanelOpen && panelVisible;
+    const panelOpen = reviewPanelOpen && (isMobile || panelVisible);
     const activeTab = panelOpen ? reviewTabs.tabs.find(tab => tab.id === reviewTabs.activeTabId) : undefined;
     const reviewing = !!activeTab && activeTab.payload.itemId === item.id;
     const reviewingOwn = !!artifact && panelOpen && reviewTabs.activeTabId === needsYouReviewTabId(item);
@@ -320,14 +358,14 @@ export function CoordinatorNeedsYou() {
     const artifactRow = artifact && artifact.kind !== "approval" ? <NeedsYouPanelRow
       icon={artifact.kind === "images" ? <ImageIcon /> : <FileText />}
       title={artifact.kind === "document" && !artifact.title ? (artifact.key === "plan" ? "Plan" : documentKeyLabel(artifact.key)) : needsYouArtifactLabel(artifact)}
-      meta={reviewingOwn ? "Open in sidebar · Showing" : "Open in sidebar"}
-      label={`${reviewingOwn ? "Close" : "Open"} ${needsYouArtifactLabel(artifact)} in the sidebar`}
+      meta={isMobile ? (reviewingOwn ? "Showing details" : "View details") : (reviewingOwn ? "Open in sidebar · Showing" : "Open in sidebar")}
+      label={isMobile ? `${reviewingOwn ? "Close" : "Open"} ${needsYouArtifactLabel(artifact)}` : `${reviewingOwn ? "Close" : "Open"} ${needsYouArtifactLabel(artifact)} in the sidebar`}
       onOpen={() => reviewingOwn ? closeReviewTab(needsYouReviewTabId(item)) : showReview(item)} /> : null;
     // A plan, document, approval or attachment the card links to opens as a
     // side-panel tab beside the card, not a page change (PAP-775, IA5).
     // A modified click still opens the link itself.
     const openMentionedDocument = (event: ReactMouseEvent) => {
-      if (isMobile || event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+      if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
       const link = (event.target as HTMLElement).closest<HTMLAnchorElement>("a[href]");
       const mentioned = link ? needsYouMentionedArtifact(link.getAttribute("href")!, link.textContent) : null;
       if (!mentioned) return;
@@ -376,7 +414,7 @@ export function CoordinatorNeedsYou() {
         : stalledReview ? <><div className="space-y-1.5"><h2>Choose how this task continues</h2><p className="text-sm text-muted-foreground">This task is still in review with no active reviewer or continuation. Return it to work, request changes, or mark the task done.</p></div><BlockedTaskCardBody item={item} companyId={selectedCompanyId!} agentMap={agentMap} userLabelMap={userLabelMap} leading={taskLink} footerContext={footerContext} onOpen={navigate} onResolved={refetchAll} /></>
         : failedRun ? <>{heading}<FailedRunActions item={item} companyId={selectedCompanyId!} leading={taskLink} footerContext={footerContext} presentation="card" onResolved={refetchAll} /></>
         : budget ? <>{heading}<BudgetAlertActions item={item} companyId={selectedCompanyId!} leading={taskLink} footerContext={footerContext} presentation="card" onResolved={refetchAll} /></>
-        : approval ? <>{heading}<ApprovalResolver item={item} companyId={selectedCompanyId!} toggle={taskLink} footerContext={footerContext} presentation="card" onViewDetails={isMobile ? undefined : () => showReview(item)} shareDraft onResolved={() => onResolved(item)} /></>
+        : approval ? <>{heading}<ApprovalResolver item={item} companyId={selectedCompanyId!} toggle={taskLink} footerContext={footerContext} presentation="card" onViewDetails={() => showReview(item)} shareDraft onResolved={() => onResolved(item)} /></>
         : joinRequest ? <>{heading}<JoinRequestResolver item={item} companyId={selectedCompanyId!} toggle={taskLink} presentation="card" onResolved={() => onResolved(item)} /></>
         : type === "review_task" ? <>{heading}<ReviewTaskCardBody item={item} companyId={selectedCompanyId!} agentMap={agentMap} userLabelMap={userLabelMap} leading={taskLink} footerContext={footerContext} onOpen={navigate} onResolved={refetchAll} /></>
         : type === "blocked_task" ? <>{heading}<BlockedTaskCardBody item={item} companyId={selectedCompanyId!} agentMap={agentMap} userLabelMap={userLabelMap} leading={taskLink} footerContext={footerContext} onOpen={navigate} onResolved={refetchAll} /></>
@@ -418,25 +456,32 @@ export function CoordinatorNeedsYou() {
   const sectionHeading = (section: NeedsYouSection) => <h2 className="text-base font-medium" data-needs-you-section={section}>
     {NEEDS_YOU_SECTIONS[section].title}
   </h2>;
+  const mobileActiveTab = isMobile && reviewPanelOpen
+    ? reviewTabs.tabs.find(tab => tab.id === reviewTabs.activeTabId) ?? reviewTabs.tabs[0] ?? null
+    : null;
+  const mobileActiveItem = mobileActiveTab
+    ? pendingItems.find(entry => entry.id === mobileActiveTab.payload.itemId) ?? null
+    : null;
+  const mobileActiveArtifact = mobileActiveTab && mobileActiveItem
+    ? needsYouTabArtifact(mobileActiveItem, mobileActiveTab.payload)
+    : null;
+
   return <LayoutGroup id="coordinator-decisions"><section className="coordinator-needs-you w-full space-y-6" aria-label="Inbox">
-    {archivedView ? <div className="flex items-center gap-2"><Button variant="ghost" size="icon-sm" aria-label="Back to Needs You" onClick={() => setView("mine")}><ArrowLeft className="size-4" /></Button><h1 className="text-2xl font-medium">Archived</h1></div> : null}
-    {/* Assigned to you by default (PAP-775); the assignee filter widens to all
-        assignees, one person, no owner yet or company alerts. Archived and
-        Decision history sit in View. */}
+    {archivedView ? <div className="flex items-center gap-2"><Button variant="ghost" size="icon-sm" aria-label="Back to Needs You" onClick={() => setView(null)}><ArrowLeft className="size-4" /></Button><h1 className="text-2xl font-medium">Archived</h1></div> : null}
     <div data-canonical-toolbar="inbox" className="design-page-toolbar" role="toolbar" aria-label="Decisions controls">
       <ToolbarSearch query={query} onQueryChange={setQuery} label="Search decisions" placeholder="Search…" />
       <div className="design-toolbar-actions">
-        <InboxFilter label="Filter decisions by agent" heading="Agents" value={agentFilter} onChange={setAgentFilter}
+        <InboxFilter label="Filter decisions by agent" heading="Agents" value={agentFilter} onChange={chooseAgent}
           defaultLabel={agentFilter ? undefined : "By agents"}
           options={[{ value: "", label: "All agents" }, ...(agentQuery.data ?? []).map(agent => ({ value: agent.id, label: agent.name }))]} />
-        <InboxFilter label="Filter decisions by project" heading="Projects" value={projectFilter} onChange={setProjectFilter}
+        <InboxFilter label="Filter decisions by project" heading="Projects" value={projectFilter} onChange={chooseProject}
           defaultLabel={projectFilter ? undefined : "By projects"}
           options={[{ value: "", label: "All projects" }, ...projects.map(([value, label]) => ({ value, label }))]} />
         {!waitingOpen && assignee && <InboxFilter label="Filter decisions by assignee" heading="Assigned to" value={assignee} onChange={chooseAssignee}
-          defaultLabel={assignee === "me" ? "By assigned" : undefined}
+          disabled={awaitingEveryone}
           options={assignee.startsWith("user:") && !assigneeOptions.some(option => option.value === assignee)
             ? [...assigneeOptions, { value: assignee, label: "Someone else" }] : assigneeOptions} />}
-        <InboxFilter<Group> label="Group decisions" heading="Group by" value={groupBy} onChange={setGroupBy}
+        <InboxFilter<NeedsYouGroup> label="Group decisions" heading="Group by" value={groupBy} onChange={next => keepToolbar({ groupBy: next })}
           options={[{ value: "type", label: "By type" }, { value: "task", label: "By task" }, { value: "agent", label: "By agent" },
             { value: "project", label: "By project" }, { value: "none", label: "No grouping" }]} />
         <DropdownMenu>
@@ -476,5 +521,70 @@ export function CoordinatorNeedsYou() {
     <AttentionSnoozedGroup count={snoozedItems.length} open={snoozedOpen} onToggle={() => setSnoozedOpen(open => !open)}>
       <InboxLimitCards items={snoozedItems} renderCard={renderCard} />
     </AttentionSnoozedGroup>
+    <Sheet open={isMobile && reviewPanelOpen} onOpenChange={(open) => { if (!open) setReviewPanelOpen(false); }}>
+      <SheetContent
+        side="bottom"
+        className="max-h-(--sz-85dvh) gap-0 overflow-hidden p-0 pb-(--sz-safe-bottom)"
+        data-testid="mobile-coordinator-review-sheet"
+      >
+        <SheetHeader className="border-b border-border px-4 py-3 pr-10">
+          <SheetTitle className="truncate text-sm">{mobileActiveTab?.label ?? "Review"}</SheetTitle>
+        </SheetHeader>
+        {reviewTabs.tabs.length > 1 ? (
+          <div className="flex items-center gap-1 overflow-x-auto border-b border-border px-4 py-2" role="tablist" aria-label="Open review artifacts">
+            {reviewTabs.tabs.map((tab) => {
+              const selected = tab.id === mobileActiveTab?.id;
+              return (
+                <div key={tab.id} className="inline-flex shrink-0 items-center rounded-md border border-border">
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={selected}
+                    onClick={() => selectReviewTab(tab.id)}
+                    className={cn(
+                      "px-2.5 py-1 text-xs",
+                      selected ? "bg-secondary font-medium text-foreground" : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {tab.label}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Close ${tab.label}`}
+                    onClick={() => closeReviewTab(tab.id)}
+                    className="px-1.5 py-1 text-muted-foreground hover:text-foreground"
+                  >
+                    <X className="size-3" />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+          {mobileActiveTab && mobileActiveItem && mobileActiveArtifact ? (
+            <CoordinatorReviewPanel
+              key={mobileActiveTab.id}
+              companyId={selectedCompanyId}
+              item={mobileActiveItem}
+              artifact={mobileActiveArtifact}
+              agentMap={agentMap}
+              currentUserId={userId}
+              userLabelMap={userLabelMap}
+              onOpenTask={(href) => {
+                setReviewPanelOpen(false);
+                navigate(href);
+              }}
+              onResolved={() => {
+                closeReviewTab(mobileActiveTab.id);
+                if (reviewTabs.tabs.length <= 1) setReviewPanelOpen(false);
+              }}
+            />
+          ) : (
+            <p className="text-sm text-muted-foreground">This is no longer waiting on you.</p>
+          )}
+        </div>
+      </SheetContent>
+    </Sheet>
   </section></LayoutGroup>;
 }

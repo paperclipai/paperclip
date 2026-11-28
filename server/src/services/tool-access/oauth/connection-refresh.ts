@@ -74,7 +74,7 @@ const oauthRefreshFlights = new Map<string, Promise<unknown>>();
         enabled: false,
         healthStatus: "error",
         healthMessage:
-          "OAuth authorization expired. Reconnect this app to continue.",
+          "Access to this app ended. Reconnect to continue.",
         lastError: "oauth_reauthorization_required",
         config: nextConfig,
         transportConfig: nextConfig,

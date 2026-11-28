@@ -81,7 +81,7 @@ const IMAGE = `ghcr.io/paperclipai/paperclip-runner@sha256:${"c".repeat(64)}`;
 const INPUTS = "1".repeat(64);
 const LABELS = `io.paperclip.runner.image=${IMAGE}\nio.paperclip.runner.inputs-digest=${INPUTS}`;
 const BUILD_ARGS = `PAPERCLIP_RUNNER_EXPECT_INPUTS_DIGEST=${INPUTS}`;
-const published = { mode: "published", build_contexts: `runner-artifacts=docker-image://${IMAGE}`, labels: LABELS, build_args: BUILD_ARGS };
+const published = { mode: "published", inputs_digest: INPUTS, build_contexts: `runner-artifacts=docker-image://${IMAGE}`, labels: LABELS, build_args: BUILD_ARGS };
 const canonical = "github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064'";
 const VERIFY = "Verify the attestation of the Runner image";
 
@@ -100,16 +100,17 @@ describe("the Runner image an application image build copies in docker.yml", () 
       "CLI_TOOLS_CACHE_EPOCH=${{ steps.tools-epoch.outputs.epoch }}",
     ],
     buildContexts: [],
-    labels: ["${{ steps.meta.outputs.labels }}"],
+    labels: [
+      "${{ steps.meta.outputs.labels }}",
+      "${{ steps.cache-policy.outputs.cache_label }}",
+    ],
   };
 
   it("runs only when the repository variable has the enabling value, in the canonical repository, and not otherwise", () => {
     expect(condition(resolver, 4)).toBe(`vars.RUNNER_IMAGE_CONSUME_ENABLED == 'true' && ${canonical}`);
     expect(workflow.match(/RUNNER_IMAGE_CONSUME_ENABLED/g)).toHaveLength(1);
     expect(Object.keys(jobs).filter((name) => jobs[name].includes("runner-image-resolve.mjs"))).toEqual(["runner_image"]);
-    for (const name of ["docker-merge-group.yml", "docker-app-check.yml"]) {
-      expect(read(name)).not.toMatch(/runner-image-resolve|RUNNER_IMAGE_CONSUME_ENABLED|build-contexts|--build-context|io\.paperclip\.runner|runner_image/);
-    }
+    expect(read("docker-app-check.yml")).not.toMatch(/runner-image-resolve|RUNNER_IMAGE_CONSUME_ENABLED|build-contexts|--build-context|io\.paperclip\.runner|runner_image/);
   });
 
   it("keeps inline Runner arguments and includes the macOS runtime identity without a published Runner", () => {
@@ -120,7 +121,7 @@ describe("the Runner image an application image build copies in docker.yml", () 
   it("gives both architectures the one answer: the context, the labels and the expected inputs of the verified image", () => {
     expect(/^ {4}needs: \[(.+)\]$/m.exec(legs)![1].split(", ")).toContain("runner_image");
     const reads = [...legs.matchAll(/needs\.runner_image\.[a-z_.]+/g)].map((match) => match[0]);
-    expect(new Set(reads)).toEqual(new Set(["mode", "build_args", "build_contexts", "labels"].map((name) => `needs.runner_image.outputs.${name}`)));
+    expect(new Set(reads)).toEqual(new Set(["mode", "inputs_digest", "build_args", "build_contexts", "labels"].map((name) => `needs.runner_image.outputs.${name}`)));
     for (const line of legs.split("\n").filter((entry) => entry.includes("needs.runner_image"))) expect(line).not.toContain("matrix.");
     expect(buildInputs(published)).toEqual({
       buildArgs: [...inlineBuild.buildArgs, BUILD_ARGS],
@@ -133,6 +134,7 @@ describe("the Runner image an application image build copies in docker.yml", () 
     const declared = /\n {4}outputs:\n((?: {6}.+\n)+)/.exec(resolver)![1].trimEnd().split("\n").map((line) => line.trim());
     expect(declared).toEqual([
       "mode: ${{ steps.verify.outputs.mode || 'inline' }}",
+      "inputs_digest: ${{ steps.verify.outputs.inputs_digest }}",
       "build_contexts: ${{ steps.verify.outputs.build_contexts }}",
       "labels: ${{ steps.verify.outputs.labels }}",
       "build_args: ${{ steps.verify.outputs.build_args }}",
@@ -140,7 +142,7 @@ describe("the Runner image an application image build copies in docker.yml", () 
     const verify = named(resolver, VERIFY);
     expect(verify).toContain("\n        id: verify\n");
     expect(condition(verify, 8)).toBe("steps.resolve.outputs.mode == 'published'");
-    const env = { IMAGE, LABELS, BUILD_ARGS, GH_TOKEN: "token-for-the-test" };
+    const env = { IMAGE, INPUTS_DIGEST: INPUTS, LABELS, BUILD_ARGS, GH_TOKEN: "token-for-the-test" };
     const gh = (status: number) => ({ gh: `printf '%s\\n' "$*" >> "$CALLS"\nexit ${status}` });
 
     const verified = runStep(verify, env, gh(0));
@@ -206,13 +208,14 @@ describe("the Runner image an application image build copies in docker.yml", () 
     expectPinnedAndExpressionFree(resolver);
   });
 
-  it("does not promote a merge-queue image for a commit that copies a published Runner", () => {
+  it("promotes a verified merge-queue image only when its Runner inputs digest matches master", () => {
     const find = named(legs, "Find the merge-queue build of this commit");
-    expect(condition(find, 8)).toBe(`needs.runner_image.outputs.mode != 'published' && ${canonical} && ${masterPush}`);
+    expect(condition(find, 8)).toBe(`${canonical} && ${masterPush}`);
     for (const name of ["Download the merge-queue image", "Promote the merge-queue image"]) {
       expect(condition(named(legs, name), 8)).toBe("steps.find.outputs.run_id != ''");
     }
     expect(legs.match(/steps\.find\.outputs\.run_id/g)).toHaveLength(3);
+    expect(named(legs, "Promote the merge-queue image")).toContain("RUNNER_INPUTS_DIGEST: ${{ needs.runner_image.outputs.inputs_digest }}");
     expect(condition(named(legs, "Build and push by digest"), 8)).toBe("steps.promote.outputs.digest == ''");
   });
 
@@ -224,6 +227,87 @@ describe("the Runner image an application image build copies in docker.yml", () 
       .map((name) => minutes(named(resolver, name), 8));
     expect(limits[1]).toBeGreaterThanOrEqual(RUNNER_IMAGE_WAIT_MINUTES + 15);
     expect(minutes(resolver, 4)).toBeGreaterThanOrEqual(limits.reduce((sum, limit) => sum + limit, 0) + 5);
+  });
+});
+
+describe("the merge-queue build's Runner image in docker-merge-group.yml", () => {
+  const workflow = read("docker-merge-group.yml");
+  const jobs = jobsOf(workflow);
+  const resolver = jobs.runner_image;
+  const buildJob = jobs.build;
+  const buildInputs = (resolved: Record<string, string>) =>
+    listInputs(named(buildJob, "Build image archive"), "needs.runner_image.outputs", resolved);
+  const inlineBuild = {
+    buildArgs: [
+      "PAPERCLIP_BUILD_VERSION=${{ steps.build-version.outputs.version }}",
+      "PAPERCLIP_BUILD_COMMIT=${{ github.sha }}",
+      "PAPERCLIP_MACOS_RUNTIME_INPUTS_DIGEST=${{ needs.macos_runner_runtime.outputs.inputs_digest }}",
+      "CLI_TOOLS_CACHE_EPOCH=${{ steps.tools-epoch.outputs.epoch }}",
+    ],
+    buildContexts: [],
+    labels: ["${{ steps.meta.outputs.labels }}"],
+  };
+
+  it("gates resolution to canonical master merge groups when RUNNER_IMAGE_CONSUME_ENABLED is true and stays read-only", () => {
+    expect(condition(resolver, 4)).toBe(
+      `vars.RUNNER_IMAGE_CONSUME_ENABLED == 'true' && ${canonical} && github.event.merge_group.base_ref == 'refs/heads/master'`,
+    );
+    expect(permissions(resolver)).toEqual(["contents: read", "actions: read", "attestations: read"]);
+    expect(resolver).toContain("\n    continue-on-error: true\n");
+    expect(resolver).toContain("persist-credentials: false");
+    expect(resolver).not.toMatch(registryWrite);
+    expectPinnedAndExpressionFree(resolver);
+    // Non-blocking lookup in the merge queue: never passes --wait.
+    expect(named(resolver, "Find the published Runner image of these inputs")).not.toContain("--wait");
+  });
+
+  it("hands build only attested published outputs and falls back cleanly on inline or failed attestation", () => {
+    const declared = /\n {4}outputs:\n((?: {6}.+\n)+)/.exec(resolver)![1].trimEnd().split("\n").map((line) => line.trim());
+    expect(declared).toEqual([
+      "mode: ${{ steps.verify.outputs.mode || 'inline' }}",
+      "inputs_digest: ${{ steps.verify.outputs.inputs_digest }}",
+      "build_contexts: ${{ steps.verify.outputs.build_contexts }}",
+      "labels: ${{ steps.verify.outputs.labels }}",
+      "build_args: ${{ steps.verify.outputs.build_args }}",
+    ]);
+
+    const verify = named(resolver, VERIFY);
+    expect(condition(verify, 8)).toBe("steps.resolve.outputs.mode == 'published'");
+    const env = { IMAGE, INPUTS_DIGEST: INPUTS, LABELS, BUILD_ARGS, GH_TOKEN: "token-for-the-test" };
+    const gh = (status: number) => ({ gh: `printf '%s\\n' "$*" >> "$CALLS"\nexit ${status}` });
+
+    const verified = runStep(verify, env, gh(0));
+    expect(verified.status, verified.stderr).toBe(0);
+    expect(outputs(verified.output)).toEqual(published);
+    expect(verified.stdout).not.toContain("::warning");
+
+    for (const status of [1, 4]) {
+      const refused = runStep(verify, env, gh(status));
+      expect(refused.status, refused.stderr).toBe(1);
+      expect(refused.output).toBe("");
+      expect(refused.stdout).toContain("::warning title=Runner image not verified::");
+    }
+
+    expect(buildInputs({})).toEqual(inlineBuild);
+    expect(buildInputs({ mode: "inline" })).toEqual(inlineBuild);
+    expect(buildInputs(published)).toEqual({
+      buildArgs: [...inlineBuild.buildArgs, BUILD_ARGS],
+      buildContexts: [`runner-artifacts=docker-image://${IMAGE}`],
+      labels: [...inlineBuild.labels, ...LABELS.split("\n")],
+    });
+  });
+
+  it("records the attested Runner inputs digest for master promotion verification", () => {
+    expect(condition(named(buildJob, "Refresh lockfile for Docker build context"), 8)).toBe("needs.runner_image.outputs.mode != 'published'");
+    const record = named(buildJob, "Record the verified image");
+    expect(record).toContain("RUNNER_INPUTS_DIGEST: ${{ needs.runner_image.outputs.inputs_digest }}");
+    expect(record).toContain('--runner-inputs-digest "$RUNNER_INPUTS_DIGEST"');
+  });
+
+  it("keeps merge-queue build jobs on standard GitHub-hosted matrix runners", () => {
+    const runsOn = /\n {4}runs-on: (.+)\n/.exec(buildJob)?.[1];
+    expect(runsOn).toBe("${{ matrix.runner }}");
+    expect(buildJob).not.toMatch(/cloud-release-32|CORE_PUBLICATION_RUNNER|runs-on\/fleet=/);
   });
 });
 

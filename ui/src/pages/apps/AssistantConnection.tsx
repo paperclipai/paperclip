@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 import { cn } from "@/lib/utils";
+import { PluginTile } from "./PluginMarketplace";
 
 export const ASSISTANT_CONNECTION_PATH = "/apps/assistant-connection";
 const connectionsKey = ["mcp-connections"];
@@ -70,6 +71,23 @@ export function AssistantConnectionCard({ onNavigate }: { onNavigate: (href: str
   </div>;
 }
 
+/** The same entry as a marketplace tile, for the Installed grid. Opening it shows the accounts and any load failure in full. */
+export function AssistantConnectionTile({ onNavigate }: { onNavigate: (href: string) => void }) {
+  const connections = useAssistantConnections();
+  const failed = connections.view.kind === "error";
+  return <PluginTile
+    slug="assistant-connection"
+    name="Assistant Connection (MCP)"
+    description={failed ? "Couldn’t load your connection status. Open it to try again." : "Use your Paperclip organization from Codex, Claude, OpenCode, or another assistant."}
+    brandKey="paperclip"
+    icon={<Paperclip className="size-8 shrink-0 p-1 text-foreground" aria-hidden="true" />}
+    state={failed ? "attention" : connections.loaded && connections.rows.length > 0 ? "connected" : "available"}
+    statusLabel={failed ? "Needs attention" : "Connected"}
+    action={null}
+    onOpen={() => onNavigate(ASSISTANT_CONNECTION_PATH)}
+  />;
+}
+
 /** Only copy user-visible, non-secret setup values. Never execute them here. */
 function CopyValue({ value, label }: { value: string; label: string }) {
   const [copied, setCopied] = useState(false);
@@ -106,7 +124,7 @@ export function AssistantConnection({ initialAssistant = "codex" }: { initialAss
     return client.invalidateQueries({ queryKey: connectionsKey });
   } });
   useEffect(() => {
-    setBreadcrumbs([{ label: "Connectors", href: "/apps" }, { label: "Assistant Connection (MCP)" }]);
+    setBreadcrumbs([{ label: "Plugins", href: "/apps" }, { label: "Assistant Connection (MCP)" }]);
     return () => setBreadcrumbs([]);
   }, [setBreadcrumbs]);
   if (!selectedCompanyId || !selectedCompany) return <p className="text-sm text-muted-foreground">Select an organization to connect an assistant.</p>;

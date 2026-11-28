@@ -37,3 +37,23 @@ describe("toast session replay", () => {
     } finally { act(() => root.unmount()); }
   });
 });
+
+describe("mobile bottom nav clearance and viewport fit", () => {
+  it("lifts toasts above MobileBottomNav on mobile and constrains width inside narrow viewports", () => {
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    try {
+      act(() => root.render(<ToastProvider><Notify toast={{ title: "Saved", body: "Ready" }} /></ToastProvider>));
+      const aside = container.querySelector("aside");
+      expect(aside).not.toBeNull();
+      const classes = aside!.className.split(/\s+/);
+      expect(classes).toContain("inset-x-3");
+      expect(classes).toContain("sm:inset-x-auto");
+      expect(classes).toContain("sm:left-3");
+      expect(classes).toContain("sm:w-full");
+      expect(classes).toContain("bottom-(--mobile-nav-overlay-bottom)");
+      expect(classes).toContain("md:bottom-3");
+      expect(classes).not.toContain("w-full");
+    } finally { act(() => root.unmount()); }
+  });
+});
