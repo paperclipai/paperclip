@@ -44,6 +44,7 @@ describe("composer run settings", () => {
     expect(composerEfforts(agent("opencode_local"), "openrouter/x/y", ["openrouter/x/y"])).toEqual([]);
     expect(composerEfforts(agent("claude_local"), "claude-sonnet-5", ["claude-sonnet-5"])).toEqual(["low", "medium", "high", "xhigh", "max"]);
     expect(composerEfforts(agent("claude_local"), "claude-haiku-4-5", ["claude-haiku-4-5"])).toEqual([]);
+    expect(composerEfforts(agent("claude_local"), "claude-haiku-5-5", ["claude-haiku-5-5"])).toEqual(["low", "medium", "high", "xhigh", "max"]);
     expect(composerEfforts(agent("grok_local"), "grok-4.7", ["grok-4.7"])).toEqual(["low", "medium", "high", "xhigh"]);
     expect(composerEfforts(agent("grok_local"), "grok-4.7", [])).toEqual([]);
     expect(composerEfforts(agent("grok_local"), "", ["grok-build"])).toEqual(["low", "medium", "high"]);
