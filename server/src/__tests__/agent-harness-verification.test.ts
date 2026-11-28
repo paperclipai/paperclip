@@ -14,6 +14,9 @@ describe("saved harness verification", () => {
     ["opencode_command_unresolvable", "harness_command_unavailable"],
     ["opencode_cwd_invalid", "harness_cwd_invalid"],
     ["opencode_hello_probe_timed_out", "harness_probe_timed_out"],
+    ["codex_hello_probe_timeout", "harness_probe_timed_out"],
+    ["opencode_hello_probe_timeout", "harness_probe_timed_out"],
+    ["opencode_hello_probe_timeout_extra", "harness_test_failed"],
     ["opencode_hello_probe_unexpected_output", "harness_probe_unexpected_output"],
     ["private provider error", "harness_test_failed"],
   ])("classifies %s without keeping provider output", (checkCode, code) => {
