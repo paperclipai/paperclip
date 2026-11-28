@@ -269,7 +269,9 @@ pnpm dev
 
 The managed `paperclipai update` command can update managed and global npm
 installs. For source checkouts it reports the appropriate git workflow instead
-of modifying the checkout automatically.
+of modifying the checkout automatically. For pnpm, Yarn, and Bun global installs
+it reports the update command for that package manager instead of running npm.
+Run that command, then restart any running Paperclip service.
 
 ## Diagnose An Installation
 
