@@ -8,7 +8,8 @@ import { isSupportedAcpxProfileVersion } from "./profile-compatibility.js";
 // release changes the commandDigest and keeps the version; a new provider starts
 // at 1. Update this table, with the reason, only for a deliberate reset.
 const PROFILE_VERSIONS: Readonly<Record<string, number>> = {
-  antigravity: 1, claude: 1, codex: 1, copilot: 92, cursor: 17, grok: 20, pi: 37,
+  // Released Antigravity uses revision 2 to refuse saved pending-candidate sessions.
+  antigravity: 2, claude: 1, codex: 1, copilot: 92, cursor: 17, grok: 20, pi: 37,
   // Released Kimi uses revision 17 to refuse saved pending-candidate sessions.
   // The upstream-only attestation migration retains that existing revision.
   kimi: 17,
@@ -68,7 +69,7 @@ describe("historical ACPX profile decoding", () => {
     ["copilot", "copilot-profile-v85-cursor-cloud-qualification-historical-identity.json", "977d68b327f3964e8337ef8ba00230eb1b1697017db21f8010f664fee3d3c70a", "private Cloud qualification"],
     ["grok", "grok-profile-v14-identity.json", "08294ec6bdcbdbe46c8c8b711d8b368558a05f0d84d25c9f5fd0c3b67b79cd17", "published ed8"],
     ["grok", "grok-profile-v14-cursor-cloud-qualification-historical-identity.json", "fa34ba395ff51affed7e7195dc44f4e33a3c6718ada1c80e8e36852cf7af40ac", "private Cloud qualification"],
-  ] as const)("keeps %s identity %s immutable and decode-only", (agent, filename, checksum) => {
+  ] as const)("keeps %s identity %s immutable and decode-only", (agent, filename, checksum, _source) => {
     const bytes = readFileSync(new URL(`../../../test/fixtures/${filename}`, import.meta.url));
     expect(createHash("sha256").update(bytes).digest("hex")).toBe(checksum);
     const identity = JSON.parse(bytes.toString("utf8"));

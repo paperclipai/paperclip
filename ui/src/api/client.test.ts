@@ -3,6 +3,7 @@ import {
   createTenantSessionRecoveryCoordinator,
   tenantSessionRecovery,
 } from "@/lib/tenant-session-recovery";
+import { isIntentionalAbortReason } from "@/lib/intentional-abort";
 import { api, detachInflightGet } from "./client";
 import { toolsApi } from "./tools";
 import { museInvitationsApi } from "./museInvitations";
@@ -93,7 +94,8 @@ describe("tenant-session recovery", () => {
     await expect(api.get("/ordinary-401")).rejects.toMatchObject({
       name: "ApiError",
       status: 401,
-      message: "unauthorized",
+      code: "unauthorized",
+      message: "Your session has ended. Sign in again to continue.",
     });
 
     fetchMock.mockResolvedValue(jsonResponse({ recovered: true }));
@@ -103,6 +105,22 @@ describe("tenant-session recovery", () => {
 });
 
 describe("in-tab GET coalescing", () => {
+  it("keeps fresh validation reads separate from older and concurrent requests", async () => {
+    const old = deferred<Response>();
+    fetchMock.mockReturnValueOnce(old.promise).mockResolvedValue(jsonResponse({ title: "Current C" }));
+    const stale = api.get("/fresh-validation");
+    const first = api.get("/fresh-validation", { cache: "no-store", fresh: true });
+    const second = api.get("/fresh-validation", { cache: "no-store", fresh: true });
+    const joined = api.get("/fresh-validation");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({ cache: "no-store" });
+    await expect(first).resolves.toEqual({ title: "Current C" });
+    await expect(second).resolves.toEqual({ title: "Current C" });
+    old.resolve(jsonResponse({ title: "Old A" }));
+    await expect(stale).resolves.toEqual({ title: "Old A" });
+    await expect(joined).resolves.toEqual({ title: "Old A" });
+  });
+
   it("times out a caller without cancelling another and starts a fresh fetch on retry", async () => {
     vi.useFakeTimers();
     const first = deferred<Response>();
@@ -260,6 +278,25 @@ describe("per-caller abort semantics", () => {
     const fresh = api.get("/abort-b");
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(await fresh).toEqual({ value: "fresh" });
+  });
+
+  it("marks the shared fetch's cancellation, whether every caller aborted or timed out", async () => {
+    vi.useFakeTimers();
+    fetchMock.mockReturnValue(deferred<Response>().promise);
+    const controller = new AbortController();
+    const aborted = api.get("/intentional-abort", { signal: controller.signal });
+    const timed = api.get("/intentional-timeout", { timeoutMs: 100 }).catch(error => error);
+    const [abortedSignal, timedSignal] = fetchMock.mock.calls.map(([, init]) => init.signal as AbortSignal);
+
+    controller.abort();
+    await expect(aborted).rejects.toMatchObject({ name: "AbortError" });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await timed).toMatchObject({ status: 408 });
+
+    expect(abortedSignal.reason).toMatchObject({ name: "AbortError" });
+    expect(isIntentionalAbortReason(abortedSignal.reason)).toBe(true);
+    expect(isIntentionalAbortReason(timedSignal.reason)).toBe(true);
+    expect(isIntentionalAbortReason(controller.signal.reason)).toBe(false);
   });
 
   it("rejects immediately if the caller signal is already aborted", async () => {

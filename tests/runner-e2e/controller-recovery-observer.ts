@@ -13,10 +13,18 @@ import type { ControllerReplacementReceipt } from "./controller-replacement.js";
 export interface RecoveryBinding { companyId: string; issueId: string; runId: string }
 export interface RecoverySnapshot {
   runId: string; runnerInstanceId: string; nativeSessionId: string;
+  status: string; phase: string; resultId: string | null;
   bootId: string; generation: number; attempt: number; leaseExpiresAt: string | null;
   sourceSeq: number; history: Array<Record<string, unknown>>;
   authenticatedConnectionCount: number;
   checkpointSourceSeq: number;
+}
+
+export function assertActiveRecoveryBoundary(snapshot: RecoverySnapshot): void {
+  if (snapshot.status !== "running" || snapshot.phase !== "observed" || snapshot.resultId !== null
+    || !snapshot.leaseExpiresAt || !Number.isFinite(Date.parse(snapshot.leaseExpiresAt)) || Date.parse(snapshot.leaseExpiresAt) <= Date.now()) {
+    throw new Error("Active controller handoff boundary unexercised: original execution settled before traffic switched");
+  }
 }
 export interface ControllerRecoveryReceipt {
   binding: RecoveryBinding;
@@ -98,7 +106,7 @@ export function validControllerRecoveryReceipt(fault: ControllerReplacementRecei
 
 export async function readControllerRecoverySnapshot(db: Db, binding: RecoveryBinding): Promise<RecoverySnapshot> {
   return db.transaction(async tx => {
-    const [row] = await tx.execute(sql`select r.id as "runId", r.runner_instance_id as "runnerInstanceId",
+    const [row] = await tx.execute(sql`select r.id as "runId", r.status, f.phase, f.result_id as "resultId", r.runner_instance_id as "runnerInstanceId",
       r.native_session_id as "nativeSessionId", f.controller_boot_id as "bootId", f.controller_generation as generation,
       f.attempt, f.lease_expires_at::text as "leaseExpiresAt", f.recovery_history as history,
       coalesce((select max(e.source_seq) from heartbeat_run_events e where e.run_id = r.id
@@ -139,7 +147,10 @@ export async function createControllerRecoveryObserver(configPath: string, bindi
         runnerInstanceId: before.runnerInstanceId, nativeSessionId: before.nativeSessionId };
   };
   return {
-    beforeHandoff: capture,
+    beforeHandoff: async (fault: ControllerReplacementReceipt) => {
+      await capture(fault);
+      assertActiveRecoveryBoundary(before!);
+    },
     // Called only after the old server is confirmed dead. This also excludes
     // receipts committed while it was stopping from replacement evidence.
     stopped: capture,

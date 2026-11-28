@@ -63,6 +63,35 @@ it("rejects a stale qualified Claude SDK before provider creation", async () => 
   } finally { await rm(workspace, { recursive: true, force: true }); }
 });
 
+it("retains only closed startup failure facts in the actual CLI artifact", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "eval-startup-failure-"));
+  try {
+    const binary = join(workspace, "runnerd"), requestPath = join(workspace, "request.json"), outputPath = join(workspace, "artifact.json");
+    await writeFile(binary, "unused fake runner");
+    await writeFile(requestPath, JSON.stringify(request({
+      runnerd: { path: binary, sha256: createHash("sha256").update("unused fake runner").digest("hex") },
+      session: { workingDirectory: workspace },
+    })));
+    const error = Object.assign(new Error("Provider startup rejected"), { runnerCommandResult: { result: {
+      providerFailure: { schema: "paperclip.provider-failure.v1", provider: "codex", phase: "startup", category: "authentication",
+        httpStatus: 401, retryability: "requires_action", message: "PRIVATE-SECRET", requestId: "private-request-id" },
+    } } });
+    const exit = await runEvalSessionCli(["--request", requestPath, "--output", outputPath], {
+      serviceFactory: () => { throw error; },
+    });
+    const artifact = JSON.parse(await readFile(outputPath, "utf8"));
+    expect(exit).toBe(2);
+    expect(artifact.providerFailureDiagnostics).toEqual([{ phase: "startup", category: "authentication", httpStatus: 401, retryability: "requires_action" }]);
+    expect(JSON.stringify(artifact)).not.toMatch(/PRIVATE-SECRET|private-request-id/);
+    expect(artifact.infrastructureError).toBe("Provider startup rejected");
+  } finally {
+    for (const entry of await readdir(workspace)) {
+      if (entry.startsWith(".paperclip-eval-runtime-context-")) await chmod(join(workspace, entry, "instructions"), 0o700);
+    }
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
 function agentCoreProfile(overrides: Record<string, unknown> = {}) {
   return {
     profileId: "agentcore-qualified",
@@ -94,7 +123,7 @@ describe("eval-session request contract", () => {
     const value = request({ provider: "acpx", acpxAgent: agent, model: "explicit-provider-model" });
     expect(() => parseEvalSessionRequest(value)).toThrow("--candidate-profile");
     expect(parseEvalSessionRequest(value, { candidateProfile: agent })).toMatchObject({ acpxAgent: agent, model: "explicit-provider-model" });
-    expect(() => parseEvalSessionRequest(value, { candidateProfile: agent === "pi" ? "cursor" : "pi" })).toThrow("must match");
+    expect(() => parseEvalSessionRequest(value, { candidateProfile: "pi" })).toThrow("must match");
     expect(() => parseEvalSessionRequest(request({ provider: "acpx", acpxAgent: agent, model: "" }), { candidateProfile: agent })).toThrow("request.model");
     expect(() => parseEvalSessionRequest(request({ provider: "acpx", acpxAgent: "codex", session: { acpxAgent: agent } }))).toThrow("session.acpxAgent must match");
     expect(() => parseEvalSessionRequest(request({ provider: "acpx", acpxAgent: agent, candidateProfile: agent }))).toThrow("--candidate-profile");
@@ -496,10 +525,10 @@ describe("eval-session usage", () => {
       providerReported: { nanodollars: null, recordedAttempts: 0 },
       estimated: { nanodollars: 6_200_000, recordedAttempts: 1 },
     });
-    expect(snapshot.usageLedger[0]?.costNanodollars).toBe(legacyCost);
+    expect(snapshot.usageLedger![0]?.costNanodollars).toBe(legacyCost);
     const limitedRequest = parseEvalSessionRequest(request());
     limitedRequest.limits.maxEstimatedCostNanodollars = 10_000_000;
-    const costlySnapshot = { ...snapshot, usageLedger: [{ ...snapshot.usageLedger[0]!, costNanodollars: 10_000_001 }] };
+    const costlySnapshot = { ...snapshot, usageLedger: [{ ...snapshot.usageLedger![0]!, costNanodollars: 10_000_001 }] };
     expect(() => boundedEvalSessionUsage(limitedRequest, {
       turnId: "codex-turn", status: "completed", assistantText: "Completed", snapshot: costlySnapshot,
     })).toThrow("legacy ledger cost limit exceeded");
@@ -580,7 +609,7 @@ describe("eval-session budget settlement", () => {
       });
       const input = request({ provider: "acpx", acpxAgent: agent, model,
         runnerd: { path: binary, sha256: createHash("sha256").update("unused fake runner").digest("hex") },
-        session: { workingDirectory: workspace, ...(agent === "pi" ? { piThinkingLevel: "low" } : {}) }, limits: { turnTimeoutMs: 1000, maxAgentTurns: 2, maxEstimatedCostNanodollars: 100_000_000 },
+        session: { workingDirectory: workspace }, limits: { turnTimeoutMs: 1000, maxAgentTurns: 2, maxEstimatedCostNanodollars: 100_000_000 },
       });
       const requestPath = join(workspace, "request.json");
       const outputPath = join(workspace, "output.json");

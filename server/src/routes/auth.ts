@@ -10,8 +10,12 @@ import {
 import { unauthorized } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { resolveSentryDsns } from "../sentry-dsn.js";
+import { resolveBrowserTracingConfig, warnOnce } from "../browser-tracing-config.js";
 import { logger } from "../middleware/logger.js";
 import { loadBoardBootstrap } from "../services/board-bootstrap.js";
+import { resolveBrowserAnalyticsConfig } from "../services/cloud-posthog-browser.js";
+import { setResolvedCloudTrialInferenceEnabled } from "../services/cloud-posthog-cohort.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 
 async function loadCurrentUserProfile(db: Db, userId: string) {
   const user = await db
@@ -37,6 +41,8 @@ async function loadCurrentUserProfile(db: Db, userId: string) {
   });
 }
 
+const warnBrowserTracing = warnOnce((message) => logger.warn(message));
+
 export function authRoutes(db: Db) {
   const router = Router();
 
@@ -52,7 +58,18 @@ export function authRoutes(db: Db) {
         return undefined;
       })
       : Promise.resolve(undefined);
-    const [user, boardBootstrap] = await Promise.all([loadCurrentUserProfile(db, req.actor.userId), bootstrap]);
+    const [user, boardBootstrap, experimental] = await Promise.all([
+      loadCurrentUserProfile(db, req.actor.userId),
+      bootstrap,
+      instanceSettingsService(db)
+        .getExperimental()
+        .catch(() => null),
+    ]);
+    const cloudTrialInferenceEnabled =
+      experimental !== null ? experimental.enableCloudTrialInference === true : undefined;
+    if (typeof cloudTrialInferenceEnabled === "boolean") {
+      setResolvedCloudTrialInferenceEnabled(cloudTrialInferenceEnabled);
+    }
     res.setHeader("Cache-Control", "private, no-store");
     const session = authSessionSchema.parse({
       session: {
@@ -67,6 +84,14 @@ export function authRoutes(db: Db) {
       sentryDsn: resolveSentryDsns().frontend,
       // Match the server SDK's runtime environment, including in reused images.
       sentryEnvironment: process.env.SENTRY_ENVIRONMENT || null,
+      // Hosted Paperclip Cloud only; null everywhere else. The ingest key is
+      // ingest-only by construction — see `server/src/browser-tracing-config.ts`.
+      browserTracing: resolveBrowserTracingConfig(process.env, warnBrowserTracing),
+      // Hosted Paperclip Cloud with PAPERCLIP_POSTHOG_BROWSER_ENABLED=1 only;
+      // null everywhere else. See `server/src/services/cloud-posthog-browser.ts`.
+      browserAnalytics: resolveBrowserAnalyticsConfig(process.env, req.headers, {
+        ...(typeof cloudTrialInferenceEnabled === "boolean" ? { cloudTrialInferenceEnabled } : {}),
+      }),
     });
     res.json({ ...session, ...(boardBootstrap ? { boardBootstrap } : {}) });
   });

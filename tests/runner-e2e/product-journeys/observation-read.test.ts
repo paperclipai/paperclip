@@ -32,7 +32,7 @@ describe("bounded observation reads", () => {
     expect(get.mock.calls[0]?.[1]?.timeoutMs).toBeGreaterThan(0);
     expect(get.mock.calls[0]?.[1]?.timeoutMs).toBeLessThanOrEqual(50);
     await createObservedReader({ get }, Date.now() + 100_000).get("/api/issues/owned");
-    expect(get.mock.calls[1]?.[1]).toEqual({ timeoutMs: 30_000 });
+    expect(get.mock.calls[1]?.[1]).toEqual({ timeoutMs: 30_000, retry: false });
   });
   it.each(["api_request_failed", "api_status_408", "api_status_429", "api_status_502", "api_status_503", "api_status_504"])("retains and retries %s without replaying work", async code => {
     vi.useFakeTimers();

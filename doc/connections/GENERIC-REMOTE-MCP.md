@@ -41,7 +41,7 @@ endpoint and branches:
 | --- | --- |
 | Nothing needed | Discovered actions, straight to review. |
 | Needs authorization, and publishes discoverable OAuth metadata | **Sign in to continue** — a browser sign-in at the provider. |
-| Needs authorization, but no discoverable sign-in | A prompt to add the key or headers its docs list, under **Advanced authentication**. |
+| Needs authorization, but no discoverable sign-in | A prompt to add the key or headers its docs list, with the sign-in options open below it. |
 | Needs a client you registered yourself | A prompt for a client ID and secret. The draft connection is kept — you don't start over. |
 | Not a valid address / private network / unreachable | The specific problem and which field to change. |
 
@@ -79,6 +79,37 @@ Optional assigned apps do not emit run-start connection warnings, including
 unavailable shared apps. Their health state and reconnect controls remain in
 Apps. An unrelated run does not need to act on that state.
 
+### Connecting another Paperclip instance
+
+Every Paperclip serves its assistant connection at `/mcp/paperclip` (see
+[Public Paperclip MCP connection](../public-mcp.md)). Pasting that address
+connects your agents to another instance — for example a colleague's — so they
+can file and follow tasks there. Paperclip recognizes the address and, using
+only the address you typed (nothing the other server says):
+
+- names the connection after that instance with its distinctive part first —
+  `acme Paperclip` for `acme.paperclip.app`, `localhost-3101 Paperclip` for a
+  local instance — and prefixes its tools with the same host-derived label,
+  so agents see
+  `mcp.acme-paperclip-<id>:paperclip-create-task` (native runners:
+  `app_mcp_acme_paperclip_…_paperclip_create_task_…`), never a bare
+  `create_task` that looks like their own. Other address-based connections
+  keep their existing tool names. Setup records the prefix on the connection
+  (`paperclipPeerToolNamespace`) when it is created, so renaming or
+  reconnecting never changes tool names that saved tool-name rules, agents or
+  pending approvals refer to. Paperclip connections created before this keep
+  their original names;
+- adds agent instructions (template `paperclip.peer`, editable and
+  resettable under **Agent instructions** on the connection's Permissions page)
+  saying these tools act on a different
+  Paperclip, that agents keep using their own Paperclip tools for their own
+  work, and that links from the other instance must be quoted in full;
+- refuses the address of this same instance (`paperclip_self_connection`,
+  422), because its tools are already built in.
+
+Actions start on, as for any other connection. A name or instructions you
+supply yourself are kept.
+
 ### Slack app access
 
 If Slack reports that MCP access is disabled for the app, ask the Slack app
@@ -87,15 +118,27 @@ connection. Signing in alone does not enable that app setting. Paperclip shows
 this as a setup error and keeps the connection available for retry. See
 [Slack's MCP app requirements](https://docs.slack.dev/ai/slack-mcp-server/#app-identity).
 
-### Advanced authentication
+### Choosing how the server signs in
 
-Collapsed by default. Open it when the server's docs are specific:
+The connect screen states the sign-in choice in one line, **Paperclip asks the
+server how to sign in.**, with a **Change** link, the same shape as the access
+line below it. **Change** lists five options (six for organization connections), each with its fields directly
+beneath it when selected:
 
-- **No sign-in needed** — the server is open to anyone with the address.
+- **Let Paperclip check** — the default; Paperclip probes and walks you through it.
 - **Key or token** — sent as an `Authorization` header.
+- **Browser sign-in** — you sign in at the provider. **Use your own client ID**
+  reveals a client ID and secret, for providers that require you to register
+  Paperclip first.
 - **Custom headers** — for servers that name their own headers.
-- **Browser sign-in** — optionally with a client ID and secret you registered
-  yourself, for providers that require preregistration.
+- **No sign-in needed** — the server is open to anyone with the address.
+- **Machine sign-in** — organization connections only. Paperclip signs in as a
+  client you registered with the provider, using a Paperclip key or a client
+  secret, with no person involved. It runs its own setup and test in place of
+  **Check link**. See [Machine sign-in](./MCP-CLIENT-CREDENTIALS.md).
+
+**Done** collapses the list back to a one-line summary of the choice. It stays
+open while the chosen option still needs a value.
 
 Every value you enter becomes a Paperclip secret. Values are write-only: they
 never appear in stored config JSON, logs, activity details, API responses after
@@ -115,8 +158,10 @@ You never choose this; Paperclip resolves it and the wizard shows none of it.
 Recorded here for security review and diagnostics. In preference order:
 
 1. **Deployment-preconfigured client.** `PAPERCLIP_TOOL_OAUTH_<PROVIDER>_CLIENT_ID`
-   / `_SECRET`, or the unsuffixed `PAPERCLIP_TOOL_OAUTH_CLIENT_ID` / `_SECRET`.
-   Always wins when set.
+   / `_SECRET` and the unsuffixed `PAPERCLIP_TOOL_OAUTH_CLIENT_ID` / `_SECRET`
+   apply only to gallery apps, at the token endpoint their app definition
+   fixes. A pasted server never gets a deployment client. Add a client of your
+   own to the connection, or use CIMD or dynamic registration.
 2. **Client ID Metadata Document (CIMD).** When the authorization server
    advertises `client_id_metadata_document_supported`, Paperclip presents the URL
    of its own published metadata document as the `client_id`. Nothing is
@@ -130,7 +175,7 @@ Recorded here for security review and diagnostics. In preference order:
    advertises a `registration_endpoint`. Paperclip registers a public client
    (`token_endpoint_auth_method: none`, `application_type: web`, PKCE S256).
 4. **Manual preregistered client.** The client ID and secret you paste under
-   **Advanced authentication → Browser sign-in**.
+   **Change → Browser sign-in → Use your own client ID**.
 
 A generic connection may register (tiers 2 and 3) **only after** validated
 protected-resource and authorization-server discovery actually produced a

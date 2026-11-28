@@ -18,14 +18,18 @@ import { projectTaskContext } from "./project-context-flow.js";
 import { runAgentJourney } from "./agent-flows.js";
 import { runActiveFollowup } from "./active-followup-flow.js";
 import { runClarificationJourney } from "./clarification-flow.js";
+import { runChatContinuity } from "./chat-continuity-flow.js";
 import { runRepositoryContinuation } from "./repository-continuation-flow.js";
 import { runScheduledRoutine } from "./routine-schedule-flow.js";
+import { taskDependencyResume } from "./task-dependency-resume.js";
 import { runInputFile } from "./input-file-flow.js";
+import { runSavedSkillUse } from "./saved-skill-use-flow.js";
 import { runAgentSettings } from "./agent-settings-flow.js";
 import { companyAccessIsolation } from "./company-access-flow.js";
 import { inboxTriage } from "./inbox-triage-flow.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type JourneyOutcome, type TargetLifecycleInput, type TargetProvider, type TargetSession } from "./types.js";
 import type { RunnerE2EResult } from "../types.js";
+import { ConnectionFailure } from "../connection-config.js";
 import { regenerateRunnerDashboard } from "../dashboard-regenerate.js";
 import { resolveRunnerE2ESource } from "../source.js";
 import { validateRetainedRunnerResult } from "../result-validation.js";
@@ -72,6 +76,12 @@ export function journeyFailure(error: unknown): { outcome: Exclude<JourneyOutcom
   if (candidate && ["failed", "blocked", "unsupported"].includes(candidate.outcome ?? "") && /^[a-z][a-z0-9_-]{0,100}$/.test(candidate.code ?? "")) {
     return { outcome: candidate.outcome as Exclude<JourneyOutcome, "passed">, code: candidate.code! };
   }
+  // ConnectionApi failures carry only these fixed codes. Providers may load
+  // their own copy of the class, so match the name as well as the instance.
+  if ((error instanceof ConnectionFailure || error instanceof Error && error.constructor?.name === "ConnectionFailure")
+    && /^(api_status_[1-5][0-9]{2}|(sensitive_)?api_request_failed|invalid_api_route|invalid_api_timeout)$/.test(error.message)) {
+    return { outcome: "failed", code: error.message };
+  }
   // Browser errors may contain keys, codes, URLs and form values. Never retain them.
   return { outcome: "failed", code: "journey_operation_failed" };
 }
@@ -116,6 +126,8 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
   const source = resolveRunnerE2ESource({ sha, ref: null, workflowRunUrl: null });
   const definitionHash = createHash("sha256").update(JSON.stringify(productJourneys));
   for (const name of [
+    "saved-skill-use-flow.ts",
+    "saved-skill-use-evidence.ts",
     "task-lifecycle.ts",
     "task-lifecycle-evidence.ts",
     "../../../packages/shared/src/validators/issue.ts",
@@ -140,6 +152,9 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
     "inbox-triage-fixture.ts",
     "inbox-author-contract.ts",
     "task-properties.ts",
+    "../../../packages/shared/src/constants.ts",
+    "task-dependency-resume.ts",
+    "task-dependency-resume-evidence.ts",
     "task-search-filter.ts",
     "task-search-evidence.ts",
     "basic-flows.ts",
@@ -164,6 +179,9 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
     "../question-resume-scoring.ts",
     "../runtime-question-readiness.ts",
     "../chat-flow.ts",
+    "chat-continuity-flow.ts",
+    "chat-continuity-evidence.ts",
+    "../chat-cases.ts",
     "../continuation-readiness.ts",
     "../continuation-cases.ts",
     "success-contract.ts",
@@ -199,6 +217,13 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
         result.productJourney!.phases.push({ phase: "cleanup", outcome: "failed", code });
       }
     }
+  };
+  // Retain only an identifier-shaped adapter cause, never its message, so a
+  // generic cleanup failure can be traced to the target step that failed.
+  const recordCleanupCause = (error: unknown) => {
+    const cause = (error as { code?: unknown } | null)?.code;
+    if (typeof cause !== "string" || !/^[A-Za-z][A-Za-z0-9_]{1,79}$/.test(cause)) return;
+    failFinalization(`cause.${cause}`);
   };
   const persist = async () => {
     try {
@@ -279,11 +304,15 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
             result.provider = ready.agent.provider;
             result.model = ready.agent.model;
             result.runtimeMode = ready.agent.runtimeMode;
-            if (id === "repository-continuation") await runRepositoryContinuation(ready, session!, campaignId, evidence,
+            if (id === "saved-skill-use") await runSavedSkillUse(ready, session!, campaignId, evidence,
+              { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
+            else if (id === "repository-continuation") await runRepositoryContinuation(ready, session!, campaignId, evidence,
               { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
             else if (id === "agent-settings-persistence") await runAgentSettings(ready, session!, campaignId, evidence,
               { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
             else if (id === "routine-scheduled-run") await runScheduledRoutine(ready, session!, campaignId, evidence,
+              { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
+            else if (id === "task-dependency-resume") await taskDependencyResume(ready, session!, campaignId, evidence,
               { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
             else if (id === "file-input-answer") await runInputFile(ready, session!, campaignId, evidence,
               { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
@@ -297,6 +326,8 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
                 await mkdir(directory, { recursive: true, mode: 0o700 });
                 await captureProductScreenshot(ready!.page, ready!.api.origin, path.join(directory, file), deadlineAt);
               } });
+            else if (id === "chat-continuity") await runChatContinuity(ready, session!, campaignId, evidence,
+              { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
             else await runAgentJourney(id, ready, session!, campaignId, evidence, { deadlineAt,
               directory: path.join(outputDir, "private-stories", id),
               capture: async (_id, _label, file) => {
@@ -387,10 +418,11 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
       for (const result of results) { if (result.cleanup !== "failed") result.cleanup = "passed"; result.productJourney!.resourceDisposition = disposition; result.productJourney!.phases.push({ phase: "cleanup", outcome: "passed" }); }
     } catch (error) {
       failFinalization(error instanceof JourneyError && error.code === "target_cleanup_timeout" ? error.code : "target_cleanup_failed");
+      if (!(error instanceof JourneyError && error.code === "target_cleanup_timeout")) recordCleanupCause(error);
       // A timed-out release may still have an in-flight request. Stop-only recovery
       // gets its own bounded signal and cannot delete resources or free the lease.
       try { await withinLifecycleDeadline(Math.min(cleanupDeadlineAt - browserCloseReserveMs, Date.now() + stopReserveMs), "target_stop_timeout", input => session?.stop?.(input) ?? Promise.resolve()); }
-      catch { failFinalization("target_stop_failed"); }
+      catch (stopError) { failFinalization("target_stop_failed"); if (!(stopError instanceof JourneyError && stopError.code === "target_stop_timeout")) recordCleanupCause(stopError); }
     }
     try { await withinLifecycleDeadline(Math.min(cleanupDeadlineAt, Date.now() + browserCloseReserveMs), "browser_cleanup_timeout", () => browser?.close() ?? Promise.resolve()); }
     catch (error) { failFinalization(error instanceof JourneyError && error.code === "browser_cleanup_timeout" ? error.code : "browser_cleanup_failed"); }

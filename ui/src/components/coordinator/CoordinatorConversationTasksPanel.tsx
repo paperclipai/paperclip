@@ -1,3 +1,4 @@
+import { useQueryView } from "@/components/QueryView";
 import { useMemo, useState } from "react";
 import { useCoordinatorChatTaskHandoffs } from "./CoordinatorChatTaskHandoffs";
 import { CoordinatorCreatedTaskLink } from "./CoordinatorTaskCommitment";
@@ -8,6 +9,8 @@ import { Button } from "@/components/ui/button";
 /** The task list is source-conversation scoped, independent of reassignment. */
 export function CoordinatorConversationTasksPanel({ conversationIssueId }: { conversationIssueId: string }) {
   const tasks = useCoordinatorChatTaskHandoffs(conversationIssueId);
+  const tasksView = useQueryView(tasks);
+  const waiting = ["loading", "reconnecting"].includes(tasksView.kind);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("");
   const [sort, setSort] = useState("newest");
@@ -23,10 +26,10 @@ export function CoordinatorConversationTasksPanel({ conversationIssueId }: { con
       <NativeSelect value={status} onChange={event => setStatus(event.target.value)} aria-label="Filter conversation tasks by status" className="w-auto"><option value="">All statuses</option><option value="todo">Ready to start</option><option value="in_progress">In progress</option><option value="in_review">Needs review</option><option value="blocked">Blocked</option><option value="done">Done</option><option value="cancelled">Cancelled</option></NativeSelect>
       <NativeSelect value={sort} onChange={event => setSort(event.target.value)} aria-label="Sort conversation tasks" className="w-auto"><option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="title">Title</option></NativeSelect>
     </div>
-    {tasks.isPending && <p role="status" className="text-sm text-muted-foreground">Loading tasks…</p>}
-    {tasks.isError && <div role="alert" className="space-y-2"><p className="text-sm">Tasks couldn’t load.</p><Button variant="outline" onClick={() => void tasks.refetch()}>Retry</Button></div>}
+    {waiting && <p role="status" className="text-sm text-muted-foreground">Loading tasks…</p>}
+    {(tasksView.kind === "error") && <div role="alert" className="space-y-2"><p className="text-sm">Tasks couldn’t load.</p><Button variant="outline" onClick={() => void tasks.refetch()}>Retry</Button></div>}
     <div className="space-y-3">{visible.map(task => <div key={task.id} className="overflow-hidden rounded-xl border border-border bg-card"><CoordinatorCreatedTaskLink task={task} /></div>)}</div>
-    {!tasks.isPending && !tasks.isError && !visible.length && <p className="py-4 text-sm text-muted-foreground">{query || status ? "No loaded tasks match these filters." : "Tasks created from this conversation will appear here."}</p>}
+    {!waiting && !(tasksView.kind === "error") && !visible.length && <p className="py-4 text-sm text-muted-foreground">{query || status ? "No loaded tasks match these filters." : "Tasks created from this conversation will appear here."}</p>}
     {tasks.hasNextPage && <Button variant="outline" disabled={tasks.isFetchingNextPage} onClick={() => void tasks.fetchNextPage()}>{tasks.isFetchingNextPage ? "Loading…" : "Load more tasks"}</Button>}
   </section>;
 }

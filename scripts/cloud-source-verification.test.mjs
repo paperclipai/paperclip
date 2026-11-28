@@ -5,9 +5,9 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createActionsReader, readSourceVerification, sourceVerificationJob, waitForSourceVerification, SourceVerificationDeferred } from "./cloud-source-verification.mjs";
+import { createActionsReader, readSourceVerification, runnerChaosEvalsJob, sourceVerificationJob, waitForSourceVerification, SourceVerificationDeferred } from "./cloud-source-verification.mjs";
 
-import { releaseAdmitted, deferredProducer, requestDeferredProducer, sourceAdmissionJob, migratorAdmissionJob, createReleaseRerunner } from "./cloud-release-admission.mjs";
+import { releaseAdmitted, deferredProducer, requestDeferredProducer, readMigratorPublication, sourceAdmissionJob, migratorAdmissionJob, createReleaseRerunner } from "./cloud-release-admission.mjs";
 
 import { cancelImageRun, runnerWaits, watchReleaseSource } from "./watch-release-source.mjs";
 
@@ -62,6 +62,48 @@ describe("admission CLI startup", () => {
     assert.match(result.stderr, /Canonical master admission context required/);
     assert.equal(result.output, "");
   });
+});
+
+test("the final image publication CLI rejects a green workflow that skipped its migrator", () => {
+  const root = mkdtempSync(join(tmpdir(), "migrator-publication-cli-"));
+  try {
+    const preload = join(root, "fixture.mjs");
+    const installFixture = () => {
+      const repository = { id: 1170821064, full_name: "paperclipai/paperclip" };
+      const run = (id, file) => ({ id, workflow_id: id, run_attempt: 1, path: `.github/workflows/${file}`, event: "push",
+        head_branch: "master", head_sha: "a".repeat(40), repository, head_repository: repository, status: "completed", conclusion: "success" });
+      const source = run(1, "cloud-readiness.yml"), migrator = run(2, "cloud-migrator-artifacts.yml");
+      globalThis.fetch = async (input, init) => {
+        if (init?.method && init.method !== "GET") throw new Error("Final publication must be read-only");
+        const url = new URL(input), path = url.pathname;
+        if (url.origin !== "https://api.github.com") throw new Error("Unexpected origin");
+        if (path.endsWith("/cloud-readiness.yml")) return Response.json({ id: 1, path: source.path });
+        if (path.endsWith("/cloud-migrator-artifacts.yml")) return Response.json({ id: 2, path: migrator.path });
+        if (path.endsWith("/workflows/1/runs")) return Response.json({ total_count: 1, workflow_runs: [source] });
+        if (path.endsWith("/workflows/2/runs")) return Response.json({ total_count: 1, workflow_runs: [migrator] });
+        if (path.endsWith("/runs/1")) return Response.json(source);
+        if (path.endsWith("/runs/2")) return Response.json(migrator);
+        if (path.endsWith("/jobs")) {
+          const id = path.includes("/runs/1/") ? 1 : 2;
+          return Response.json({ total_count: 1, jobs: [{ id: 3, name: id === 1 ? "Cloud source verified v1" : "publish",
+            run_id: id, run_attempt: 1, head_sha: "a".repeat(40), status: "completed",
+            conclusion: id === 1 || process.env.FIXTURE_PUBLISHED === "1" ? "success" : "skipped" }] });
+        }
+        throw new Error(`Unexpected path ${path}`);
+      };
+    };
+    writeFileSync(preload, "(" + installFixture.toString() + ")();\n");
+    for (const published of [false, true]) {
+      const output = join(root, `output-${published}`);
+      const result = spawnSync(process.execPath, ["--import", preload, fileURLToPath(new URL("./watch-release-source.mjs", import.meta.url)), "--check-proof"], {
+        encoding: "utf8", timeout: 5_000, env: { ...process.env, GITHUB_REPOSITORY: "paperclipai/paperclip", GITHUB_REF: "refs/heads/master",
+          GITHUB_SHA: sha, GITHUB_TOKEN: "fixture", GITHUB_OUTPUT: output, FIXTURE_PUBLISHED: published ? "1" : "0" },
+      });
+      assert.equal(result.status, published ? 0 : 1, result.stderr || result.error?.message);
+      if (published) assert.equal(readFileSync(output, "utf8"), "verified=true\n");
+      else assert.match(result.stderr, /Exact-source migrator has not published/);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 const workflow = { id: 123, path: ".github/workflows/cloud-readiness.yml" };
 const baseRun = {
@@ -219,7 +261,7 @@ test("a transient gateway error is retried instead of failing the release", asyn
 });
 
 test("every transient status is retried, and the backoff grows", async () => {
-  for (const status of [408, 425, 429, 500, 502, 503, 504]) {
+  for (const status of [408, 425, 500, 502, 503, 504]) {
     const { api, seen, waits } = reader({ responses: [{ status }, { status }, { status: 200, body: { ok: true } }] });
     await api("/repos/x");
     assert.equal(seen.length, 3, `status ${status} should be retried`);
@@ -242,14 +284,15 @@ test("a rate-limited 403 is retried, and a forbidden 403 is not", async () => {
   }
 });
 
-test("Retry-After sets the wait, capped so one header cannot stall the poll", async () => {
+test("Retry-After sets the wait and an excessive delay fails without retrying early", async () => {
   const { api, waits } = reader({ responses: [{ status: 429, headers: { "retry-after": "5" } }, { status: 200 }] });
   await api("/repos/x");
   assert.deepEqual(waits, [5_000]);
 
   const capped = reader({ responses: [{ status: 429, headers: { "retry-after": "86400" } }, { status: 200 }], maxRetryAfterMs: 60_000 });
-  await capped.api("/repos/x");
-  assert.deepEqual(capped.waits, [60_000]);
+  await assert.rejects(capped.api("/repos/x"), /GitHub API rate limited/);
+  assert.deepEqual(capped.waits, []);
+  assert.equal(capped.seen.length, 1);
 });
 
 test("a body that fails while being read is retried", async () => {
@@ -334,6 +377,27 @@ describe("image build source monitor", () => {
     const f = fixture({ jobs: [{ ...proof, name: "General tests", conclusion: "failure" }] });
     await assert.rejects(watchReleaseSource(f), /General tests/);
     assert.deepEqual(f.cancellations, ["/repos/paperclipai/paperclip/actions/runs/99/cancel", `/repos/paperclipai/paperclip/actions/runs/${runId}/cancel`]);
+  });
+
+  // Owner decision 2026-11-12: Runner chaos evals run and report, but do not
+  // gate image publication or the exact-source proof.
+  const chaosJob = { ...proof, id: 112, name: `${runnerChaosEvalsJob} / Restart, replay, trace, and recovery faults` };
+
+  test("a failed Runner chaos eval neither cancels image work nor blocks the source proof", async () => {
+    const f = fixture({ jobs: [{ ...chaosJob, conclusion: "failure" }, proof] });
+    assert.equal((await watchReleaseSource(f)).jobId, proof.id);
+    assert.deepEqual(f.cancellations, []);
+  });
+
+  test("a failed Runner chaos eval while the proof is pending keeps waiting instead of failing", async () => {
+    const f = fixture({ jobs: [{ ...chaosJob, conclusion: "failure" }, { ...proof, status: "in_progress", conclusion: null }] });
+    assert.equal(await readSourceVerification(sha, f.api, { failFast: true }), undefined);
+    assert.deepEqual(f.cancellations, []);
+  });
+
+  test("a required check that only resembles the chaos job name still fails fast", async () => {
+    const f = fixture({ jobs: [{ ...proof, name: "Runner chaos evals / Restart", conclusion: "failure" }] });
+    await assert.rejects(watchReleaseSource(f), /Runner chaos evals \/ Restart/);
   });
 
   test("a superseded readiness attempt cancels image work with no deployable future", async () => {
@@ -583,6 +647,8 @@ describe("release candidate admission", () => {
     f.jobs[producer.id] = [job(producer, migratorAdmissionJob, "success"), build];
     assert.equal(await requestDeferredProducer(f), "pending");
     build.status = "in_progress";
+    assert.equal(await requestDeferredProducer(f), "pending", "labels alone do not prove a worker started");
+    build.runner_id = 123;
     assert.equal(await requestDeferredProducer(f), "admitted");
     build.run_attempt = 2;
     assert.equal(await requestDeferredProducer(f), "pending", "a stale build cannot admit work");
@@ -615,7 +681,7 @@ describe("release candidate admission", () => {
     assert.equal(f.writes.length, 1);
   });
 
-  test("the image monitor admits a late migrator even when source proof is ready", async () => {
+  test("the image monitor waits for actual migrator publication after deferred admission", async () => {
     const f = fixture("cloud-migrator-artifacts.yml");
     const source = run("cloud-readiness.yml");
     f.runs["cloud-readiness.yml"] = [source];
@@ -627,13 +693,43 @@ describe("release candidate admission", () => {
     const proof = await watchReleaseSource({ ...f, runId: image.id, attempt: 1, cancel: () => assert.fail("must not cancel"),
       now: () => time, intervalMs: 10, timeoutMs: 30, log: () => {}, summary: async () => {}, sleep: async ms => {
         time += ms;
-        const selected = run(f.file, { run_attempt: 2 });
+        const selected = run(f.file, { run_attempt: 2, ...(time >= 20 ? { status: "completed", conclusion: "success" } : {}) });
         f.runs[f.file] = [selected];
-        f.jobs[selected.id] = [{ ...job(selected, "Build migrator", null), status: "in_progress", labels: ["cloud-release-32"] }];
+        f.jobs[selected.id] = [time >= 20 ? job(selected, "publish", "success") :
+          { ...job(selected, "Build migrator", null), status: "in_progress", labels: ["cloud-release-32"], runner_id: 123 }];
       } });
     assert.equal(proof.sha, sha);
-    assert.equal(time, 10);
+    assert.equal(time, 20);
     assert.equal(f.writes.length, 1);
+  });
+
+  test("migrator publication rejects skipped, stale, failed and duplicate publisher evidence", async () => {
+    const f = fixture("cloud-migrator-artifacts.yml");
+    const selected = f.runs[f.file][0];
+    assert.equal(await readMigratorPublication(sha, f.api), false);
+    f.jobs[selected.id] = [job(selected, "publish", "success")];
+    assert.equal(await readMigratorPublication(sha, f.api), true);
+    for (const change of [{ conclusion: "skipped" }, { run_attempt: 2 }, { run_id: 1 }, { head_sha: "b".repeat(40) }, { status: "queued" }]) {
+      f.jobs[selected.id] = [{ ...job(selected, "publish", "success"), ...change }];
+      assert.equal(await readMigratorPublication(sha, f.api), false);
+    }
+    f.jobs[selected.id] = [job(selected, "publish", "success"), job(selected, "publish", "success")];
+    assert.equal(await readMigratorPublication(sha, f.api), false);
+    f.current[selected.id] = { ...selected, conclusion: "failure" };
+    await assert.rejects(readMigratorPublication(sha, f.api), /migrator publication failed/);
+    assert.deepEqual(f.writes, [], "a read never retries a failed producer");
+  });
+
+  test("a publication retry racing job evidence invalidates the old success", async () => {
+    const f = fixture("cloud-migrator-artifacts.yml");
+    const selected = f.runs[f.file][0];
+    f.jobs[selected.id] = [job(selected, "publish", "success")];
+    let reads = 0;
+    const api = async path => {
+      if (path.endsWith(`/runs/${selected.id}`) && ++reads === 2) return { ...selected, run_attempt: 2 };
+      return f.api(path);
+    };
+    assert.equal(await readMigratorPublication(sha, api), false);
   });
 
   test("the retry transport is a bounded POST to a canonical run", async () => {
@@ -645,4 +741,53 @@ describe("release candidate admission", () => {
     assert.equal(calls[0].options.method, "POST");
     assert.equal(calls[0].options.redirect, "error");
   });
+});
+
+function etagServer(resources) {
+  const requests = [];
+  const fetchImpl = async (url, init) => {
+    const path = url.replace("https://api.github.com", "");
+    const sent = init.headers["If-None-Match"] ?? null;
+    requests.push({ path, sent });
+    const { etag, body } = resources[path];
+    const notModified = sent === etag;
+    return {
+      ok: !notModified, status: notModified ? 304 : 200,
+      headers: { get: (name) => (name.toLowerCase() === "etag" ? etag : null) },
+      json: async () => (notModified ? assert.fail("a 304 has no body") : structuredClone(body)),
+    };
+  };
+  return { requests, fetchImpl };
+}
+
+test("a repeated read sends its ETag and reuses the body when GitHub answers 304", async () => {
+  const resources = { "/repos/x": { etag: '"v1"', body: { id: 1 } } };
+  const { requests, fetchImpl } = etagServer(resources);
+  const api = createActionsReader({ token: "t", fetchImpl, log: () => {} });
+
+  assert.deepEqual(await api("/repos/x"), { id: 1 });
+  assert.deepEqual(await api("/repos/x"), { id: 1 });
+  assert.deepEqual(requests, [{ path: "/repos/x", sent: null }, { path: "/repos/x", sent: '"v1"' }]);
+
+  resources["/repos/x"] = { etag: '"v2"', body: { id: 2 } };
+  assert.deepEqual(await api("/repos/x"), { id: 2 }, "a changed resource replaces the cached body");
+  assert.deepEqual(await api("/repos/x"), { id: 2 });
+  assert.equal(requests.at(-1).sent, '"v2"');
+});
+
+test("a cached body cannot be changed by the caller that received it", async () => {
+  const { fetchImpl } = etagServer({ "/repos/x": { etag: '"v1"', body: { jobs: [1] } } });
+  const api = createActionsReader({ token: "t", fetchImpl, log: () => {} });
+  (await api("/repos/x")).jobs.push(2);
+  assert.deepEqual(await api("/repos/x"), { jobs: [1] });
+});
+
+test("ETags are kept per path", async () => {
+  const { requests, fetchImpl } = etagServer({
+    "/repos/a": { etag: '"a"', body: { id: "a" } }, "/repos/b": { etag: '"b"', body: { id: "b" } },
+  });
+  const api = createActionsReader({ token: "t", fetchImpl, log: () => {} });
+  await api("/repos/a");
+  assert.deepEqual(await api("/repos/b"), { id: "b" });
+  assert.deepEqual(requests.map((r) => r.sent), [null, null]);
 });

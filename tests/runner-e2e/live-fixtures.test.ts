@@ -528,7 +528,7 @@ describe("Daytona fixture readiness after candidate startup", () => {
     const end = source.indexOf("    const api = new RunnerApi(request);", start);
     expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
     const js = transformSync(source.slice(start, end), { loader: "ts", format: "cjs" }).code;
-    return new Function("kimiCandidateAdmissionForExecution", "execution", "api", "nonce", "startedAtMs", "deadlineMs", "trace", "saveTrace", "restartIsolatedPaperclipServer", "waitForFixtureDaytonaProvider", js + ";return onCompanyCreated;")(
+    return new Function("candidateAdmissionForExecution", "execution", "api", "nonce", "startedAtMs", "deadlineMs", "trace", "saveTrace", "restartIsolatedPaperclipServer", "waitForFixtureDaytonaProvider", js + ";return onCompanyCreated;")(
       () => ({}), execution, api, "fixture", 0, deadlineAt, undefined, async () => {}, restart, waitReady(),
     ) as (id: string) => Promise<void>;
   }

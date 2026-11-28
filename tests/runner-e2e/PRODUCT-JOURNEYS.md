@@ -26,11 +26,14 @@ never start a server or depend on a tenant filesystem.
 | `repository-continuation` | Native agent; two work runs; a pinned public read-only repository | Verify independent Git bundle history and workspace bytes across two turns, preserve the original random file, and reopen registered outputs after reload. See [repository-continuation.md](product-journeys/repository-continuation.md) |
 | `routine-scheduled-run` | Native agent; one work run; an owned project and routine | Browser-create a routine, enable its minute schedule, verify one scheduled invocation and run-attributed saved output, then pause and observe the next schedule boundary with no new work |
 | `company-access-isolation` | Two registered QA Cloud workspaces; disposable company-bound agent credentials; zero model runs | Switch through the real tenant Cloud menu and return. Require allowed task reads and task creation, foreign read/create denial in both directions, exact canonical creator evidence, and key revocation. See [COMPANY-ACCESS.md](product-journeys/COMPANY-ACCESS.md) |
+| `saved-skill-use` | Native agent with skill-write capability; one work run; one synthetic company skill assigned by key using Latest | Load the assigned saved skill, use inputs available only in its source, and verify a same-run-authored task document after reload. Bind the immutable created version to the run's admitted skill-version map. Require a complete bound native source read/load and preserve the exact source and version. Works with Beta skills off. See [saved-skill-use.md](product-journeys/saved-skill-use.md) |
 | `file-input-answer` | Native agent; one work run; synthetic CSV uploaded through the composer | Verify original uploaded bytes, independently calculated accepted-row count and units, a run-attributed task document after reload, and preservation of the input attachment. The task prompt contains neither the random file reference nor the answers |
 | `inbox-triage` | Signed-in board user; a separately authenticated QA human author; a fresh self-assigned task; zero model runs | Mark an unread task read, archive it through Mine, reload both views, verify unchanged work status, then observe a real Blocked transition resurface it through the normal archive policy |
 | `task-create` | Company and signed-in board user | Create a task through the shared production composer, assign it to yourself, reopen and reload it, verify the saved prompt and no agent work |
 | `project-task-context` | Company, signed-in board user, task-write capability; no model runs | Create a project and a self-assigned task with the project selected through the production dialogs. Reopen the project, open its task, reload both, and verify exact saved company, project, prompt, assignment, standard work mode and zero runs |
+| `task-dependency-resume` | Native agent; one automatic work run; two browser-created tasks | Keep an assigned dependent blocked for a measured ten seconds; complete its human-owned blocker through the UI; require one automatic native wake, run-authored saved document, and reloaded result. See [contract](product-journeys/task-dependency-resume.md). |
 | `ask-question` | Company, configured agent capability, positive model allowance and exactly one permitted work run | Reuse the existing cross-model Ask question prompt; require one successful run with matching company/task/agent/model/environment, one saved exact answer, and visible readback after reload |
+| `chat-continuity` | Fresh owned native agent with no prior work runs; Agent Chat enabled; fresh owned user chat; three provider turns and one synthetic reset | Recall prompt-hidden context after reopening, then use `/new` to advance the same saved conversation to a fresh native session, preserve history and verify the final reply after reload. See [CHAT-CONTINUITY.md](product-journeys/CHAT-CONTINUITY.md) |
 | `question-answer-resume` | Native agent; up to three work runs | Reuse the classic two-question story: answer a choice and a free-text question through the browser, verify each native continuation, then read the exact saved answers in an agent-authored task document after reload |
 | `task-properties` | Company, signed-in board user, task-write capability, prepared run-owned backlog task | Open its properties, assign it to the signed-in user, reload, check both UI and saved assignment; verify no agent run |
 | `task-edit-lifecycle` | Company, signed-in board user, task-write capability; target support for run-owned labels and exact predeclared `taskEdit.revisedTitle` cleanup; zero model runs | Create a self-assigned task, edit its inline header title and label, reload, complete and reopen it; independently verify exact saved state, unchanged context and zero runs. Open a closed Properties panel through its shipped toggle |
@@ -458,6 +461,12 @@ not evidence that its Cloud journey passed.
 
 ## Reuse and daily QA promotion
 
+Task property and document journeys open the current side panel or the classic
+Properties control before they act. Property reads exclude inert and accessibility-hidden
+panels, select the Properties tab when needed, and check the row in the viewport.
+Document navigation waits for the available authoring controls after each reload.
+These browser regressions do not establish a new deployed QA pass.
+
 The classic matrix and deployment-targeted stories share Plan revision actions,
 artifact download/oracle code, Skill Studio editing and protected-action decisions.
 Their target adapters own login, agent/connection provisioning, environment
@@ -477,6 +486,29 @@ A candidate's presence in this source catalog is not qualification. It enters th
 saved daily TestOps plan only after an inspected real QA Cloud pass including
 usage, artifact/decision evidence and cleanup. The daily driver runs that saved
 plan against the registered QA tenant; it does not substitute a local instance.
+
+The scheduled-routine browser actions use the current routine form's Title,
+Default agent, Project and Instructions controls. Each picker opens explicitly;
+agent selection does not imply project focus. The schedule's normal popover
+owns Resume and Pause, and both actions wait for the exact trigger PATCH.
+The task-history read returns to the routine page's History field; the separate
+/history route contains configuration revisions. The existing scheduled-run,
+output attribution, duplicate-run and pause-window checks remain independent.
+
+A credential-free control renders the production form, entity pickers and
+routine page in Chromium. It resolves React from the UI workspace, as required
+by an isolated pnpm install. It checks exact owner/project selection, refusal of a
+missing agent or project, and one Resume/Pause mutation for the owned trigger. Its unrelated
+editor/display boundaries are stubbed: AgentAvatar, Identity initials, style
+joining, router Link, MarkdownBody, RunButton, TaskSummaryList, MarkdownEditor,
+RoutineVariablesEditor, EnvironmentVariablesEditor, and ScheduleEditor (including
+its schedule-description formatter). The stub map is next to the browser fixture.
+The real Markdown serialization, task-history content and schedule-expression
+editor are outside this control's scope. It is not full-stack or QA qualification:
+
+```sh
+node --import ./cli/node_modules/tsx/dist/loader.mjs tests/runner-e2e/product-journeys/routine-schedule-ui.browser.mjs
+```
 
 The scheduled-routine pause oracle uses a full 65 seconds of monotonic elapsed
 time after both pause acknowledgement and work completion. Its enable receipt
@@ -525,3 +557,29 @@ retains the five allowlisted task observations. The adjacent
 Valid, wrong and missing evidence
 controls calibrate the independent oracle. Registration and local checks do not
 claim a Cloud staging pass or admission to a daily plan.
+
+
+Agent task journeys keep observing an exact native-session retry when the API
+reports a retryable failure, agent-owned recovery, remaining attempts and a retry
+time inside the original campaign deadline. Older projections can omit the
+optional successor field when there is no successor. The same run must later
+succeed; the temporary failed state never counts as completion. Terminal,
+unbound, exhausted and out-of-deadline failures still fail immediately. The
+original run limit, budgets, deadline and artifact checks stay in effect.
+
+The recovery wait gates the shared task snapshot before it reaches any journey
+consumer. Plan revision, Plan approval and protected-action decisions cannot use
+a pending card while its producing run is still recovering. A recovery that
+outlives the original campaign deadline fails without making a decision.
+
+The hire-delegate-reuse observer applies the same exact-session retry wait to
+lead and hired-agent runs. Its idle check still requires every run to succeed.
+A journey failure from a hosted API call keeps its fixed code, such as
+`api_status_500` or `api_request_failed`; other errors stay
+`journey_operation_failed`.
+
+`ConnectionApi` repeats a JSON read up to three times after a dropped connection
+or a 408, 429, 502, 503 or 504 response, inside the caller's original timeout. It
+honors a `Retry-After` of up to five seconds. It never repeats a write or a binary
+download (`bytes`). The observed reader opts out, so its own retry loop records
+every transient failure in `observation-read-failures.json`.

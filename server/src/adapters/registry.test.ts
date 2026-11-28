@@ -4,6 +4,7 @@ import { listServerAdapters, requireServerAdapter } from "./registry.js";
 import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 import { QUALIFIED_ACPX_PROFILES, KIMI_DISTRIBUTION_CLOSURE_SHA256 } from "../vendor/paperclip-runner/index.js";
+import { assertHarnessTestPassed } from "../services/agent-harness-verification.js";
 
 const { probeInstallation, probeGrokInstallation, probePiInstallation, probeKimiInstallation, probeKimiModels, probeKimiRemote, verifyApiKey } = vi.hoisted(() => ({
   verifyApiKey: vi.fn(),
@@ -222,6 +223,24 @@ describe("native ACPX environment checks", () => {
     expect(result.checks.map(check => check.code)).toEqual(["acpx_runtime_ready", "ai_connection_api_key_reverified"]);
   });
 
+  it.each(["verified", "rejected", "unavailable", "missing", "managed"])("keeps remote Grok adoption tied to account verification: %s", async state => {
+    if (state === "rejected") verifyApiKey.mockRejectedValue({ details: { code: "ai_connection_api_key_rejected" } });
+    if (state === "unavailable") verifyApiKey.mockRejectedValue(new Error("Provider unavailable"));
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment!({ ...context,
+      config: { provider: "acpx", acpxAgent: "grok", model: "grok-4.7",
+        env: state === "missing" ? {} : { XAI_API_KEY: "fixture-xai-key" },
+        ...(state === "managed" ? { managedAiConnection: { method: "api_key" } } : {}) },
+      executionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", providerKey: "test",
+        runner: { execute: vi.fn().mockResolvedValue({ exitCode: 0, timedOut: false, stdout: "Linux\nx86_64\n" }) } },
+    });
+    if (["missing", "managed"].includes(state)) expect(verifyApiKey).not.toHaveBeenCalled();
+    else expect(verifyApiKey).toHaveBeenCalledExactlyOnceWith("xai", "fixture-xai-key");
+    expect(result.checks[0]).toMatchObject({ code: "acpx_remote_runtime_unverified", level: "warn" });
+    if (state === "verified") expect(() => assertHarnessTestPassed(result)).not.toThrow();
+    else expect(() => assertHarnessTestPassed(result)).toThrow("The harness test failed");
+    expect(probeGrokInstallation).not.toHaveBeenCalled();
+  });
+
   it.each(["ai_connection_api_key_rejected", "ai_connection_verification_failed"])("fails setup on %s", async code => {
     verifyApiKey.mockRejectedValue({ details: { code } });
     const result = await requireServerAdapter("paperclip_runner").testEnvironment!({ ...context,
@@ -365,3 +384,19 @@ function authorizeKimi(model: string) {
     platform: "linux", architecture: "x64", nativeClosureDigest: `sha256:${KIMI_DISTRIBUTION_CLOSURE_SHA256["linux-x64"]}`,
     expiresAt: Date.now() + 60_000 }));
 }
+
+describe("plugin Runner-task environment checks", () => {
+  it.each([
+    { provider: "codex", model: "gpt-6.1-sol" },
+    { provider: "acpx", acpxAgent: "claude", model: "claude-opus-5-5" },
+  ])("requires a managed AI connection before any task operation: %j", async config => {
+    const runnerTask = vi.fn();
+    const result = await requireServerAdapter("paperclip_runner").testEnvironment!({ companyId: "company-test", adapterType: "paperclip_runner", config,
+      executionTarget: { kind: "remote", transport: "sandbox", remoteCwd: ".", leaseId: "probe-lease",
+        runnerTaskProbe: { runId: "probe-run", sessionId: "probe-session" }, runnerTask } as never });
+    expect(result).toMatchObject({ adapterType: "paperclip_runner", status: "fail",
+      checks: [{ code: "ai_connection_required", level: "error", message: expect.stringContaining("requires a managed AI connection") }] });
+    expect(runnerTask).not.toHaveBeenCalled();
+    expect(() => assertHarnessTestPassed(result)).toThrow(expect.objectContaining({ code: "ai_connection_required" }));
+  });
+});

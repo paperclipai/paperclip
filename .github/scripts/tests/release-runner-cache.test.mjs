@@ -36,9 +36,27 @@ test("the shared cache excludes workspace artifacts and only restores or saves t
 
 test("parallel lanes cover check:all exactly once and never bypass verification", () => {
   const scripts = JSON.parse(readFileSync(new URL("../../../packages/paperclip-runner/package.json", import.meta.url))).scripts;
-  const checks = [...runner.matchAll(/^            checks: (.+)$/gm)].flatMap(([, value]) => value.split(" "));
-  assert.deepEqual(checks, scripts["check:all"].split(" && ").map((command) => command.replace(/^pnpm run /, "")));
-  assert.deepEqual([...runner.matchAll(/^          - lane: (.+)$/gm)].map(([, value]) => value), ["protocol", "rust", "server-integration"]);
+  const matrixBlock = runner.split("      matrix:\n        include:\n")[1].split("\n    steps:")[0];
+  const matrixEntries = matrixBlock.split(/^          - /m).slice(1).map((entry) => {
+    const row = { lane: "", checks: "", vitest_lane: "", server_integration_shard_index: "", server_integration_shard_count: "" };
+    for (const line of entry.trim().split("\n")) {
+      const match = /^\s*(lane|checks|vitest_lane|server_integration_shard_index|server_integration_shard_count):\s*(.+?)\s*$/.exec(line);
+      assert.ok(match, `unexpected matrix field line: ${line}`);
+      row[match[1]] = match[2];
+    }
+    return row;
+  });
+  const checks = matrixEntries.filter((row) => row.checks).flatMap((row) => row.checks.split(" "));
+  assert.deepEqual(checks, scripts["check:all-without-vitest"].split(" && ").map((command) => command.replace(/^pnpm run /, "")));
+  assert.deepEqual(matrixEntries.map((row) => row.lane), [
+    "protocol-static", "protocol (1/4)", "protocol (2/4)", "protocol (3/4)", "protocol (4/4)",
+    "rust", "api-authority", "server-integration (1/3)", "server-integration (2/3)", "server-integration (3/3)",
+  ]);
+  assert.deepEqual(matrixEntries.filter((row) => row.vitest_lane).map((row) => row.vitest_lane), ["1/4", "2/4", "3/4", "4/4"]);
+  assert.deepEqual(
+    matrixEntries.filter((row) => row.lane.startsWith("server-integration")).map((row) => [row.server_integration_shard_index, row.server_integration_shard_count]),
+    [["0", "3"], ["1", "3"], ["2", "3"]],
+  );
   assert.match(runner, /fail-fast: false/);
   assert.doesNotMatch(runner, /max-parallel: 1|^    needs:|continue-on-error:/m);
   const verify = runner.split("      - name: Verify Paperclip Runner\n")[1].split("      - name:")[0];
@@ -46,11 +64,25 @@ test("parallel lanes cover check:all exactly once and never bypass verification"
   assert.match(verify, /set -euo pipefail/);
   assert.match(verify, /for check in \$RUNNER_CHECKS; do\s+pnpm --filter @paperclipai\/paperclip-runner "\$check"\s+done/);
   const verifyIf = verify.match(/^\s*if: \$\{\{ (.+) \}\}$/m)?.[1];
-  assert.equal(verifyIf, "matrix.lane != 'server-integration'");
-  for (const lane of ["protocol", "rust", "server-integration"]) {
-    assert.equal(runInNewContext(verifyIf, { matrix: { lane } }), lane !== "server-integration");
+  assert.equal(verifyIf, "!startsWith(matrix.lane, 'server-integration') && matrix.vitest_lane == ''");
+  const vitestStep = runner.split("      - name: Run Paperclip Runner package Vitest lane\n")[1].split("      - name:")[0];
+  assert.match(vitestStep, /RUNNER_VITEST_LANE: \$\{\{ matrix.vitest_lane \}\}/);
+  assert.match(vitestStep, /pnpm --filter @paperclipai\/paperclip-runner test:typescript:vitest "--package-lane=\$RUNNER_VITEST_LANE"/);
+  const vitestIf = vitestStep.match(/^\s*if: \$\{\{ (.+) \}\}$/m)?.[1];
+  assert.equal(vitestIf, "matrix.vitest_lane != ''");
+  const serverStep = runner.split("      - name: Run native server integration suites\n")[1].split("      - name:")[0];
+  const serverIf = serverStep.match(/^\s*if: \$\{\{ (.+) \}\}$/m)?.[1];
+  const startsWith = (value, prefix) => String(value).startsWith(prefix);
+  for (const matrix of matrixEntries) {
+    const runsVerify = runInNewContext(verifyIf, { matrix, startsWith });
+    const runsVitest = runInNewContext(vitestIf, { matrix, startsWith });
+    const runsServer = runInNewContext(serverIf, { matrix, startsWith });
+    assert.equal([runsVerify, runsVitest, runsServer].filter(Boolean).length, 1, `lane ${matrix.lane} must match exactly one verification step`);
+    assert.equal(Boolean(matrix.checks), runsVerify, `lane ${matrix.lane} checks field must match Verify Paperclip Runner condition`);
+    assert.equal(Boolean(matrix.vitest_lane), runsVitest, `lane ${matrix.lane} vitest_lane field must match Vitest lane condition`);
   }
   assert.doesNotMatch(verify, /cache-hit/);
+  assert.doesNotMatch(vitestStep, /cache-hit/);
   assert.doesNotMatch(runner, /id-token: write|packages: write|secrets: inherit/);
 });
 
@@ -62,7 +94,7 @@ test("only the trusted Rust lane writes, and warms both build profiles before sa
   assert.match(warm, /run: pnpm --filter @paperclipai\/paperclip-runner build:rust/);
   const sha = "a".repeat(40);
   const base = { repository: "paperclipai/paperclip", event_name: "push", ref: "refs/heads/master", sha };
-  for (const lane of ["protocol", "rust", "server-integration"]) {
+  for (const lane of ["protocol-static", "protocol (1/4)", "protocol (2/4)", "protocol (3/4)", "protocol (4/4)", "rust", "api-authority", "server-integration (1/3)", "server-integration (2/3)", "server-integration (3/3)"]) {
     for (const [overrides, ref, trusted] of [
       [{}, sha, true],
       [{ event_name: "pull_request", ref: "refs/pull/1/merge" }, sha, false],

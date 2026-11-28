@@ -4,6 +4,8 @@ import { nativeSha256 } from "./canonical.js";
 const RECEIPT_FIELDS = new Set(["operationId", "apiOperationId", "callId", "ok", "status", "contentType"]);
 const REDACTED_FIELDS = new Set([...RECEIPT_FIELDS, "data", "apiPayloadRedacted", "apiPayloadSha256"]);
 const CASE_OPERATIONS = new Set(["create_case", "read_case", "update_case", "read_case_document", "write_case_document", "list_workflows", "read_workflow", "create_workflow", "update_workflow"]);
+// Generic API tools whose arguments can carry request values even when malformed.
+const API_TOOLS = new Set(["call_api", "save_api_response"]);
 const SCHEMA_DENIAL_STRINGS = ["provider", "operationId", "callId", "message", "inputSchemaGuidance"];
 const SCHEMA_DENIAL_FIELDS = new Set([...SCHEMA_DENIAL_STRINGS, "code", "paperclipExecuted"]);
 
@@ -48,10 +50,10 @@ export function redactRunnerApiPayloads<T>(value: T): T {
   if (!value || typeof value !== "object") return value;
   const entry = value as Record<string, unknown>;
   const operation = entry.apiOperationId ?? entry.operationId;
-  if (operation === "call_api" || CASE_OPERATIONS.has(String(operation)) || (typeof operation === "string" && /^(GET|HEAD|OPTIONS|POST|PUT|PATCH|DELETE) \/api\//.test(operation))) {
+  if (API_TOOLS.has(String(operation)) || CASE_OPERATIONS.has(String(operation)) || (typeof operation === "string" && /^(GET|HEAD|OPTIONS|POST|PUT|PATCH|DELETE) \/api\//.test(operation))) {
     return redactedPayload(value) as T;
   }
-  if (entry.type === "tool_use" && (entry.name === "call_api" || CASE_OPERATIONS.has(String(entry.name)))) {
+  if (entry.type === "tool_use" && (API_TOOLS.has(String(entry.name)) || CASE_OPERATIONS.has(String(entry.name)))) {
     return { ...entry, input: redactedPayload(entry.input) } as T;
   }
   return Object.fromEntries(Object.entries(entry).map(([key, item]) => [key, redactRunnerApiPayloads(item)])) as T;

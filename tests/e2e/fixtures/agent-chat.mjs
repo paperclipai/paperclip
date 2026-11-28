@@ -23,6 +23,10 @@ const ctx = run.contextSnapshot;
 const task = await api(`/issues/${ctx.issueId}`);
 const comment = async (body) =>
   api(`/issues/${task.id}/comments`, "POST", { body });
+if (ctx.wakeReason === "onboarding_chat_greeting") {
+  await comment("Welcome to Paperclip! I'm your first agent teammate. Tell me what you'd like to achieve, or ask me to interview you so we can work it out together.");
+  process.exit(0);
+}
 if (!task.conversationAgentId) {
   if (task.description?.includes("proactive-digest-fixture")) {
     await api("/agents/me/chat/messages", "POST", {

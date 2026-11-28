@@ -19,6 +19,7 @@ export const coordinatorTaskQuestionAttention: AttentionItem = {
     href: `/issues/PAPER-102#interaction-${coordinatorTaskQuestion.id}` },
   relatedIssue: { kind: "issue", id: coordinatorTaskQuestion.issueId, companyId: coordinatorTaskQuestion.companyId,
     title: "Write the launch post", identifier: "PAPER-102", status: "blocked", href: "/issues/PAPER-102" },
+  audience: { kind: "pool", userId: null, reason: "none" }, stale: null, required: false, changeFingerprint: "fixture.other", closeModes: ["withdraw", "archive", "snooze"], obligationKey: null, obligationLeadId: null,
   whyNow: "The task needs an audience.", decisionVerbs: [], inlineResolvable: true, entryRule: "pending", exitRule: "answered",
   dedupKey: coordinatorTaskQuestion.id, dismissalKey: coordinatorTaskQuestion.id, dismissal: null, severity: "medium", rank: 1,
   activityAt: new Date(coordinatorTaskQuestion.createdAt).toISOString(), createdAt: new Date(coordinatorTaskQuestion.createdAt).toISOString(), updatedAt: new Date(coordinatorTaskQuestion.updatedAt).toISOString(),

@@ -1,4 +1,6 @@
 import { notifyExternalConversationSettlement } from "../external-conversation-settlement-notifications.js";
+import { preservedAccountRuntimeState } from "../agent-provider-rate-limits.js";
+import { readRuntimeAccountingTotals } from "../runtime-accounting-totals.js";
 import { conversationEventCondition, conversationEventColumns } from "./conversation-events.js";
 import { deriveTaskKey } from "./run-preparation.js";
 import { retryIdempotentDatabaseOperation } from "../../database-retry.js";
@@ -11,6 +13,7 @@ import {
   eq,
   getTableColumns,
   gt,
+  isNull,
   or,
   sql,
 } from "drizzle-orm";
@@ -55,6 +58,8 @@ import {
 import { isUuidLike } from "@paperclipai/shared";
 import { HEARTBEAT_RUN_LIST_DEFAULT_LIMIT, HEARTBEAT_RUN_LIST_MAX_LIMIT } from "@paperclipai/shared";
 import { isUnsafeSessionWorkspaceCwd } from "../session-workspace-cwd.js";
+import { RUN_CONTENT_DELETED_MARKER } from "../tool-access/connections/run-session-reset.js";
+import { presentStorageFailureMessage } from "../../storage/storage-unavailable.js";
 
 export const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON =
   "execution_review_participant_recovery";
@@ -325,6 +330,7 @@ const heartbeatRunExecutionEvidenceColumn = sql<Record<string, unknown> | null>`
     'nativeCancellation', ${heartbeatRuns.resultJson} -> 'nativeCancellation',
     'cancelledByActorType', ${heartbeatRuns.resultJson} -> 'cancelledByActorType',
     'cancelledByUserId', ${heartbeatRuns.resultJson} -> 'cancelledByUserId',
+    'reassignmentStopRequested', ${heartbeatRuns.resultJson} -> 'reassignmentStopRequested',
     'conversationContinuation', ${heartbeatRuns.resultJson} -> 'conversationContinuation',
     'cancellation', ${heartbeatRuns.resultJson} -> 'cancellation',
     'acpToolInventoryComplete', ${heartbeatRuns.resultJson} -> 'acpToolInventoryComplete',
@@ -369,7 +375,10 @@ const heartbeatRunIssueControlColumns = {
   runtimeModeResolvedAt: heartbeatRuns.runtimeModeResolvedAt,
   startedAt: heartbeatRuns.startedAt, createdAt: heartbeatRuns.createdAt,
   contextSnapshot: sql<Record<string, unknown> | null>`case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object'
-    then jsonb_build_object('issueId', ${heartbeatRuns.contextSnapshot}->'issueId') else null end`,
+    then jsonb_build_object('issueId', ${heartbeatRuns.contextSnapshot}->'issueId')
+      || case when ${heartbeatRuns.contextSnapshot} ? 'firstTurnQueuedInput'
+        then jsonb_build_object('firstTurnQueuedInput', ${heartbeatRuns.contextSnapshot}->'firstTurnQueuedInput') else '{}'::jsonb end
+    else null end`,
   runnerProfileJson: sql<Record<string, unknown> | null>`case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object'
     then jsonb_build_object('adapterDispatch', jsonb_build_object('adapterType', ${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->'adapterType'))
     else null end`,
@@ -1227,8 +1236,8 @@ export function createHeartbeatRunState(db: Db) {
     }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then(rows => rows[0] ?? null);
   }
 
-  async function getRuntimeState(agentId: string) {
-    return db
+  async function getRuntimeState(agentId: string, reader: Pick<Db, "select"> = db) {
+    return reader
       .select()
       .from(agentRuntimeState)
       .where(eq(agentRuntimeState.agentId, agentId))
@@ -1265,8 +1274,9 @@ export function createHeartbeatRunState(db: Db) {
     agentId: string,
     adapterType: string,
     taskKey: string,
+    reader: Pick<Db, "select"> = db,
   ) {
-    return db
+    return reader
       .select()
       .from(agentTaskSessions)
       .where(
@@ -1499,6 +1509,7 @@ export function createHeartbeatRunState(db: Db) {
   async function resolveSessionBeforeForWakeup(
     agent: typeof agents.$inferSelect,
     taskKey: string | null,
+    reader: Pick<Db, "select"> = db,
   ) {
     if (taskKey) {
       const codec = getAdapterSessionCodec(agent.adapterType);
@@ -1507,6 +1518,7 @@ export function createHeartbeatRunState(db: Db) {
         agent.id,
         agent.adapterType,
         taskKey,
+        reader,
       );
       const parsedParams = normalizeSessionParams(
         codec.deserialize(existingTaskSession?.sessionParamsJson ?? null),
@@ -1518,7 +1530,7 @@ export function createHeartbeatRunState(db: Db) {
       );
     }
 
-    const runtimeForRun = await getRuntimeState(agent.id);
+    const runtimeForRun = await getRuntimeState(agent.id, reader);
     return runtimeForRun?.sessionId ?? null;
   }
 
@@ -1590,6 +1602,7 @@ export function createHeartbeatRunState(db: Db) {
       )
       .then((rows) => rows[0] ?? null);
     if (!resumeRun) return null;
+    if (parseObject(resumeRun.resultJson)[RUN_CONTENT_DELETED_MARKER]) return null;
 
     const resumeContext = parseObject(resumeRun.contextSnapshot);
     const resumeTaskKey = deriveTaskKey(resumeContext, null) ?? taskKey;
@@ -1862,6 +1875,8 @@ export function createHeartbeatRunState(db: Db) {
 
         return {
           ...rest,
+          // Saved runs from earlier releases may promise a storage retry no wait owns.
+          ...("error" in rest ? { error: presentStorageFailureMessage(rest) ?? null } : {}),
           contextSnapshot: summarizeHeartbeatRunContextSnapshot({
             issueId: contextIssueId,
             taskId: contextTaskId,
@@ -1907,6 +1922,7 @@ export function createHeartbeatRunState(db: Db) {
         .then((rows) => rows[0] ?? null);
       return {
         ...ensured,
+        ...await readRuntimeAccountingTotals(db, agent.companyId, agentId),
         sessionDisplayId:
           latestTaskSession?.sessionDisplayId ?? ensured.sessionId,
         sessionParamsJson: latestTaskSession?.sessionParamsJson ?? null,
@@ -1938,7 +1954,7 @@ export function createHeartbeatRunState(db: Db) {
     ) => {
       const agent = await getAgent(agentId);
       if (!agent) throw notFound("Agent not found");
-      await ensureRuntimeState(agent);
+      const runtimeBefore = await ensureRuntimeState(agent);
       const taskKey = readNonEmptyString(opts?.taskKey);
       const clearedTaskSessions = await clearTaskSessions(
         agent.companyId,
@@ -1957,7 +1973,8 @@ export function createHeartbeatRunState(db: Db) {
         updatedAt: new Date(),
       };
       if (!taskKey) {
-        runtimePatch.stateJson = {};
+        // Provider rate limits describe the account, not the session.
+        runtimePatch.stateJson = preservedAccountRuntimeState(runtimeBefore.stateJson);
       }
 
       const updated = await db
@@ -2043,6 +2060,18 @@ export function createHeartbeatRunState(db: Db) {
         )
         .orderBy(desc(heartbeatRuns.startedAt))
         .limit(1);
+      return run ?? null;
+    },
+
+    getQueuedAssignmentRunForIssue: async (input: { companyId: string; agentId: string; issueId: string }) => {
+      const [run] = await db.select().from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.agentId, input.agentId),
+        eq(heartbeatRuns.status, "queued"),
+        isNull(heartbeatRuns.startedAt),
+        sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${input.issueId}`,
+        sql`${heartbeatRuns.contextSnapshot}->>'wakeReason' = 'issue_assigned'`,
+      )).orderBy(asc(heartbeatRuns.createdAt)).limit(1);
       return run ?? null;
     },
 

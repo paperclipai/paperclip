@@ -156,7 +156,11 @@ export async function assertMuseCleanupCredential(db:MuseIdentityDatabase,s:Agen
 }
 
 export function museIdentity(db: Db) {
-  async function enabled() { const s=await instanceSettingsService(db).getExperimental(); return s.enableMuse && s.enableNativeRunner; }
+  async function enabled(queryOwner?: Pick<Db, "select">) {
+    const settings = instanceSettingsService(db);
+    const s = queryOwner ? await settings.getExperimentalReadOnly(queryOwner) : await settings.getExperimental();
+    return s.enableMuse && s.enableNativeRunner;
+  }
   async function issue(tx: ExternalAdmissionTransaction, b: typeof bindings.$inferSelect, familyId: string=randomUUID()): Promise<MuseCredentials> {
     const accessToken=token(), refreshToken=token(), cleanupToken=token(), detectorCleanupToken=token();
     const accessExpiresAt=new Date(Date.now()+MUSE_ACCESS_TTL_MS), refreshExpiresAt=new Date(Date.now()+MUSE_REFRESH_INACTIVITY_MS);

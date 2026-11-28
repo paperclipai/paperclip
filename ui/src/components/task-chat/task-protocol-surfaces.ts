@@ -37,7 +37,7 @@ const debugOnly = (surface: string, rationale: string): TaskProtocolSurfaceRegis
 });
 
 const providerEvents = [
-  "plan.updated",
+  "plan.updated", "plan.proposed",
   "tool.execution.started", "tool.execution.progressed", "tool.execution.completed",
   "research.started", "research.progressed", "research.completed",
   "delegation.started", "delegation.updated", "delegation.completed",

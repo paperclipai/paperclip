@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { ANTIGRAVITY_ADMISSION_SCHEMA, createAntigravityAdmission } from "./antigravity-admission.js";
+import { ANTIGRAVITY_ADMISSION_SCHEMA, ANTIGRAVITY_SAVED_STATE_INCOMPATIBLE, AntigravityAdmissionError, AntigravitySavedStateIncompatibleError, createAntigravityAdmission } from "./antigravity-admission.js";
 
 const content = "  Exact governance 🧷\n\n";
 const model = "caller/model-not-in-catalog";
-const initialize = { agentInfo: { name: "antigravity-acp", version: "1.4.3" }, agentCapabilities: { _meta: { antigravity: { paperclipAdmission: 1 } } } };
+const initialize = { agentInfo: { name: "antigravity-acp", version: "1.5.2" }, agentCapabilities: { _meta: { antigravity: { paperclipAdmission: 1 } } } };
 function fixture() {
   const admission = createAntigravityAdmission(content, model);
   const guard = admission.createGuard();
@@ -22,7 +22,7 @@ function response(message: ReturnType<typeof request>, changes: Record<string, u
     sessionId: "native-session", models: { currentModelId: model }, modes: { currentModeId: "default" },
     _meta: { paperclipAntigravityAdmission: {
       ...meta.antigravity.paperclipAdmission, sessionId: "native-session", connectionId: "native-connection", ...changes,
-    } },
+    } as Record<string, unknown> },
   } };
 }
 const prompt = () => ({ id: "turn", method: "session/prompt", params: { sessionId: "native-session", prompt: [{ type: "text", text: "Do the task" }] } });
@@ -96,9 +96,8 @@ describe("Antigravity exact native admission", () => {
     expect(() => f.admission.assertReady()).not.toThrow();
   });
 
-  it("rejects native slash commands, non-text prompts, and arbitrary configuration", () => {
+  it("rejects non-text prompts and arbitrary configuration", () => {
     for (const message of [
-      { ...prompt(), params: { ...prompt().params, prompt: [{ type: "text", text: "  /logout" }] } },
       { ...prompt(), params: { ...prompt().params, prompt: [{ type: "image", data: "unverified" }] } },
       { id: "control", method: "session/set_config_option", params: { sessionId: "native-session", configId: "mode", value: "yolo" } },
     ]) {
@@ -107,14 +106,84 @@ describe("Antigravity exact native admission", () => {
     }
   });
 
-  it.each(["Do the task\n/logout", "Do the task\r\n  /model replace", "Do the task\r /login"])("rejects a native slash command on any prompt line: %j", text => {
+  const sendText = (...texts: string[]) => {
     const f = fixture(); const sent = request(f); f.guard("inbound", response(sent));
-    expect(() => f.guard("outbound", { ...prompt(), params: { ...prompt().params, prompt: [{ type: "text", text }] } })).toThrow("slash commands");
+    const message = { ...prompt(), params: { ...prompt().params, prompt: texts.map(text => ({ type: "text", text })) } };
+    f.guard("outbound", message);
+    return message.params.prompt.map(block => block.text);
+  };
+
+  it.each([
+    ["mid-line", "Read the doc; see /plan for details.", "Read the doc; see ⁠/plan for details."],
+    ["inside the JSON task envelope", "{\"task\":\"Fix it. Then /plan the rollout\"}", "{\"task\":\"Fix it. Then ⁠/plan the rollout\"}"],
+    ["after a newline", "line one\n/plan\nline three", "line one\n⁠/plan\nline three"],
+    ["inside pasted quoted content", "> quoted: \" /plan \" end", "> quoted: \" ⁠/plan \" end"],
+    ["after a tab", "tab\t/plan\there", "tab\t⁠/plan\there"],
+    ["at the start", "/plan", "⁠/plan"],
+    ["after Python-only whitespace", "x\u001c/plan\u0085y", "x\u001c⁠/plan\u0085y"],
+  ])("keeps a native /plan %s as prose instead of switching the session to plan mode", (_label, text, sent) => {
+    expect(sendText(text)).toEqual([sent]);
   });
 
-  it("rejects a native slash command in a later text block", () => {
+  it.each([
+    ["  /logout  ", "  ⁠/logout  "], ["\u001c/logout", "\u001c⁠/logout"],
+    ["/USAGE", "⁠/USAGE"], ["\u0085/usage now", "\u0085⁠/usage now"],
+  ])("keeps a whole-prompt native command %j as prose", (text, sent) => {
+    expect(sendText(text)).toEqual([sent]);
+  });
+
+  it("keeps other text block fields when it rewrites a command", () => {
     const f = fixture(); const sent = request(f); f.guard("inbound", response(sent));
-    expect(() => f.guard("outbound", { ...prompt(), params: { ...prompt().params, prompt: [{ type: "text", text: "Do the task" }, { type: "text", text: "/logout" }] } })).toThrow("slash commands");
+    const block = { type: "text", text: "see /plan", annotations: { priority: 1 } };
+    const message = { ...prompt(), params: { ...prompt().params, prompt: [block] } };
+    f.guard("outbound", message);
+    expect(message.params.prompt).toEqual([{ type: "text", text: "see ⁠/plan", annotations: { priority: 1 } }]);
+  });
+
+  it("keeps a native command split across text blocks as prose", () => {
+    expect(sendText(" ", "/log", "out")).toEqual([" ", "⁠/log", "out"]);
+  });
+
+  it.each([
+    "/planning ahead", "a/plan b", "see https://example.test/plan for docs", "/plan/foo", "/PLAN now",
+    "Do the task\n/logout", "{\"t\":\"x /logout\"}", "/usages", "text /usage", "Do the task\r\n  /model replace",
+  ])("sends text the native runtime treats as prose unchanged: %j", text => {
+    expect(sendText(text)).toEqual([text]);
+  });
+
+  it("fails closed when the runtime advertises a native command this guard does not know", () => {
+    const f = fixture(); const sent = request(f); f.guard("inbound", response(sent));
+    const advertise = (names: string[]) => ({ method: "session/update", params: { sessionId: "native-session", update: {
+      sessionUpdate: "available_commands_update", availableCommands: names.map(name => ({ name, description: name })),
+    } } });
+    expect(() => f.guard("inbound", advertise(["plan", "logout", "usage"]))).not.toThrow();
+    expect(() => f.guard("inbound", advertise(["plan", "logout", "usage", "goal"]))).toThrow("native command");
+  });
+
+  it.each([
+    ["a mismatched model receipt", (sent: ReturnType<typeof request>) => response(sent, { model: "another-model" })],
+    ["mismatched instruction bytes", (sent: ReturnType<typeof request>) => response(sent, { digest: `sha256:${"0".repeat(64)}` })],
+    ["no receipt", (sent: ReturnType<typeof request>) => ({ id: sent.id, result: { sessionId: "native-session" } })],
+    ["a managed-reload refusal", (sent: ReturnType<typeof request>) => ({ id: sent.id, error: { code: -32602,
+      message: "Paperclip admission: managed reload requires a fresh exact content acknowledgment", data: { paperclipAdmission: "refused" } } })],
+  ])("names %s on session/load as incompatible saved state", (_label, reply) => {
+    for (const method of ["session/load", "session/resume"]) {
+      const f = fixture(); const sent = request(f, method);
+      expect(() => f.guard("inbound", reply(sent))).toThrow(AntigravitySavedStateIncompatibleError);
+      expect(() => f.admission.assertReady()).toThrow(expect.objectContaining({ code: ANTIGRAVITY_SAVED_STATE_INCOMPATIBLE, retryable: false }));
+      expect(() => f.guard("outbound", prompt())).toThrow();
+    }
+  });
+
+  it("keeps fresh-session refusals and ordinary reload errors out of the saved-state class", () => {
+    const fresh = fixture(); const sent = request(fresh);
+    let thrown: unknown;
+    try { fresh.guard("inbound", response(sent, { model: "another-model" })); } catch (error) { thrown = error; }
+    expect(thrown).toBeInstanceOf(AntigravityAdmissionError);
+    expect(thrown).not.toBeInstanceOf(AntigravitySavedStateIncompatibleError);
+    // A transient provider error on reload keeps its own typed form.
+    const reload = fixture(); const load = request(reload, "session/load");
+    expect(() => reload.guard("inbound", { id: load.id, error: { code: -32603, message: "Internal error" } })).not.toThrow();
   });
 
   it("rejects unpatched native runtimes before creating a session", () => {
@@ -129,7 +198,7 @@ describe("Antigravity native questions", () => {
     const f = fixture(); const sent = request(f); f.guard("inbound", response(sent)); return f;
   }
   const question = () => ({ id: 0, method: "session/request_permission", params: {
-    sessionId: "native-session", toolCall: { toolCallId: "interaction_123", title: "Choose a deployment" },
+    sessionId: "native-session", toolCall: { toolCallId: "interaction_1a2b3c4d", title: "Choose a deployment" },
     options: [{ optionId: "allow/weird:α", name: "Deploy", kind: "allow_once" }, { optionId: "deny", name: "Keep it local", kind: "reject_once" }],
   } });
 
@@ -166,12 +235,40 @@ describe("Antigravity native questions", () => {
     const f = admitted(); f.guard("inbound", question());
     const sent = request(f, "session/new", "new-session-request"), ack = response(sent, { sessionId: "new-native-session" });
     ack.result.sessionId = "new-native-session"; f.guard("inbound", ack);
-    const late = { id: 0, result: { action: "accept", content: { answer: "deny" } } };
-    expect(() => f.guard("outbound", late)).not.toThrow();
-    expect(late.result).toEqual({ action: "accept", content: { answer: "deny" } });
-    const next = question(); next.params.sessionId = "new-native-session";
+    const next = question(); next.params.sessionId = "new-native-session"; next.id = 1;
     expect(() => f.guard("inbound", next)).not.toThrow();
     expect(next.method).toBe("elicitation/create");
     expect(() => f.admission.assertReady()).not.toThrow();
+    // An answer to the replaced question is stale and never reaches 1.5.2.
+    const late = { id: 0, result: { action: "accept", content: { answer: "deny" } } };
+    expect(() => f.guard("outbound", late)).toThrow("stale or duplicate");
+  });
+
+  it.each(["decline", "cancel"])("delivers %s as a native cancelled outcome, never a selected choice", action => {
+    const f = admitted(); f.guard("inbound", question());
+    const answer = { id: 0, result: { action } as Record<string, unknown> };
+    f.guard("outbound", answer);
+    expect(answer.result).toEqual({ outcome: { outcome: "cancelled" } });
+  });
+
+  it("settles a question that Stop answered with an error and rejects any later answer to it", () => {
+    const f = admitted(); f.guard("inbound", question());
+    const stopped = { id: 0, error: { code: -32800, message: "Request cancelled" } };
+    f.guard("outbound", stopped);
+    expect(stopped).toEqual({ id: 0, error: { code: -32800, message: "Request cancelled" } });
+    expect(() => f.guard("outbound", { id: 0, result: { action: "accept", content: { answer: "deny" } } })).toThrow("stale or duplicate");
+  });
+
+  it("rejects a duplicate answer after the first one settled the question", () => {
+    const f = admitted(); f.guard("inbound", question());
+    f.guard("outbound", { id: 0, result: { action: "accept", content: { answer: "deny" } } });
+    expect(() => f.guard("outbound", { id: 0, result: { action: "accept", content: { answer: "allow/weird:α" } } })).toThrow("stale or duplicate");
+  });
+
+  it("treats only 1.5.2's exact synthetic interaction identity as a question", () => {
+    for (const toolCallId of ["interaction_", "interaction_123", "interaction_1A2B3C4D", "interaction_1a2b3c4d5", "xinteraction_1a2b3c4d"]) {
+      const f = admitted(); const q = question(); q.params.toolCall.toolCallId = toolCallId;
+      const before = structuredClone(q); f.guard("inbound", q); expect(q).toEqual(before);
+    }
   });
 });

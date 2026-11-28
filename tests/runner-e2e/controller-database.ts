@@ -1,5 +1,6 @@
 /** Qualification owns Postgres outside the server process tree. No migrations
  * run here: each serving artifact must apply its own schema on startup. */
+import type { ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -35,7 +36,10 @@ export async function prepareControllerDatabase(configPath: string, temporaryRoo
       connectionString: `${base}/paperclip` });
     config.database = { ...config.database, mode: "postgres", connectionString: `${base}/paperclip` };
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
-    return { cleanup: async () => { await database.stop(); } };
+    const postgres = (database as unknown as { process?: ChildProcess }).process;
+    let exited = !postgres || postgres.exitCode !== null || postgres.signalCode !== null;
+    postgres?.once("exit", () => { exited = true; });
+    return { cleanup: async () => { if (!exited) await database.stop(); } };
   } catch (error) {
     if (started) await database.stop().catch(() => undefined);
     throw new Error(`Qualification database startup failed: ${logs.getRecentLogs().join(" | ")}`, { cause: error });

@@ -195,6 +195,18 @@ describe("remote restart lifecycle evidence", () => {
     expect(gradeRemoteRestart(evidence).every(check => check.passed)).toBe(true);
   });
 
+  it("accepts the same start notification after reattachment and rejects a different turn or payload", () => {
+    const f = fixture();
+    const replay = f.event(5, "turn.started");
+    const after = [...f.rows, replay];
+    expect(observeRemoteRestartBoundary(f.active, after, f.leases, f.scope, true).identity).toEqual(f.evidence.before.identity);
+    expect(() => observeRemoteRestartBoundary(f.active, after, f.leases, f.scope)).toThrow("active original provider turn");
+    expect(() => observeRemoteRestartBoundary(f.active, [...f.rows, f.event(5, "turn.started", { changed: true })], f.leases, f.scope, true))
+      .toThrow("active original provider turn");
+    replay.payload.prpEvent.turnId = "another-turn";
+    expect(() => observeRemoteRestartBoundary(f.active, after, f.leases, f.scope, true)).toThrow("active original provider turn");
+  });
+
   it.each(["replacement", "second submission", "changed tool receipt", "changed start receipt", "missing terminal"])("rejects %s at completion", fault => {
     const { evidence } = fixture();
     if (fault === "replacement") evidence.final.run.id = "replacement";

@@ -249,6 +249,16 @@ async function runCliJson<T>(
   return JSON.parse(stdout.slice(jsonStart)) as T;
 }
 
+// `paperclipai run` loads the CLI and the whole server graph from source
+// through tsx. The test runner gives every run a fresh TMPDIR, so tsx's
+// transform cache is always cold: startup then costs about twice a warm start
+// (11.5 s against 5.2 s from "Starting Paperclip server..." to the first server
+// log on an idle 16-core machine). On contended 4-vCPU CI runners the hooks of
+// passing runs took 15-25 s, and the old 30 s budget failed in the tail. This budget
+// matches the 90 s test-body timeout; a child that exits early still fails at
+// once.
+const SERVER_STARTUP_TIMEOUT_MS = 90_000;
+
 async function waitForServer(
   instanceId: string,
   runtimeInfoPath: string,
@@ -256,7 +266,7 @@ async function waitForServer(
   output: { stdout: string[]; stderr: string[] },
 ) {
   const startedAt = Date.now();
-  while (Date.now() - startedAt < 30_000) {
+  while (Date.now() - startedAt < SERVER_STARTUP_TIMEOUT_MS) {
     if (child.exitCode !== null) {
       throw new Error(
         `paperclipai run exited before healthcheck succeeded.\nstdout:\n${output.stdout.join("")}\nstderr:\n${output.stderr.join("")}`,
@@ -342,7 +352,8 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
       output,
     );
     expect(new URL(apiBase).port).not.toBe(String(port));
-  }, 60_000);
+    // Room for the embedded database start on top of the server budget.
+  }, SERVER_STARTUP_TIMEOUT_MS + 30_000);
 
   afterAll(async () => {
     await stopServerProcess(serverProcess);
