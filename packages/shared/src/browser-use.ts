@@ -51,6 +51,37 @@ export interface BrowserUseViewportState {
   /** True only when remote metrics changed (lease renewals do not create audit noise). */
   applied?: boolean;
 }
+/**
+ * Officially assigned ISO 3166-1 alpha-2 codes, lower-cased as the v4 proxy
+ * option expects. An unassigned pair such as "zz" is rejected here instead of
+ * being forwarded to the provider.
+ */
+export const BROWSER_USE_PROXY_COUNTRY_CODES = [
+  "ad", "ae", "af", "ag", "ai", "al", "am", "ao", "aq", "ar", "as", "at",
+  "au", "aw", "ax", "az", "ba", "bb", "bd", "be", "bf", "bg", "bh", "bi",
+  "bj", "bl", "bm", "bn", "bo", "bq", "br", "bs", "bt", "bv", "bw", "by",
+  "bz", "ca", "cc", "cd", "cf", "cg", "ch", "ci", "ck", "cl", "cm", "cn",
+  "co", "cr", "cu", "cv", "cw", "cx", "cy", "cz", "de", "dj", "dk", "dm",
+  "do", "dz", "ec", "ee", "eg", "eh", "er", "es", "et", "fi", "fj", "fk",
+  "fm", "fo", "fr", "ga", "gb", "gd", "ge", "gf", "gg", "gh", "gi", "gl",
+  "gm", "gn", "gp", "gq", "gr", "gs", "gt", "gu", "gw", "gy", "hk", "hm",
+  "hn", "hr", "ht", "hu", "id", "ie", "il", "im", "in", "io", "iq", "ir",
+  "is", "it", "je", "jm", "jo", "jp", "ke", "kg", "kh", "ki", "km", "kn",
+  "kp", "kr", "kw", "ky", "kz", "la", "lb", "lc", "li", "lk", "lr", "ls",
+  "lt", "lu", "lv", "ly", "ma", "mc", "md", "me", "mf", "mg", "mh", "mk",
+  "ml", "mm", "mn", "mo", "mp", "mq", "mr", "ms", "mt", "mu", "mv", "mw",
+  "mx", "my", "mz", "na", "nc", "ne", "nf", "ng", "ni", "nl", "no", "np",
+  "nr", "nu", "nz", "om", "pa", "pe", "pf", "pg", "ph", "pk", "pl", "pm",
+  "pn", "pr", "ps", "pt", "pw", "py", "qa", "re", "ro", "rs", "ru", "rw",
+  "sa", "sb", "sc", "sd", "se", "sg", "sh", "si", "sj", "sk", "sl", "sm",
+  "sn", "so", "sr", "ss", "st", "sv", "sx", "sy", "sz", "tc", "td", "tf",
+  "tg", "th", "tj", "tk", "tl", "tm", "tn", "to", "tr", "tt", "tv", "tw",
+  "tz", "ua", "ug", "um", "us", "uy", "uz", "va", "vc", "ve", "vg", "vi",
+  "vn", "vu", "wf", "ws", "ye", "yt", "za", "zm", "zw",
+] as const;
+export const browserUseProxyCountryCodeSchema = z.enum(
+  BROWSER_USE_PROXY_COUNTRY_CODES,
+);
 export const browserUseSettingsSchema = z
   .object({
     allowedProfileIds: z.array(z.string().uuid()).max(100).default([]),
@@ -91,6 +122,12 @@ const task = {
   maxLength: 30000,
   description: "The browser task to delegate.",
 };
+const proxyCountryCode = {
+  type: ["string", "null"],
+  enum: [...BROWSER_USE_PROXY_COUNTRY_CODES, null],
+  description:
+    'Residential proxy exit country as a lower-case ISO 3166-1 alpha-2 code, for example "ch". Omit for the provider default; null disables the proxy. It applies when a browser is provisioned, so a continuation keeps the browser it already has.',
+};
 function tool(
   name: string,
   description: string,
@@ -125,6 +162,7 @@ export const BROWSER_USE_TOOLS = [
       task,
       profileId: { type: "string", format: "uuid" },
       maxCostUsd: { type: "number", exclusiveMinimum: 0 },
+      proxyCountryCode,
     },
     ["task"],
   ),
@@ -142,6 +180,7 @@ export const BROWSER_USE_TOOLS = [
       sessionId: session,
       task,
       maxCostUsd: { type: "number", exclusiveMinimum: 0 },
+      proxyCountryCode,
     },
     ["sessionId", "task"],
   ),
