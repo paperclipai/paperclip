@@ -946,9 +946,11 @@ function AccountIssueDocumentsSection({
   useEffect(() => {
     if (!documentConflict) return;
     const latest = sortedDocuments.find((doc) => doc.key === documentConflict.key);
-    if (!latest || latest.latestRevisionId === documentConflict.serverDocument.latestRevisionId) return;
+    if (!latest) return;
     setDocumentConflict((current) =>
       current?.key === latest.key
+        && current.serverDocument.id === latest.id
+        && current.serverDocument.latestRevisionNumber < latest.latestRevisionNumber
         ? { ...current, serverDocument: latest }
         : current,
     );
