@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.browser.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": [
+    "devtools/browser/**/*.ts",
+    "devtools/browser/**/*.tsx",
+    "devtools/issue-thread/**/*.ts",
+    "devtools/issue-thread/**/*.tsx",
+    "examples/**/*.ts",
+    "examples/**/*.tsx"
+  ],
+  "exclude": ["**/dist/**", "**/vite.config.ts"]
+}

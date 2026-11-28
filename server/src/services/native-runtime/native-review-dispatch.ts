@@ -1,7 +1,9 @@
+import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { withExternalAdmissionGuard, assertNoExternalOverlap } from "../../modules/external-agents/index.js";
 import { agentWakeupRequests, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import type { PgUpdateSetSource } from "drizzle-orm/pg-core";
+import { assertAgentRunSlotFree } from "../heartbeat/run-slot-admission.js";
 import { claimNativeReviewExecutionLock, readNativeReviewAssignmentContext } from "./native-review-participant.js";
 
 /** The run, wake, and issue lock form one reviewer admission claim. */
@@ -34,12 +36,16 @@ export async function claimQueuedNativeReviewRun(db: Db, input: {
     )).for("update");
     if (!run || run.status !== "queued" || run.wakeupRequestId !== input.run.wakeupRequestId) return null;
     if ((run.contextSnapshot as Record<string, unknown> | null)?.issueId !== issueId) return null;
-    await withExternalAdmissionGuard(tx, run.companyId, run.agentId, () => assertNoExternalOverlap(tx, run.companyId, run.agentId));
+    await withExternalAdmissionGuard(tx, run.companyId, run.agentId, async () => {
+      await assertNoExternalOverlap(tx, run.companyId, run.agentId);
+      await assertAgentRunSlotFree(tx, run);
+    });
     const locked = await claimNativeReviewExecutionLock(tx as unknown as Db, {
       companyId: run.companyId, issueId, agentId: run.agentId, runId: run.id,
       contextSnapshot: context, agentNameKey: input.agentNameKey, claimedAt: input.claimedAt,
     });
     if (!locked) return null;
+    await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId });
     const [claimed] = await tx.update(heartbeatRuns).set({
       ...input.claimValues, status: "running", startedAt: run.startedAt ?? input.claimedAt,
       updatedAt: input.claimedAt,

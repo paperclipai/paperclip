@@ -9,6 +9,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
 
+import { sampleHarnesses } from "@/test-support/harness-availability";
 import { CodexLocalConfigFields } from "./config-fields";
 import { buildCodexRunnerConfig } from "./config-fields";
 import { buildPaperclipRunnerConfig } from "@paperclipai/adapter-codex-local/ui";
@@ -17,22 +18,23 @@ import { resolveCodexLocalCliPolicy } from "@paperclipai/adapter-codex-local";
 
 beforeAll(() => { Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true }); });
 
-async function renderMarkup(node: ReactNode, expand?: string, inspect?: (container: HTMLElement) => void): Promise<string> {
+async function renderMarkup(node: ReactNode, expand?: string, inspect?: (container: HTMLElement) => void | Promise<void>): Promise<string> {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
-  await act(async () => root.render(<QueryClientProvider client={new QueryClient()}>{node}</QueryClientProvider>));
+  const client = new QueryClient();
+  await act(async () => root.render(<QueryClientProvider client={client}>{node}</QueryClientProvider>));
   if (expand) await act(async () => {
     container.querySelector(`[aria-label="${expand}"]`)?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
   });
-  inspect?.(container);
+  await inspect?.(container);
   const html = container.innerHTML + Array.from(document.body.children).filter(child => child !== container).map(child => child.outerHTML).join("");
   await act(async () => root.unmount());
   container.remove();
   return html;
 }
 
-async function renderRunner(config: Record<string, unknown>, expand?: string, inspectOrDot?: ((container: HTMLElement) => void) | boolean): Promise<string> {
+async function renderRunner(config: Record<string, unknown>, expand?: string, inspectOrDot?: ((container: HTMLElement) => void) | boolean, cloud = false): Promise<string> {
   const openAiDotEnabled = inspectOrDot === true;
   const inspect = typeof inspectOrDot === "function" ? inspectOrDot : undefined;
   return renderMarkup(
@@ -48,12 +50,44 @@ async function renderRunner(config: Record<string, unknown>, expand?: string, in
         mark={() => undefined}
         models={[]}
         hideInstructionsFile
+        availableHarnesses={cloud ? sampleHarnesses : undefined}
         openAiDotEnabled={openAiDotEnabled}
       />
     </TooltipProvider>,
     expand, inspect,
   );
 }
+
+it("withholds unsupported Cloud Runner providers even for an existing native agent", async () => {
+  const html = await renderRunner({ provider: "codex" }, "Harness", undefined, true);
+  expect(html).toContain("Codex");
+  expect(html).toContain("OpenCode");
+  expect(html).toContain("Grok Build");
+  for (const label of ["Claude Managed", "AWS AgentCore", "Cursor Cloud", "Antigravity"]) expect(html).not.toContain(label);
+});
+
+it("offers only released ACP profiles on Cloud", async () => {
+  const html = await renderRunner({ provider: "acpx", acpxAgent: "claude" }, "ACP agent", undefined, true);
+  expect(html).toContain("Claude");
+  expect(html).toContain("Copilot");
+  for (const label of ["Antigravity", "Kimi", "Cursor", "qualification pending"]) expect(html).not.toContain(label);
+});
+
+it("selects an allowed ACP default when deployment configuration excludes Claude", async () => {
+  const changes: Record<string, unknown> = {};
+  await renderMarkup(<TooltipProvider><CodexLocalConfigFields mode="edit" isCreate={false}
+    adapterType="paperclip_runner" values={null} set={null} config={{ provider: "codex" }}
+    eff={(_group, _field, original) => original} mark={(_group, field, value) => { changes[field] = value; }}
+    models={[]} hideInstructionsFile availableHarnesses={["copilot_runtime"]} />
+  </TooltipProvider>, "Harness", async () => {
+    const option = [...document.querySelectorAll('[role="option"]')].find(element => element.textContent?.includes("ACP agents"));
+    expect(option).toBeDefined();
+    await act(async () => option!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+    expect(changes.provider).toBe("acpx");
+    expect(changes.acpxAgent).toBe("copilot");
+    expect(changes.model).toBe("");
+  });
+});
 
 async function selectField(container: HTMLElement, label: string, value: string) {
   const picker = container.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!;
@@ -213,6 +247,56 @@ describe("Paperclip Runner Codex configuration", () => {
     const html = await renderRunner({ provider: "future-provider" });
     expect(html).toContain("future-provider");
     expect(html).not.toContain('aria-label="Permission mode"');
+  });
+  it("shows cloud repository settings without local permission or warm-process controls", async () => {
+    const html = await renderRunner({ provider: "cursor_cloud", repoUrl: "https://github.com/acme/repo", repoRef: "feature" });
+    expect(html).toContain("GitHub repository");
+    expect(html).toContain("Cursor cloud environment");
+    expect(html).toContain("effective model identity is unavailable");
+    expect(html).toContain("Agent environment settings support only CURSOR_API_KEY");
+    expect(html).toContain("Configure hosted secrets in your Cursor Cloud environment");
+    expect(html).toContain("https://github.com/acme/repo");
+    expect(html).not.toContain('aria-label="Permission mode"');
+    expect(html).not.toContain("Runner lifecycle");
+    expect(html).not.toContain("Warm idle timeout");
+  });
+  it.each(["create", "edit"] as const)("clears hidden Codex settings when explicitly choosing Cursor Cloud during %s", async mode => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const initial = { provider: "codex", model: "gpt-5.6-sol", codexPermissionMode: "never", lifecycleMode: "warm",
+      modelReasoningEffort: "high", reasoningEffort: "high", effort: "high", modelParams: [{ id: "reasoning", value: "high" }], homeMode: "preconfigured" };
+    let currentConfig: Record<string, unknown> = initial;
+    let currentValues: CreateConfigValues = { ...defaultCreateValues, adapterType: "paperclip_runner", model: initial.model,
+      thinkingEffort: "high", adapterSchemaValues: initial };
+    function Fixture() {
+      const [config, setConfig] = useState(currentConfig);
+      const [values, setValues] = useState(currentValues);
+      currentConfig = config;
+      currentValues = values;
+      return <CodexLocalConfigFields mode={mode} isCreate={mode === "create"} adapterType="paperclip_runner"
+        values={mode === "create" ? values : null} set={patch => setValues(previous => ({ ...previous, ...patch }))}
+        config={config} eff={(_group, _field, original) => original}
+        mark={(_group, field, value) => setConfig(previous => ({ ...previous, [field]: value }))}
+        models={[]} hideInstructionsFile />;
+    }
+    try {
+      await act(async () => root.render(<QueryClientProvider client={new QueryClient()}><TooltipProvider><Fixture /></TooltipProvider></QueryClientProvider>));
+      const picker = container.querySelector<HTMLButtonElement>('[aria-label="Harness"]')!;
+      await act(async () => picker.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+      const cloudOption = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(option => option.textContent?.includes("Cursor Cloud"));
+      expect(cloudOption).toBeDefined();
+      await act(async () => cloudOption!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+      const saved = mode === "create" ? currentValues.adapterSchemaValues! : currentConfig;
+      expect(saved.provider).toBe("cursor_cloud");
+      expect(saved.lifecycleMode).toBe("per_turn");
+      for (const key of ["modelReasoningEffort", "reasoningEffort", "effort", "modelParams", "homeMode", "codexPermissionMode"]) expect(saved[key], key).toBeUndefined();
+      if (mode === "create") {
+        expect(currentValues.thinkingEffort).toBe("");
+        expect(buildPaperclipRunnerConfig({ ...currentValues, model: "caller-cloud-model" })).toMatchObject({ provider: "cursor_cloud", model: "caller-cloud-model", lifecycleMode: "per_turn" });
+      }
+      expect(container.textContent).toContain("Cursor manages command permissions");
+    } finally { await act(async () => root.unmount()); container.remove(); }
   });
   it("keeps Dot out of the general harness picker and hides that picker for Dot", async () => {
     expect(await renderRunner({ provider: "codex" }, "Harness", true)).not.toContain("OpenAI Dot");

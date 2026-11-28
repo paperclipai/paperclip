@@ -6,29 +6,6 @@ async function json<T = Record<string, any>>(response: APIResponse): Promise<T> 
   return response.json();
 }
 
-let cleanup: { companyId: string; enableClassicTaskInterface: boolean } | undefined;
-
-test.afterEach(async ({ request }, testInfo) => {
-  const state = cleanup;
-  cleanup = undefined;
-  if (!state) return;
-  testInfo.setTimeout(15_000);
-  const results = await Promise.allSettled([
-    request.patch("/api/instance/settings/experimental", {
-      data: { enableClassicTaskInterface: state.enableClassicTaskInterface }, timeout: 5_000,
-    }),
-    request.patch(`/api/companies/${state.companyId}`, { data: { status: "archived" }, timeout: 5_000 }),
-  ]);
-  const failures = results.flatMap((result, index) => result.status === "rejected"
-    ? [`Cleanup ${index}: ${String(result.reason)}`]
-    : result.value.ok() ? [] : [`Cleanup ${index}: HTTP ${result.value.status()}`]);
-  if (!failures.length) return;
-  await testInfo.attach("cleanup-failure", {
-    body: Buffer.from(JSON.stringify({ companyId: state.companyId, failures })), contentType: "application/json",
-  });
-  if (testInfo.status === "passed") throw new Error(failures.join("\n"));
-});
-
 for (const classic of [false, true]) {
   test(`${classic ? "classic" : "task chat"}: paused assignee warnings follow the task's current status without resuming the agent`, async ({ page, request }, testInfo) => {
     page.setDefaultTimeout(10_000);
@@ -36,10 +13,14 @@ for (const classic of [false, true]) {
     const company = await json(await request.post("/api/companies", {
       data: { name: `Completed task status ${randomUUID()}` },
     }));
-    cleanup = { companyId: company.id, enableClassicTaskInterface: settings.enableClassicTaskInterface };
-    await json(await request.patch("/api/instance/settings/experimental", {
-      data: { enableClassicTaskInterface: classic },
-    }));
+    const workspace = await json(await request.get("/api/workspace-preferences/me"));
+    await page.route("**/api/workspace-preferences/me", route => route.fulfill({ json: {
+      ...workspace, coordinatorWorkspaceEnabled: !classic,
+    } }));
+    await page.route("**/api/instance/settings/experimental", route => route.fulfill({ json: {
+      ...settings, enableClassicTaskInterface: classic,
+    } }));
+    try {
     // This command is deliberately not a model adapter. Heartbeats are disabled
     // and the agent is paused before assignment, so the journey starts no work.
     const agent = await json(await request.post(`/api/companies/${company.id}/agents`, { data: {
@@ -72,9 +53,12 @@ for (const classic of [false, true]) {
       await testInfo.attach(name, { path, contentType: "image/png" });
     };
     const observe = async (status: string, warningVisible: boolean) => {
-      await expect(page.getByText(task.title, { exact: true }).first()).toBeVisible();
+      const header = page.getByTestId("issue-detail-header");
+      await expect(header.getByRole("heading", { name: task.title, exact: true })).toBeVisible();
+      const showProperties = page.getByRole("button", { name: "Show properties", exact: true });
+      if (await showProperties.isVisible()) await showProperties.click();
       const statusLabel = status[0].toUpperCase() + status.slice(1);
-      await expect(page.getByTestId("issue-detail-header").getByRole("button", {
+      await expect(header.getByRole("button", {
         name: status === "blocked"
           ? /^Change status \(current: Blocked(?: · [^)]*)?\)$/
           : `Change status (current: ${statusLabel})`,
@@ -82,7 +66,7 @@ for (const classic of [false, true]) {
       }).first()).toBeVisible();
       // Wait for the actual agent-backed controls and thread to render before
       // asserting absence; a title alone can appear before the agent map loads.
-      await expect(page.getByRole("button", { name: /Receipt implementation/ }).first()).toBeVisible();
+      await expect(page.getByRole("button", { name: classic ? /Receipt implementation/ : "Select assignee" }).first()).toBeVisible();
       await expect(page.getByRole("textbox", { name: "editable markdown" })).toBeVisible();
       if (warningVisible) {
         await expect(notice).toBeVisible();
@@ -133,5 +117,8 @@ for (const classic of [false, true]) {
       }, null, 2)),
       contentType: "application/json",
     });
+    } finally {
+      await request.patch(`/api/companies/${company.id}`, { data: { status: "archived" }, timeout: 5_000 }).catch(() => {});
+    }
   });
 }

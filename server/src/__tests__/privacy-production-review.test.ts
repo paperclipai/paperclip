@@ -16,6 +16,7 @@ import { canActorReadWorkspaceOperation } from "../services/heartbeat-run-privac
 describe("private task production review", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
+  let fixtureCompanyNumber = 0;
   beforeAll(async () => {
     process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = "enforce";
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-private-review-");
@@ -26,12 +27,12 @@ describe("private task production review", () => {
   afterAll(async () => { await tempDb?.cleanup(); });
 
   async function fixture() {
-    const [company] = await db.insert(companies).values({ name: randomUUID(), issuePrefix: `T${randomUUID().slice(0, 5)}` }).returning();
+    const [company] = await db.insert(companies).values({ name: randomUUID(), issuePrefix: `T${++fixtureCompanyNumber}` }).returning();
     const owner = randomUUID(), outsider = randomUUID();
     await db.insert(authUsers).values([owner, outsider].map(id => ({ id, name: id, email: `${id}@example.test`, createdAt: new Date(), updatedAt: new Date() })));
     await db.insert(companyMemberships).values([owner, outsider].map(principalId => ({ companyId: company.id, principalType: "user", principalId, status: "active", membershipRole: "operator" })));
     const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Shared agent", role: "engineer", adapterType: "process", adapterConfig: {}, runtimeConfig: {}, permissions: {} }).returning();
-    const actor = (userId: string): AuthorizationActor => ({ type: "board", userId, source: "session", companyIds: [company.id] });
+    const actor = (userId: string) => ({ type: "board", userId, source: "session", companyIds: [company.id] }) satisfies AuthorizationActor;
     return { company, owner, outsider, agent, actor };
   }
 
@@ -67,7 +68,7 @@ describe("private task production review", () => {
   it("publishes private chat content only to a currently authorized linked DM recipient", async () => {
     const f = await fixture();
     const [task] = await db.insert(issues).values({ companyId: f.company.id, title: "Private chat", visibility: "private", responsibleUserId: f.owner }).returning();
-    const [application] = await db.insert(toolApplications).values({ companyId: f.company.id, name: "Test chat", type: "native" }).returning();
+    const [application] = await db.insert(toolApplications).values({ companyId: f.company.id, name: "Test chat", type: "chat" }).returning();
     const [connection] = await db.insert(toolConnections).values({ companyId: f.company.id, applicationId: application.id, name: "Test chat", uid: "test-chat", connectionPurpose: "channel", transport: "chat_sdk" }).returning();
     const [endpoint] = await db.insert(chatEndpoints).values({ companyId: f.company.id, connectionId: connection.id, provider: "slack", publicId: randomUUID(), assignedAgentId: f.agent.id }).returning();
     const [principal] = await db.insert(chatExternalPrincipals).values({ companyId: f.company.id, provider: "slack", providerAccountId: "test", externalId: "person", kind: "user" }).returning();

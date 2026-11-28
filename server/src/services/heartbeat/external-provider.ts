@@ -24,5 +24,5 @@ type TaskWorkspaceExecution = Exclude<NativeExecutionInput, {
 
 export function nativeExecutionUsesTaskWorkspace(execution: NativeExecutionInput | null): execution is TaskWorkspaceExecution {
   return execution !== null && execution.schema !== "paperclip.native-execution-input.v6"
-    && execution.schema !== "paperclip.native-execution-input.v8";
+    && execution.schema !== "paperclip.native-execution-input.v8" && execution.provider.kind !== "cursor_cloud";
 }

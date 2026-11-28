@@ -52,6 +52,19 @@ it("keeps failed forwarding charged to the finite allowance and records an unres
   expect((await f.records()).at(-1)).toMatchObject({ admittedRequests: 3, responses: 0, unresolvedRequests: 3 });
 });
 
+it.each([6, 7])("exports both deterministic grades for every retained case in a %i-case qualification", async cases => {
+  const upstream = vi.fn<typeof fetch>(async () => Response.json({ ok: true }));
+  const f = await fixture(upstream);
+  await f.send({ project_id: projectId });
+  await f.send({ events: Array.from({ length: cases }, (_, index) => ({
+    id: `attempt-${index}`, scores: { product_pass: Number(index !== 0), cleanup_pass: 1 },
+  })) }, `experiment/${experimentId}/insert`);
+  await f.transport(`https://api.braintrust.dev/v1/experiment/${experimentId}/summarize`, { method: "GET" });
+  await f.close();
+  expect(upstream).toHaveBeenCalledTimes(3);
+  expect((await f.records()).at(-1)).toMatchObject({ admittedRequests: 3, admittedScores: cases * 2, unresolvedRequests: 0 });
+});
+
 it("retains an unresolved allowance when response headers arrive but the body disconnects", async () => {
   const f = await fixture(async () => new Response(new ReadableStream({ pull(controller) {
     controller.error(new Error("private-disconnect-error"));
@@ -85,7 +98,7 @@ it("refuses excess bytes, scores, foreign project and unqualified endpoints befo
   const f = await fixture(upstream);
   await expect(f.send({ project_id: experimentId })).rejects.toThrow("project mismatch");
   await expect(f.send({ project_id: projectId, data: "x".repeat(EVAL_EXPERIMENT_LIMITS.maxTotalBytes) })).rejects.toThrow("byte limit");
-  await expect(f.send({ events: Array.from({ length: 9 }, () => ({ scores: { pass: 1 } })) }, `experiment/${experimentId}/insert`))
+  await expect(f.send({ events: Array.from({ length: EVAL_EXPERIMENT_LIMITS.maxScores + 1 }, () => ({ scores: { pass: 1 } })) }, `experiment/${experimentId}/insert`))
     .rejects.toThrow("allowance exhausted");
   await expect(f.send({}, "project")).rejects.toThrow("Unqualified");
   expect(upstream).not.toHaveBeenCalled();

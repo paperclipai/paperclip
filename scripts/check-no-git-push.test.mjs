@@ -6,25 +6,24 @@ import test from "node:test";
 
 import {
   ALLOW_MARKER,
-  GIT_PUSH_PATTERN,
   collectScannableFiles,
   findGitPushOffenses,
   runCheck,
 } from "./check-no-git-push.mjs";
 
 test("regex matches common git push forms", () => {
-  assert.ok(GIT_PUSH_PATTERN.test("git push"));
-  assert.ok(GIT_PUSH_PATTERN.test("GIT PUSH"));
-  assert.ok(GIT_PUSH_PATTERN.test("git  push origin master"));
-  assert.ok(GIT_PUSH_PATTERN.test("git-push"));
-  assert.ok(GIT_PUSH_PATTERN.test("git_push"));
+  assert.equal(findGitPushOffenses("git push").length, 1);
+  assert.equal(findGitPushOffenses("GIT PUSH").length, 1);
+  assert.equal(findGitPushOffenses("git  push origin master").length, 1);
+  assert.equal(findGitPushOffenses("git-push").length, 1);
+  assert.equal(findGitPushOffenses("git_push").length, 1);
 });
 
 test("regex ignores unrelated `push` usages", () => {
-  assert.ok(!GIT_PUSH_PATTERN.test("args.push('git')"));
-  assert.ok(!GIT_PUSH_PATTERN.test("notes.push('git remote')"));
-  assert.ok(!GIT_PUSH_PATTERN.test("pushed"));
-  assert.ok(!GIT_PUSH_PATTERN.test("git fetch"));
+  assert.equal(findGitPushOffenses("args.push('git')").length, 0);
+  assert.equal(findGitPushOffenses("notes.push('git remote')").length, 0);
+  assert.equal(findGitPushOffenses("pushed").length, 0);
+  assert.equal(findGitPushOffenses("git fetch").length, 0);
 });
 
 test("findGitPushOffenses flags a bare invocation in a string", () => {

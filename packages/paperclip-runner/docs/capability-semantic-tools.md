@@ -39,6 +39,16 @@ by src/catalog/catalog-docs.test.ts; update the catalog, not the numbers. -->
 `finish_task`, `block_task`, `request_review`, `write_document`,
 `request_human_input`, `register_deliverable`, `inspect_operation_result`.
 
+Active-task document tools use the task bound to the run: call `list_documents`
+with `{}` and `read_document` with `{key}`. The API bridge also exposes
+`get_task`, `list_task_documents`, `read_task_document`, `write_task_document`,
+and `comment_on_task` for explicitly selected authorized tasks. These require
+`taskId`, a UUID from task context, search, or creation. They do not infer a task
+from a document key. Their schemas identify the active-task alternative.
+MCP bridges return direct required-property descriptions with missing-field
+errors, so the caller can correct the request before execution. Validation and
+task permissions still apply to every retry.
+
 ### Optional tools (26), by group
 
 | Group | Tools |

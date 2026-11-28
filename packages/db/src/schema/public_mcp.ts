@@ -33,6 +33,12 @@ export const mcpOauthGrants = pgTable("mcp_oauth_grants", {
   agentId: uuid("agent_id").references(() => agents.id, { onDelete: "cascade" }),
   scopes: jsonb("scopes").$type<string[]>().notNull(),
   revokedAt: timestamp("revoked_at", { withTimezone: true }),
+
+
+  revocationRevision: integer("revocation_revision").notNull().default(0),
+  revocationIndexReceipt: jsonb("revocation_index_receipt").$type<{
+    version: 1; authorityId: string; keyId: string; revision: number; generation: string;
+  }>(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   index("mcp_oauth_grants_user_company_idx").on(t.userId, t.companyId),
@@ -65,18 +71,21 @@ export const mcpOauthTokens = pgTable("mcp_oauth_tokens", {
   tokenHash: text("token_hash").notNull(),
   kind: text("kind").$type<"access" | "refresh">().notNull(),
   usedAt: timestamp("used_at", { withTimezone: true }),
+  revocationRevision: integer("revocation_revision").notNull().default(0),
   // Null only for renewable agent connection refresh tokens; access tokens expire.
   expiresAt: timestamp("expires_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   uniqueIndex("mcp_oauth_tokens_hash_uq").on(t.tokenHash),
   index("mcp_oauth_tokens_grant_idx").on(t.grantId),
+  index("mcp_oauth_tokens_revocation_revision_idx").on(t.grantId, t.revocationRevision, t.id),
   index("mcp_oauth_tokens_expiry_idx").on(t.expiresAt),
 ]);
 
 export const mcpOauthDeviceRequests = pgTable("mcp_oauth_device_requests", {
   id: uuid("id").primaryKey().defaultRandom(),
   clientId: text("client_id").notNull().references(() => mcpOauthClients.id, { onDelete: "cascade" }),
+  ingressOwner:text("ingress_owner").$type<"tenant"|"cloud">().notNull().default("tenant"),
   deviceCodeHash: text("device_code_hash").notNull(),
   userCodeHash: text("user_code_hash").notNull(),
   resource: text("resource").notNull(),
@@ -90,6 +99,7 @@ export const mcpOauthDeviceRequests = pgTable("mcp_oauth_device_requests", {
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
+  check("mcp_device_ingress_owner",sql`${t.ingressOwner} IN ('tenant','cloud')`),
   uniqueIndex("mcp_oauth_device_code_uq").on(t.deviceCodeHash),
   uniqueIndex("mcp_oauth_user_code_uq").on(t.userCodeHash),
   index("mcp_oauth_device_expiry_idx").on(t.expiresAt),
@@ -188,6 +198,9 @@ export const mcpAttachmentUploads = pgTable("mcp_attachment_uploads", {
   storageProvider: text("storage_provider").notNull(),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   cleanedAt: timestamp("cleaned_at", { withTimezone: true }),
+  // Written only after storage deletion and an authoritative absence readback.
+  // Legacy cleanedAt can predate truthful local filesystem error handling.
+  cleanupVerifiedAt: timestamp("cleanup_verified_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   uniqueIndex("mcp_attachment_upload_request_uq").on(t.companyId, t.userId, t.requestId),
@@ -204,3 +217,18 @@ export const mcpFileTickets = pgTable("mcp_file_tickets", {
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [index("mcp_file_ticket_expiry_idx").on(t.expiresAt), index("mcp_file_ticket_grant_idx").on(t.grantId)]);
+
+export const mcpOauthClientMirrorState = pgTable("mcp_oauth_client_mirror_state", {
+  id: text("id").primaryKey(),
+  enabled:boolean("enabled").notNull().default(false),
+  remoteResponsibility:boolean("remote_responsibility").notNull().default(false),
+  deviceCutoverStackId:text("device_cutover_stack_id"),
+  deviceCutoverAt:timestamp("device_cutover_at",{withTimezone:true}),
+  revision: integer("revision").notNull().default(0),
+  receipt: jsonb("receipt").$type<{ version: 1; instanceId: string; origin: string; revision: number; enabled:boolean; frontDoor?:"tenant-personal-v1";authorizationOrigin?:string; deviceStatus?:{keyId:string;generation:string;count:number}; generation: string }>(),
+}, t => [check("mcp_client_mirror_singleton",sql`${t.id} = 'public'`),check("mcp_client_mirror_revision",sql`${t.revision} >= 0`),check("mcp_device_cutover_identity",sql`(${t.deviceCutoverAt} IS NULL AND ${t.deviceCutoverStackId} IS NULL) OR (${t.deviceCutoverAt} IS NOT NULL AND ${t.deviceCutoverStackId} IS NOT NULL)`)]);
+export const mcpOauthClientChanges = pgTable("mcp_oauth_client_changes", {
+  clientId: text("client_id").primaryKey(),
+  revision: integer("revision").notNull(),
+  operation: text("operation").$type<"upsert"|"delete">().notNull(),
+}, t => [index("mcp_client_changes_revision_idx").on(t.revision,t.clientId),check("mcp_client_change_revision",sql`${t.revision} >= 1`),check("mcp_client_change_operation",sql`${t.operation} IN ('upsert','delete')`)]);
