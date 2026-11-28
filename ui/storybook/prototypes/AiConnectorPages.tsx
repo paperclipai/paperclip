@@ -19,7 +19,7 @@ import { storybookAgents, storybookAuthSession } from "../fixtures/paperclipData
 const companyId = "company-storybook";
 const date = new Date("2026-09-10T12:00:00Z");
 const agents = storybookAgents.slice(0, 2).map((agent, index) => ({ ...agent, id: index ? "atlas" : "nova", name: index ? "Atlas" : "Nova" }));
-const capabilities = { canConfigure: true, canCreateOrganizationGrant: true, canSetCompanyInstall: true, canConnectAsCurrentUser: true, canManageAgentInstalls: true, canViewOtherPersonalIdentities: true, editableAgentIds: ["nova", "atlas"] };
+const capabilities = { canConfigure: true, canCreateOrganizationGrant: true, canSetCompanyInstall: true, canConnectAsCurrentUser: true, canManageAgentInstalls: true, canManageToolPolicies: true, canViewOtherPersonalIdentities: true, editableAgentIds: ["nova", "atlas"] };
 const members = [{ userId: "dotta", name: "Dotta", email: "dotta@example.test" }, { userId: "sam", name: "Sam", email: "sam@example.test" }];
 
 /** Use the production provider catalog; only accounts and actions are simulated. */

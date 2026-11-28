@@ -316,6 +316,7 @@ export interface ToolConnectionCapabilities {
   canConfigure: boolean;
   canCreateOrganizationGrant: boolean;
   canSetCompanyInstall: boolean;
+  canManageToolPolicies: boolean;
   canConnectAsCurrentUser: boolean;
   canManageAgentInstalls: boolean;
   canViewOtherPersonalIdentities: boolean;

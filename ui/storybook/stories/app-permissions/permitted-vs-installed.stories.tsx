@@ -30,6 +30,7 @@ const FULL_CAPABILITIES: ToolConnectionCapabilities = {
   canSetCompanyInstall: true,
   canConnectAsCurrentUser: true,
   canManageAgentInstalls: true,
+  canManageToolPolicies: true,
   canViewOtherPersonalIdentities: false,
   editableAgentIds: AGENT_IDS,
 };
@@ -40,6 +41,7 @@ const VIEWER_CAPABILITIES: ToolConnectionCapabilities = {
   canSetCompanyInstall: false,
   canConnectAsCurrentUser: false,
   canManageAgentInstalls: false,
+  canManageToolPolicies: false,
   canViewOtherPersonalIdentities: false,
   editableAgentIds: [],
 };

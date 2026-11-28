@@ -203,6 +203,7 @@ function personalGrantsResponse(
       canSetCompanyInstall: true,
       canConnectAsCurrentUser: true,
       canManageAgentInstalls: true,
+      canManageToolPolicies: true,
       canViewOtherPersonalIdentities: false,
       editableAgentIds: ["agent-1"],
     },

@@ -5422,6 +5422,59 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(crossTenantResponses[0]!.body).toEqual(missingRes.body);
   });
 
+  it("reports canManageToolPolicies from the policy-route permission, not the page flag", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const connection = await service.createConnection(company.id, connectionInput({
+      name: "Policy capability connection",
+      transport: "mcp_remote",
+      config: { url: "https://policy-capability.example/mcp" },
+    }));
+    const grants = async (actor: Express.Request["actor"]) =>
+      await request(createRouteApp(db, actor))
+        .get(`/api/tool-connections/${connection.id}/grants`);
+
+    const ownerActor = memberActor(company, false);
+    const ownerRes = await grants(ownerActor);
+    expect(ownerRes.status).toBe(200);
+    expect(ownerRes.body.capabilities).toMatchObject({
+      canConfigure: true,
+      canManageToolPolicies: true,
+    });
+
+    await db.insert(principalPermissionGrants).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: ownerActor.userId!,
+      permissionKey: "tools:manage_profiles",
+      scope: { targetAgentIds: [randomUUID()] },
+      grantedByUserId: "owner",
+    });
+    const scopedRes = await grants(ownerActor);
+    expect(scopedRes.status).toBe(200);
+    expect(scopedRes.body.capabilities).toMatchObject({
+      canConfigure: true,
+      canManageToolPolicies: false,
+    });
+
+    const viewerActor: Express.Request["actor"] = {
+      type: "board",
+      userId: "viewer-user",
+      userName: "Viewer User",
+      userEmail: null,
+      companyIds: [company.id],
+      memberships: [{ companyId: company.id, membershipRole: "viewer", status: "active" }],
+      isInstanceAdmin: false,
+      source: "session",
+    };
+    const viewerRes = await grants(viewerActor);
+    expect(viewerRes.status).toBe(200);
+    expect(viewerRes.body.capabilities).toMatchObject({
+      canConfigure: false,
+      canManageToolPolicies: false,
+    });
+  });
+
   it("returns 404 for cross-company connection routes, including instance admins", async () => {
     const allowedCompany = await createCompany(db);
     const otherCompany = await createCompany(db);
