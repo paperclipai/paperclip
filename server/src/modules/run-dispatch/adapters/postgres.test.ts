@@ -1218,6 +1218,66 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
         allowed: false,
         errorCode: "issue_review_participant_changed",
       });
+
+      const reviewerRunId = await seedRun({ companyId, agentId: reviewerAgentId, contextSnapshot: { issueId } });
+      expect(
+        await adapter.evaluateScheduledRetryGate({
+          runId: reviewerRunId,
+          companyId,
+          retryReasonOverride: "other",
+          now,
+        }),
+      ).toEqual({ allowed: true });
+    });
+
+    it("ignores a retained review participant on scheduled retry when execution state is not pending", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const reviewerAgentId = randomUUID();
+      await seedAgent({ id: reviewerAgentId, companyId, name: "ReviewerAgent", role: "qa" });
+      const issueId = randomUUID();
+      await seedIssue({
+        companyId,
+        issueId,
+        status: "in_review",
+        assigneeAgentId: agentId,
+        executionState: {
+          status: "changes_requested",
+          currentStageId: randomUUID(),
+          currentStageIndex: 0,
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: reviewerAgentId, userId: null },
+          returnAssignee: { type: "agent", agentId, userId: null },
+          reviewRequest: null,
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: "changes_requested",
+        },
+      });
+
+      const adapter = createPostgresRunDispatchAdapter(db);
+      const now = new Date();
+      const assigneeRunId = await seedRun({ companyId, agentId, contextSnapshot: { issueId } });
+      expect(
+        await adapter.evaluateScheduledRetryGate({
+          runId: assigneeRunId,
+          companyId,
+          retryReasonOverride: "other",
+          now,
+        }),
+      ).toEqual({ allowed: true });
+
+      const reviewerRunId = await seedRun({ companyId, agentId: reviewerAgentId, contextSnapshot: { issueId } });
+      expect(
+        await adapter.evaluateScheduledRetryGate({
+          runId: reviewerRunId,
+          companyId,
+          retryReasonOverride: "other",
+          now,
+        }),
+      ).toMatchObject({
+        allowed: false,
+        errorCode: "issue_reassigned",
+      });
     });
 
     it("maps a terminal issue status into a blocked scheduled-retry gate decision", async () => {
@@ -1268,6 +1328,106 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
 
       expect(await adapter.cancelStaleQueuedRun({ companyId, runId, expectedStatus: "queued", now: new Date() }))
         .toMatchObject({ outcome: "not_stale" });
+    });
+
+    it("gates queued runs on review participant only while execution state is pending", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const reviewerAgentId = randomUUID();
+      await seedAgent({ id: reviewerAgentId, companyId, name: "ReviewerAgent", role: "qa" });
+      const stageId = randomUUID();
+      const baseState = {
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: reviewerAgentId, userId: null },
+        returnAssignee: { type: "agent", agentId, userId: null },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+      };
+      const changesRequestedIssueId = randomUUID();
+      await seedIssue({
+        companyId,
+        issueId: changesRequestedIssueId,
+        status: "in_review",
+        assigneeAgentId: agentId,
+        executionState: {
+          ...baseState,
+          status: "changes_requested",
+          lastDecisionOutcome: "changes_requested",
+        },
+      });
+      const pendingIssueId = randomUUID();
+      await seedIssue({
+        companyId,
+        issueId: pendingIssueId,
+        status: "in_review",
+        assigneeAgentId: agentId,
+        executionState: {
+          ...baseState,
+          status: "pending",
+          lastDecisionOutcome: null,
+        },
+      });
+
+      const adapter = createPostgresRunDispatchAdapter(db);
+      const now = new Date();
+
+      const assigneeChangesRequestedRunId = await seedRun({
+        companyId,
+        agentId,
+        contextSnapshot: { issueId: changesRequestedIssueId },
+      });
+      expect(
+        await adapter.cancelStaleQueuedRun({
+          companyId,
+          runId: assigneeChangesRequestedRunId,
+          expectedStatus: "queued",
+          now,
+        }),
+      ).toMatchObject({ outcome: "not_stale" });
+
+      const reviewerChangesRequestedRunId = await seedRun({
+        companyId,
+        agentId: reviewerAgentId,
+        contextSnapshot: { issueId: changesRequestedIssueId },
+      });
+      expect(
+        await adapter.cancelStaleQueuedRun({
+          companyId,
+          runId: reviewerChangesRequestedRunId,
+          expectedStatus: "queued",
+          now,
+        }),
+      ).toMatchObject({ outcome: "cancelled", errorCode: "issue_assignee_changed" });
+
+      const assigneePendingRunId = await seedRun({
+        companyId,
+        agentId,
+        contextSnapshot: { issueId: pendingIssueId },
+      });
+      expect(
+        await adapter.cancelStaleQueuedRun({
+          companyId,
+          runId: assigneePendingRunId,
+          expectedStatus: "queued",
+          now,
+        }),
+      ).toMatchObject({ outcome: "cancelled", errorCode: "issue_review_participant_changed" });
+
+      const reviewerPendingRunId = await seedRun({
+        companyId,
+        agentId: reviewerAgentId,
+        contextSnapshot: { issueId: pendingIssueId },
+      });
+      expect(
+        await adapter.cancelStaleQueuedRun({
+          companyId,
+          runId: reviewerPendingRunId,
+          expectedStatus: "queued",
+          now,
+        }),
+      ).toMatchObject({ outcome: "not_stale" });
     });
 
     it.each([
