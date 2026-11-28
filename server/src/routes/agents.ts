@@ -5760,6 +5760,8 @@ export function agentRoutes(
     const requestedAdapterType = nextAdapterType === existing.adapterType
       ? nextAdapterType
       : await assertSelectableAdapterType(nextAdapterType, patchData.adapterConfig, existing.companyId);
+    const changingAdapterType =
+      typeof patchData.adapterType === "string" && patchData.adapterType !== existing.adapterType;
     let requestedRuntimeConfig: Record<string, unknown> | null = null;
     if (hasOwn(patchData, "runtimeConfig")) {
       const runtimeConfig = asRecord(patchData.runtimeConfig);
@@ -5785,8 +5787,6 @@ export function agentRoutes(
     if (touchesAdapterConfiguration) {
       assertExternalInstructionsAdmin(req, existing);
       const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
-      const changingAdapterType =
-        typeof patchData.adapterType === "string" && patchData.adapterType !== existing.adapterType;
       const requestedAdapterConfig = hasOwn(patchData, "adapterConfig")
         ? (asRecord(patchData.adapterConfig) ?? {})
         : null;
@@ -5904,6 +5904,17 @@ export function agentRoutes(
         && (existingBinding.mode === "router" || isAiConnectionCompatible(existingBinding,
           requestedAdapterType, nextAiConfig.model, nextAiConfig.provider, nextAiConfig.acpxAgent))) {
         requestedRuntimeConfig.aiConnection = existingBinding;
+      }
+    }
+    // Switching adapters with no replacement connection drops an existing
+    // connection the new harness cannot use instead of rejecting the update.
+    if (changingAdapterType && existing.runtimeConfig.aiConnection && !requestedRuntimeConfig?.aiConnection) {
+      const existingBinding = aiRuntimeConnectionBindingSchema.safeParse(existing.runtimeConfig.aiConnection).data;
+      if (existingBinding && existingBinding.mode !== "router" && !isAiConnectionCompatible(existingBinding,
+        requestedAdapterType, nextAiConfig.model, nextAiConfig.provider, nextAiConfig.acpxAgent)) {
+        const nextRuntimeConfig = { ...(requestedRuntimeConfig ?? existing.runtimeConfig) };
+        delete nextRuntimeConfig.aiConnection;
+        requestedRuntimeConfig = nextRuntimeConfig;
       }
     }
     if (!requestedRuntimeConfig?.aiConnection && !existing.runtimeConfig.aiConnection
