@@ -941,7 +941,6 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
     managementContext?: ConnectionManagementContext;
   }) {
     const existing = await getGenericPolicyRow(db, input.companyId, input.policyId);
-    assertSupportedGenericPolicyShape(existing.policyType, existing.conditions ?? null, existing.config ?? null);
     const rows = await db
       .select({ name: toolPolicies.name })
       .from(toolPolicies)
@@ -1016,8 +1015,14 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
     const existing = await getGenericPolicyRow(db, input.companyId, input.policyId);
     const nextPolicyType = input.body.policyType ?? existing.policyType;
     const nextConditions = input.body.conditions !== undefined ? input.body.conditions ?? null : existing.conditions ?? null;
-    const nextConfig = input.body.config !== undefined ? input.body.config ?? null : existing.config ?? null;
-    assertSupportedGenericPolicyShape(nextPolicyType, nextConditions, nextConfig);
+    const storedConfig = existing.config ?? null;
+    const typeChanged = input.body.policyType !== undefined && input.body.policyType !== existing.policyType;
+    const nextConfig = input.body.config !== undefined ? input.body.config ?? null
+      : !typeChanged && nextPolicyType !== "rate_limit" ? null
+      : storedConfig;
+    const configUnchanged = !typeChanged && nextPolicyType !== "rate_limit" && hasConfig(storedConfig)
+      && stableStringify(nextConfig) === stableStringify(storedConfig);
+    assertSupportedGenericPolicyShape(nextPolicyType, nextConditions, configUnchanged ? null : nextConfig);
     await input.managementContext?.reauthorize();
     const now = new Date();
     const [policy] = await db
