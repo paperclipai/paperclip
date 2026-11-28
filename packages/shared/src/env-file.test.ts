@@ -8,6 +8,21 @@ describe("env file editor", () => {
     expect(encodeEnvValue("plain-value", "json")).toBe('"plain-value"');
   });
 
+  it("single-quotes values with backslashes or double quotes so dotenv reads them literally", () => {
+    expect(encodeEnvValue("C:\\Users\\nick\\.paperclip", "json")).toBe("'C:\\Users\\nick\\.paperclip'");
+    expect(encodeEnvValue("C:\\Users\\nick\\.paperclip", "minimal")).toBe("'C:\\Users\\nick\\.paperclip'");
+    expect(encodeEnvValue('say "hi"', "json")).toBe("'say \"hi\"'");
+    expect(encodeEnvValue("it's C:\\temp", "json")).toBe('"it\'s C:\\\\temp"');
+    expect(
+      updateEnvFileContents("", { PAPERCLIP_HOME: "C:\\Users\\nick\\.paperclip" }, { valueEncoding: "json" }),
+    ).toBe("PAPERCLIP_HOME='C:\\Users\\nick\\.paperclip'\n");
+    expect(
+      updateEnvFileContents("PAPERCLIP_HOME='C:\\Users\\nick\\.paperclip'\n", {
+        PAPERCLIP_HOME: "C:\\Users\\nick\\.paperclip",
+      }),
+    ).toBe("PAPERCLIP_HOME='C:\\Users\\nick\\.paperclip'\n");
+  });
+
   it("preserves unrelated content and CRLF while updating every stale duplicate", () => {
     const original = [
       "# operator comment",
