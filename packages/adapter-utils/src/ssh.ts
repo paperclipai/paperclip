@@ -301,9 +301,8 @@ async function spawnText(
 
     const append = (
       streamName: "stdout" | "stderr",
-      chunk: unknown,
+      text: string,
     ) => {
-      const text = String(chunk);
       if (streamName === "stdout") {
         stdout += text;
       } else {
@@ -342,10 +341,10 @@ async function spawnText(
       if (killEscalation) clearTimeout(killEscalation);
     };
 
-    child.stdout?.on("data", (chunk) => {
+    child.stdout?.setEncoding("utf8").on("data", (chunk: string) => {
       append("stdout", chunk);
     });
-    child.stderr?.on("data", (chunk) => {
+    child.stderr?.setEncoding("utf8").on("data", (chunk: string) => {
       append("stderr", chunk);
     });
 

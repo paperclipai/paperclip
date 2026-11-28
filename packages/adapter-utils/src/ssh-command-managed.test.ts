@@ -2,8 +2,9 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { spawn } from "node:child_process";
+import { ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { PassThrough } from "node:stream";
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
@@ -43,6 +44,41 @@ async function runner(fileSync = false) {
 }
 
 describe("SSH command-managed argv", () => {
+  it.each([
+    { stdoutText: "中é", stderrText: "🙂!", maxBuffer: 5 },
+    { stdoutText: "中é!", stderrText: "🙂!", maxBuffer: 5 },
+    { stdoutText: "中é", stderrText: "🙂!!", maxBuffer: 5 },
+  ])("decodes split UTF-8 and caps each stream at $maxBuffer bytes: $stdoutText / $stderrText", async ({
+    stdoutText, stderrText, maxBuffer,
+  }) => {
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const child = Object.assign(new ChildProcess(), { stdin: new PassThrough(), stdout, stderr });
+    const kill = vi.spyOn(child, "kill").mockReturnValue(true);
+    vi.mocked(spawn).mockImplementationOnce(() => {
+      queueMicrotask(() => {
+        for (const [stream, bytes] of [[stdout, Buffer.from(stdoutText)], [stderr, Buffer.from(stderrText)]] as const) {
+          for (const byte of bytes) stream.write(Buffer.of(byte));
+          stream.end();
+        }
+        child.emit("close", 0, null);
+      });
+      return child;
+    });
+
+    const result = runSshCommand({
+      host: "fixture.invalid", port: 22, username: "fixture", remoteWorkspacePath: "/tmp",
+      privateKey: null, knownHosts: null, strictHostKeyChecking: true,
+    }, "true", { maxBuffer });
+    if (Buffer.byteLength(stdoutText) > maxBuffer || Buffer.byteLength(stderrText) > maxBuffer) {
+      await expect(result).rejects.toThrow(`Process output exceeded maxBuffer of ${maxBuffer} bytes.`);
+      expect(kill).toHaveBeenCalledWith("SIGTERM");
+    } else {
+      await expect(result).resolves.toEqual({ stdout: stdoutText, stderr: stderrText });
+      expect(kill).not.toHaveBeenCalled();
+    }
+  });
+
   it("opts into bounded streaming archive transfer without changing ordinary SSH runners", async () => {
     const plain = await runner();
     expect(plain.syncIn).toBeUndefined();
