@@ -472,6 +472,27 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(errors).toEqual([]);
   });
 
+  it("releases a run orphaned by an earlier host process and runs the job again", async () => {
+    const row = await due();
+    const orphan = await pluginJobStore(db).createRun({ jobId: row.id, pluginId, trigger: "schedule" });
+    await pluginJobStore(db).markRunning(orphan.id);
+    await db.update(pluginJobRuns).set({ startedAt: new Date(Date.now() - 24 * 3600_000), createdAt: new Date(Date.now() - 24 * 3600_000) })
+      .where(eq(pluginJobRuns.id, orphan.id));
+    await start();
+    await completed(2);
+    const all = await runs();
+    expect(all.find(run => run.id === orphan.id)).toMatchObject({ status: "failed", error: expect.stringMatching(/^Orphaned/) });
+    expect(all.filter(run => run.id !== orphan.id)).toMatchObject([{ status: "succeeded" }]);
+    expect(rpc).toHaveBeenCalledOnce();
+  });
+  it("keeps a recent outstanding run as a block", async () => {
+    const row = await due();
+    const recent = await pluginJobStore(db).createRun({ jobId: row.id, pluginId, trigger: "schedule" });
+    await pluginJobStore(db).markRunning(recent.id);
+    await start(); await settled();
+    expect(await runs()).toMatchObject([{ id: recent.id, status: "running" }]);
+    expect(rpc).not.toHaveBeenCalled();
+  });
   it("deleting the last job cancels its future deadline", async () => {
     await job(); await start(); await settled(); await pluginJobStore(db).deleteAllJobs(pluginId); await quiet();
   });
