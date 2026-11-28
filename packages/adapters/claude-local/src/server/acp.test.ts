@@ -5,6 +5,7 @@ import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixt
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionContext, AdapterInvocationMeta } from "@paperclipai/adapter-utils";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
+import { parseAcpxStdoutLine } from "@paperclipai/adapter-utils/acpx-engine/ui";
 
 // Wrap the shared staging seam in a call-recording spy that still delegates to
 // the real implementation (a runner-backed sandbox test exercises it end to
@@ -64,7 +65,7 @@ function createLocalSandboxRunner() {
 }
 
 type FakeRuntimeOptions = Record<string, unknown>;
-type FakeRuntimeEvent = { type: string; text?: string; stream?: string; tag?: string };
+type FakeRuntimeEvent = { type: string; text?: string; stream?: string; tag?: string; messageId?: string };
 type FakeRuntimeHandle = {
   sessionKey: string;
   backend: string;
@@ -273,6 +274,30 @@ function buildContext(root: string, overrides: Partial<AdapterExecutionContext> 
 }
 
 describe("claude_local ACP lane", () => {
+  it("shows a safeguard retry as safety activity while retaining identical model text", async () => {
+    const root = await makeTempRoot("paperclip-claude-acp-safety-notice-");
+    const notice = "**Notice:** Opus 5.5's safeguards stopped the response above · continuing once with that noted";
+    const logs: string[] = [];
+    const events: FakeRuntimeEvent[] = [
+      { type: "text_delta", stream: "output", tag: "agent_message_chunk", text: notice },
+      { type: "text_delta", stream: "output", tag: "agent_message_chunk", text: notice, messageId: "model-1" },
+    ];
+    const execute = createClaudeAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => new FakeRuntime(options, events) as never,
+    });
+    const result = await execute(buildContext(root, {
+      onLog: async (stream, text) => { if (stream === "stdout") logs.push(text); },
+    }));
+
+    expect(result.exitCode).toBe(0);
+    expect(result.summary).toBe(notice);
+    const transcript = logs.flatMap(line => parseAcpxStdoutLine(line, "timestamp"));
+    expect(transcript.filter(entry => entry.kind === "assistant")).toMatchObject([{ text: notice }]);
+    expect(transcript.filter(entry => entry.kind === "provider_activity")).toMatchObject([
+      { family: "safety", eventType: "claude_safeguard_retry", status: "informational", summary: notice },
+    ]);
+  });
+
   it("uses the same default model in ACP startup and session identity", async () => {
     const root = await makeTempRoot("paperclip-claude-acp-default-");
     const meta: AdapterInvocationMeta[] = [];

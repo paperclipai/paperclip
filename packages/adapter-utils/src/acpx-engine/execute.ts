@@ -403,6 +403,9 @@ export interface AcpxEngineExecutorOptions {
     failure: AcpxTerminalSessionFailure,
     now: Date,
   ) => AcpxTerminalFailureClassification | null;
+  classifyOutputSafetyNotice?: (
+    event: Pick<Extract<AcpRuntimeEvent, { type: "text_delta" }>, "tag" | "text" | "messageId">,
+  ) => { eventType: string; title: string } | null;
   /**
    * The bound on how long the fail-fast seam waits for a cooperative
    * `turn.cancel()` after a latched terminal sandbox duplex-channel loss,
@@ -5346,6 +5349,11 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               }
             }
             if (event.type === "text_delta" && event.stream !== "thought") {
+              const notice = deps.classifyOutputSafetyNotice?.(event);
+              if (notice) {
+                await emitAcpxLog(ctx, { type: "acpx.safety_notice", eventType: notice.eventType, title: notice.title, summary: event.text });
+                continue;
+              }
               currentOutputChunk.push(event.text);
             } else if (event.type === "tool_call" && event.tag !== "tool_call_update") {
               // ACP makes tool-call status optional. The normalized event tag is

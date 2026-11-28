@@ -381,11 +381,19 @@ export function classifyClaudeTerminalSessionFailure(
   };
 }
 
+const classifyClaudeOutputSafetyNotice: NonNullable<AcpxEngineExecutorOptions["classifyOutputSafetyNotice"]> = (event) => {
+  if (event.tag !== "agent_message_chunk" || event.messageId) return null;
+  const safeguardRetry = /^\*\*Notice:\*\* [^\r\n]+['’]s safeguards stopped the response above · continuing once with that noted$/;
+  if (!safeguardRetry.test(event.text.trim())) return null;
+  return { eventType: "claude_safeguard_retry", title: "Claude safeguard retry" };
+};
+
 function withClaudeAcpDefaults(options: ClaudeAcpExecutorOptions): AcpxEngineExecutorOptions {
   return {
     resolveBillingIdentity: resolveClaudeAcpBillingIdentity,
     prepareRemoteManagedHome: prepareClaudeRemoteManagedHome,
     classifyTerminalSessionFailure: classifyClaudeTerminalSessionFailure,
+    classifyOutputSafetyNotice: classifyClaudeOutputSafetyNotice,
     ...options,
     adapterType: "claude_local",
     moduleDir,
