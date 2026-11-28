@@ -9,6 +9,8 @@ const UNRELATED_AGENT_ID = "33333333-3333-4333-8333-333333333333";
 const CREATED_AGENT_ID = "22222222-2222-4222-8222-222222222222";
 const ISSUE_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const OTHER_ISSUE_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+// Stage ids are validated as GUIDs, so the lost-update fixture needs a real one.
+const CONCURRENT_STAGE_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
 // Authenticated run ids are real UUIDs in production, and the per-run
 // cross-issue influence counter fails closed on a malformed one before it can
@@ -27,6 +29,7 @@ const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   listReviewAttention: vi.fn(),
   addComment: vi.fn(),
+  update: vi.fn(),
 }));
 const mockDecisionReceipts = vi.hoisted(() => ({ list: vi.fn(), listCreatedTasks: vi.fn() }));
 const mockDocumentService = vi.hoisted(() => ({ getIssueDocumentRevision: vi.fn() }));
@@ -107,15 +110,34 @@ const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })))
 // The per-run cross-issue influence counter runs in its own locking
 // transaction, so the route harness has to model it: the locked run row (whose
 // persisted context snapshot names the source issue) and the observation count.
+// The wait-monitor arming holds a row lock on the issue and derives the policy
+// from the locked row, so the harness has to serve that row separately from the
+// request snapshot `svc.getById` returns — the point of the lock is that the two
+// are allowed to differ.
+const mockLockedIssue = vi.hoisted(() => ({ value: null as Record<string, unknown> | null }));
+const mockIssueRowLock = vi.hoisted(() => vi.fn());
+
 const mockCrossIssueInfluence = vi.hoisted(() => ({
   sourceIssueId: null as string | null,
   priorCount: 0,
   inserted: [] as Array<Record<string, unknown>>,
 }));
 const mockDbTransaction = vi.hoisted(() => vi.fn(async (callback: (tx: unknown) => unknown) => callback({
-  select: (selection: Record<string, unknown>) => ({
+  select: (selection?: Record<string, unknown>) => ({
     from: () => ({
       where: () => {
+        // `select()` with no projection is the wait-monitor issue row lock.
+        if (!selection) {
+          return {
+            for: (mode: string) => {
+              mockIssueRowLock(mode);
+              return {
+                then: (resolve: (rows: unknown[]) => unknown) =>
+                  resolve(mockLockedIssue.value ? [mockLockedIssue.value] : []),
+              };
+            },
+          };
+        }
         if (Object.keys(selection).includes("count")) {
           return {
             then: (resolve: (rows: unknown[]) => unknown) =>
@@ -364,6 +386,9 @@ describe("issue thread interaction routes", () => {
       explanation: "Allowed by test grant.",
     }));
     mockIssueService.getById.mockResolvedValue(createIssue());
+    mockLockedIssue.value = createIssue();
+    mockIssueRowLock.mockClear();
+    mockIssueService.update.mockResolvedValue(createIssue());
     mockDecisionReceipts.list.mockResolvedValue({ items: [], nextCursor: null });
     mockDecisionReceipts.listCreatedTasks.mockResolvedValue({ items: [], nextCursor: null });
     mockDocumentService.getIssueDocumentRevision.mockResolvedValue(null);
@@ -3834,4 +3859,169 @@ describe("issue thread interaction routes", () => {
       ]);
     },
   );
+
+  it("arms a default wait monitor when a wake-on-response gate lands on an unmonitored issue", async () => {
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({
+        kind: "suggest_tasks",
+        payload: { version: 1, tasks: [{ clientKey: "task-1", title: "One" }] },
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({
+        monitorNextCheckAt: expect.any(Date),
+        executionPolicy: expect.objectContaining({
+          monitor: expect.objectContaining({
+            serviceName: "pending issue interaction",
+            nextCheckAt: expect.any(String),
+          }),
+        }),
+      }),
+      // The write joins the lock's transaction instead of opening its own.
+      expect.anything(),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.monitor_scheduled",
+        details: expect.objectContaining({
+          source: "interaction.wait_monitor_default",
+          interactionId: "interaction-1",
+        }),
+      }),
+    );
+  });
+
+  it("leaves a monitor the agent already armed alone", async () => {
+    mockLockedIssue.value = createIssue({ monitorNextCheckAt: new Date("2026-01-09T10:00:00.000Z") });
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({
+        kind: "suggest_tasks",
+        payload: { version: 1, tasks: [{ clientKey: "task-1", title: "One" }] },
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("reads the issue under a row lock, so a concurrent monitor is not overwritten", async () => {
+    // The request snapshot is taken before the interaction is created. A policy
+    // written from that snapshot would discard whatever landed in between, so the
+    // guard has to see the locked row — here: a monitor armed concurrently.
+    mockIssueService.getById.mockResolvedValue(createIssue());
+    mockLockedIssue.value = createIssue({ monitorNextCheckAt: new Date("2026-01-09T10:00:00.000Z") });
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({
+        kind: "suggest_tasks",
+        payload: { version: 1, tasks: [{ clientKey: "task-1", title: "One" }] },
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueRowLock).toHaveBeenCalledWith("update");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("carries the locked row's execution policy into the write, not the request snapshot", async () => {
+    // This is the lost update the lock exists for: the snapshot has no stages, the
+    // row committed one while the interaction was being created. Writing the whole
+    // `executionPolicy` column from the snapshot would silently drop that stage.
+    mockIssueService.getById.mockResolvedValue(createIssue({ executionPolicy: null }));
+    mockLockedIssue.value = createIssue({
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [{
+          id: CONCURRENT_STAGE_ID,
+          type: "review",
+          approvalsNeeded: 1,
+          participants: [{
+            id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+            type: "agent",
+            agentId: ASSIGNEE_AGENT_ID,
+          }],
+        }],
+      },
+    });
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({
+        kind: "suggest_tasks",
+        payload: { version: 1, tasks: [{ clientKey: "task-1", title: "One" }] },
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueRowLock).toHaveBeenCalledWith("update");
+    const [, patch] = mockIssueService.update.mock.calls.at(-1) as [string, Record<string, any>];
+    expect(patch.executionPolicy.stages).toHaveLength(1);
+    expect(patch.executionPolicy.stages[0]).toMatchObject({ id: CONCURRENT_STAGE_ID });
+    expect(patch.executionPolicy.monitor).toMatchObject({ serviceName: "pending issue interaction" });
+  });
+
+  it("writes the wait monitor inside the locking transaction", async () => {
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({
+        kind: "suggest_tasks",
+        payload: { version: 1, tasks: [{ clientKey: "task-1", title: "One" }] },
+      });
+
+    expect(res.status).toBe(201);
+    // Third argument is the transaction handle: the update must join the lock, not
+    // open a second connection that the lock cannot serialize against.
+    const call = mockIssueService.update.mock.calls.at(-1) as unknown[];
+    expect(call[2]).toBeDefined();
+  });
+
+  it("does not arm for an interaction that never wakes the assignee", async () => {
+    mockInteractionService.create.mockResolvedValue({
+      id: "interaction-quiet",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "none",
+    });
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({
+        kind: "request_confirmation",
+        continuationPolicy: "none",
+        payload: { version: 1, prompt: "Ship it?" },
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("still returns the created gate when arming the wait monitor fails", async () => {
+    mockIssueService.update.mockRejectedValue(new Error("db down"));
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({
+        kind: "suggest_tasks",
+        payload: { version: 1, tasks: [{ clientKey: "task-1", title: "One" }] },
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).toHaveBeenCalled();
+  });
 });

@@ -380,11 +380,16 @@ import {
 } from "../services/company-search-rate-limit.js";
 import {
   applyIssueExecutionPolicyTransition,
+  applyIssueMonitorPolicyTransition,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
   redactIssueMonitorExternalRef,
   setIssueExecutionPolicyMonitorScheduledBy,
 } from "../services/issue-execution-policy.js";
+import {
+  buildInteractionWaitMonitorPolicy,
+  INTERACTION_WAIT_MONITOR_SERVICE_NAME,
+} from "../services/issue-interaction-wait-monitor.js";
 import { buildExecutionWorkspaceAdapterConfig, parseProjectExecutionWorkspacePolicy, parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import {
@@ -18224,6 +18229,15 @@ export function issueRoutes(
           );
       }
 
+      // Best effort: the interaction is already committed, so a failure to arm the
+      // wait monitor must not turn a created gate into a 5xx the agent retries.
+      await armInteractionWaitMonitor(issue.id, interaction, actor).catch((err) => {
+        logger.warn(
+          { err, issueId: issue.id, interactionId: interaction.id },
+          "interaction wait monitor arming failed",
+        );
+      });
+
       res.status(201).json(interaction);
     },
   );
@@ -18256,6 +18270,92 @@ export function issueRoutes(
       res.json(result);
     },
   );
+
+  /**
+   * A wake-on-response interaction parks the issue on an answer that may never
+   * come. Give the wait a server-owned floor: if the issue carries no monitor yet,
+   * arm a default one so the assignee is re-woken instead of aging out silently.
+   * An agent that arms its own monitor keeps it — this never overwrites.
+   *
+   * The issue is re-read under a row lock rather than from the request snapshot.
+   * Writing the whole `executionPolicy` from a snapshot taken before the
+   * interaction was created would discard stages or settings that landed in
+   * between, and the "already armed" guard has to see the current monitor to hold.
+   */
+  async function armInteractionWaitMonitor(
+    issueId: string,
+    interaction: { id: string; kind: string; continuationPolicy: string },
+    actor: ReturnType<typeof getActorInfo>,
+  ) {
+    // Lock the row for the whole read-derive-write. Re-reading alone only narrows
+    // the window: this writes the *entire* `executionPolicy` column, so a policy
+    // update that commits between the read and the write is silently replaced by
+    // the older snapshot, losing stages or approval settings. Holding the row lock
+    // makes the derivation and the write one atomic step.
+    const armed = await db.transaction(async (tx) => {
+      const locked = await tx
+        .select()
+        .from(issueRows)
+        .where(eq(issueRows.id, issueId))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!locked) return null;
+
+      const policy = buildInteractionWaitMonitorPolicy({
+        issue: locked,
+        interaction,
+        now: new Date(),
+      });
+      // Under the lock this also settles the "already armed" guard: a monitor armed
+      // concurrently is committed before we read, so we see it and leave it alone.
+      if (!policy) return null;
+
+      const transition = applyIssueMonitorPolicyTransition({
+        issue: locked,
+        policy,
+        previousPolicy: normalizeIssueExecutionPolicy(locked.executionPolicy ?? null),
+        requestedStatus: locked.status,
+        requestedAssigneePatch: {},
+        actor: { agentId: actor.agentId ?? null, userId: null },
+        monitorExplicitlyUpdated: true,
+      });
+      const updated = await svc.update(
+        locked.id,
+        {
+          ...transition.patch,
+          // The jsonb column takes a plain record; IssueExecutionPolicy has no index signature.
+          executionPolicy: policy as unknown as Record<string, unknown>,
+        },
+        tx,
+      );
+      if (!updated) return null;
+      return { companyId: locked.companyId, identifier: locked.identifier, policy };
+    });
+    if (!armed) return;
+
+    await logActivity(db, {
+      companyId: armed.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
+      action: "issue.monitor_scheduled",
+      entityType: "issue",
+      entityId: issueId,
+      details: {
+        identifier: armed.identifier,
+        source: "interaction.wait_monitor_default",
+        interactionId: interaction.id,
+        interactionKind: interaction.kind,
+        continuationPolicy: interaction.continuationPolicy,
+        nextCheckAt: armed.policy.monitor?.nextCheckAt ?? null,
+        serviceName: INTERACTION_WAIT_MONITOR_SERVICE_NAME,
+        timeoutAt: armed.policy.monitor?.timeoutAt ?? null,
+        maxAttempts: armed.policy.monitor?.maxAttempts ?? null,
+      },
+    });
+  }
 
   router.post(
     "/issues/:id/interactions/:interactionId/accept",
