@@ -184,6 +184,8 @@ export interface ResponsibilityRollup {
   projects: number;
   /** Member routines that are not archived. */
   routines: number;
+  /** Distinct agent ids assigned to non-archived member routines. */
+  routineAgentIds: string[];
   openTasks: number;
   blockedTasks: number;
   /** Open tasks assigned to an agent. */

@@ -110,7 +110,7 @@ function overview(): ResponsibilityOverview {
         metric: { kind: "volume", name: "Investors contacted", unit: null, target: 20, low: null, high: null, current: 4,
           direction: "at_least", attainment: 0.2, statusRule: null, updatedAt: new Date(), stale: false },
         statusSentence: "4 of 20 investors contacted, 20% of target", workSummary: [],
-        projects: 0, routines: 0, openTasks: 2, blockedTasks: 0, agentTasks: 0, userTasks: 2, doneTasks: 0, nextDueAt: null, overdueProjects: [],
+        projects: 0, routines: 0, routineAgentIds: [], openTasks: 2, blockedTasks: 0, agentTasks: 0, userTasks: 2, doneTasks: 0, nextDueAt: null, overdueProjects: [],
       },
     }] as unknown as ResponsibilityOverview["responsibilities"],
     proposed: [],

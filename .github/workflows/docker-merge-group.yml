@@ -208,6 +208,29 @@ jobs:
           done
           df -h
 
+      - name: Enable containerd image store for OCI archive loading
+        run: |
+          set -euo pipefail
+          if docker info --format '{{json .DriverStatus}}' | grep -q 'containerd.snapshotter'; then
+            echo "Docker containerd image store already enabled."
+            exit 0
+          fi
+          sudo python3 - <<'PYTHON'
+          import json
+          from pathlib import Path
+          config = Path("/etc/docker/daemon.json")
+          settings = json.loads(config.read_text()) if config.exists() else {}
+          settings.setdefault("features", {})["containerd-snapshotter"] = True
+          config.write_text(json.dumps(settings))
+          PYTHON
+          sudo systemctl restart docker
+          status="$(docker info --format '{{json .DriverStatus}}')"
+          echo "$status"
+          echo "$status" | grep -q 'containerd.snapshotter' || {
+            echo "Docker containerd image store failed to activate." >&2
+            exit 1
+          }
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
         with:

@@ -34,19 +34,18 @@ const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 type Db = ReturnType<typeof createDb>;
 
+let loadedActivityRoutes!: (typeof import("../routes/activity.js"))["activityRoutes"];
+let loadedIssueRoutes!: (typeof import("../routes/issues.js"))["issueRoutes"];
+
 async function createApp(db: Db, actor: Express.Request["actor"]) {
-  const [{ activityRoutes }, { issueRoutes }] = await Promise.all([
-    import("../routes/activity.js"),
-    import("../routes/issues.js"),
-  ]);
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
     req.actor = actor;
     next();
   });
-  app.use("/api", issueRoutes(db, {} as never));
-  app.use("/api", activityRoutes(db));
+  app.use("/api", loadedIssueRoutes(db, {} as never));
+  app.use("/api", loadedActivityRoutes(db));
   app.use((error: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     res.status(error.status ?? 500).json({ error: error.message ?? "Internal server error" });
   });
@@ -58,9 +57,19 @@ describeEmbeddedPostgres("issue comment attribution and patch audit routes", () 
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-comment-attribution-audit-");
-    db = createDb(tempDb.connectionString);
-  }, 20_000);
+    const [dbResult, activityResult, issueResult] = await Promise.allSettled([
+      startEmbeddedPostgresTestDatabase("paperclip-comment-attribution-audit-"),
+      import("../routes/activity.js"),
+      import("../routes/issues.js"),
+    ]);
+    if (dbResult.status === "rejected") throw dbResult.reason;
+    tempDb = dbResult.value;
+    if (activityResult.status === "rejected") throw activityResult.reason;
+    if (issueResult.status === "rejected") throw issueResult.reason;
+    loadedActivityRoutes = activityResult.value.activityRoutes;
+    loadedIssueRoutes = issueResult.value.issueRoutes;
+    db = createDb(dbResult.value.connectionString);
+  }, 30_000);
 
   afterEach(async () => {
     await db.delete(activityLog);
