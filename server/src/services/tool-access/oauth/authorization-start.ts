@@ -11,7 +11,7 @@ import { GOOGLE_SIGN_IN_CLOUD_ONLY_MESSAGE, googleWorkspaceDraftRequestedScopes,
 import { paperclipGoogleSignInAvailable } from "../../google-sign-in-availability.js";
 import { and, eq, lt } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { companies, agents, connectionGrants, issueThreadInteractions, toolConnections, toolOauthStates } from "@paperclipai/db";
+import { companies, agents, connectionGrants, issueThreadInteractions, toolConnectionInstalls, toolConnections, toolOauthStates } from "@paperclipai/db";
 import type { ConnectionGrantKind, ToolOAuthStartResult } from "@paperclipai/shared";
 import { getConnectableAppDefinition } from "@paperclipai/shared";
 import { badRequest, conflict, forbidden, notFound, tooManyRequests, unprocessable } from "../../../errors.js";
@@ -58,6 +58,32 @@ function cloudConnectorStartHttpError(error: unknown, provider: string, provider
 export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies) {
   const { now, getConnectionRow, setupPolicy, fixedPersonalIdentityForReconnect, currentCloudConnector, vercelConnect, ensureOAuthClient, oauthEndpointsForConnection, assertOAuthEndpointUrl } = dependencies;
   const { assertConnectorConnectionSetupEnabled, assertExperimentalConnectorSetupEnabled } = setupPolicy;
+  async function retainedSubjectAgentId(connection: typeof toolConnections.$inferSelect): Promise<string | undefined> {
+    if (connection.credentialPolicy !== "per_agent") return undefined;
+    const configured = oauthConfig(connection).connectorSubjectAgentId;
+    if (typeof configured === "string" && configured) return configured;
+    const grants = await db
+      .select({ subjectAgentId: connectionGrants.subjectAgentId })
+      .from(connectionGrants)
+      .where(and(
+        eq(connectionGrants.companyId, connection.companyId),
+        eq(connectionGrants.connectionId, connection.id),
+        eq(connectionGrants.kind, "agent"),
+        eq(connectionGrants.status, "active"),
+      ))
+      .limit(2);
+    if (grants.length === 1 && grants[0]!.subjectAgentId) return grants[0]!.subjectAgentId;
+    const installs = await db
+      .select({ targetId: toolConnectionInstalls.targetId })
+      .from(toolConnectionInstalls)
+      .where(and(
+        eq(toolConnectionInstalls.companyId, connection.companyId),
+        eq(toolConnectionInstalls.connectionId, connection.id),
+        eq(toolConnectionInstalls.targetType, "agent"),
+      ))
+      .limit(2);
+    return installs.length === 1 ? installs[0]!.targetId : undefined;
+  }
   async function startOAuth(
     companyId: string,
     connectionId: string,
@@ -99,7 +125,7 @@ export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies
     );
     const authorizationSubjectUserId =
       fixedPersonalIdentity?.subjectUserId ?? input.subjectUserId;
-    const authorizationSubjectAgentId = input.subjectAgentId;
+    const authorizationSubjectAgentId = input.subjectAgentId ?? await retainedSubjectAgentId(connection);
     const workspaceDraftBinding = {
       companyId, connectionId: connection.id,
       actorType: starterBinding.actorType, actorId: starterBinding.actorId,
@@ -397,6 +423,11 @@ export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies
         throw forbidden(
           `${providerName} sign-in requires an authenticated actor`,
         );
+      }
+      if (connection.credentialPolicy === "per_agent" && !authorizationSubjectAgentId) {
+        throw conflict("This connection has no agent to authorize. Connect it again and choose its agent.", {
+          code: "connection_subject_agent_required",
+        });
       }
       const subjectUserId = authorizationSubjectAgentId
         ? null
