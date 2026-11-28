@@ -495,6 +495,11 @@ describe("Codex ACPX runtime adapter", () => {
         guard("outbound", request);
         // Grok binds its model at open even when no effort is selected.
         expect(request.params._meta).toEqual({ rules: options.systemInstructions ?? "", modelId: options.profile.reportedModelId });
+        const reopen = { method: "session/load", params: { sessionId: "s", _meta: { yoloMode: true } } };
+        guard("outbound", reopen);
+        expect(reopen.params._meta).toEqual({ modelId: options.profile.reportedModelId });
+        expect(() => guard("inbound", { method: "_x.ai/sessions/changed", params: { upserted: [{ sessionId: "s", yolo: true }], removed: [] } }))
+          .toThrow(expect.objectContaining({ code: "GROK_POLICY_VIOLATION" }));
       } else expect(created.protocolGuardFactory).toBeUndefined();
       if (agent === "copilot") {
         expect(() => port.startTurn({ text: "\n/yolo on", requestId: "bad" })).toThrow(/admitted permission policy/);

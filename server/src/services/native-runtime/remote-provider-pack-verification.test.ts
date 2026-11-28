@@ -284,19 +284,20 @@ describe("installed provider pack compatibility", () => {
 
   it("rejects the published Grok pack from before native effort admission", async () => {
     const profiles = JSON.parse(readFileSync(new URL("../../../../packages/paperclip-runner/acpx-profiles.json", import.meta.url), "utf8"));
-    const current = manifest("b"), installed = manifest("a");
-    // Published builtin Grok profile 1 predates grokEffort and grokDisableWebSearch
-    // in session.open. Its launcher bytes equal today's, so its release digest
-    // matches; the pack predates contract digests, so that gate refuses it.
     const published = "sha256:f0b698395a3704ed2ffaf84ea19bdb20c36c8a0a70b7c629c7b6ffe144e59e55";
-    expect(profiles.profiles.grok.commandDigest).toBe(published);
-    installed.payload.acpxProfileDigests = { grok: published };
-    delete installed.payload.contractDigest;
-    current.payload.acpxProfileDigests = { grok: profiles.profiles.grok.commandDigest };
+    expect(profiles.profiles.grok.commandDigest).not.toBe(published);
     const execute = vi.fn();
-    await expect(verifyRemoteProviderPack({ runner: { execute }, cwd: "/workspace", packRoot: "/opt/paperclip-runner/provider-pack",
-      manifest: reseal(current), installation: { root: "/opt/paperclip-runner/provider-pack", manifest: reseal(installed), immutable: true },
-      provider: { kind: "acpx", agent: "grok" } })).rejects.toThrow("interface or installation is incompatible");
+    const verify = (digest: string, contract: boolean) => {
+      const current = manifest("b"), installed = manifest("a");
+      installed.payload.acpxProfileDigests = { grok: digest };
+      if (!contract) delete installed.payload.contractDigest;
+      current.payload.acpxProfileDigests = { grok: profiles.profiles.grok.commandDigest };
+      return verifyRemoteProviderPack({ runner: { execute }, cwd: "/workspace", packRoot: "/opt/paperclip-runner/provider-pack",
+        manifest: reseal(current), installation: { root: "/opt/paperclip-runner/provider-pack", manifest: reseal(installed), immutable: true },
+        provider: { kind: "acpx", agent: "grok" } });
+    };
+    await expect(verify(published, false)).rejects.toThrow("interface or installation is incompatible");
+    await expect(verify(published, true)).rejects.toThrow("selected ACPX provider profile is incompatible");
     expect(execute).not.toHaveBeenCalled();
   });
 

@@ -1344,6 +1344,7 @@ fn response_error_classification(error: &ResponseError) -> &'static str {
         "GROK_CONFIGURATION_CONFLICT" => return "grok_configuration_conflict",
         "GROK_CONFIGURATION_DRIFT" => return "grok_configuration_drift",
         "GROK_ADMISSION_PROTOCOL_VIOLATION" => return "grok_admission_protocol_violation",
+        "GROK_POLICY_VIOLATION" => return "grok_policy_violation",
         "ACPX_ADMISSION_BINDING" => return "admission_binding",
         "ACPX_ADMISSION_INSTALLATION" => return "admission_installation",
         "ACPX_ADMISSION_SANDBOX" => return "admission_sandbox",
@@ -1793,6 +1794,7 @@ mod tests {
         );
         let admission_failures = [
             ("COPILOT_POLICY_VIOLATION", "copilot_policy_violation"),
+            ("GROK_POLICY_VIOLATION", "grok_policy_violation"),
             (
                 "COPILOT_DETACHED_WORK_UNSUPPORTED",
                 "copilot_detached_work_unsupported",

@@ -5,6 +5,7 @@ import { createGrokPromptUsageCollector } from "./grok-usage.js";
 import { resolveGrokDisableWebSearch } from "./grok-web-search.js";
 import { resolveGrokEffort, createGrokEffortAdmission } from "./grok-effort.js";
 import { createGrokSessionOpenGuard } from "./grok-session-rules.js";
+import { createGrokPermissionGuard } from "./grok-permission-policy.js";
 import { resolveClaudeEffort, createClaudeEffortAdmission } from "./claude-effort.js";
 import { CLAUDE_ASYNC_TASKS_CAPABILITY } from "./claude-background-tasks.js";
 import { ClaudeProviderCycles } from "./claude-provider-turns.js";
@@ -478,8 +479,9 @@ export async function openQualifiedAcpxRuntime(
     ...(piThinking ? { protocolGuardFactory: () => piThinking.createGuard() } : {}),
     ...(options.profile.agent === "grok" ? { protocolGuardFactory: () => {
       const open = createGrokSessionOpenGuard({ rules: options.systemInstructions ?? "", model: options.profile.reportedModelId });
+      const permissions = createGrokPermissionGuard();
       const effort = effortAdmission?.createGuard();
-      return (direction: "inbound" | "outbound", message: unknown) => { open(direction, message); effort?.(direction, message); };
+      return (direction: "inbound" | "outbound", message: unknown) => { open(direction, message); permissions(direction, message); effort?.(direction, message); };
     } } : effortAdmission ? { protocolGuardFactory: () => effortAdmission.createGuard() } : {}),
     ...(antigravityAdmission ? { protocolGuardFactory: () => antigravityAdmission.createGuard() } : {}),
     sessionStore,

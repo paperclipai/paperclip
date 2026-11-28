@@ -56,7 +56,13 @@ Paperclip tool authority, so explicitly selecting `approve-paperclip` or
 Full auto does not bypass Paperclip's company permissions, governed approvals,
 or execution-environment boundaries. Isolated ask
 rules override project allow rules, and compatible always-approve settings are
-locked off. Compatible hook/MCP discovery and shell login capture are disabled.
+locked off. Grok deletes its `requirements.toml` when a command starts, so the
+launcher writes the same lock again immediately before each `grok agent` start,
+after any subscription refresh. The runner sends only `modelId` in the
+`session/load` and `session/resume` `_meta`, so a client `yoloMode` request
+never reaches Grok. If Grok reports a yolo session or a bypass permission mode,
+the runner stops the provider with `GROK_POLICY_VIOLATION`.
+Compatible hook/MCP discovery and shell login capture are disabled.
 
 ## Installation and identity
 

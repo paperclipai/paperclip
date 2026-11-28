@@ -27,7 +27,7 @@ export const QUALIFIED_ACPX_PROFILE_DATA = {
     "agentServerVersion": "1",
     "agentRuntimePackage": "native:grok",
     "agentRuntimeVersion": "1.0.13",
-    "commandDigest": "sha256:f0b698395a3704ed2ffaf84ea19bdb20c36c8a0a70b7c629c7b6ffe144e59e55",
+    "commandDigest": "sha256:5e20f5491cecdb4c6c93946c9caeb7901c53d10404ad4d4fa8bd5da6955b5c31",
     "permissionPolicy": "interactive"
   },
   "pi": {
