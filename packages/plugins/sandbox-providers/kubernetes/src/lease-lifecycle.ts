@@ -21,6 +21,7 @@ import { deleteJob, findPodForJob, getJobStatus } from "./job-orchestrator.js";
 import {
   deleteSandboxCr,
   findPodForSandbox,
+  getSandboxCrStatus,
   waitForSandboxReady,
 } from "./sandbox-cr-orchestrator.js";
 
@@ -147,6 +148,44 @@ export async function checkLeaseResumable(
     podName,
     phase: status.phase === "Running" ? "Running" : "Pending",
   };
+}
+
+export interface ConfirmGoneInput {
+  namespace: string;
+  name: string;
+  backend: "sandbox-cr" | "job";
+  podName: string | null;
+  timeoutMs: number;
+  pollMs?: number;
+}
+
+export async function confirmLeaseResourcesGone(
+  clients: KubeClients,
+  input: ConfirmGoneInput,
+): Promise<boolean> {
+  const exists = async (read: () => Promise<unknown>) => {
+    try {
+      await read();
+      return true;
+    } catch (err) {
+      if (isKubeNotFoundError(err)) return false;
+      throw err;
+    }
+  };
+  const deadline = Date.now() + input.timeoutMs;
+  for (;;) {
+    const workload = await exists(() =>
+      input.backend === "sandbox-cr"
+        ? getSandboxCrStatus(clients, input.namespace, input.name)
+        : getJobStatus(clients, input.namespace, input.name),
+    );
+    const pod = !workload && input.podName
+      ? await exists(() => clients.core.readNamespacedPod({ namespace: input.namespace, name: input.podName! }))
+      : workload;
+    if (!workload && !pod) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, input.pollMs ?? 1000));
+  }
 }
 
 export interface DestroyLeaseInput {

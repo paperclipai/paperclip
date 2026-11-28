@@ -167,12 +167,12 @@ describe("onEnvironmentDestroyLease", () => {
     const deletePod = vi.fn().mockResolvedValue({});
     const deleteSecret = vi.fn().mockResolvedValue({});
     h.clients = {
-      custom: { deleteNamespacedCustomObject: deleteCr },
-      core: { deleteNamespacedPod: deletePod, deleteNamespacedSecret: deleteSecret },
+      custom: { deleteNamespacedCustomObject: deleteCr, getNamespacedCustomObject: vi.fn().mockRejectedValue(notFound()) },
+      core: { deleteNamespacedPod: deletePod, deleteNamespacedSecret: deleteSecret, readNamespacedPod: vi.fn().mockRejectedValue(notFound()) },
       batch: { deleteNamespacedJob: vi.fn() },
     };
 
-    await plugin.definition.onEnvironmentDestroyLease!({
+    const receipt = await plugin.definition.onEnvironmentDestroyLease!({
       driverKey: "kubernetes",
       companyId: "acme",
       environmentId: "env-1",
@@ -192,14 +192,19 @@ describe("onEnvironmentDestroyLease", () => {
       namespace: "paperclip-acme",
       name: "pc-abc-env",
     });
+    expect(receipt).toEqual({ providerLeaseId: "pc-abc", state: "destroyed" });
   });
 
   it("is idempotent: resolves cleanly when every resource is already gone (404)", async () => {
     h.clients = {
-      custom: { deleteNamespacedCustomObject: vi.fn().mockRejectedValue(notFound()) },
+      custom: {
+        deleteNamespacedCustomObject: vi.fn().mockRejectedValue(notFound()),
+        getNamespacedCustomObject: vi.fn().mockRejectedValue(notFound()),
+      },
       core: {
         deleteNamespacedPod: vi.fn().mockRejectedValue(notFound()),
         deleteNamespacedSecret: vi.fn().mockRejectedValue(notFound()),
+        readNamespacedPod: vi.fn().mockRejectedValue(notFound()),
       },
       batch: { deleteNamespacedJob: vi.fn() },
     };
@@ -213,7 +218,40 @@ describe("onEnvironmentDestroyLease", () => {
         providerLeaseId: "pc-abc",
         leaseMetadata: leaseMetadata(),
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({ providerLeaseId: "pc-abc", state: "destroyed" });
+  });
+
+  it("fails, so cleanup stays pending, while the pod still exists, within the host's default 30 s call limit", async () => {
+    vi.useFakeTimers();
+    try {
+      h.clients = {
+        custom: {
+          deleteNamespacedCustomObject: vi.fn().mockResolvedValue({}),
+          getNamespacedCustomObject: vi.fn().mockRejectedValue(notFound()),
+        },
+        core: {
+          deleteNamespacedPod: vi.fn().mockResolvedValue({}),
+          deleteNamespacedSecret: vi.fn().mockResolvedValue({}),
+          readNamespacedPod: vi.fn().mockResolvedValue({}),
+        },
+        batch: { deleteNamespacedJob: vi.fn() },
+      };
+      const pending = plugin.definition.onEnvironmentDestroyLease!({
+        driverKey: "kubernetes",
+        companyId: "acme",
+        environmentId: "env-1",
+        config: CONFIG,
+        providerLeaseId: "pc-abc",
+        leaseMetadata: leaseMetadata(),
+      });
+      let settled = false;
+      void pending.then(() => { settled = true; }, () => { settled = true; });
+      await vi.advanceTimersByTimeAsync(29_000);
+      expect(settled).toBe(true);
+      await expect(pending).rejects.toThrow(/still terminating/);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("is a no-op when providerLeaseId is null", async () => {
@@ -244,8 +282,9 @@ describe("onEnvironmentDestroyLease", () => {
       core: {
         deleteNamespacedPod: vi.fn().mockResolvedValue({}),
         deleteNamespacedSecret: vi.fn().mockResolvedValue({}),
+        readNamespacedPod: vi.fn().mockRejectedValue(notFound()),
       },
-      batch: { deleteNamespacedJob: deleteJob },
+      batch: { deleteNamespacedJob: deleteJob, readNamespacedJobStatus: vi.fn().mockRejectedValue(notFound()) },
     };
 
     await plugin.definition.onEnvironmentDestroyLease!({
@@ -261,5 +300,55 @@ describe("onEnvironmentDestroyLease", () => {
       expect.objectContaining({ namespace: "paperclip-acme", name: "pc-job" }),
     );
     expect(deleteCr).not.toHaveBeenCalled();
+  });
+});
+
+describe("onEnvironmentReleaseLease termination receipt", () => {
+  it("returns a destroyed receipt once the Sandbox and its pod are gone", async () => {
+    const deleteCr = vi.fn().mockResolvedValue({});
+    const readCr = vi.fn()
+      .mockResolvedValueOnce({ metadata: { deletionTimestamp: "2026-11-23T00:00:00Z" }, status: {} })
+      .mockRejectedValue(notFound());
+    h.clients = {
+      custom: { deleteNamespacedCustomObject: deleteCr, getNamespacedCustomObject: readCr },
+      core: { readNamespacedPod: vi.fn().mockRejectedValue(notFound()) },
+      batch: {},
+    };
+    vi.useFakeTimers();
+    try {
+      const pending = plugin.definition.onEnvironmentReleaseLease!({
+        driverKey: "kubernetes",
+        companyId: "acme",
+        environmentId: "env-1",
+        config: CONFIG,
+        providerLeaseId: "pc-abc",
+        leaseMetadata: leaseMetadata(),
+      });
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(pending).resolves.toEqual({ providerLeaseId: "pc-abc", state: "destroyed" });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(deleteCr).toHaveBeenCalledWith(expect.objectContaining({ name: "pc-abc", propagationPolicy: "Foreground" }));
+    expect(readCr.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("propagates a read error other than 404 instead of guessing", async () => {
+    h.clients = {
+      custom: {
+        deleteNamespacedCustomObject: vi.fn().mockResolvedValue({}),
+        getNamespacedCustomObject: vi.fn().mockRejectedValue(Object.assign(new Error("forbidden"), { code: 403 })),
+      },
+      core: {},
+      batch: {},
+    };
+    await expect(plugin.definition.onEnvironmentReleaseLease!({
+      driverKey: "kubernetes",
+      companyId: "acme",
+      environmentId: "env-1",
+      config: CONFIG,
+      providerLeaseId: "pc-abc",
+      leaseMetadata: leaseMetadata(),
+    })).rejects.toThrow("forbidden");
   });
 });
