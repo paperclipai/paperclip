@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
 import { reuseCanaryImage } from "./reuse-canary-image.mjs";
 
 const sha = "a".repeat(40);
@@ -66,8 +67,20 @@ test("canary reuse gates both native builds and still runs convergent promotion"
   assert.match(reuse, /github.repository_id == '1170821064'.*startsWith\(github.ref, 'refs\/tags\/canary\/v'\)/);
   assert.match(reuse, /node scripts\/reuse-canary-image.mjs/);
   const build = workflow.split("  build-and-push:\n")[1].split("  merge-and-push:\n")[0];
-  assert.match(build, /needs: \[reuse_canary_image\]/);
+  const dependencies = build.match(/^    needs: \[([^\]]+)\]/m)[1].split(", ").sort();
+  for (const dependency of ["reuse_canary_image", "runner_image", "macos_runner_runtime"]) assert.ok(dependencies.includes(dependency));
   assert.match(build, /!cancelled\(\).*result == 'skipped'.*result == 'success'.*outputs.reused == 'false'/);
+  const expression = build.match(/^    if: \$\{\{ (.+) \}\}$/m)[1];
+  for (const [mac, reuse, reused, expected] of [
+    ["success", "skipped", undefined, true], ["success", "success", "false", true],
+    ["success", "success", "true", false], ["success", "failure", undefined, false],
+    ["failure", "skipped", undefined, false], ["cancelled", "success", "false", false],
+    ["skipped", "skipped", undefined, false],
+  ]) {
+    assert.equal(runInNewContext(expression, { cancelled: () => false, needs: {
+      macos_runner_runtime: { result: mac }, reuse_canary_image: { result: reuse, outputs: { reused } },
+    } }), expected);
+  }
   assert.match(build, /platform: linux\/amd64/);
   assert.match(build, /platform: linux\/arm64/);
   const promotion = workflow.split("  promote_canary_channel:\n")[1];

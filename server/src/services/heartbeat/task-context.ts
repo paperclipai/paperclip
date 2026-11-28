@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
+import { eq } from "drizzle-orm";
+import { companies } from "@paperclipai/db";
 import type { Db, agents, agentTaskSessions, heartbeatRuns } from "@paperclipai/db";
-import { FAST_RESPONSE_AGENT_GUIDANCE, fastResponseHistoryBody } from "@paperclipai/shared";
+import { AUTOMATION_CONVERSATION_ORIGIN_KIND, FAST_RESPONSE_AGENT_GUIDANCE, ONBOARDING_FIRST_TASK_ORIGIN_KIND, RESPONSIBILITY_BAR_ORIGIN_KIND, RESPONSIBILITY_DASHBOARD_ORIGIN_KIND, RESPONSIBILITY_STATUS_UPDATE_ORIGIN_KIND, fastResponseHistoryBody, isValidIanaTimeZone } from "@paperclipai/shared";
 import type { PaperclipTurnContext } from "@paperclipai/adapter-utils/server-utils";
 import { parseObject } from "../../adapters/utils.js";
 import { isConversation } from "../agent-conversations.js";
@@ -12,6 +14,11 @@ import type { issueService } from "../issues.js";
 import { createRunSecretRedactionRegistry } from "../run-secret-redaction.js";
 import { redactQuarantinedBodyForHigherTrust, sanitizeQuarantinedCommentForHigherTrust } from "../source-trust.js";
 import { getTaskPlanContext } from "../task-plan-context.js";
+import { loadResponsibilityBarGuidance } from "../responsibility-bar-guidance.js";
+import { loadAutomationConversationGuidance } from "../automation-conversation-guidance.js";
+import { loadDashboardConversationGuidance } from "../responsibility-dashboard-guidance.js";
+import { loadStatusRefreshReminder, loadStatusUpdateGuidance } from "../responsibility-status-guidance.js";
+import { loadStandingCheckGuidance } from "../routine-standing-checks.js";
 import { caseExecutionMarkdown, getCaseExecutionContext } from "../case-context.js";
 import type { TrustPresetResolution } from "../trust-preset-resolver.js";
 import { liveVoiceExecutionGuidance } from "../voice/voice-execution-guidance.js";
@@ -37,7 +44,7 @@ export interface HeartbeatTaskContextInput {
   policy: {
     recovering?: boolean;
     trustPreset: Pick<TrustPresetResolution, "kind">;
-    experimentalInstanceSettings: { enableSimplifiedEnglishInteractions?: boolean; enableCases?: boolean };
+    experimentalInstanceSettings: { enableSimplifiedEnglishInteractions?: boolean; enableCases?: boolean; enableConferenceRoomChat?: boolean; enableStatusCards?: boolean; enableResponsibilities?: boolean };
   };
   services: {
     issuesSvc: Pick<ReturnType<typeof issueService>, "getAncestors">;
@@ -230,20 +237,124 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
     issueContext?.chatAssignedAgentId === agent.id
       ? issueContext.chatCommunicationGuidance
       : null;
-  // Use the standing chat owner's saved presentation choice, never worker text.
-  // Recovery retains the admitted choice instead of silently changing its prompt.
+  // Use the standing chat owner's saved preferences, never worker text.
+  // Recovery retains the admitted choices instead of silently changing its prompt.
+  const conversationOwnerPreference = isConversation(issueContext) && issueContext?.conversationUserId
+    && !input.policy.recovering
+    ? await workspacePreferenceService(db).get(issueContext.conversationUserId)
+    : null;
   const coordinatorWorkspace = agent.adapterType === "paperclip_runner" && isConversation(issueContext)
     && issueContext?.conversationUserId
     ? input.policy.recovering
       ? context.paperclipCoordinatorWorkspaceEnabled === true
-      : (await workspacePreferenceService(db).get(issueContext.conversationUserId)).coordinatorWorkspaceEnabled
+      : conversationOwnerPreference?.coordinatorWorkspaceEnabled === true
     : false;
   context.paperclipCoordinatorWorkspaceEnabled = Boolean(coordinatorWorkspace);
+  const savedPersonTimeZone = input.policy.recovering
+    ? readNonEmptyString(context.paperclipConversationTimeZone)
+    : conversationOwnerPreference?.timeZone ?? null;
+  const personTimeZone = isConversation(issueContext) && issueContext?.conversationUserId
+    && savedPersonTimeZone && isValidIanaTimeZone(savedPersonTimeZone)
+    ? savedPersonTimeZone
+    : null;
+  if (personTimeZone) context.paperclipConversationTimeZone = personTimeZone;
+  else delete context.paperclipConversationTimeZone;
+  const [chatCompany] = issueRef?.conversationAgentId && !issueRef.identifier
+    ? await db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, agent.companyId))
+    : [];
   const taskMarkdownInput = {
+    companyPrefix: chatCompany?.issuePrefix,
     coordinatorWorkspace: Boolean(coordinatorWorkspace),
+    personTimeZone,
+    conferenceRoomEnabled: experimentalInstanceSettings.enableConferenceRoomChat === true,
+    statusCardsEnabled: experimentalInstanceSettings.enableStatusCards === true,
+    casesEnabled: experimentalInstanceSettings.enableCases === true,
+    responsibilitiesEnabled: experimentalInstanceSettings.enableResponsibilities === true,
+    // Work a routine created, the onboarding task, bar and automation conversations and status update requests are never offered as routines.
+    routineSuggestionsEnabled: experimentalInstanceSettings.enableResponsibilities === true
+      && issueContext?.originKind !== "routine_execution"
+      && issueContext?.originKind !== ONBOARDING_FIRST_TASK_ORIGIN_KIND
+      && issueContext?.originKind !== RESPONSIBILITY_BAR_ORIGIN_KIND
+      && issueContext?.originKind !== AUTOMATION_CONVERSATION_ORIGIN_KIND
+      && issueContext?.originKind !== RESPONSIBILITY_STATUS_UPDATE_ORIGIN_KIND
+      && issueContext?.originKind !== RESPONSIBILITY_DASHBOARD_ORIGIN_KIND,
+    // The bar conversation's instructions, rebuilt from the responsibility each wake.
+    responsibilityBarGuidance: experimentalInstanceSettings.enableResponsibilities === true && issueRef && issueContext
+      && issueContext.originKind === RESPONSIBILITY_BAR_ORIGIN_KIND
+      ? await loadResponsibilityBarGuidance(db, {
+        issue: {
+          id: issueRef.id,
+          companyId: agent.companyId,
+          originKind: issueContext.originKind,
+          originId: issueContext.originId ?? null,
+          assigneeAgentId: issueContext.assigneeAgentId ?? null,
+        },
+        agentId: agent.id,
+      })
+      : null,
+    // The automation conversation's instructions, rebuilt from the task being automated each wake.
+    automationConversationGuidance: experimentalInstanceSettings.enableResponsibilities === true && issueRef && issueContext
+      && issueContext.originKind === AUTOMATION_CONVERSATION_ORIGIN_KIND
+      ? await loadAutomationConversationGuidance(db, {
+        issue: {
+          id: issueRef.id,
+          companyId: agent.companyId,
+          originKind: issueContext.originKind,
+          originId: issueContext.originId ?? null,
+          assigneeAgentId: issueContext.assigneeAgentId ?? null,
+        },
+        agentId: agent.id,
+      })
+      : null,
+    // A status update request's instructions, rebuilt from the responsibility each wake.
+    responsibilityStatusUpdateGuidance: experimentalInstanceSettings.enableResponsibilities === true && issueRef && issueContext
+      && issueContext.originKind === RESPONSIBILITY_STATUS_UPDATE_ORIGIN_KIND
+      ? await loadStatusUpdateGuidance(db, {
+        issue: {
+          id: issueRef.id,
+          companyId: agent.companyId,
+          originKind: issueContext.originKind,
+          originId: issueContext.originId ?? null,
+          assigneeAgentId: issueContext.assigneeAgentId ?? null,
+        },
+        agentId: agent.id,
+        runId: run.id,
+      })
+      : null,
+    // The dashboard conversation's instructions, rebuilt from the person's dashboard each wake; they differ by mode.
+    responsibilityDashboardGuidance: experimentalInstanceSettings.enableResponsibilities === true && issueRef && issueContext
+      && issueContext.originKind === RESPONSIBILITY_DASHBOARD_ORIGIN_KIND
+      ? await loadDashboardConversationGuidance(db, {
+        issue: {
+          id: issueRef.id,
+          companyId: agent.companyId,
+          originKind: issueContext.originKind,
+          originId: issueContext.originId ?? null,
+          assigneeAgentId: issueContext.assigneeAgentId ?? null,
+        },
+        agentId: agent.id,
+      })
+      : null,
+    // On other work under a responsibility this agent reports on: a short reminder to refresh its status.
+    responsibilityStatusReminder: experimentalInstanceSettings.enableResponsibilities === true && issueRef && issueContext
+      && !isConversation(issueContext) && (issueRef.workMode ?? "standard") === "standard"
+      && issueContext.originKind !== RESPONSIBILITY_STATUS_UPDATE_ORIGIN_KIND
+      ? await loadStatusRefreshReminder(db, {
+        issue: {
+          id: issueRef.id,
+          companyId: agent.companyId,
+          projectId: issueRef.projectId ?? null,
+          originKind: issueContext.originKind ?? null,
+          assigneeAgentId: issueContext.assigneeAgentId ?? null,
+        },
+        agentId: agent.id,
+      })
+      : null,
     conversationConfirmations: issueRef && isConversation(issueContext)
       ? await getConversationConfirmationContext({ db, companyId: agent.companyId, issueId: issueRef.id, agentId: agent.id })
       : null,
+    onboardingChat: issueContext?.originKind === "onboarding_chat",
+    onboardingGreeting: context.wakeReason === "onboarding_chat_greeting",
     issue: issueRef
       ? {
           id: issueRef.id,
@@ -309,29 +420,28 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
   // must also reach resumed turns. Rebuild it from server records each wake.
   const liveVoiceTaskPrefix = liveVoiceGuidance ? `${liveVoiceGuidance}\n\n` : "";
   context.paperclipCasesEnabled = experimentalInstanceSettings.enableCases === true;
+  context.paperclipResponsibilitiesEnabled = experimentalInstanceSettings.enableResponsibilities === true;
   const workflowCase = issueRef && experimentalInstanceSettings.enableCases
     ? await getCaseExecutionContext(db, { companyId: agent.companyId, issueId: issueRef.id, agentId: agent.id, runId: run.id, exposeLowTrustRaw })
     : null;
   if (workflowCase) context.paperclipCase = workflowCase;
   else delete context.paperclipCase;
   const assignmentPrefix = liveVoiceTaskPrefix + caseExecutionMarkdown(workflowCase);
-  let taskMarkdown = assignmentPrefix + buildPaperclipTaskMarkdown({ ...taskMarkdownInput, taskPlan }) + chatCompletionInstruction(context);
-  let taskMarkdownAssignment = assignmentPrefix + buildPaperclipTaskMarkdown({
-    ...taskMarkdownInput,
-    taskPlan,
-    includeWakeComments: false,
-  }) + chatCompletionInstruction(context);
-  const taskMarkdownCompact = assignmentPrefix + buildPaperclipTaskMarkdown({
-    ...taskMarkdownInput,
-    taskPlan,
-    includeDescription: false,
-  }) + chatCompletionInstruction(context);
-  const taskMarkdownAssignmentCompact = assignmentPrefix + buildPaperclipTaskMarkdown({
-    ...taskMarkdownInput,
-    taskPlan,
-    includeDescription: false,
-    includeWakeComments: false,
-  }) + chatCompletionInstruction(context);
+  // Experimental standing checks (enableResponsibilities): a timer wake with
+  // no task carries the agent's active standing checks, rebuilt each wake.
+  const standingChecks = !issueRef && experimentalInstanceSettings.enableResponsibilities === true
+    && readNonEmptyString(context.wakeReason) === "heartbeat_timer"
+    ? await loadStandingCheckGuidance(db, { companyId: agent.companyId, agentId: agent.id })
+    : null;
+  // A wake with no task builds no task markdown; never let that read as "null".
+  const markdown = (options: { includeDescription?: boolean; includeWakeComments?: boolean }) =>
+    assignmentPrefix
+      + [buildPaperclipTaskMarkdown({ ...taskMarkdownInput, taskPlan, ...options }), standingChecks].filter(Boolean).join("\n\n")
+      + chatCompletionInstruction(context);
+  let taskMarkdown = markdown({});
+  let taskMarkdownAssignment = markdown({ includeWakeComments: false });
+  const taskMarkdownCompact = markdown({ includeDescription: false });
+  const taskMarkdownAssignmentCompact = markdown({ includeDescription: false, includeWakeComments: false });
   if (issueRef) {
     context.paperclipIssue = {
       id: issueRef.id,

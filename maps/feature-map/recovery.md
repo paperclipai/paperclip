@@ -27,7 +27,8 @@ Agent access: [companion](../agent-access-map/recovery.md).
   no duplicate dispatch, and later recovery after preparation leaves the registry.
 - `source-action`: `recovery/source-action` — source-scoped recovery actions remain attached to the task;
   independent repair work may have its own issue and return owner.
-- `exhaustion`: `recovery/exhaustion` — an exhausted infrastructure attempt offers ordinary Retry.
+- `exhaustion`: `recovery/exhaustion` — a run stopped for a reason only a person can resolve offers ordinary Retry;
+  exhausted infrastructure recovery instead continues in one fresh run from saved work.
   Internal repair stays system-owned; genuine user decisions retain their
   specific action.
 - `workspace`: `recovery/workspace` — workspace divergence/export failures show the applicable repair,
@@ -39,27 +40,10 @@ Agent access: [companion](../agent-access-map/recovery.md).
   workspace link when the destination is disabled. Local PostgreSQL and real
   filesystem regressions cover native and legacy recovery and one-time delivery;
   hosted provider recovery remains separate acceptance.
-  Daytona directory export can stream its archive when the sandbox cannot store
-  a temporary tar. The transfer remains bounded and validates archive completion
-  and paths before import. The [capacity regression](../../packages/plugins/sandbox-providers/daytona/src/file-sync-capacity.test.ts)
-  exercises a real local PTY and file-size limit. The credential-gated
-  [provider test](../../packages/plugins/sandbox-providers/daytona/src/file-sync-capacity.live.test.ts)
-  covers stop/start, an ENOSPC archive sink, safe-link filtering, and a second
-  export. Neither test proves the original task's continuation or repairs lost
-  provider session state.
   Native finalization deadline failures also retain the exact prepared source
   for the same stop-and-save workflow before Retry admits another executor.
-  A blocked native restart records that preservation obligation atomically with
-  its failure. PostgreSQL regressions cover exact source binding, live ownership,
-  rollback, and no replacement run or wake from file preservation.
   Retry reconstructs missing preservation for historical failures only from an
   exact prepared source without a live finalization owner.
-  New messages and orphan cleanup can register missing preservation automatically
-  and wake the existing worker. Saved input still waits for verified stop and file
-  persistence, then enters ordinary admission once.
-  A completed explicit Retry also retires its failed, unowned sandbox predecessor's
-  stale retry and registers preservation atomically. Current task state and live or
-  mismatched owners remain protected; workspace switching still waits for cleanup.
 - `unknown-outcome`: `recovery/unknown-outcome` — uncertain external side effects require inspection and
   an explicit decision, not automatic replay.
 - `user-continuation`: `recovery/user-continuation` — saved user messages after a stop are reconsidered once
@@ -71,46 +55,23 @@ Agent access: [companion](../agent-access-map/recovery.md).
   the agent itself restarted or that a failed run succeeded.
 
 ## How to get to it (user POV)
+For `recovery/reconnect`, interrupt a write response after the server accepts it.
+Verify that task, document, and decision drafts survive reload and that retrying
+the saved request does not create a duplicate. After the bounded retry budget
+ends, use **Resend now** to continue. Check that drafts remain private to their
+original account and task. See [durable autosave tests](../../ui/src/hooks/useDurableAutosave.test.tsx)
+and the [disconnect recovery journey](../../tests/e2e/disconnect-write-recovery.spec.ts).
 
-For `recovery/reconnect`, also interrupt a write response after the server accepts
-it. Keep a title draft bound to its original task while navigating. Restore a
-new-task draft with its files selected in another order and require the same
-creation key and one task. Verify lost document-create and decision responses,
-including an interrupted verification read. Once the bounded retry budget ends,
-require a visible **Resend now** action. Use
-[durable autosave tests](../../ui/src/hooks/useDurableAutosave.test.tsx) and
-[task creation tests](../../ui/src/components/NewIssueDialog.test.tsx) for the
-controlled source cases; repeat the real browser journey for acceptance.
-Switch accounts while an inline edit is open or a channel send waits to retry:
-the next account must see neither private text nor a retry from the first account.
-Returning to the original account restores its retained channel request with the
-same key for explicit retry. Unowned legacy receipts stay held for Activity
-inspection until a person explicitly discards their browser record; discard does
-not replay the text or cancel an accepted update. Typing before the first session
-lookup survives that initial lookup and is backed up under the resolved owner. Component evidence lives in the
-[inline editor tests](../../ui/src/components/InlineEditor.test.tsx) and
-[connected-channel tests](../../ui/src/components/chat/ExternallyConnectedTaskBanner.test.tsx);
-these controlled session changes do not establish hosted authentication acceptance.
-Also switch accounts during a restored task create and while its files are
-uploading: later uploads stop, the next account sees a fresh form, and the
-original request key remains owned by the first account. Reselect colliding
-text-document filenames in reverse order and verify their original keys and
-contents. Switch between cached document subjects without copying either draft.
-A receipt arriving before an in-flight resend must preserve the next message.
-The startup browser journey in
-[disconnect recovery](../../tests/e2e/disconnect-write-recovery.spec.ts) holds the
-first session response while a title save waits, simulates an offline event with
-API failures while keeping static assets reachable, then verifies the real saved
-server title after account resolution and reload. The accepted-comment journey
-then completes and assigns a task before repeating its saved comment request;
-the original receipt must return once, its activity must appear once, and the task must stay Done. Reusing that
-key with different text must return a conflict without changing the task. This
-uses a disposable process agent and makes no provider call. A separate healthy-API
-startup journey fails the session endpoint with JSON 500 responses, then restores
-it while an edit waits; the same edit must save and survive reload without a
-network reconnect or another user action.
 
 ### `source-task`
+
+A Native run held for unknown controller process space remains blocked even
+after its lease expires. A company owner, company administrator, or instance
+administrator can record separate original-host controller and provider/tool stop confirmations with reviewed
+action outcomes through the existing task recovery card. Recording containment
+does not replay work. After normal settlement/cleanup, use a separate ordinary
+Retry; stale authority or unresolved cleanup must keep it blocked. This candidate
+path is source-only pending its focused real-owner qualification.
 
 Open the affected task from Tasks, Inbox/Blocked, search, or a direct task link.
 Observe one working, backoff, failed or waiting-for-user state. Use Retry after
@@ -139,14 +100,11 @@ Open the agent's run (`/agents/:agentId/runs/:runId`) from activity or the task'
 run link. The run page hosts workspace repair controls only for a failed run
 with error code `workspace_validation_failed` and a linked source task that still
 has a live `workspace_validation` recovery action. Use the source task for other
-stopped-run recovery checks. Native workspace export failures also offer the
-read-only **Inspect recovery** control described in the
-[run diagnostic recipe](activity.md#activity-audit-1). It observes one selected
-source's recorded identity and does not retry, repair, or authorize execution.
+stopped-run recovery checks.
 
 ### `operator-retry`
 
-The [connected-task regression](../../server/src/__tests__/chat-channels.integration.test.ts)
+The [connected-task regression](../../server/src/__tests__/chat-channels/github-retry-and-recovery.integration.test.ts)
 uses HTTP Retry after an accepted board message fails before provider startup.
 It checks the canonical intent, same-user identity and actual queue dispatch,
 then repeats Retry after another contained preparation failure with the same
@@ -164,9 +122,10 @@ needs containment. Observe a saved wait with no new executor. After verified
 containment, the same chat receipt must admit one successor with the original
 source batch. Reload and repeat reconciliation. Check that a paused endpoint,
 changed source, superseded request or revoked access cannot start that work.
-The connected-chat database regression in
-[chat channel integration](../../server/src/__tests__/chat-channels.integration.test.ts)
-exercises admission and queue continuation. It does not establish hosted
+The connected-chat database regressions in
+[GitHub retry and recovery](../../server/src/__tests__/chat-channels/github-retry-and-recovery.integration.test.ts)
+and [board and shared core](../../server/src/__tests__/chat-channels/board-and-shared-core.integration.test.ts)
+exercise admission and queue continuation. They do not establish hosted
 provider recovery or successful delivery.
 
 For GitHub, save a follow-up behind a failed run, then reconnect the same App.
@@ -272,15 +231,6 @@ provider restart. For that journey, interrupt a disposable deployment after
 workspace preparation and before its first executor claim, then confirm one
 provider turn starts on the original run through the normal admission gates.
 
-The same suite's `diskless` and `diskless-per-turn` cases exercise three native
-controller processes with both native projections removed between completed
-turns. They check history and invocation counts through the real executor and
-admission snapshot rebinder. The workspace and sandbox remain available, and
-the processes use the same source revision. Separate Postgres tests cover
-metadata import, bounded discovery, ownership holds and incomplete-publication
-retention. These cases do not qualify full webserver disk loss, distinct releases,
-HTTP traffic continuity, or the live Daytona provider path.
-
 The [Runner transport regressions](../../packages/paperclip-runner/runner/crates/runner-core/src/durable/transport.rs)
 exercise a real WebSocket welcome delayed beyond two seconds. Authentication
 uses the ten-second connection setup budget, clipped by the current lifecycle
@@ -296,10 +246,8 @@ historical provider outage or successful hosted task recovery.
 
 Active remote process supervision distinguishes a failed health read from a
 confirmed exit. The [executor tests](../../server/src/services/native-runtime/native-session-executor.test.ts)
-exercise timeout and repeated gateway-failure recovery with a real listening
-process, unchanged ownership, and rejected identity evidence. Read-only probes
-use their shared deadline with bounded backoff; fast failures do not exhaust a
-three-attempt limit. Signal requests remain single-attempt. The Runner restart tests require positive exit
+exercise timeout recovery with a real listening process, unchanged ownership,
+and rejected identity evidence. The Runner restart tests require positive exit
 evidence before replacement. The executor regressions also retire a real child
 during its metadata read, keep unknown adopted-process ownership held, and reject
 launch before detachment when Node is unavailable. The diagnostic tests cover
@@ -340,7 +288,7 @@ the task becomes done or cancelled. Verify one unchanged action ID, attempt
 count, and timestamps; task completion must not authorize copyback. Clear only
 the exact receipt after operator stop verification, then confirm stale action
 cleanup. The [route regressions](../../server/src/__tests__/issue-recovery-actions.test.ts)
-and [heartbeat regression](../../server/src/__tests__/heartbeat-process-recovery.test.ts)
+and [heartbeat regression](../../server/src/__tests__/heartbeat-process-recovery-part-1.test.ts)
 cover this sequence without a live operator recovery claim.
 
 An intentionally Done onboarding parent can still need its validated
@@ -356,12 +304,14 @@ and the revised behavior still needs live qualification.
 
 ### `run-detail`
 
-Automated: [run workspace recovery](../../ui/src/components/RunWorkspaceRecoverySurface.test.tsx)
-tests this host; it is component coverage, not an end-to-end repair.
+Automated: none for mocked UI (`RunWorkspaceRecoverySurface` component tests were
+removed; verify the run workspace recovery host manually).
 
 Manual: prepare a failed run with error code `workspace_validation_failed`, a
 linked source task, and a live `workspace_validation` recovery action on that
-task. Open that exact run and compare its recovery diagnosis to the source task.
+task. For retained-file export recovery, use a matching active source action and
+terminal run; compare Recover saved files on the task and run inspector.
+Open that exact run and compare its recovery diagnosis to the source task.
 Use an eligible action from the run surface, return to the task,
 and verify the same action state, persisted outcome, and restored execution.
 Repeat with an actor who lacks authority. Verify that the run-page controls are
@@ -371,7 +321,7 @@ gap.
 
 ### `operator-retry`
 
-The [workspace recovery regression](../../server/src/services/workspace-recovery.test.ts)
+The [workspace recovery regression](../../server/src/services/workspace-recovery-warm-handoff.test.ts)
 uses the real Retry producer and a quiet delivery coordinator. It checks that a
 committed request starts one physical source preservation, duplicate Retry keeps
 the active owner's receipt valid, and startup reconstructs a resolved files-only
@@ -386,11 +336,10 @@ provider stop reply, and verifies that HTTP Retry cannot admit a successor until
 the real temporary files are restored. Duplicate requests then admit one queued
 turn. GitHub and Telegram admission also retain the exact pending recovery.
 
-Automated: [disposition notices](../../ui/src/components/DispositionRecoveryNotice.test.tsx)
-tests pending/error/gated states and waiting for the real retry acknowledgement.
-The recovery-card suite covers workspace divergence, reissue, reconcile, and
-confirmation. [Workspace export](../../ui/src/components/WorkspaceExportRecovery.test.tsx)
-covers quiet restoration, legacy/operator assistance and resolved states.
+Automated: [IssueRecoveryActionCard](../../ui/src/components/IssueRecoveryActionCard.test.tsx)
+covers workspace divergence, reissue, reconcile, and confirmation (mocked UI tests
+for `DispositionRecoveryNotice` and `WorkspaceExportRecovery` were removed; verify
+those notice and export states via Storybook/manual checks).
 
 For a retained legacy or native file hold, open the source task after its recovery
 action has resolved but its files still need recovery. The shared task projection
@@ -399,10 +348,9 @@ infrastructure attention card. Unknown external outcomes remain fenced internall
 An authorized board operator can use the resolution API to record verified files
 and a backup link without changing task status or starting another run. The
 server independently validates the original stopped-execution receipt. Agent
-Chat retains the hold rather than suggesting another message. The
-[notice](../../ui/src/components/ExecutionBlockerNotice.test.tsx) and
-[repair route](../../server/src/__tests__/workspace-restore-repair-route.test.ts)
-cover quiet live recovery, read-only access, stale or missing stop proof,
+Chat retains the hold rather than suggesting another message. The [repair route](../../server/src/__tests__/workspace-restore-repair-route.test.ts)
+covers quiet live recovery, read-only access, stale or missing stop proof,
+(mocked `ExecutionBlockerNotice` UI tests were removed; verify notice UI manually) and
 source-only repair, and preserved task status. These tests use fixtures; separately
 verify original files and their attached artifact before recording a real repair.
 
@@ -410,18 +358,7 @@ For a source with a retained-file protection marker, exercise recovery through
 the assembled environment runtime. Its exact preservation owner may reopen the
 stopped allocation to read saved files; ordinary resume stays blocked. Reject a
 changed claim, missing stop intent, wrong lease or wrong environment before a
-provider call. Repeat accepted-native-result copyback for both reusable lease policies. Require
-the exact accepted result and completion contract; reject a rejected or unselected
-result, another allocation owner, and an active host writer. Verify no provider
-turn or wake is created, then finalize the original result once. Reject malformed
-or oversized Git metadata through native finalization: the run must fail and
-retain its file-recovery barrier, rather than successfully omitting the export.
-Exercise both an oversized sender file and an oversized transfer report. Verify
-one rejected export, no payload read after rejection, and unchanged host files.
-Reload a large-result run and its activity: the failure code and task recovery
-notice remain visible, and metadata repair offers no new provider turn. These database
-and filesystem controls do not qualify a deployed provider.
-Verify saved and newer local files, one preservation receipt, and
+provider call. Verify saved and newer local files, one preservation receipt, and
 no additional agent turn. The PostgreSQL regression covers this boundary; the
 opt-in provider probe also uses this runtime path with the protection marker.
 
@@ -437,8 +374,9 @@ Repeat source-only repair with a `succeeded` legacy run that still has a retaine
 file obligation. Its result must remain successful, its current task owner and
 status must stay unchanged, and later saved input must become eligible for normal
 admission. A running or queued source and a normal retry of a successful turn
-remain denied. The [reconciliation regressions](../../server/src/services/workspace-restore-reconciliation.test.ts)
-cover these cases and stop-receipt validation without claiming live provider proof.
+remain denied. Canonical workspace recovery coverage lives in
+[workspace recovery admission](../../server/src/services/workspace-recovery-admission.test.ts)
+and [workspace recovery warm handoff](../../server/src/services/workspace-recovery-warm-handoff.test.ts) without claiming live provider proof.
 
 For an abandoned native copyback owner, the harness verifies the exact stopped
 deployment and the reconciler restores saved work automatically. Task users see
@@ -470,7 +408,7 @@ files, successful lease cleanup, and one bounded continuation. Reload before
 checking the successor. Repeat with controller loss: the expired fence must
 retain the exact source and require repair, never claim restored files or start
 a second executor. The database-backed
-[shutdown regression](../../server/src/__tests__/heartbeat-process-recovery.test.ts)
+[shutdown regression](../../server/src/__tests__/heartbeat-process-recovery-part-1.test.ts)
 checks finalizer joining, release order, durable retry uniqueness, and reload.
 The [settlement regressions](../../server/src/services/heartbeat/recovery.test.ts)
 cover other-controller fencing and owner loss. Provider boundaries are controlled
@@ -491,9 +429,8 @@ while the second cannot use the operator API.
 
 Automated: [legacy continuation](../../server/src/services/recovery/legacy-continuation.test.ts),
 [queue routes](../../server/src/__tests__/issue-queued-comments-routes.test.ts), and
-[native restart recovery](../../server/src/services/native-runtime/native-restart-recovery.test.ts)
-cover their respective recovery paths. [Legacy failure continuation](../../tests/e2e/legacy-failure-continuation.spec.ts)
-adds a browser journey; it is not native runtime proof.
+[native runner restart recovery](../../server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts)
+cover their respective recovery paths.
 
 [Queued Stop database regressions](../../server/src/modules/wake-queue/adapters/queued-operator-stop-postgres.test.ts)
 verify that an operator cancellation before runtime selection releases its own
@@ -530,8 +467,7 @@ only. Separately inspect the underlying execution if it is still stuck.
   silently trigger recovery that fights the user's instruction.
 - Source inspection and mocked component tests do not qualify real server
   restart continuity. Use the appropriate runtime suite for that claim.
-- See [execution semantics](../../doc/execution-semantics.md) for the governing
-  recovery contract and [steering](./steering.md) for saved follow-ups.
+- See [steering](./steering.md) for saved follow-ups.
 
 ### Storybook verification
 
@@ -542,7 +478,7 @@ Capability ID: `recovery/exhaustion`.
 Scope: ui
 Storybook: Exhausted/overdue attempts, operator retry pending/error, blocked authority/gate and specific escalation.
 Production: Inspect durable attempt bounds and actual eligible retry/repair; acknowledgment alone does not prove continued execution.
-Sources: Source: [IssueRecoveryActionCard.tsx](../../ui/src/components/IssueRecoveryActionCard.tsx), [DispositionRecoveryNotice.tsx](../../ui/src/components/DispositionRecoveryNotice.tsx), [issue-recovery-actions.ts](../../server/src/services/issue-recovery-actions.ts). Tests: [IssueRecoveryActionCard.test.tsx](../../ui/src/components/IssueRecoveryActionCard.test.tsx), [DispositionRecoveryNotice.test.tsx](../../ui/src/components/DispositionRecoveryNotice.test.tsx), [issue-recovery-actions.test.ts](../../server/src/__tests__/issue-recovery-actions.test.ts), [recovery.spec.ts](../../tests/e2e/execution-recovery/recovery.spec.ts)
+Sources: Source: [IssueRecoveryActionCard.tsx](../../ui/src/components/IssueRecoveryActionCard.tsx), [DispositionRecoveryNotice.tsx](../../ui/src/components/DispositionRecoveryNotice.tsx), [issue-recovery-actions.ts](../../server/src/services/issue-recovery-actions.ts). Tests: [IssueRecoveryActionCard.test.tsx](../../ui/src/components/IssueRecoveryActionCard.test.tsx), [issue-recovery-actions.test.ts](../../server/src/__tests__/issue-recovery-actions.test.ts), [recovery.spec.ts](../../tests/e2e/execution-recovery/recovery.spec.ts)
 
 #### `unknown-outcome`
 
@@ -560,4 +496,4 @@ Capability ID: `recovery/user-continuation`.
 Scope: ui
 Storybook: Saved follow-up waiting on stop cleanup, pause/budget gate, one eligible continuation and result/failure.
 Production: Confirm previous execution stopped before delivery, preserve message, avoid duplicate wakes and honor actual task/ancestor/budget gate in separate legacy/native paths.
-Sources: Source: [TaskChatQueuedMessages.tsx](../../ui/src/components/task-chat/TaskChatQueuedMessages.tsx), [legacy-continuation.ts](../../server/src/services/recovery/legacy-continuation.ts), [native-restart-recovery.ts](../../server/src/services/native-runtime/native-restart-recovery.ts). Tests: [legacy-continuation.test.ts](../../server/src/services/recovery/legacy-continuation.test.ts), [native-restart-recovery.test.ts](../../server/src/services/native-runtime/native-restart-recovery.test.ts), [issue-queued-comments-routes.test.ts](../../server/src/__tests__/issue-queued-comments-routes.test.ts), [legacy-failure-continuation.spec.ts](../../tests/e2e/legacy-failure-continuation.spec.ts)
+Sources: Source: [TaskChatQueuedMessages.tsx](../../ui/src/components/task-chat/TaskChatQueuedMessages.tsx), [legacy-continuation.ts](../../server/src/services/recovery/legacy-continuation.ts), [native-restart-recovery.ts](../../server/src/services/native-runtime/native-restart-recovery.ts). Tests: [legacy-continuation.test.ts](../../server/src/services/recovery/legacy-continuation.test.ts), [native-runner-restart-recovery.integration.test.ts](../../server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts), [issue-queued-comments-routes.test.ts](../../server/src/__tests__/issue-queued-comments-routes.test.ts)

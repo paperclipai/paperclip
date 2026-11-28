@@ -106,6 +106,8 @@ export interface ComposerSendRequest {
   attachmentIds?: string[];
   /** Composer run settings, passed back unchanged. */
   runSettings?: Record<string, unknown>;
+  /** A structured native command ("swarm"), resent unchanged so a retry stays a swarm request. */
+  nativeCommand?: "swarm";
 }
 
 export interface ComposerDraftSubmission {
@@ -138,8 +140,9 @@ function isNullableString(value: unknown): value is string | null {
 export function isComposerSendRequest(value: unknown): value is ComposerSendRequest {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const row = value as Record<string, unknown>;
-  if (!Object.keys(row).every((key) => ["body", "reopen", "reassignment", "attachmentIds", "runSettings"].includes(key))) return false;
+  if (!Object.keys(row).every((key) => ["body", "reopen", "reassignment", "attachmentIds", "runSettings", "nativeCommand"].includes(key))) return false;
   if (typeof row.body !== "string") return false;
+  if (row.nativeCommand !== undefined && row.nativeCommand !== "swarm") return false;
   if (row.reopen !== undefined && typeof row.reopen !== "boolean") return false;
   if (row.reassignment !== undefined) {
     const reassignment = row.reassignment as Record<string, unknown> | null;
@@ -239,6 +242,7 @@ export interface ComposerDraftAttachment {
   name: string;
   size?: number;
   inline: boolean;
+  contentType?: string;
   contentPath: string;
 }
 
@@ -280,6 +284,7 @@ function draftAttachments(value: unknown): ComposerDraftAttachment[] {
       name: row.name,
       inline: row.inline,
       contentPath: row.contentPath,
+      ...(typeof row.contentType === "string" ? { contentType: row.contentType } : {}),
       ...(row.size === undefined ? {} : { size: row.size as number }),
     });
   }

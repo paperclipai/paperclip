@@ -12,6 +12,8 @@ interface Submission {
   runIds: Set<string>;
   clientRequestId: string;
   interruptionKey: string;
+  interruptionIntentId: string | null;
+  reopeningStatus: string | null;
   takingLonger: boolean;
 }
 
@@ -66,12 +68,13 @@ export function useRunnerSubmission({
         new Date(run.createdAt).getTime() >= acknowledgedAt)
     )) : [];
   const settled = Boolean(submission && (
-    runId || startupBlocked || isTerminalIssueStatus(issueStatus) ||
+    runId || startupBlocked ||
+    (isTerminalIssueStatus(issueStatus) && submission.reopeningStatus !== issueStatus) ||
     (submission.agentId !== agentId && submission.previousAgentId !== agentId) ||
     (submission.issueId && submission.issueId !== issueId) ||
     (interruption && interruption.state !== "working" &&
       interruptionKey !== submission.interruptionKey &&
-      (interruption.intentId !== null ||
+      ((interruption.intentId !== null && interruption.intentId !== submission.interruptionIntentId) ||
         submissionRuns.some(run => run.runId === interruption.observedRunId))) ||
     submissionRuns.some(run =>
       run.status !== "queued" && run.status !== "running")
@@ -83,8 +86,10 @@ export function useRunnerSubmission({
   useLayoutEffect(() => {
     if (settled) {
       setSubmission(null);
+    } else if (submission?.reopeningStatus && !isTerminalIssueStatus(issueStatus)) {
+      setSubmission(current => current ? { ...current, reopeningStatus: null } : current);
     }
-  }, [settled]);
+  }, [settled, issueStatus, submission?.reopeningStatus]);
 
   useEffect(() => {
     if (!pending) return;
@@ -96,17 +101,19 @@ export function useRunnerSubmission({
     return () => window.clearTimeout(timeout);
   }, [pending, attemptId]);
 
-  const begin = useCallback((clientRequestId: string, recipient?: { agentId: string | null; agent?: SubmissionAgent }) => {
+  const begin = useCallback((clientRequestId: string, recipient?: { agentId: string | null; agent?: SubmissionAgent }, reopen = false) => {
     const targetAgentId = recipient ? recipient.agentId : agentId;
     const targetAgent = recipient ? recipient.agent : agent;
     const next: Submission | null = targetAgentId && !blocked && !agentBlocksStartup(targetAgent) ? {
       issueId, agentId: targetAgentId, previousAgentId: agentId, interruptionKey, clientRequestId,
+      interruptionIntentId: interruption?.intentId ?? null,
+      reopeningStatus: reopen && isTerminalIssueStatus(issueStatus) ? issueStatus! : null,
       attemptId: ++nextAttemptId.current, takingLonger: false,
       runIds: new Set(linkedRuns.map(run => run.runId)),
     } : null;
     setSubmission(next);
     return next?.attemptId ?? null;
-  }, [agentId, agent, blocked, issueId, interruptionKey, linkedRuns]);
+  }, [agentId, agent, blocked, issueId, issueStatus, interruptionKey, interruption?.intentId, linkedRuns]);
 
   const reject = useCallback((attempt: number | null, error: unknown) => {
     setSubmission(current => {

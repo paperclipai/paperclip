@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { expect, it, vi } from "vitest";
 import {
-  DurablePrpControlPlane, inspectStagedRunAttachmentHeader,
+  DurablePrpControlPlane, inspectStagedRunAttachmentHeader, spawnRunner,
   type DurablePrpCheckpoint, type RunnerProcessConnection, type PrpWireConnection,
 } from "../control-plane/durable-prp-control-plane.js";
 import {
@@ -47,6 +47,9 @@ async function openOwnedWire(url: string): Promise<{ wire: PrpWireConnection; cl
           const size = initial === 126 ? buffer.readUInt16BE(2) : initial === 127 ? Number(buffer.readBigUInt64BE(2)) : initial;
           const offset = initial === 126 ? 4 : initial === 127 ? 10 : 2;
           if (buffer.length < offset + size) return;
+          // Upgrade head bytes can precede the caller's message subscription.
+          // Retain complete data frames until the control-plane listener exists.
+          if ((opcode === 1 || opcode === 2) && listeners.length === 0) return;
           const payload = buffer.subarray(offset, offset + size); buffer = buffer.subarray(offset + size);
           if (opcode === 8) { socket.destroy(); finish(); return; }
           if (opcode === 9) send(payload, 10);
@@ -56,14 +59,47 @@ async function openOwnedWire(url: string): Promise<{ wire: PrpWireConnection; cl
       socket.on("data", bytes => { buffer = Buffer.concat([buffer, bytes]); parse(); }); socket.on("close", finish); socket.on("error", finish);
       const close = () => { socket.destroy(); finish(); };
       resolvePeer({ wire: { sendJson: value => send(Buffer.from(JSON.stringify(value)), 1), close,
-        onJson: listener => { listeners.push(listener); }, onClose: listener => { closes.push(() => listener({})); } }, closed, close });
+        onJson: listener => { listeners.push(listener); parse(); }, onClose: listener => { closes.push(() => listener({})); } }, closed, close });
       queueMicrotask(parse);
     }); req.end();
   });
 }
 
+it("delivers a WebSocket message coalesced with the real HTTP upgrade response", async () => {
+  const message = { type: "hello", sentinel: "coalesced-upgrade" };
+  const server = createServer();
+  const sockets = new Set<import("node:net").Socket>();
+  server.on("connection", socket => { sockets.add(socket); socket.on("close", () => sockets.delete(socket)); });
+  server.on("upgrade", (req, socket) => {
+    const accept = createHash("sha1").update(String(req.headers["sec-websocket-key"]) + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");
+    const payload = Buffer.from(JSON.stringify(message));
+    socket.write(Buffer.concat([Buffer.from(`HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`),
+      Buffer.from([0x81, payload.length]), payload]));
+  });
+  let peer: Awaited<ReturnType<typeof openOwnedWire>> | undefined;
+  const messages: unknown[] = [];
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => { server.off("error", reject); resolve(); });
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Missing coalesced-upgrade endpoint");
+    peer = await openOwnedWire(`ws://127.0.0.1:${address.port}/`);
+    peer.wire.onJson(value => messages.push(value));
+    await vi.waitFor(() => expect(messages).toEqual([message]), { timeout: 1000 });
+  } finally {
+    peer?.close();
+    const closing = server.listening
+      ? new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
+      : Promise.resolve();
+    for (const socket of sockets) socket.destroy();
+    await closing;
+  }
+});
+
 // Real encrypted PRP and real Runner/provider processes; no model or server imports.
-it.each(["connect", "listen"] as const)("recovers a staged %s handoff at every durable boundary without another process", async mode => {
+it.each([["connect", "owned"], ["listen", "owned"], ["external", "owned"], ["connect", "legacy"], ["listen", "legacy"], ["connect", "cleanup"]] as const)("recovers a staged %s %s handoff at every durable boundary without another process", async (mode, policy) => {
   const root = await mkdtemp(join(tmpdir(), "runner-staged-handoff-"));
   const shared = join(root, "shared"), calls = join(root, "calls.log");
   const source = { runnerInstanceId: "runner-staged", environmentLeaseId: "lease-staged", runId: "source-run",
@@ -101,10 +137,11 @@ it.each(["connect", "listen"] as const)("recovers a staged %s handoff at every d
       const atBoundary = new Promise<void>(done => { reached = done; });
       const cores = new Set<DurablePrpControlPlane>();
       const registered = new WeakSet<DurablePrpControlPlane>();
-      let generation = 0;
+      let generation = 0, authorityRunId = target.runId;
       const registration = async (core: DurablePrpControlPlane, identity = core.store.state.identity) => {
         currentCore = core;
         if (!registered.has(core)) {
+          if (policy === "cleanup") vi.spyOn(core, "enableSemanticInputDispatch");
           registered.add(core); cores.add(core);
           const epoch = generation;
           core.setCheckpointPersistence(async saved => {
@@ -120,6 +157,7 @@ it.each(["connect", "listen"] as const)("recovers a staged %s handoff at every d
         const path = `/api/runner/v1/connect/${identity.runId}`, token = Symbol(path);
         const connection: RunnerProcessConnection = mode === "connect"
           ? { mode: "connect", connectUrl: `ws://127.0.0.1:${address.port}${path}` }
+          : mode === "external" ? { mode: "external" }
           : { mode: "listen", listenAddress: "0.0.0.0", listenPort: guestPort, listenPath: path };
         if (mode === "connect") {
           routes.set(path, { core, token });
@@ -133,7 +171,7 @@ it.each(["connect", "listen"] as const)("recovers a staged %s handoff at every d
           const deadline = Date.now() + 8_000;
           while (!stopped && Date.now() < deadline) {
             try {
-              const peer = await openOwnedWire(`ws://127.0.0.1:${guestPort}${path}`); socket = peer;
+              const peer = await openOwnedWire(`ws://127.0.0.1:${guestPort}${mode === "external" ? `/api/runner/v1/connect/${source.runId}` : path}`); socket = peer;
               if (stopped) { peer.close(); return; }
               core.attachWireConnection(peer.wire); readyResolve(); await peer.closed;
             } catch { /* The target listener appears only after the old receipt ACK. */ }
@@ -142,13 +180,24 @@ it.each(["connect", "listen"] as const)("recovers a staged %s handoff at every d
           }
           if (!stopped) readyReject(new Error("Owned listener did not become available"));
         };
-        return { connection, activate: () => { void connect(); }, ready: () => ready,
+        return { connection, activate: async () => {
+          if (mode === "external" && (generation > 0 || identity.runId !== source.runId)) {
+            // Hosted ingress admits only the physical authority currently served.
+            const physical = JSON.parse(await readFile(join(directory, "runner/runner-state.json"), "utf8"));
+            for (const [key, value] of Object.entries(identity)) expect(physical[key]).toBe(value);
+          }
+          void connect();
+        }, ready: () => ready,
           release: () => { stopped = true; socket?.close(); } };
       };
       const options = { runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: resolve(import.meta.dirname, "../../runner/target/debug/fake-codex-app-server"),
         codexArgs: ["--call-log", callLog, "--record-process-start", "--state-file", join(directory, "fake.json")],
         stateDirectory: directory, readRunnerState: async () => JSON.parse(await readFile(join(directory, "runner/runner-state.json"), "utf8")), lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 },
         runnerReconnectGraceMs: 5_000, prpIdentity: source, controlPlaneRegistration: registration,
+        ...(mode === "external" ? { runnerProcessLauncher: (spec: import("../control-plane/durable-prp-control-plane.js").RunnerProcessLaunchSpec) =>
+          spawnRunner({ ...spec.nativeRunner!, runnerBinaryPath: defaultCapabilityRunnerdBinary(), environment: spec.environment,
+            connection: { mode: "listen", listenAddress: "0.0.0.0", listenPort: guestPort,
+              listenPath: `/api/runner/v1/connect/${source.runId}` } }) } : {}),
         onStagedRunAttachment: async () => undefined, onRecoveryAccountingEvent: async () => undefined };
       const first = createCapabilityRunnerdCodexTransport(options);
       let replacement: ReturnType<typeof createCapabilityRunnerdCodexTransport> | undefined;
@@ -156,7 +205,7 @@ it.each(["connect", "listen"] as const)("recovers a staged %s handoff at every d
       try {
         const opened = await within(first.transport.request("thread/start", { cwd: root, dynamicTools: [] }), "source open");
         runnerPid = first.evidence().runnerPid; providerPid = first.evidence().providerPid;
-        const startedAt = first.transport.processInfo().startedAt;
+        const startedAt = first.transport.processInfo!().startedAt;
         const providerStart = execFileSync("ps", ["-p", String(providerPid), "-o", "lstart="], { encoding: "utf8" }).trim();
         expect(runnerPid).toBeGreaterThan(0); expect(providerPid).toBeGreaterThan(0);
         const attach = first.transport.attachRun!({ runId: target.runId, turnId: target.turnId, itemId: target.itemId });
@@ -172,14 +221,22 @@ it.each(["connect", "listen"] as const)("recovers a staged %s handoff at every d
         checkpoint.restoreSessionDirectory(next);
         const noSpawn = vi.fn(() => { throw new Error("Duplicate Runner launch"); });
         const recoveryOptions: Parameters<typeof createCapabilityRunnerdCodexTransport>[0] = { ...options, stateDirectory: next,
-          prpIdentity: target, runnerArtifact: readRunnerdArtifactBinding(options.runnerBinary),
+          get authorityRunId() { return policy === "legacy" ? undefined : authorityRunId; },
+          recoveryPurpose: policy === "cleanup" ? "stop_cleanup" : undefined, prpIdentity: target, runnerArtifact: readRunnerdArtifactBinding(options.runnerBinary),
           runnerStateDirectory: join(directory, "runner"), readRunnerState: async () => JSON.parse(await readFile(join(directory, "runner/runner-state.json"), "utf8")),
           prepareExternalRunnerState: async () => { throw new Error("Verified live handoff must not restore a backup"); },
-          runnerProcessLauncher: noSpawn, warmTransitionRegistrationMode: mode === "listen" ? "routed_same_endpoint" : "routed_connect",
+          runnerProcessLauncher: noSpawn, warmTransitionRegistrationMode: mode !== "connect" ? "routed_same_endpoint" : "routed_connect",
           resumeProviderSession: { driverSessionId: String((opened.thread as { id: string }).id), providerSessionId: String((opened.thread as { sessionId: string }).sessionId) },
           adoptExistingRunner: { pid: runnerPid, processGroupId: runnerPid, startedAt,
             isAlive: () => !dead(runnerPid!), signal: signal => { if (dead(runnerPid!)) return true; process.kill(-runnerPid!, signal); return true; } } };
         if (boundary === "queued") {
+          if (policy === "owned") {
+            const wrongProvider = createCapabilityRunnerdCodexTransport({ ...recoveryOptions,
+              resumeProviderSession: { ...recoveryOptions.resumeProviderSession!, driverSessionId: "foreign-thread" } });
+            await expect(wrongProvider.transport.request("thread/read", {})).rejects.toThrow("provider_identity_mismatch");
+            await wrongProvider.detachControllerForRestart().catch(() => undefined);
+            checkpoint.restoreSessionDirectory(next);
+          }
           const noProof = createCapabilityRunnerdCodexTransport({ ...recoveryOptions, adoptExistingRunner: undefined });
           await expect(noProof.transport.request("thread/read", {})).rejects.toThrow("queued_attachment_requires_verified_live_source");
           await noProof.detachControllerForRestart().catch(() => undefined);
@@ -214,11 +271,24 @@ it.each(["connect", "listen"] as const)("recovers a staged %s handoff at every d
         await currentCore.flushCheckpoint(); expect(checkpoint).toBe(beforeMark);
         await within(replacement.transport.request("thread/goal/get", {}), "post-checkpoint read");
         expect(currentCore.store.state.stagedRunAttachment).toBeUndefined();
+        if (policy === "cleanup") expect(currentCore.enableSemanticInputDispatch).not.toHaveBeenCalled();
+        else {
+          await within(replacement.transport.request("turn/start", { input: [{ type: "text", text: "Work after recovered attachment" }] }), "target turn");
+          for await (const event of replacement.transport.notifications()) if (event.method === "turn/completed") break;
+          if (mode === "external") {
+            const next = { ...target, runId: "next-run", turnId: "next-turn", itemId: "next-item" };
+            authorityRunId = next.runId;
+            await within(replacement.transport.attachRun!(next), "ordinary external warm followup");
+            expect(currentCore.store.state.identity).toEqual(next);
+            await within(replacement.transport.request("turn/start", { input: [{ type: "text", text: "Work after ordinary external attachment" }] }), "ordinary target turn");
+            for await (const event of replacement.transport.notifications()) if (event.method === "turn/completed") break;
+          }
+        }
         expect(noSpawn).not.toHaveBeenCalled();
         const effects = (await readFile(callLog, "utf8")).trim().split(/\r?\n/);
         expect(effects.filter(line => line === "process-start")).toHaveLength(1);
         expect(effects.filter(line => line === "thread/start")).toHaveLength(1);
-        expect(effects.filter(line => line === "turn/start")).toHaveLength(0);
+        expect(effects.filter(line => line === "turn/start")).toHaveLength(policy === "cleanup" ? 0 : mode === "external" ? 2 : 1);
       } catch (error) {
         const physical = JSON.parse(await readFile(join(directory, "runner/runner-state.json"), "utf8").catch(() => "{}"));
         throw new Error(`${mode}/${boundary}: ${String(error)}; ${JSON.stringify({
@@ -226,6 +296,7 @@ it.each(["connect", "listen"] as const)("recovers a staged %s handoff at every d
           coreWarm: currentCore?.store.state.warmTransition?.phase, header: checkpoint && inspectStagedRunAttachmentHeader(checkpoint.records.get("header")!)?.phase,
           runnerRun: physical.runId, runnerWarm: physical.warmTransition?.phase, lifecycle: physical.lifecycle,
           failureCode: physical.recoverableFailure?.code, failureKeys: Object.keys(physical.recoverableFailure ?? {}),
+          physicalFailure: physical.recoverableFailure,
         })}`, { cause: error });
       } finally {
         release();

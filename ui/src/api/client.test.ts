@@ -3,6 +3,7 @@ import {
   createTenantSessionRecoveryCoordinator,
   tenantSessionRecovery,
 } from "@/lib/tenant-session-recovery";
+import { isIntentionalAbortReason } from "@/lib/intentional-abort";
 import { api, detachInflightGet } from "./client";
 import { toolsApi } from "./tools";
 import { museInvitationsApi } from "./museInvitations";
@@ -41,6 +42,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe("tenant-session recovery", () => {
@@ -92,7 +94,8 @@ describe("tenant-session recovery", () => {
     await expect(api.get("/ordinary-401")).rejects.toMatchObject({
       name: "ApiError",
       status: 401,
-      message: "unauthorized",
+      code: "unauthorized",
+      message: "Your session has ended. Sign in again to continue.",
     });
 
     fetchMock.mockResolvedValue(jsonResponse({ recovered: true }));
@@ -102,6 +105,71 @@ describe("tenant-session recovery", () => {
 });
 
 describe("in-tab GET coalescing", () => {
+  it("keeps fresh validation reads separate from older and concurrent requests", async () => {
+    const old = deferred<Response>();
+    fetchMock.mockReturnValueOnce(old.promise).mockResolvedValue(jsonResponse({ title: "Current C" }));
+    const stale = api.get("/fresh-validation");
+    const first = api.get("/fresh-validation", { cache: "no-store", fresh: true });
+    const second = api.get("/fresh-validation", { cache: "no-store", fresh: true });
+    const joined = api.get("/fresh-validation");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({ cache: "no-store" });
+    await expect(first).resolves.toEqual({ title: "Current C" });
+    await expect(second).resolves.toEqual({ title: "Current C" });
+    old.resolve(jsonResponse({ title: "Old A" }));
+    await expect(stale).resolves.toEqual({ title: "Old A" });
+    await expect(joined).resolves.toEqual({ title: "Old A" });
+  });
+
+  it("times out a caller without cancelling another and starts a fresh fetch on retry", async () => {
+    vi.useFakeTimers();
+    const first = deferred<Response>();
+    fetchMock.mockReturnValueOnce(first.promise);
+    const survivorController = new AbortController();
+    const survivor = api.get("/deadline-shared", { signal: survivorController.signal });
+    const timed = api.get("/deadline-shared", { timeoutMs: 100 }).catch(error => error);
+    const sharedSignal = fetchMock.mock.calls[0][1].signal as AbortSignal;
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await timed).toMatchObject({ status: 408, body: { error: "TIMEOUT" } });
+    expect(sharedSignal.aborted).toBe(false);
+    fetchMock.mockResolvedValueOnce(jsonResponse({ fresh: true }));
+    await expect(api.get("/deadline-shared", { timeoutMs: 100 })).resolves.toEqual({ fresh: true });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    survivorController.abort();
+    await expect(survivor).rejects.toMatchObject({ name: "AbortError" });
+    expect(sharedSignal.aborted).toBe(true);
+    first.resolve(jsonResponse({ stale: true }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("bounds response-body reads and aborts the last caller's fetch", async () => {
+    vi.useFakeTimers();
+    const body = deferred<unknown>();
+    fetchMock.mockResolvedValue({ ok: true, status: 200, json: () => body.promise });
+    const result = api.get("/deadline-body", { timeoutMs: 100 }).catch(error => error);
+    const signal = fetchMock.mock.calls[0][1].signal as AbortSignal;
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await result).toMatchObject({ status: 408 });
+    expect(signal.aborted).toBe(true);
+    body.resolve({ tooLate: true });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("clears a successful or cancelled caller's deadline", async () => {
+    vi.useFakeTimers();
+    fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true }));
+    await expect(api.get("/deadline-success", { timeoutMs: 100 })).resolves.toEqual({ ok: true });
+    expect(vi.getTimerCount()).toBe(0);
+    const controller = new AbortController();
+    fetchMock.mockReturnValueOnce(deferred<Response>().promise);
+    const result = api.get("/deadline-cancel", { signal: controller.signal, timeoutMs: 100 });
+    controller.abort();
+    await expect(result).rejects.toMatchObject({ name: "AbortError" });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("shares one underlying fetch for identical in-flight GETs", async () => {
     const d = deferred<Response>();
     fetchMock.mockReturnValue(d.promise);
@@ -210,6 +278,25 @@ describe("per-caller abort semantics", () => {
     const fresh = api.get("/abort-b");
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(await fresh).toEqual({ value: "fresh" });
+  });
+
+  it("marks the shared fetch's cancellation, whether every caller aborted or timed out", async () => {
+    vi.useFakeTimers();
+    fetchMock.mockReturnValue(deferred<Response>().promise);
+    const controller = new AbortController();
+    const aborted = api.get("/intentional-abort", { signal: controller.signal });
+    const timed = api.get("/intentional-timeout", { timeoutMs: 100 }).catch(error => error);
+    const [abortedSignal, timedSignal] = fetchMock.mock.calls.map(([, init]) => init.signal as AbortSignal);
+
+    controller.abort();
+    await expect(aborted).rejects.toMatchObject({ name: "AbortError" });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await timed).toMatchObject({ status: 408 });
+
+    expect(abortedSignal.reason).toMatchObject({ name: "AbortError" });
+    expect(isIntentionalAbortReason(abortedSignal.reason)).toBe(true);
+    expect(isIntentionalAbortReason(timedSignal.reason)).toBe(true);
+    expect(isIntentionalAbortReason(controller.signal.reason)).toBe(false);
   });
 
   it("rejects immediately if the caller signal is already aborted", async () => {

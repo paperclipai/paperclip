@@ -88,7 +88,8 @@ Policy: Instance setup is operator work; company creation is board; agent creati
 creation retain their individual permissions.
 
 The wizard selects the Codex harness and lets the server resolve an automatic
-new-agent runner; explicit Legacy remains available. Supported-platform and
+new-agent runner without a runner dropdown. Explicit runner requests remain
+available through the agent creation API. Supported-platform and
 immutable sandbox evidence follow [environment probe policy](./execution-environments.md#probe).
 Creation/discovery do not provision a target to determine this default. Adapter
 setup validation requires `agents:create`, plus saved-agent update access when
@@ -113,9 +114,8 @@ test. This adds no installation API, account grant, environment authority or
 engine fallback. Cloud UI omits manual shell debugging and legacy operator hints
 while retaining check messages and details. Local, SSH and custom
 commands remain operator-managed. Controls:
-[runtime](../../packages/adapters/claude-local/src/server/sandbox-cli-version.test.ts),
-[probe](../../packages/adapters/claude-local/src/server/test.remote.test.ts), and
-[wizard](../../ui/src/components/OnboardingWizard.test.tsx). Live managed
+[runtime](../../packages/adapters/claude-local/src/server/sandbox-cli-version.test.ts)
+and [probe](../../packages/adapters/claude-local/src/server/test.remote.test.ts) (mocked UI wizard unit tests were removed; verify wizard UI via [onboarding browser suite](../../tests/e2e/onboarding.spec.ts) or manual checks). Live managed
 authorization and subscription execution remain `not-run` for this change.
 
 For fresh managed Codex Auto setup, the wizard's explicit Connect path can call
@@ -139,9 +139,8 @@ change instruction discovery for ordinary task execution.
 
 Scoped source review: 2026-10-13, exact baseline
 `1a0ca66242121e39d88455aa2b52a07acc4a07d9` plus the privately composed onboarding
-correction. [Wizard controls](../../ui/src/components/OnboardingWizard.test.tsx)
-and [existing Product E2E observer controls](../../tests/runner-e2e/first-task.test.ts)
-exercise mocked allowed/denied setup and sticky unknown cost coverage. They do
+correction. [Existing Product E2E observer controls](../../tests/runner-e2e/first-task.test.ts)
+exercise mocked allowed/denied setup and sticky unknown cost coverage (mocked UI wizard component tests were removed; verify wizard UI manually or via browser checks). They do
 not prove live actor authorization or provider execution. The explicit manual
 `confirmation-replies.runner-codex.daytona.task-card-accept` case requires an
 eligible immutable OCI target and the existing probe authority, two identified
@@ -184,13 +183,22 @@ API: `present` — representative operation IDs:
 
 - `POST /api/companies/{companyId}/issues`.
 - `POST /api/issues/{issueId}/children`.
+- `POST /api/companies/{companyId}/chats/{agentRef}/onboarding` (board only).
+- `POST /api/companies/{companyId}/chats/{agentRef}/onboarding/greeting` (board only).
 
 Agent access: `available` — Native create_task / agent REST / CLI issue.
 
 Policy: Instance setup is operator work; company creation is board; agent creation/task
 creation retain their individual permissions.
 
-An authenticated run bound to the server-created onboarding first task must
+The company wizard opens the owner's standing chat without an execution task or
+project. Its board client requests a live welcome only once the thread is
+visible. Agents use the existing chat interactions to propose work; acceptance
+creates standalone tasks, and explicit task requests permit direct creation.
+See [chat-first onboarding](../../doc/onboarding-chat.md). The new board routes
+do not grant agents authority to start another person's onboarding conversation.
+
+For historical task-based onboarding, an authenticated run bound to an onboarding first task must
 obtain persisted human acceptance of the latest ordinary proposal before creating
 new tasks through native `create_task` or REST. Its authenticated run determines
 this admission even for an explicit standalone task. A card decision or a saved
@@ -249,8 +257,11 @@ Scoped source review: 2026-10-13, the first-task asset correction against
 send file-producing work through the child's own execution and existing
 dependency/block controls. Native `register_deliverable` retains its current-task
 binding; this adds no cross-task file-registration authority or permission.
-Document-only work may use the existing child-document API inline, and plan-only
-approval does not authorize implementation. The existing asset tests check
+Document-only work may use the existing child-document API inline. Acceptance
+of an execution proposal authorizes its selected tasks and proposed team within
+existing hiring, budget, and connection controls. An explicitly plan-only
+approval does not authorize implementation; requested separate approvals remain
+in force. The existing asset tests check
 wording only. The literal baseline live attempt failed child-file delivery and
 completion reporting; revised live authorization and execution remain `not-run`.
 
@@ -288,8 +299,8 @@ and opening a saved Legacy agent does not apply new-agent defaults.
 The initial matching route opening preserves the authorized saved wizard step
 on bare and company-prefixed reloads. Explicit new-company or changed-company
 openings retain their navigation override and clear foreign company resource
-IDs. [Existing component controls](../../ui/src/components/OnboardingWizard.test.tsx)
-exercise these presentation and account boundaries. This scoped correction adds
+IDs. No automated UI component tests cover these wizard presentation and account
+boundaries (previously mocked wizard tests were removed; verify via [onboarding browser suite](../../tests/e2e/onboarding.spec.ts) or manual reload checks). This scoped correction adds
 no server draft API, agent grant or proof of live actor authorization. The
 managed first-task eval still reloads before Get started and remains a separate
 live acceptance gate. The existing mocked-login browser case also checks the

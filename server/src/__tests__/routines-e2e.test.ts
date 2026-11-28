@@ -27,16 +27,21 @@ import {
   principalPermissionGrants,
   projectWorkspaces,
   projects,
+  responsibilities,
+  responsibilityLinks,
   routineDocuments,
+  routineRevisions,
   routineRuns,
   routines,
   routineTriggers,
+  userWorkspacePreferences,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { accessService } from "../services/access.js";
+import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 
 function registerRoutineServiceMock() {
   vi.doMock("../services/routines.js", async () => {
@@ -114,6 +119,9 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     await db.delete(documentAnnotationAnchorSnapshots);
     await db.delete(documentAnnotationComments);
     await db.delete(documentAnnotationThreads);
+    await db.delete(responsibilityLinks);
+    await db.delete(responsibilities);
+    await db.delete(userWorkspacePreferences);
     await db.delete(routineRuns);
     await db.delete(routineTriggers);
     await db.delete(heartbeatRunEvents);
@@ -156,6 +164,13 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     registerRoutineServiceMock();
+    vi.doMock("../services/index.js", async () => {
+      const [{ accessService }, { documentAnnotationService }, { logActivity }, { routineService }] = await Promise.all([
+        import("../services/access.js"), import("../services/document-annotations.js"),
+        import("../services/activity-log.js"), import("../services/routines.js"),
+      ]);
+      return { accessService, documentAnnotationService, logActivity, routineService };
+    });
     vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
     vi.clearAllMocks();
   });
@@ -172,6 +187,19 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     app.use("/api", routineRoutes(db));
     app.use(errorHandler);
     return app;
+  }
+
+  async function createAuthenticatedApp() {
+    const { actorMiddleware } = await import("../middleware/auth.js");
+    const { routineRoutes } = await import("../routes/routines.js");
+    const { errorHandler } = await import("../middleware/index.js");
+    const resolveSession = vi.fn(async () => null);
+    const app = express();
+    app.use(express.json());
+    app.use(actorMiddleware(db, { deploymentMode: "authenticated", resolveSession }));
+    app.use("/api", routineRoutes(db));
+    app.use(errorHandler);
+    return { app, resolveSession };
   }
 
   async function postRoutineRun(
@@ -284,7 +312,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
           for (const pending of routineResourceRequests(app, id)) {
             const response = await pending;
             expect(response.status, JSON.stringify(response.body)).toBe(404);
-            expect(response.body).toEqual({ error: response.req.path.includes("/routine-triggers/")
+            expect(response.body).toEqual({ error: pending.url.includes("/routine-triggers/")
               ? "Routine trigger not found" : "Routine not found" });
           }
         }
@@ -313,7 +341,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
         for (const pending of routineResourceRequests(app, id!, tid!)) {
           const response = await pending;
           expect(response.status, JSON.stringify(response.body)).toBe(404);
-          expect(response.body).toEqual({ error: response.req.path.includes("/routine-triggers/")
+          expect(response.body).toEqual({ error: pending.url.includes("/routine-triggers/")
             ? "Routine trigger not found" : "Routine not found" });
         }
       }
@@ -439,6 +467,71 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     },
   );
 
+  it("uses the normal public webhook for verified caller provenance and routine-wide receipts", async () => {
+    vi.stubEnv("PAPERCLIP_API_URL", "http://localhost:3100");
+    vi.stubEnv("PAPERCLIP_IN_WORKTREE", "false");
+    vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", randomUUID().repeat(2));
+    const { companyId, agentId, projectId, userId } = await seedFixture();
+    const board = await createApp({ type: "board", source: "local_implicit", userId, isInstanceAdmin: true });
+    const created = await request(board).post(`/api/companies/${companyId}/routines`).send({
+      projectId, assigneeAgentId: agentId, title: "Ordinary webhook", concurrencyPolicy: "always_enqueue",
+    });
+    expect(created.status).toBe(201);
+    const routineId = created.body.id;
+    const a = await request(board).post(`/api/routines/${routineId}/triggers`).send({ kind: "webhook", signingMode: "app_webhook" });
+    const b = await request(board).post(`/api/routines/${routineId}/triggers`).send({ kind: "webhook", signingMode: "app_webhook" });
+    expect(a.status).toBe(201); expect(b.status).toBe(201);
+    const [source] = await db.insert(issues).values({ companyId, title: "Caller source", createdByUserId: userId }).returning();
+    const [caller] = await db.insert(heartbeatRuns).values({ companyId, agentId, nativeIssueId: source!.id, status: "running" }).returning();
+    const token = createLocalAgentJwt(agentId, companyId, "codex_local", caller!.id)!;
+    const { app: publicApp, resolveSession } = await createAuthenticatedApp();
+    const delivery = (config: typeof a.body, scope = "routine") => request(publicApp)
+      .post(new URL(config.secretMaterial.webhookUrl).pathname)
+      .set("Authorization", `Bearer ${config.secretMaterial.webhookSecret}`)
+      .set("X-Paperclip-Source-Run-Token", token).set("X-Paperclip-Idempotency-Scope", scope)
+      .set("Idempotency-Key", "external-occurrence-1").send({ event: "any-provider.failure", createdByRunId: randomUUID() });
+    expect((await delivery(a.body, "global")).status).toBe(400);
+    const first = await delivery(a.body), retry = await delivery(b.body);
+    expect(first.status, JSON.stringify(first.body)).toBe(202);
+    expect(retry.status).toBe(202);
+    expect(first.body.createdByRunId).toBe(caller!.id);
+    expect(retry.body.id).toBe(first.body.id);
+    expect(await db.select().from(routineRuns)).toHaveLength(1);
+    expect(await db.select().from(issues)).toHaveLength(2);
+    expect(resolveSession).not.toHaveBeenCalled();
+    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, caller!.id));
+    expect((await delivery(a.body)).status).toBe(401);
+    expect(await db.select().from(routineRuns)).toHaveLength(1);
+    const removedPath = new URL(a.body.secretMaterial.webhookUrl).pathname.replace(/\/fire$/, "/sentry-run-failures");
+    expect((await request(publicApp).post(removedPath).send({})).status).toBe(404);
+  });
+
+  it("preserves the authenticated caller and upstream routine through the routine HTTP API", async () => {
+    vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", randomUUID().repeat(2));
+    const { companyId, agentId, projectId, userId } = await seedFixture();
+    const board = await createApp({ type: "board", source: "local_implicit", userId, isInstanceAdmin: true });
+    const create = (title: string) => request(board).post(`/api/companies/${companyId}/routines`)
+      .send({ projectId, assigneeAgentId: agentId, title });
+    const upstream = await create("Upstream routine"), downstream = await create("API consumer");
+    expect(upstream.status).toBe(201); expect(downstream.status).toBe(201);
+    const source = await request(board).post(`/api/routines/${upstream.body.id}/run`).send({});
+    expect(source.status, JSON.stringify(source.body)).toBe(202);
+    const [task] = await db.select().from(issues).where(eq(issues.id, source.body.linkedIssueId));
+    const [caller] = await db.update(heartbeatRuns).set({ status: "running" })
+      .where(eq(heartbeatRuns.id, task!.executionRunId!)).returning();
+    const { app } = await createAuthenticatedApp();
+    const token = createLocalAgentJwt(agentId, companyId, "codex_local", caller!.id)!;
+    const response = await request(app).post(`/api/routines/${downstream.body.id}/run`)
+      .set("Authorization", `Bearer ${token}`).send({ source: "api" });
+    expect(response.status, JSON.stringify(response.body)).toBe(202);
+    expect(response.body.createdByRunId).toBe(caller!.id);
+    const [receipt] = await db.select().from(routineRuns).where(eq(routineRuns.id, response.body.id));
+    expect(receipt?.createdByRunId).toBe(caller!.id);
+    const { readTaskCreationProvenance } = await import("../services/task-creation-provenance.js");
+    expect(await readTaskCreationProvenance(db, companyId, response.body.linkedIssueId))
+      .toEqual({ status: "complete", routineIds: [upstream.body.id, downstream.body.id].sort(), shareable: true });
+  });
+
   it("keeps setup deliveries out of runs, persists test receipts, and restores removed triggers", async () => {
     vi.stubEnv("PAPERCLIP_API_URL", "http://localhost:3100");
     vi.stubEnv("PAPERCLIP_IN_WORKTREE", "false");
@@ -481,7 +574,6 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     expect((await deliver("live-event")).body.id).toBe(live.body.id);
     expect(await db.select().from(activityLog).where(eq(activityLog.action, "routine.run_triggered"))).toHaveLength(1);
     expect(await db.select().from(issues)).toHaveLength(1);
-    expect((await request(board).patch(`/api/routine-triggers/${trigger.id}`).send({ setupPending: true })).status).toBe(400);
     expect((await request(board).patch(`/api/routine-triggers/${trigger.id}`).send({ archived: true })).status).toBe(200);
     expect((await deliver("removed-event")).status).toBe(404);
     expect((await request(board).get(`/api/routines/${routineId}`)).body.triggers).toHaveLength(0);
@@ -495,6 +587,140 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     expect((await request(board).get(`/api/routines/${routineId}`)).body.triggers).toHaveLength(1);
     await request(board).patch(`/api/routine-triggers/${schedule.body.trigger.id}`).send({ archived: false });
     expect((await request(board).get(`/api/routines/${routineId}`)).body.triggers).toHaveLength(2);
+  });
+
+  it("puts a live webhook back into test mode without starting runs and restores its last real delivery", async () => {
+    vi.stubEnv("PAPERCLIP_API_URL", "http://localhost:3100");
+    vi.stubEnv("PAPERCLIP_IN_WORKTREE", "false");
+    const { companyId, agentId, projectId, userId } = await seedFixture();
+    const board = await createApp({ type: "board", source: "local_implicit", userId, isInstanceAdmin: true });
+    const created = await request(board).post(`/api/companies/${companyId}/routines`).send({
+      projectId, assigneeAgentId: agentId, title: "Triage alerts", description: "Look at the alert", concurrencyPolicy: "always_enqueue",
+    });
+    expect(created.status).toBe(201);
+    const routineId = created.body.id;
+    const configured = await request(board).post(`/api/routines/${routineId}/triggers`).send({ kind: "webhook", signingMode: "bearer" });
+    expect(configured.status).toBe(201);
+    const { trigger, secretMaterial } = configured.body;
+    const path = new URL(secretMaterial.webhookUrl).pathname;
+    const publicApp = await createApp({ type: "none" });
+    const deliver = (key: string) => request(publicApp).post(path)
+      .set("Authorization", `Bearer ${secretMaterial.webhookSecret}`).set("Idempotency-Key", key).send({ event: "alert.fired" });
+    const triggerRow = async () => (await db.select().from(routineTriggers).where(eq(routineTriggers.id, trigger.id)))[0]!;
+
+    const live = await deliver("live-1");
+    expect(live.body.status, JSON.stringify(live.body)).toBe("issue_created");
+    expect(await db.select().from(issues)).toHaveLength(1);
+    const realDelivery = (await triggerRow()).lastWebhookDelivery!;
+    expect(realDelivery).toMatchObject({ status: "received", test: false });
+    expect(realDelivery.previous).toBeUndefined();
+
+    const outsider = await createApp({ type: "board", userId: randomUUID(), source: "session", companyIds: [randomUUID()] });
+    expect((await request(outsider).patch(`/api/routine-triggers/${trigger.id}`).send({ setupPending: true })).status).toBe(404);
+    expect((await triggerRow()).setupPending).toBe(false);
+
+    const started = await request(board).patch(`/api/routine-triggers/${trigger.id}`).send({ setupPending: true });
+    expect(started.status, JSON.stringify(started.body)).toBe(200);
+    expect(started.body).toMatchObject({ setupPending: true, lastWebhookDelivery: realDelivery });
+    expect(await db.select().from(activityLog).where(eq(activityLog.action, "routine.trigger_test_started"))).toHaveLength(1);
+    const revisions = await request(board).get(`/api/routines/${routineId}/revisions`);
+    expect(revisions.body.map((revision: { changeSummary: string }) => revision.changeSummary)).toContain("Started testing webhook");
+
+    for (const key of ["test-1", "test-2"]) {
+      const tested = await deliver(key);
+      expect(tested.status, JSON.stringify(tested.body)).toBe(202);
+      expect(tested.body).toMatchObject({ status: "test_received", routineStarted: false, linkedIssueId: null });
+    }
+    expect(await db.select().from(issues)).toHaveLength(1);
+    expect(await db.select().from(routineRuns)).toHaveLength(1);
+    expect((await triggerRow()).lastWebhookDelivery).toMatchObject({
+      status: "received", test: true, previous: { ...realDelivery, test: false },
+    });
+
+    const finished = await request(board).patch(`/api/routine-triggers/${trigger.id}`).send({ setupPending: false });
+    expect(finished.status).toBe(200);
+    expect(finished.body).toMatchObject({ setupPending: false, lastWebhookDelivery: realDelivery });
+    expect((await triggerRow()).lastWebhookDelivery).toEqual(realDelivery);
+    expect(await db.select().from(activityLog).where(eq(activityLog.action, "routine.trigger_setup_finished"))).toHaveLength(1);
+    expect((await request(board).get(`/api/routines/${routineId}/revisions`)).body
+      .map((revision: { changeSummary: string }) => revision.changeSummary)).toContain("Finished testing webhook");
+
+    // A sender retry of an event received during testing stays a test receipt.
+    expect((await deliver("test-1")).body.status).toBe("test_received");
+    expect(await db.select().from(issues)).toHaveLength(1);
+    const next = await deliver("live-2");
+    expect(next.body.status, JSON.stringify(next.body)).toBe("issue_created");
+    expect(await db.select().from(issues)).toHaveLength(2);
+    expect((await triggerRow()).lastWebhookDelivery).toMatchObject({ status: "received", test: false });
+    expect((await triggerRow()).lastWebhookDelivery?.previous).toBeUndefined();
+  });
+
+  it("starts each test of a never-used webhook without the last test's result", async () => {
+    vi.stubEnv("PAPERCLIP_API_URL", "http://localhost:3100");
+    vi.stubEnv("PAPERCLIP_IN_WORKTREE", "false");
+    const { companyId, agentId, projectId, userId } = await seedFixture();
+    const board = await createApp({ type: "board", source: "local_implicit", userId, isInstanceAdmin: true });
+    const created = await request(board).post(`/api/companies/${companyId}/routines`).send({ projectId, assigneeAgentId: agentId, title: "Quiet hook" });
+    const routineId = created.body.id;
+    const configured = await request(board).post(`/api/routines/${routineId}/triggers`).send({ kind: "webhook", signingMode: "bearer" });
+    const { trigger, secretMaterial } = configured.body;
+    const path = new URL(secretMaterial.webhookUrl).pathname;
+    const publicApp = await createApp({ type: "none" });
+    const triggerRow = async () => (await db.select().from(routineTriggers).where(eq(routineTriggers.id, trigger.id)))[0]!;
+
+    expect((await request(board).patch(`/api/routine-triggers/${trigger.id}`).send({ setupPending: true })).status).toBe(200);
+    const tested = await request(publicApp).post(path).set("Authorization", `Bearer ${secretMaterial.webhookSecret}`)
+      .set("Idempotency-Key", "test-1").send({ event: "ping" });
+    expect(tested.body.status).toBe("test_received");
+    expect((await triggerRow()).lastWebhookDelivery).toMatchObject({ status: "received", test: true, previous: null });
+
+    expect((await request(board).patch(`/api/routine-triggers/${trigger.id}`).send({ setupPending: false })).status).toBe(200);
+    expect((await triggerRow()).lastWebhookDelivery).toBeNull();
+    expect((await request(board).patch(`/api/routine-triggers/${trigger.id}`).send({ setupPending: true })).status).toBe(200);
+    // A new test starts clean: nothing reads as "Test event received" before an event arrives.
+    expect((await triggerRow()).lastWebhookDelivery).toBeNull();
+    expect(await db.select().from(issues)).toHaveLength(0);
+  });
+
+  it("only starts testing on an active, enabled webhook", async () => {
+    vi.stubEnv("PAPERCLIP_API_URL", "http://localhost:3100");
+    const { companyId, agentId, projectId, userId } = await seedFixture();
+    const board = await createApp({ type: "board", source: "local_implicit", userId, isInstanceAdmin: true });
+    const created = await request(board).post(`/api/companies/${companyId}/routines`).send({
+      projectId, assigneeAgentId: agentId, title: "Triage alerts", description: "Look at the alert",
+    });
+    const routineId = created.body.id;
+    const webhook = (await request(board).post(`/api/routines/${routineId}/triggers`).send({ kind: "webhook", signingMode: "bearer" })).body.trigger;
+    const schedule = (await request(board).post(`/api/routines/${routineId}/triggers`)
+      .send({ kind: "schedule", cronExpression: "0 9 * * 1-5", timezone: "UTC" })).body.trigger;
+    const startTesting = (id: string, extra: Record<string, unknown> = {}) =>
+      request(board).patch(`/api/routine-triggers/${id}`).send({ setupPending: true, ...extra });
+
+    const scheduleAttempt = await startTesting(schedule.id);
+    expect(scheduleAttempt.status).toBe(422);
+    expect(scheduleAttempt.body.error).toBe("Only webhooks can be tested");
+
+    const disablingAttempt = await startTesting(webhook.id, { enabled: false });
+    expect(disablingAttempt.status).toBe(409);
+    expect((await request(board).patch(`/api/routine-triggers/${webhook.id}`).send({ enabled: false })).status).toBe(200);
+    const disabledAttempt = await startTesting(webhook.id);
+    expect(disabledAttempt.status).toBe(409);
+    expect(disabledAttempt.body.error).toBe("Turn the webhook on before testing it");
+    await request(board).patch(`/api/routine-triggers/${webhook.id}`).send({ enabled: true });
+
+    await request(board).patch(`/api/routine-triggers/${webhook.id}`).send({ archived: true });
+    const archivedAttempt = await startTesting(webhook.id);
+    expect(archivedAttempt.status).toBe(409);
+    expect(archivedAttempt.body.error).toBe("This webhook was removed");
+    await request(board).patch(`/api/routine-triggers/${webhook.id}`).send({ archived: false });
+
+    await db.update(routines).set({ status: "archived" }).where(eq(routines.id, routineId));
+    const archivedRoutineAttempt = await startTesting(webhook.id);
+    expect(archivedRoutineAttempt.status).toBe(409);
+    expect(archivedRoutineAttempt.body.error).toBe("This routine is archived");
+
+    expect((await db.select().from(routineTriggers).where(eq(routineTriggers.id, webhook.id)))[0]?.setupPending).toBe(false);
+    expect(await db.select().from(activityLog).where(eq(activityLog.action, "routine.trigger_test_started"))).toHaveLength(0);
   });
 
   it("supports creating, scheduling, and manually running a routine through the API", async () => {
@@ -836,6 +1062,150 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
       executionWorkspaceId,
       executionWorkspacePreference: "reuse_existing",
       executionWorkspaceSettings: { mode: "isolated_workspace" },
+    });
+  });
+
+  describe("an agent acting for the routine's person", () => {
+    /** A second agent, working in the person's own chat, so it acts for them. */
+    async function helperFor(companyId: string, personUserId: string) {
+      const [helper] = await db.insert(agents).values({
+        companyId, name: "Helper", role: "general", status: "active", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {},
+      }).returning();
+      const [chat] = await db.insert(issues).values({ companyId, title: "Chat", createdByUserId: personUserId, responsibleUserId: personUserId }).returning();
+      const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: helper!.id, issueId: chat!.id, scopeKind: "issue", status: "running", contextSnapshot: { issueId: chat!.id } }).returning();
+      const app = await createApp({
+        type: "agent", agentId: helper!.id, companyId, runId: run!.id, source: "agent_jwt",
+        onBehalfOfUserId: personUserId, onBehalfOfMemberships: [{ companyId, membershipRole: "owner", status: "active" }],
+      });
+      return { app, helperId: helper!.id };
+    }
+
+    async function personRoutine(companyId: string, agentId: string, userId: string, values: Record<string, unknown> = {}) {
+      const board = await createApp({ type: "board", source: "local_implicit", userId, isInstanceAdmin: true });
+      const created = await request(board).post(`/api/companies/${companyId}/routines`).send({ assigneeAgentId: agentId, title: "Weekly pipeline", ...values });
+      expect(created.status, JSON.stringify(created.body)).toBe(201);
+      return created.body.id as string;
+    }
+
+    it("reschedules its person's routine run by another agent in one revision, with one schedule however often it races", async () => {
+      const { companyId, agentId, userId } = await seedFixture();
+      const routineId = await personRoutine(companyId, agentId, userId);
+      const { app } = await helperFor(companyId, userId);
+      const revisions = async () => db.select().from(routineRevisions).where(eq(routineRevisions.routineId, routineId));
+      const before = (await revisions()).length;
+
+      // No zone given, none on the routine and none saved for the person: the agent must name one.
+      const unnamed = await request(app).patch(`/api/routines/${routineId}`).send({ title: "Pipeline review", schedule: { cronExpression: "30 9 * * 1" } });
+      expect(unnamed.status).toBe(422);
+      expect((await revisions()).length).toBe(before);
+
+      await db.insert(userWorkspacePreferences).values({ userId, timeZone: "Europe/Berlin" });
+      const changed = await request(app).patch(`/api/routines/${routineId}`).send({ title: "Pipeline review", schedule: { cronExpression: "30 9 * * 1" } });
+      expect(changed.status, JSON.stringify(changed.body)).toBe(200);
+      const after = await revisions();
+      expect(after.length).toBe(before + 1);
+      expect(after.find((revision) => revision.revisionNumber === Math.max(...after.map((r) => r.revisionNumber)))?.changeSummary).toBe("Updated routine and schedule");
+      const schedules = async () => db.select().from(routineTriggers).where(eq(routineTriggers.routineId, routineId));
+      expect(await schedules()).toMatchObject([{ kind: "schedule", enabled: true, cronExpression: "30 9 * * 1", timezone: "Europe/Berlin" }]);
+
+      // Two changes at once: the routine lock keeps one enabled schedule.
+      await db.delete(routineTriggers).where(eq(routineTriggers.routineId, routineId));
+      const raced = await Promise.all([
+        request(app).patch(`/api/routines/${routineId}`).send({ schedule: { cronExpression: "0 8 * * *", timezone: "UTC" } }),
+        request(app).patch(`/api/routines/${routineId}`).send({ schedule: { cronExpression: "0 18 * * *", timezone: "UTC" } }),
+      ]);
+      expect(raced.map((res) => res.status)).toEqual([200, 200]);
+      expect((await schedules()).filter((trigger) => trigger.enabled)).toHaveLength(1);
+
+      const off = await request(app).patch(`/api/routines/${routineId}`).send({ schedule: null });
+      expect(off.status).toBe(200);
+      expect((await schedules()).every((trigger) => !trigger.enabled)).toBe(true);
+
+      // Handing the routine to another person with a new time: the time is in the new person's zone.
+      const nextPerson = randomUUID();
+      await accessService(db).ensureMembership(companyId, "user", nextPerson, "operator", "active");
+      await db.insert(userWorkspacePreferences).values({ userId: nextPerson, timeZone: "Asia/Tokyo" });
+      await db.delete(routineTriggers).where(eq(routineTriggers.routineId, routineId));
+      const board = await createApp({ type: "board", source: "local_implicit", userId, isInstanceAdmin: true });
+      const handed = await request(board).patch(`/api/routines/${routineId}`).send({ responsibleUserId: nextPerson, schedule: { cronExpression: "0 9 * * *" } });
+      expect(handed.status, JSON.stringify(handed.body)).toBe(200);
+      expect(await schedules()).toMatchObject([{ enabled: true, timezone: "Asia/Tokyo" }]);
+    });
+
+    it("refuses another person's routine, and needs the person's tasks:assign to take, turn on or reschedule one it does not run", async () => {
+      const { companyId, agentId, userId } = await seedFixture();
+      const memberId = randomUUID();
+      await accessService(db).ensureMembership(companyId, "user", memberId, "operator", "active");
+      // A member who may not assign tasks, as under a restricted assignment policy.
+      vi.doMock("../services/index.js", async () => {
+        const [{ accessService: realAccess }, { documentAnnotationService }, { logActivity }, { routineService }] = await Promise.all([
+          import("../services/access.js"), import("../services/document-annotations.js"),
+          import("../services/activity-log.js"), import("../services/routines.js"),
+        ]);
+        const accessService = (database: typeof db) => {
+          const access = realAccess(database);
+          return { ...access, canUser: async (...args: Parameters<typeof access.canUser>) =>
+            (args[1] === memberId && args[2] === "tasks:assign" ? false : access.canUser(...args)) };
+        };
+        return { accessService, documentAnnotationService, logActivity, routineService };
+      });
+      const ownersRoutine = await personRoutine(companyId, agentId, userId);
+      const membersRoutine = await personRoutine(companyId, agentId, userId, { status: "paused" });
+      await db.update(routines).set({ responsibleUserId: memberId }).where(eq(routines.id, membersRoutine));
+
+      const { app: forMember, helperId } = await helperFor(companyId, memberId);
+      // Not the member's routine: no change at all.
+      expect((await request(forMember).patch(`/api/routines/${ownersRoutine}`).send({ title: "x" })).status).toBe(403);
+      // The member's routine: an ordinary change is fine, but the member may not assign tasks.
+      expect((await request(forMember).patch(`/api/routines/${membersRoutine}`).send({ title: "Member pipeline" })).status).toBe(200);
+      expect((await request(forMember).patch(`/api/routines/${membersRoutine}`).send({ assigneeAgentId: helperId })).status).toBe(403);
+      expect((await request(forMember).patch(`/api/routines/${membersRoutine}`).send({ status: "active" })).status).toBe(403);
+      expect((await request(forMember).patch(`/api/routines/${membersRoutine}`).send({ schedule: { cronExpression: "0 9 * * 1", timezone: "UTC" } })).status).toBe(403);
+      expect((await request(forMember).post(`/api/routines/${membersRoutine}/triggers`).send({ kind: "schedule", cronExpression: "0 9 * * 1", timezone: "UTC" })).status).toBe(403);
+      // Nor change an existing trigger, start the routine, or restore a revision of it.
+      const board = await createApp({ type: "board", source: "local_implicit", userId, isInstanceAdmin: true });
+      const trigger = await request(board).post(`/api/routines/${membersRoutine}/triggers`).send({ kind: "schedule", cronExpression: "0 9 * * 1", timezone: "UTC", enabled: false });
+      expect(trigger.status, JSON.stringify(trigger.body)).toBe(201);
+      expect((await request(forMember).patch(`/api/routine-triggers/${trigger.body.trigger.id}`).send({ enabled: true })).status).toBe(403);
+      expect((await request(forMember).delete(`/api/routine-triggers/${trigger.body.trigger.id}`)).status).toBe(403);
+      expect((await request(forMember).post(`/api/routines/${membersRoutine}/run`).send({})).status).toBe(403);
+      const [revision] = await db.select().from(routineRevisions).where(eq(routineRevisions.routineId, membersRoutine)).limit(1);
+      expect((await request(forMember).post(`/api/routines/${membersRoutine}/revisions/${revision!.id}/restore`).send({})).status).toBe(403);
+
+      // The owner may assign tasks, so an agent acting for them may take the routine.
+      const { app: forOwner, helperId: ownersHelper } = await helperFor(companyId, userId);
+      const taken = await request(forOwner).patch(`/api/routines/${ownersRoutine}`).send({ assigneeAgentId: ownersHelper });
+      expect(taken.status, JSON.stringify(taken.body)).toBe(200);
+      // The agent that runs a routine still reschedules its own, also through its trigger.
+      const runner = await createApp({ type: "agent", agentId, companyId });
+      expect((await request(runner).patch(`/api/routines/${membersRoutine}`).send({ schedule: { cronExpression: "0 9 * * 1", timezone: "UTC" } })).status).toBe(200);
+      expect((await request(runner).patch(`/api/routine-triggers/${trigger.body.trigger.id}`).send({ cronExpression: "0 10 * * 1" })).status).toBe(200);
+    });
+
+    it("filters the list in the query: words, status and routines filed under no responsibility", async () => {
+      const { companyId, agentId, userId } = await seedFixture();
+      await db.delete(instanceSettings);
+      await db.insert(instanceSettings).values({ experimental: { enableResponsibilities: true } });
+      const filed = await personRoutine(companyId, agentId, userId, { title: "Pipeline filed" });
+      const loose = await personRoutine(companyId, agentId, userId, { title: "Pipeline loose", status: "paused" });
+      await personRoutine(companyId, agentId, userId, { title: "Standup" });
+      const [hiring] = await db.insert(responsibilities).values({ companyId, ownerUserId: userId, title: "Hiring", status: "active" }).returning();
+      await db.insert(responsibilityLinks).values({ companyId, responsibilityId: hiring!.id, routineId: filed });
+      const board = await createApp({ type: "board", source: "local_implicit", userId, isInstanceAdmin: true });
+      const list = async (query: string) => (await request(board).get(`/api/companies/${companyId}/routines?${query}`)).body.map((routine: { id: string }) => routine.id);
+
+      expect(await list("q=PIPELINE")).toEqual(expect.arrayContaining([filed, loose]));
+      expect(await list("q=PIPELINE")).toHaveLength(2);
+      expect(await list("q=pipeline&unfiled=true&status=paused")).toEqual([loose]);
+      expect(await list(`responsibilityId=${hiring!.id}`)).toEqual([filed]);
+
+      // The responsibility filters are part of the Responsibilities experiment; plain searches are not.
+      await db.update(instanceSettings).set({ experimental: { enableResponsibilities: false } });
+      (await import("../services/instance-settings-cache.js")).invalidateInstanceSettingsCache();
+      const off = await request(board).get(`/api/companies/${companyId}/routines?unfiled=true`);
+      expect(off.status).toBe(404);
+      expect(off.body.code).toBe("responsibilities_disabled");
+      expect(await list("q=standup")).toHaveLength(1);
     });
   });
 });

@@ -1,8 +1,16 @@
+import { notifyGitHubCredentialChange } from "../../github-connection-notifications.js";
 import { notifyVoiceChange } from "../../voice/voice-recovery-notifications.js";
 import { notifyChatEndpointWork } from "../../chat-work-notifications.js";
 import { notifyToolConnectionHealth } from "../../tool-connection-health-notifications.js";
 import { toConnection } from "./projection.js";
-import { actorBinding } from "../actor.js";
+import { createManagedGoogleAccessRemoval } from "./google-access-removal.js";
+import { createAntigravitySignInRemoval } from "../../antigravity-access-removal.js";
+import { publishActivity } from "../../activity-log.js";
+import type { ActivityPublication } from "../../../types/activity-publication.js";
+import { contentDeletionActor, deleteGoogleContentWhenAccessEnds } from "./google-content-retention.js";
+import type { PaperclipCloudConnector } from "../../paperclip-cloud-connector.js";
+import { actorBinding, connectionActorUserId } from "../actor.js";
+import { stageSlackCloudEnrollmentIntent } from "../../chat-channels/slack/cloud-enrollment.js";
 import { vercelConnectResourcesFor } from "../vercel-credentials.js";
 import type { ActorInfo } from "../types.js";
 import { chatCredentialMutationLease } from "../../chat-credential-mutation-lease.js";
@@ -11,15 +19,16 @@ import { chatEndpoints } from "@paperclipai/db";
 import { isBrowserUseConnection } from "../../browser-use-client.js";
 import { browserUseService } from "../../browser-use.js";
 import { emitConnectionUpdated } from "../../connector-telemetry.js";
-import { and, eq, inArray, isNull, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { connectionGrants, connectionTokenIssuances, companySecretBindings, companySecrets, userSecretDefinitions, userSecretDeclarations, toolApplications, toolCatalogEntries, toolConnectionInstalls, toolConnections, toolOauthStates, toolGatewaySessions, toolMcpGateways, toolMcpGatewayTokens, toolProfileBindings, toolProfileEntries, toolProfiles, toolRuntimeSlots } from "@paperclipai/db";
+import { connectionGrants, connectionTokenIssuances, companySecretBindings, companySecrets, userSecretDefinitions, toolApplications, toolCatalogEntries, toolConnectionInstalls, toolConnections, toolOauthStates, toolGatewaySessions, toolMcpGateways, toolMcpGatewayTokens, toolProfileBindings, toolProfileEntries, toolProfiles, toolRuntimeSlots } from "@paperclipai/db";
 import type { ToolConnectionRemovalResult, ToolConnectionRemovalSummary } from "@paperclipai/shared";
 import { notFound } from "../../../errors.js";
 import { logger } from "../../../middleware/logger.js";
+import { releaseProviderLimitWaits } from "../../heartbeat/provider-limit-wait.js";
 import { forgetMcpHttpSessions } from "../../mcp-http.js";
 import { secretService } from "../../secrets.js";
-import { connectionSecretsUsedByOtherConsumers } from "../../connection-credentials.js";
+import { findSecretConsumers } from "../../connection-secret-consumers.js";
 import { createToolRuntimeSupervisor } from "../../tool-runtime-supervisor.js";
 import { vercelConnectIntegrationStatus, vercelTokenRequest, type VercelConnectClient } from "../../vercel-connect.js";
 
@@ -41,7 +50,7 @@ function asRecord(value: unknown): Record<string, unknown> {
 const CONNECTION_OWNED_SECRET_KEY_PREFIX = "tool_app.";
 
 /** Token fields a legacy row may have inlined into `config.oauth`. */
-const INLINE_OAUTH_TOKEN_FIELDS = [
+export const INLINE_OAUTH_TOKEN_FIELDS = [
   "access_token",
   "refresh_token",
   "accessToken",
@@ -79,10 +88,13 @@ type RemovalDependencies = {
   secrets: ReturnType<typeof secretService>;
   runtimeSupervisor: Pick<ReturnType<typeof createToolRuntimeSupervisor>, "stopSlot">;
   vercelConnect: VercelConnectClient | null;
+  currentCloudConnector: () => PaperclipCloudConnector | null;
   getConnectionRow(idOrUid: string, companyId?: string): Promise<typeof toolConnections.$inferSelect>;
 };
 
-export function createConnectionRemoval(db: Db, { options, secrets, runtimeSupervisor, vercelConnect, getConnectionRow }: RemovalDependencies) {
+export function createConnectionRemoval(db: Db, { options, secrets, runtimeSupervisor, vercelConnect, currentCloudConnector, getConnectionRow }: RemovalDependencies) {
+  const managedGoogleAccess = createManagedGoogleAccessRemoval(db, { currentCloudConnector });
+  const antigravitySignIn = createAntigravitySignInRemoval(db, { secrets });
   /**
    * Split the secrets a connection points at into the ones it owns outright and
    * the ones another consumer still depends on.
@@ -131,63 +143,15 @@ async function classifyConnectionSecrets(
       );
     const byId = new Map(secretRows.map((row) => [row.id, row]));
 
-    const referencedElsewhere = await connectionSecretsUsedByOtherConsumers(db, unique);
-    const foreignBindings = await db
-      .select({ secretId: companySecretBindings.secretId })
-      .from(companySecretBindings)
-      .where(
-        and(
-          eq(companySecretBindings.companyId, connection.companyId),
-          inArray(companySecretBindings.secretId, unique),
-          sql`not (${companySecretBindings.targetType} = 'tool_connection' and ${companySecretBindings.targetId} = ${connection.id})`,
-        ),
-      );
-    for (const row of foreignBindings) referencedElsewhere.add(row.secretId);
-
-    // Bindings are the authority, but read the sibling refs too: a row written
-    // before `syncCredentialBindings` existed — or by hand — can reference a
-    // secret with no binding to prove it.
-    const siblingConnections = await db
-      .select({
-        credentialRefs: toolConnections.credentialRefs,
-        credentialSecretRefs: toolConnections.credentialSecretRefs,
-      })
-      .from(toolConnections)
-      .where(
-        and(
-          eq(toolConnections.companyId, connection.companyId),
-          ne(toolConnections.id, connection.id),
-        ),
-      );
-    for (const row of siblingConnections) {
-      for (const ref of row.credentialRefs ?? [])
-        referencedElsewhere.add(ref.secretId);
-      for (const ref of row.credentialSecretRefs ?? [])
-        referencedElsewhere.add(ref.secretId);
-    }
-    const siblingGrants = await db
-      .select({ credentialSecretRefs: connectionGrants.credentialSecretRefs })
-      .from(connectionGrants)
-      .where(
-        and(
-          eq(connectionGrants.companyId, connection.companyId),
-          ne(connectionGrants.connectionId, connection.id),
-        ),
-      );
-    for (const row of siblingGrants) {
-      for (const ref of row.credentialSecretRefs ?? [])
-        referencedElsewhere.add(ref.secretId);
-    }
+    const referencedElsewhere = await findSecretConsumers(db, {
+      companyId: connection.companyId, connectionId: connection.id, secretIds: unique,
+      removingConnection: true, liveOnly: false,
+    });
 
     const definitionIds = secretRows.flatMap((row) => row.userSecretDefinitionId ? [row.userSecretDefinitionId] : []);
     const definitions = definitionIds.length ? await db.select().from(userSecretDefinitions)
       .where(and(eq(userSecretDefinitions.companyId, connection.companyId), inArray(userSecretDefinitions.id, definitionIds))) : [];
     const dedicatedDefinitions = new Set(definitions.filter((row) => row.key.startsWith(CONNECTION_OWNED_SECRET_KEY_PREFIX) || row.key.startsWith(`tool_oauth.${connection.id}.`)).map((row) => row.id));
-    const foreignDeclarations = definitionIds.length ? await db.select().from(userSecretDeclarations).where(and(
-      inArray(userSecretDeclarations.userSecretDefinitionId, definitionIds),
-      sql`not (${userSecretDeclarations.targetType} = 'tool_connection' and ${userSecretDeclarations.targetId} = ${connection.id})`,
-    )) : [];
-    const sharedDefinitions = new Set(foreignDeclarations.map((row) => row.userSecretDefinitionId));
     const owned: string[] = [];
     const retained: string[] = [];
     for (const secretId of unique) {
@@ -200,7 +164,7 @@ async function classifyConnectionSecrets(
         continue;
       }
       const dedicated = row.scope === "user" && row.userSecretDefinitionId
-        ? dedicatedDefinitions.has(row.userSecretDefinitionId) && !sharedDefinitions.has(row.userSecretDefinitionId)
+        ? dedicatedDefinitions.has(row.userSecretDefinitionId)
         : row.scope === "company" && row.userSecretDefinitionId === null
           && row.key.startsWith(CONNECTION_OWNED_SECRET_KEY_PREFIX);
       if (dedicated && !referencedElsewhere.has(secretId)) owned.push(secretId);
@@ -240,6 +204,8 @@ async function removeConnection(
         await lease.assertOwned(tx);
         await tx.update(chatEndpoints).set({ status: "archived", updatedAt: new Date() }).where(eq(chatEndpoints.id, endpoint.id));
         await tx.update(toolConnections).set({ status: "archived", enabled: false, updatedAt: new Date() }).where(eq(toolConnections.id, connection.id));
+        await stageSlackCloudEnrollmentIntent(tx as unknown as Db, endpoint.id, connectionActorUserId(actor));
+        await lease.assertOwned(tx);
       });
       await removeSlackRegistration(db, endpoint.id, lease);
       return removeConnectionUnlocked(connectionId, companyId, actor);
@@ -258,10 +224,14 @@ async function removeConnection(
     const grantRows = await db
       .select({
         id: connectionGrants.id,
+        companyId: connectionGrants.companyId,
+        connectionId: connectionGrants.connectionId,
         status: connectionGrants.status,
         kind: connectionGrants.kind,
         subjectUserId: connectionGrants.subjectUserId,
+        subjectAgentId: connectionGrants.subjectAgentId,
         credentialSecretRefs: connectionGrants.credentialSecretRefs,
+        providerTenant: connectionGrants.providerTenant,
         externalCredential: connectionGrants.externalCredential,
       })
       .from(connectionGrants)
@@ -272,8 +242,18 @@ async function removeConnection(
         ),
       );
     const grantsToRevoke = grantRows.filter((row) => row.status !== "revoked");
-    if (grantsToRevoke.length > 0) {
-      await db
+    let secretsRevoked = 0;
+    const providerAccessRemoval = await managedGoogleAccess.prepare(connection, grantRows, actor, {
+      removingConnection: true,
+      canRemoveSecret: async (secretId) => (await classifyConnectionSecrets(connection, [secretId])).owned.includes(secretId),
+      removeSecret: async (secretId, expectedVersion) => {
+        if (await secrets.remove(secretId, { expectedVersion })) secretsRevoked += 1;
+      },
+    });
+    const signInRemoval = await antigravitySignIn.prepare(connection, grantRows, { removingConnection: true });
+    const releasedWaitPublications: ActivityPublication[] = [];
+    await db.transaction(async (tx) => {
+      if (grantsToRevoke.length > 0) await tx
         .update(connectionGrants)
         .set({
           status: "revoked",
@@ -291,7 +271,16 @@ async function removeConnection(
             grantsToRevoke.map((row) => row.id),
           ),
         );
-    }
+      // Usage limits reported on a removed account no longer hold work. The
+      // release commits with the revocation, so waiting work never outlives it.
+      await releaseProviderLimitWaits(tx as unknown as Db, {
+        companyId: connection.companyId, reason: "ai_connection_revoked",
+        grantIds: grantRows.map((row) => row.id),
+        publications: releasedWaitPublications,
+        ...(binding.actorType && binding.actorId ? { actor: { actorType: binding.actorType, actorId: binding.actorId } } : {}),
+      });
+    });
+    releasedWaitPublications.forEach(publishActivity);
     let externalCredentialCleanup: ToolConnectionRemovalSummary["externalCredentialCleanup"] =
       null;
     if (
@@ -543,6 +532,7 @@ async function removeConnection(
     const archived = await db.transaction(async (tx) => {
       if (connection.transport === "chat_sdk") await notifyChatEndpointWork(tx, connection.id, connection.companyId);
           if (connection.transport === "voice") await notifyVoiceChange(tx, { kind: "connection", id: connection.id });
+      await notifyGitHubCredentialChange(tx, connection);
       await notifyToolConnectionHealth(tx, connection);
       await tx.select({ id: toolApplications.id }).from(toolApplications)
         .where(and(eq(toolApplications.id, connection.applicationId), eq(toolApplications.companyId, connection.companyId)))
@@ -553,6 +543,7 @@ async function removeConnection(
         .where(eq(toolConnections.id, connection.id))
         .returning();
       if (!updatedConnection) throw notFound("Tool connection not found");
+      await deleteGoogleContentWhenAccessEnds(tx as unknown as Db, updatedConnection, "connection_removed", contentDeletionActor(actor));
 
       const remainingConnections = await tx
         .select({ id: toolConnections.id })
@@ -590,6 +581,10 @@ async function removeConnection(
       await browserUseService(db, options.remoteHttpRequest).stopBeforeCredentialRemoval(connection.companyId, connection.id);
     }
 
+    const providerAccess = providerAccessRemoval ? await providerAccessRemoval.send() : null;
+    const signIn = signInRemoval ? await signInRemoval.send() : null;
+    const retainedGrantIds = signInRemoval?.retainedGrantIds() ?? [];
+
     // Only now, with every access path closed, revoke the credentials. Each
     // `secrets.remove` marks the row deleted before it calls the provider, so a
     // provider error leaves an unresolvable secret and a resumable removal
@@ -606,7 +601,6 @@ async function removeConnection(
       connection,
       candidateSecretIds,
     );
-    let secretsRevoked = 0;
     for (const secretId of owned) {
       const removed = await secrets.remove(secretId);
       if (removed) secretsRevoked += 1;
@@ -635,6 +629,8 @@ async function removeConnection(
           and(
             eq(connectionGrants.companyId, connection.companyId),
             eq(connectionGrants.connectionId, connection.id),
+            eq(connectionGrants.status, "revoked"),
+            ...(retainedGrantIds.length > 0 ? [notInArray(connectionGrants.id, retainedGrantIds)] : []),
           ),
         );
     }
@@ -659,6 +655,8 @@ async function removeConnection(
         gatewaySessionsRevoked,
         applicationArchived: archived.applicationArchived,
         externalCredentialCleanup,
+        ...(providerAccess ? { providerAccess } : {}),
+        ...(signIn ? { signInRemoval: signIn } : {}),
       },
     };
   }

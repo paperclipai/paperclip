@@ -93,12 +93,27 @@ describe("Speko hosted provider transport", () => {
     expect(body.systemPrompt).toContain("answer_question with its exact interaction and question IDs");
     expect(body.systemPrompt).toContain("Do not repeatedly poll while pending.");
   });
-  it("uses the hosted phone endpoint with scoped secrets and returns no media or phone number", async () => {
+  it("falls back to a supported S2S voice only for S2S_VOICE_UNSUPPORTED 400s", async () => {
+    let calls = 0;
+    const transport = vi.fn<typeof fetch>(async () => {
+      calls += 1;
+      if (calls === 1) return Response.json({ code: "S2S_VOICE_UNSUPPORTED" }, { status: 400 });
+      return Response.json({ id: input.agentId });
+    });
+    await createSpekoProvider("key", transport).configureVoiceDefaults(input.agentId);
+    expect(transport).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(transport.mock.calls[1]![1]?.body))).toMatchObject({ runMode: "s2s", voice: "marin", idleRePrompts: { enabled: false } });
+
+    const unrelated = vi.fn<typeof fetch>(async () => Response.json({ code: "VALIDATION_ERROR" }, { status: 400 }));
+    await expect(createSpekoProvider("key", unrelated).configureVoiceDefaults(input.agentId)).rejects.toMatchObject({ httpStatus: 400, providerCode: "VALIDATION_ERROR" });
+    expect(unrelated).toHaveBeenCalledOnce();
+  });
+  it("uses the hosted phone endpoint with scoped secrets, optional firstMessage, and returns no media or phone number", async () => {
     const transport = vi.fn<typeof fetch>(async () => Response.json({ sessionId: "phone_test", status: "dialing", to: "+12015551234", callControlId: "private-control" }));
-    expect(await createSpekoProvider("private-key", transport).createPhoneSession({ ...input, to: "+12015551234" })).toEqual({ sessionId: "phone_test", status: "dialing" });
+    expect(await createSpekoProvider("private-key", transport).createPhoneSession({ ...input, to: "+12015551234", firstMessage: "The staging deploy succeeded. Ready to ship?" })).toEqual({ sessionId: "phone_test", status: "dialing" });
     expect(transport).toHaveBeenCalledOnce();
     expect(transport.mock.calls[0]![0]).toBe("https://api.speko.dev/v1/sessions/phone");
-    expect(JSON.parse(String(transport.mock.calls[0]![1]?.body))).toMatchObject({ runMode: "s2s", maxDurationSeconds: 600, toolSecrets: { paperclip_session_token: input.toolToken } });
+    expect(JSON.parse(String(transport.mock.calls[0]![1]?.body))).toMatchObject({ runMode: "s2s", maxDurationSeconds: 600, firstMessage: "The staging deploy succeeded. Ready to ship?", toolSecrets: { paperclip_session_token: input.toolToken } });
   });
   it("validates phone parameters before changing the persona or placing a call", async () => {
     const transport = vi.fn<typeof fetch>(); const provider = createSpekoProvider("key", transport);

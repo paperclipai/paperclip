@@ -8,6 +8,7 @@ import {
   resolvePaperclipRunnerProviderProfile,
   type PaperclipRunnerProviderProfile,
 } from "./provider-profile.js";
+import { antigravityCandidateTarget } from "./antigravity-release.js";
 
 /**
  * Public compatibility resolver version. This value is persisted by the
@@ -18,19 +19,6 @@ export const NATIVE_RUNTIME_RESOLVER_VERSION = "paperclip-runner-v1" as const;
 
 /** Resolver version for the richer native runtime profile used by runnerd. */
 export const NATIVE_RUNTIME_PROFILE_RESOLVER_VERSION = "phase6-v1" as const;
-
-export type HeartbeatRuntimeResolution =
-  | {
-      kind: "legacy";
-      resolverVersion: typeof NATIVE_RUNTIME_RESOLVER_VERSION;
-      reason: "direct_adapter" | "persisted_legacy_selection";
-    }
-  | {
-      kind: "native";
-      resolverVersion: typeof NATIVE_RUNTIME_RESOLVER_VERSION;
-      reason: "explicit_paperclip_runner" | "persisted_native_selection";
-      provider: PaperclipRunnerProviderProfile["provider"];
-    };
 
 export type NativeRuntimeResolution =
   | {
@@ -53,7 +41,8 @@ export type NativeRuntimeResolution =
           | "acpx_runtime"
           | "openai_dot_mcp"
           | "grok_bot_mcp"
-          | "muse_external";
+          | "muse_external"
+          | "cursor_cloud_api";
         protocolVersion: 1;
       };
       authorityDecision: NativeStatusDecision;
@@ -81,6 +70,7 @@ export class NativeRuntimeEligibilityError extends NativeRunnerSelectionError {
   constructor(
     code: string,
     reason?: string,
+    readonly detailReason?: string,
   ) {
     super(code, reason ?? `Native runner profile is ineligible: ${code}`);
     this.name = "NativeRuntimeEligibilityError";
@@ -90,10 +80,12 @@ export class NativeRuntimeEligibilityError extends NativeRunnerSelectionError {
 function ineligible(
   code: string,
   reason: string,
+  detailReason?: string,
 ): NativeRuntimeEligibilityError {
   return new NativeRuntimeEligibilityError(
     code,
     reason,
+    detailReason,
   );
 }
 
@@ -123,10 +115,11 @@ export function resolveNativeRuntimeMode(input: {
   }
   let runnerProfile: PaperclipRunnerProviderProfile;
   try {
-    runnerProfile = resolvePaperclipRunnerProviderProfile(input.adapterConfig, { companyId: input.agent.companyId });
+    runnerProfile = resolvePaperclipRunnerProviderProfile(input.adapterConfig, { companyId: input.agent.companyId,
+      candidateTarget: antigravityCandidateTarget((input.target?.kind ?? "local") === "remote") });
   } catch (error) {
     if (error instanceof PaperclipRunnerProviderProfileError) {
-      throw ineligible(error.code, error.message);
+      throw ineligible(error.code, error.message, error.detailReason);
     }
     throw error;
   }
@@ -135,9 +128,9 @@ export function resolveNativeRuntimeMode(input: {
     if (!input.enabled) throw ineligible("paperclip_runner_rollout_disabled", "Paperclip Runner is experimental and disabled on this instance.");
     if (input.museEnabled !== true) throw ineligible("paperclip_runner_muse_disabled", "Enable Muse personal-agent connections in experimental settings before assigning new work.");
   } else if (runnerProfile.provider === "openai_dot") {
-    if (input.dotEnabled !== true) throw ineligible("paperclip_runner_dot_disabled", "Enable OpenAI Dot and Assistant connections (MCP) in experimental settings before assigning new work.");
+    if (input.dotEnabled !== true) throw ineligible("paperclip_runner_dot_disabled", "Enable OpenAI Dot in experimental settings before assigning new work.");
   } else if (runnerProfile.provider === "grok_bot" && (input.grokEnabled !== true || !input.enabled)) {
-    throw ineligible("paperclip_runner_grok_disabled", "Enable Grok Bot, Paperclip Runner, and Assistant connections (MCP) before assigning new work.");
+    throw ineligible("paperclip_runner_grok_disabled", "Enable Grok Bot and Paperclip Runner before assigning new work.");
   } else if (runnerProfile.provider !== "codex" && runnerProfile.provider !== "opencode"
     && !(runnerProfile.provider === "acpx"
       && (["claude", "copilot", "pi", "antigravity"].includes(runnerProfile.acpxAgent ?? "")))
@@ -156,8 +149,17 @@ export function resolveNativeRuntimeMode(input: {
       "Paperclip Runner requires an active agent.",
     );
   }
+  if (runnerProfile.provider === "cursor_cloud" && (input.target?.kind ?? "local") !== "local") {
+    throw ineligible("paperclip_runner_cursor_cloud_local_controller_required", "Cursor Cloud currently requires a local Paperclip controller. Cursor hosts its execution environment.");
+  }
+  if (!input.issue) {
+    throw ineligible(
+      "paperclip_runner_task_required",
+      "Paperclip Runner requires a task to run. Assign or open a task for this agent.",
+    );
+  }
   const allowedWorkModes = ["standard", "planning", "ask", "skill_test"];
-  if (!input.issue || !allowedWorkModes.includes(input.issue.workMode)) {
+  if (!allowedWorkModes.includes(input.issue.workMode)) {
     throw ineligible(
       "paperclip_runner_issue_ineligible",
       "Paperclip Runner requires a standard, planning, ask, or skill test task.",
@@ -184,93 +186,6 @@ export function resolveNativeRuntimeMode(input: {
       protocolVersion: 1,
     },
     authorityDecision: rollout,
-  };
-}
-
-/**
- * Backward-compatible heartbeat selection API. New runnerd code consumes the
- * richer profile from resolveHeartbeatNativeRuntimeMode; this public seam
- * keeps the original result shape, reason codes, and resolver version.
- */
-export function resolveHeartbeatRuntimeMode(input: {
-  persisted: {
-    runtimeMode: string | null;
-    runtimeModeResolvedAt: Date | null;
-  };
-  enabled: boolean;
-  museEnabled?: boolean;
-  dotEnabled?: boolean;
-  grokEnabled?: boolean;
-  adapterType: string | null;
-  adapterConfig: unknown;
-  agentStatus: string;
-  issue: { workMode: string } | null;
-  executionTarget: { kind?: string } | null | undefined;
-}): HeartbeatRuntimeResolution {
-  if (input.persisted.runtimeModeResolvedAt) {
-    if (input.persisted.runtimeMode === "native") {
-      return {
-        kind: "native",
-        resolverVersion: NATIVE_RUNTIME_RESOLVER_VERSION,
-        reason: "persisted_native_selection",
-        provider: "codex",
-      };
-    }
-    return {
-      kind: "legacy",
-      resolverVersion: NATIVE_RUNTIME_RESOLVER_VERSION,
-      reason: "persisted_legacy_selection",
-    };
-  }
-
-  let resolution: NativeRuntimeResolution;
-  try {
-    resolution = resolveNativeRuntimeMode({
-      enabled: input.enabled,
-      museEnabled: input.museEnabled,
-      dotEnabled: input.dotEnabled,
-      grokEnabled: input.grokEnabled,
-      runtimeConfig: {},
-      adapterConfig: input.adapterConfig,
-      agent: {
-        status: input.agentStatus,
-        adapterType: input.adapterType,
-      },
-      issue: input.issue
-        ? { id: "heartbeat-runtime-selection", workMode: input.issue.workMode }
-        : null,
-      target: input.executionTarget,
-      workspaceId: null,
-    });
-  } catch (error) {
-    if (error instanceof NativeRuntimeEligibilityError) {
-      throw new NativeRunnerSelectionError(error.code, error.message);
-    }
-    throw error;
-  }
-  if (resolution.kind === "legacy") {
-    return {
-      kind: "legacy",
-      resolverVersion: NATIVE_RUNTIME_RESOLVER_VERSION,
-      reason: "direct_adapter",
-    };
-  }
-  return {
-    kind: "native",
-    resolverVersion: NATIVE_RUNTIME_RESOLVER_VERSION,
-    reason: "explicit_paperclip_runner",
-    provider: resolution.profile.backend === "opencode_server"
-      ? "opencode"
-      : resolution.profile.backend === "claude_managed_agents_api"
-        ? "claude_managed"
-        : resolution.profile.backend === "aws_agentcore_harness_api"
-          ? "aws_agentcore"
-      : resolution.profile.backend === "muse_external" ? "muse"
-      : resolution.profile.backend === "grok_bot_mcp" ? "grok_bot"
-      : resolution.profile.backend === "openai_dot_mcp" ? "openai_dot"
-      : resolution.profile.backend === "acpx_runtime"
-          ? "acpx"
-          : "codex",
   };
 }
 
@@ -324,6 +239,7 @@ export function resolveHeartbeatNativeRuntimeMode(input: {
         : driverKind === "muse_external" ? "muse_external"
         : driverKind === "grok_bot_mcp" ? "grok_bot_mcp"
         : driverKind === "openai_dot_mcp" ? "openai_dot_mcp"
+        : driverKind === "cursor_cloud_api" ? "cursor_cloud_api"
         : driverKind === "acpx_runtime"
             ? "acpx_runtime"
             : driverKind === null

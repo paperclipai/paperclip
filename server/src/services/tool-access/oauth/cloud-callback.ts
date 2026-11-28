@@ -1,3 +1,6 @@
+import { notifyGitHubCredentialChange } from "../../github-connection-notifications.js";
+import type { createGitHubGrantContinuity } from "../github-grant-continuity.js";
+import { randomUUID } from "node:crypto";
 import { notifyIssueReviewState } from "../../issue-review-state-notifications.js";
 import { notifyToolConnectionHealth } from "../../tool-connection-health-notifications.js";
 import { managedConnectorProfile } from "./client-settings.js";
@@ -5,7 +8,7 @@ import type { ActorInfo } from "../types.js";
 import { oauthConfig, normalizeOauthScopes } from "./metadata.js";
 import { connectionMethodForConnection } from "../connection-methods.js";
 import { loadGitHubGrantMetadata } from "../github-access-discovery.js";
-import { googleWorkspaceEffectiveScopes, isGoogleWorkspaceScopeGrant } from "@paperclipai/shared";
+import { googleWorkspaceEffectiveScopes, googleWorkspaceSubmittedScopesIn, isGoogleWorkspaceScopeGrant } from "@paperclipai/shared";
 import { emitConnectionUpdated } from "../../connector-telemetry.js";
 import { and, eq, gte, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -13,6 +16,7 @@ import { connectionGrants, companyMemberships, principalPermissionGrants, issueT
 import type { ConnectionGrantKind, ConnectToolAppResult } from "@paperclipai/shared";
 import { getConnectableAppDefinition, recommendedDefaultsForApp } from "@paperclipai/shared";
 import { badRequest, forbidden, HttpError, unprocessable } from "../../../errors.js";
+import { lockConnectionForSignIn } from "../connections/first-sign-in.js";
 import { secretService } from "../../secrets.js";
 import { isPaperclipCloudConnectorStrategy, type PaperclipCloudConnector } from "../../paperclip-cloud-connector.js";
 
@@ -32,6 +36,7 @@ type Dependencies = {
   finishOAuthCatalogWithRecommendedDefaults: OAuthCatalogCompletion;
   store: Pick<OAuthCredentialStore, "createOrRotateOAuthSecret" | "syncCredentialBindings">;
   currentCloudConnector: () => PaperclipCloudConnector | null;
+  syncGitHubGrantBindings: ReturnType<typeof createGitHubGrantContinuity>["syncGitHubGrantBindings"];
 };
 
 export function createCloudOAuthCallback(db: Db, dependencies: Dependencies) {
@@ -127,8 +132,8 @@ export function createCloudOAuthCallback(db: Db, dependencies: Dependencies) {
       ...(profile.id === "workspace.all" && stateRow.requestedScopes ? { scopes: stateRow.requestedScopes } : {}),
     });
     if (profile.id === "workspace.all") {
-      const requested = normalizeOauthScopes(stateRow.requestedScopes);
-      credentials.scopes = googleWorkspaceEffectiveScopes(requested, credentials.scopes);
+      const requested = googleWorkspaceSubmittedScopesIn(normalizeOauthScopes(stateRow.requestedScopes));
+      credentials.scopes = googleWorkspaceEffectiveScopes(requested, googleWorkspaceSubmittedScopesIn(credentials.scopes));
       if (!isGoogleWorkspaceScopeGrant(credentials.scopes)) throw unprocessable("Google did not grant any selected service permissions", { code: "oauth_scope_grant_invalid" });
     }
     const refreshToken = credentials.refreshToken;
@@ -256,9 +261,7 @@ export function createCloudOAuthCallback(db: Db, dependencies: Dependencies) {
       await tx.select({ id: toolApplications.id }).from(toolApplications)
         .where(and(eq(toolApplications.id, connection.applicationId), eq(toolApplications.companyId, connection.companyId)))
         .for("update");
-      await tx.select({ id: toolConnections.id }).from(toolConnections)
-        .where(and(eq(toolConnections.id, connection.id), eq(toolConnections.companyId, connection.companyId)))
-        .for("update");
+      await lockConnectionForSignIn(tx, connection);
       const existingRefs =
         existingCredentialGrant?.credentialSecretRefs ??
         (personalCredential || agentCredential
@@ -301,6 +304,8 @@ export function createCloudOAuthCallback(db: Db, dependencies: Dependencies) {
         accessRef,
         ...(refreshRef ? [refreshRef] : []),
       ];
+      await notifyGitHubCredentialChange(tx, connection);
+      await notifyToolConnectionHealth(tx, connection);
       const grantValues = {
         providerTenant: {
           name: githubMetadata?.login ?? providerName,
@@ -319,7 +324,12 @@ export function createCloudOAuthCallback(db: Db, dependencies: Dependencies) {
               ? { refreshedAt: now().toISOString() }
               : {}),
           },
-          ...(githubMetadata ? { github: githubMetadata } : {}),
+          ...(githubMetadata ? { github: { ...githubMetadata, bindingSync: {
+            id: randomUUID(), removeInstallationIds: [...new Set([
+              ...(existingCredentialGrant?.providerTenant?.github?.bindingSync?.removeInstallationIds ?? []),
+              ...(existingCredentialGrant?.providerTenant?.github?.installationIds ?? []),
+            ])].filter(id => !githubMetadata.installationIds.includes(id)),
+          } } } : {}),
         },
         credentialSecretRefs,
         status: "active" as const,
@@ -358,7 +368,6 @@ export function createCloudOAuthCallback(db: Db, dependencies: Dependencies) {
           scopes: [...profile.scopes],
         },
       };
-      await notifyToolConnectionHealth(tx, connection);
       [connection] = await tx
         .update(toolConnections)
         .set({
@@ -438,42 +447,8 @@ export function createCloudOAuthCallback(db: Db, dependencies: Dependencies) {
     // Paperclip Cloud connector callback is the managed variant of an OAuth
     // callback completion.
     emitConnectionUpdated(connection, preCloudCallbackLifecycle, "oauth_callback");
-    if (githubMetadata) {
-      const [githubGrant] = await db
-        .select({ id: connectionGrants.id })
-        .from(connectionGrants)
-        .where(
-          and(
-            eq(connectionGrants.companyId, connection.companyId),
-            eq(connectionGrants.connectionId, connection.id),
-            subjectAgentId
-              ? and(
-                  eq(connectionGrants.kind, "agent"),
-                  eq(connectionGrants.subjectAgentId, subjectAgentId),
-                )
-              : and(
-                  eq(connectionGrants.kind, "user"),
-                  eq(connectionGrants.subjectUserId, subjectUserId!),
-                ),
-          ),
-        )
-        .limit(1);
-      if (!githubGrant) throw new Error("GitHub grant was not persisted");
-      await Promise.all(
-        githubMetadata.installationIds.map((installationId) =>
-          cloudConnector.setWebhookBinding({
-            subject: connectorSubject,
-            companyId: connection.companyId,
-            id: `${githubGrant.id}_${installationId}`,
-            installationId,
-            connectionId: connection.id,
-            grantId: githubGrant.id,
-            active: true,
-            accessToken: credentials.accessToken,
-          }),
-        ),
-      );
-    }
+    // Binding registration is saved above before Cloud I/O. The continuity
+    // worker drains it after activation, including after a callback/server crash.
     const refresh = await refreshCatalog(connection.id, input.actor, {
       enableAllByDefault: false,
       quarantineManagedOAuthDraft: shouldFinalizeManagedDefaults,
@@ -494,6 +469,15 @@ export function createCloudOAuthCallback(db: Db, dependencies: Dependencies) {
           actor: input.actor,
         })
       : null;
+    if (githubMetadata) {
+      const [grant] = await db.select().from(connectionGrants).where(and(
+        eq(connectionGrants.companyId, connection.companyId), eq(connectionGrants.connectionId, connection.id),
+        subjectAgentId ? and(eq(connectionGrants.kind, "agent"), eq(connectionGrants.subjectAgentId, subjectAgentId))
+          : and(eq(connectionGrants.kind, "user"), eq(connectionGrants.subjectUserId, subjectUserId!)),
+      )).limit(1);
+      if (!grant) throw new Error("GitHub grant was not persisted");
+      await dependencies.syncGitHubGrantBindings(await getConnectionRow(connection.id, connection.companyId), grant, input.actor, credentials.accessToken);
+    }
     const activatedCatalogEntryIds = new Set(
       shouldFinalizeManagedDefaults
         ? refresh.catalog

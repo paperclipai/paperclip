@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { gradeQuestionResume, questionPath, validResumeQuestionForm, type QuestionPath } from "./question-resume-scoring.js";
+import { includesSubmittedReference, submittedReferencePattern } from "./submitted-reference.js";
 import { gradeContinuation } from "./continuation-scoring.js";
 import { gradeLifecycleBaseline } from "./lifecycle-baseline.js";
 import { continuationScenario } from "./continuation-cases.js";
@@ -60,8 +61,55 @@ function recording(paths: QuestionPath[] = ["provider", "semantic"]) {
 }
 const failed = (r: any[]) => gradeQuestionResume(r, "AMBERnonce").filter(c => !c.passed).map(c => c.id);
 const question = (r: any[], n = 0) => r[n].interactions[n];
+function writtenReference(r: any[]) {
+  for (const point of r.slice(1)) Object.assign(point.interactions[1].payload.questionSet.questions[0], {
+    answerMode: "single_select", options: [{ id: "none", label: "No reference" }], customAnswer: { enabled: true },
+  });
+  return r;
+}
 
 describe("native question/resume path qualification", () => {
+  it("accepts an explicit provider written answer without selecting a predefined option", () => {
+    const r = writtenReference(recording(["provider", "provider"]));
+    expect(failed(r)).toEqual([]);
+    expect(validResumeQuestionForm(r[1], question(r, 1), false)).toBe(false);
+  });
+  it("rejects an inferred legacy freeText reference without a canonical question set", () => {
+    const r = writtenReference(recording(["provider", "provider"]));
+    for (const point of r.slice(1)) {
+      const payload = point.interactions[1].payload;
+      payload.questions = [{ id: "reference", prompt: "What reference should I include?", selectionMode: "single",
+        options: [{ id: "write", label: "Write reference", freeText: true }] }];
+      delete payload.questionSet;
+    }
+    expect(failed(r)).toContain("question-resume.forms");
+  });
+  it.each(["missing-custom", "disabled-custom", "missing-options", "duplicate-options", "missing-option-id", "multi-select", "extra-question",
+    "wrong-request", "foreign-source", "foreign-agent", "foreign-company", "semantic", "api"])("rejects an unverified written-reference form: %s", kind => {
+    const r = writtenReference(recording(["provider", kind === "semantic" || kind === "api" ? kind : "provider"]));
+    const card = question(r, 1), field = card.payload.questionSet.questions[0];
+    if (kind === "missing-custom") delete field.customAnswer;
+    if (kind === "disabled-custom") field.customAnswer.enabled = false;
+    if (kind === "missing-options") field.options = [];
+    if (kind === "duplicate-options") field.options.push(structuredClone(field.options[0]));
+    if (kind === "missing-option-id") delete field.options[0].id;
+    if (kind === "multi-select") field.answerMode = "multi_select";
+    if (kind === "extra-question") card.payload.questionSet.questions.push({ id: "extra", answerMode: "text" });
+    if (kind === "wrong-request") card.payload.runtimeRequestId = "other";
+    if (kind === "foreign-source") card.sourceRunId = "other";
+    if (kind === "foreign-agent") card.createdByAgentId = "other";
+    if (kind === "foreign-company") card.companyId = "other";
+    expect(failed(r)).toContain("question-resume.forms");
+  });
+  it.each(["predefined-option", "wrong-text", "missing-text", "foreign-user", "changed-form"])("rejects a corrupt written-reference answer: %s", kind => {
+    const r = writtenReference(recording(["provider", "provider"])), card = r[2].interactions[1], answer = card.result.answers[0];
+    if (kind === "predefined-option") answer.optionIds = ["none"];
+    if (kind === "wrong-text") answer.otherText = "Use OLD.";
+    if (kind === "missing-text") delete answer.otherText;
+    if (kind === "foreign-user") { card.resolvedByUserId = null; card.resolvedByAgentId = "agent"; }
+    if (kind === "changed-form") card.payload.questionSet.questions[0].customAnswer.label = "Changed";
+    expect(failed(r)).toContain("question-resume.text.answer");
+  });
   it("accepts a native API creation receipt with the retained server response shape", () => {
     const point = JSON.parse(readFileSync(new URL("./fixtures/native-api-question.json", import.meta.url), "utf8"));
     expect(questionPath(point, point.interactions[0])).toBe("api");
@@ -134,12 +182,33 @@ describe("native question/resume path qualification", () => {
     expect(gradeLifecycleBaseline(r).filter(c => !c.passed)).toEqual([]);
   });
   it.each([
-    "Welcome to the afternoon meetup, AMBERnonce.",
+    "Welcome to the club meetup this afternoon; reference: AMBERnonce.",
     "Welcome to the afternoon meetup. Use AMBERnonce",
+    "Welcome to the afternoon meetup. Reference: _AMBERnonce_.",
+    "Welcome to the afternoon meetup. Reference: __AMBERnonce__.",
+    "Welcome to the afternoon meetup. Reference: **AMBERnonce**.",
+  ])("accepts the complete supplied reference without the answer's instruction wording: %s", body => {
+    const r = recording();
+    r[2].documents[0].body = body;
+    expect(failed(r)).toEqual([]);
+  });
+  it.each([
+    "Welcome to the afternoon meetup, AMBERnonc.",
+    "Welcome to the afternoon meetup, AMBERnonce2.",
+    "Welcome to the afternoon meetup, xAMBERnonce.",
+    "Welcome to the afternoon meetup, AMBERnonce_extra.",
+    "Welcome to the afternoon meetup, AMBERnonce-extra.",
+    "Welcome to the afternoon meetup, old-AMBERnonce.",
+    "Welcome to the afternoon meetup, old_AMBERnonce.",
+    "Welcome to the afternoon meetup, _AMBERnonce_extra_.",
   ])("rejects a shortened supplied reference in the saved document: %s", body => {
     const r = recording();
     r[2].documents[0].body = body;
     expect(failed(r)).toContain("question-resume.complete-evidence");
+  });
+  it("never matches an empty reference marker", () => {
+    expect(includesSubmittedReference("Welcome to the afternoon meetup ! here", "")).toBe(false);
+    expect(() => submittedReferencePattern("")).toThrow();
   });
   it("does not admit an optional Other field on the semantic path", () => {
     const r = recording(["semantic", "semantic"]);

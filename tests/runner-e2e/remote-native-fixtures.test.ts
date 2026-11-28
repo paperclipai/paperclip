@@ -889,7 +889,7 @@ describe("actual generated observer state machine", () => {
   it.each(["valid", "wrong-inode", "foreign-executable", "ambiguous", "wrong-arguments"])("dispatches generated provider death only for verified descriptor ownership: %s", async variant => {
     const o = await observerHarness();
     o.request("snapshot"); o.request("publish", { path: "action.txt", text: "do task" });
-    const executable = "/tmp/paperclip-acpx-native-owned/distribution/copilot";
+    const executable = "/tmp/paperclip-verified-native-501/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee/distribution/copilot";
     o.proc.set(22, { ppid: 21, group: 21, ticks: "200", argv: ["/node"] });
     o.proc.set(23, { ppid: 22, group: 21, ticks: "300", argv: ["/proc/self/fd/7", ...copilotDeathArguments] });
     o.processExecutables.set("/proc/23/exe", { path: executable, dev: 1n, ino: 40n });

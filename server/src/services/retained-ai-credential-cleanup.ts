@@ -7,6 +7,7 @@ import { RetiredCredentialRecoveryError } from "./quota-credential-recovery.js";
 export type RetainedAiCleanupScope = { companyId: string; accountKey: string };
 type Cleanup = {
   scope: RetainedAiCleanupScope;
+  home?: string;
   cleanup: () => Promise<void>;
   retryRetirement?: () => Promise<void>;
   retired: "pending" | "confirmed" | "failed";
@@ -15,14 +16,13 @@ type Cleanup = {
   warned?: boolean;
 };
 const retained = new Map<string, Set<Cleanup>>();
-const reconciling = new Map<string, Promise<void>>();
 const homes = new Map<string, RetainedAiCleanupScope>();
 const active = new AsyncLocalStorage<ReadonlySet<Cleanup>>();
 const key = (scope: RetainedAiCleanupScope) => JSON.stringify([scope.companyId, scope.accountKey]);
 registerIdleLocalWorkProbe(() => retained.size ? "present" : "none");
 
 function pending() {
-  return unprocessable("The selected AI account is still completing credential cleanup. Retry shortly.", { code: "ai_connection_busy" });
+  return unprocessable("This runtime still has unfinished credential cleanup.", { code: "ai_credential_cleanup_pending" });
 }
 function remove(entry: Cleanup) {
   const entries = retained.get(key(entry.scope));
@@ -38,11 +38,6 @@ function cleaningScope(scope: RetainedAiCleanupScope) {
   return [...(active.getStore() ?? [])].some(entry => entry.executing && key(entry.scope) === key(scope));
 }
 
-/** Check without joining work that may need the mutation lock already held by
- * the caller. A cleanup's own nested journal recovery shares its ownership. */
-export function assertAiCredentialCleanupSettled(scope: RetainedAiCleanupScope): void {
-  if (!cleaningScope(scope) && retained.get(key(scope))?.size) throw pending();
-}
 function attempt(entry: Cleanup): Promise<void> {
   if (!retained.get(key(entry.scope))?.has(entry)) return Promise.resolve();
   if (entry.retired === "pending" || (entry.retired === "failed" && !entry.retryRetirement)) return Promise.reject(pending());
@@ -75,34 +70,20 @@ export function retainAiCredentialCleanup(input: {
   const scopeKey = key(input.scope);
   const entries = retained.get(scopeKey) ?? new Set<Cleanup>();
   if ([...entries].some(entry => entry.cleanup === input.cleanup)) return;
-  const entry: Cleanup = { scope: { ...input.scope }, cleanup: input.cleanup, retryRetirement: input.retryRetirement,
+  const entry: Cleanup = { scope: { ...input.scope }, home: input.home, cleanup: input.cleanup, retryRetirement: input.retryRetirement,
     retired: input.retired ? "pending" : "confirmed" };
   entries.add(entry); retained.set(scopeKey, entries);
   if (input.retired) void input.retired.then(() => {
     entry.retired = "confirmed";
-    return reconcileRetainedAiCleanup(entry.scope).catch(() => undefined);
+    return attempt(entry).catch(() => undefined);
   }, () => { entry.retired = "failed"; warn(entry); });
 }
 
-/** Fail closed before another provider starts. Concurrent attempts join the
- * original cleanup. Nested credential reads skip this account's peer join to
- * avoid recursing into the current callback. The outer bounded pass and final
- * fence still settle every peer before any external provider admission. */
 export async function reconcileRetainedAiCleanup(scope: RetainedAiCleanupScope): Promise<void> {
   await Promise.resolve();
   const scopeKey = key(scope);
   if (cleaningScope(scope)) return;
-  const existing = reconciling.get(scopeKey);
-  if (existing) return existing;
-  const operation = (async () => {
-    for (const entry of [...(retained.get(scopeKey) ?? [])]) await attempt(entry);
-    // A new obligation can arrive while a callback awaits storage. This
-    // request attempts its original bounded set and keeps admission closed.
-    if (retained.get(scopeKey)?.size) throw pending();
-  })();
-  reconciling.set(scopeKey, operation);
-  try { await operation; }
-  finally { if (reconciling.get(scopeKey) === operation) reconciling.delete(scopeKey); }
+  for (const entry of [...(retained.get(scopeKey) ?? [])]) await attempt(entry);
 }
 
 export function bindRetainedAiCredentialHome(home: string, scope: RetainedAiCleanupScope): () => void {
@@ -112,7 +93,10 @@ export function bindRetainedAiCredentialHome(home: string, scope: RetainedAiClea
 }
 export async function reconcileRetainedAiCleanupForHome(home: string): Promise<void> {
   const scope = homes.get(home);
-  if (scope) await reconcileRetainedAiCleanup(scope);
+  if (!scope || cleaningScope(scope)) return;
+  for (const entry of [...(retained.get(key(scope)) ?? [])]) {
+    if (entry.home === home) await attempt(entry);
+  }
 }
 export function retainAiCredentialCleanupForHome(home: string, input: {
   cleanup: () => Promise<void>; retired?: Promise<void>; retryRetirement?: () => Promise<void>;

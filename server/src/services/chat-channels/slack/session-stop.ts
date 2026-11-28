@@ -1,3 +1,4 @@
+import { notifyStrandedAgentStatus } from "../../live-run-recovery-notifications.js";
 import { notifyChatInboundWakeNotices } from "../../chat-inbound-wake-notice-notifications.js";
 import type { EndpointRow, DbTransaction, DbOrTransaction, RuntimeContext, LifecycleRuntimeFence } from "../runtime-types.js";
 
@@ -585,6 +586,7 @@ export function createSlackSessionStop(db: Db, options: SlackSessionStopOptions)
           ["queued", "deferred_issue_execution"].includes(wakeup.status) &&
           !issue.executionRunId
         ) {
+          await notifyStrandedAgentStatus(tx, { companyId: current.companyId, agentId: wakeup.agentId });
           await notifyChatInboundWakeNotices(tx, { companyId: current.companyId, issueId: issue.id });
           await tx
             .update(agentWakeupRequests)

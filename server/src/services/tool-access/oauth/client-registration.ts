@@ -14,7 +14,7 @@ import { type RemoteHttpEndpointLookup } from "../../remote-http-endpoint-guard.
 
 import type { OAuthCredentialStore } from "./credential-store.js";
 import { singleFlight } from "../single-flight.js";
-import { configuredOAuthClientForConnection, oauthSecretRef } from "./client-settings.js";
+import { configuredOAuthClientForConnection, manualOAuthClientRequiredError, oauthSecretRef, refusedDeploymentClientError } from "./client-settings.js";
 const oauthRegistrationFlights = new Map<string, Promise<unknown>>();
 
 type RegistrationDependencies = {
@@ -422,6 +422,7 @@ function canRegisterOAuthClientDynamically(
     const configured = configuredOAuthClientForConnection(
       input.connection,
       input.endpoints.provider,
+      input.endpoints.tokenUrl,
     );
     if (configured.clientId) {
       return {
@@ -466,6 +467,7 @@ function canRegisterOAuthClientDynamically(
         client: await oauthClientForConnection(
           bound,
           input.endpoints.provider,
+          input.endpoints.tokenUrl,
           input.actor,
         ),
         source: storedOAuthClientRegistrationSource(bound),
@@ -492,6 +494,9 @@ function canRegisterOAuthClientDynamically(
         input.galleryEntry,
       )
     ) {
+      if (refusedDeploymentClientError(input.endpoints.provider)) {
+        throw manualOAuthClientRequiredError(input.endpoints.provider, "");
+      }
       throw unprocessable(
         `OAuth client id is not configured for ${input.endpoints.provider}`,
         {
@@ -515,6 +520,7 @@ function canRegisterOAuthClientDynamically(
       const latestConfigured = configuredOAuthClientForConnection(
         latest,
         input.endpoints.provider,
+        input.endpoints.tokenUrl,
       );
       if (latestConfigured.clientId) {
         return {
@@ -541,6 +547,7 @@ function canRegisterOAuthClientDynamically(
           client: await oauthClientForConnection(
             bound,
             input.endpoints.provider,
+            input.endpoints.tokenUrl,
             input.actor,
           ),
           source: storedOAuthClientRegistrationSource(bound),
@@ -561,6 +568,7 @@ function canRegisterOAuthClientDynamically(
           client: await oauthClientForConnection(
             adopted,
             input.endpoints.provider,
+            input.endpoints.tokenUrl,
             input.actor,
           ),
           source: "cimd" as const,
@@ -568,9 +576,9 @@ function canRegisterOAuthClientDynamically(
       }
       // 4. Dynamic client registration.
       if (!input.endpoints.registrationUrl) {
-        throw unprocessable(
-          "This server needs sign-in details you create yourself. Add a client ID and secret under Advanced authentication.",
-          { code: "oauth_manual_client_required" },
+        throw manualOAuthClientRequiredError(
+          input.endpoints.provider,
+          "This server needs sign-in details you create yourself. Register Paperclip with the provider, then add the client ID and secret it gives you.",
         );
       }
       const registered = await registerOAuthClient({
@@ -584,6 +592,7 @@ function canRegisterOAuthClientDynamically(
         client: await oauthClientForConnection(
           registered,
           input.endpoints.provider,
+          input.endpoints.tokenUrl,
           input.actor,
         ),
         source: "dcr" as const,
