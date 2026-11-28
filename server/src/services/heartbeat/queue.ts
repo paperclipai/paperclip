@@ -2537,7 +2537,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     queuedRuns: QueuedRunCandidate[],
     dependencyReadiness: Map<string, { isDependencyReady: boolean }>,
     issueById: Map<string, { status: string; priority: string | null; updatedAt: Date; executionRunId: string | null;
-      createdByUserId: string | null }>,
+      createdByUserId: string | null; executionState: Record<string, unknown> | null }>,
   ) {
     const now = new Date();
     pruneDeclinedAgedClaims(now);
@@ -2643,7 +2643,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       }))];
       const issueRows = queuedIssueIds.length > 0
         ? await db.select({ id: issues.id, status: issues.status, priority: issues.priority, updatedAt: issues.updatedAt,
-          executionRunId: issues.executionRunId, createdByUserId: issues.createdByUserId }).from(issues)
+          executionRunId: issues.executionRunId, createdByUserId: issues.createdByUserId, executionState: issues.executionState }).from(issues)
           .where(and(eq(issues.companyId, agent.companyId), inArray(issues.id, queuedIssueIds)))
         : [];
       const issueById = new Map(issueRows.map((row) => [row.id, row]));
