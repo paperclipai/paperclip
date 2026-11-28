@@ -2321,4 +2321,72 @@ describe("review round circuit breaker", () => {
       changesRequestedCount: 1,
     });
   });
+
+  it("does not start the review stage on in_review when a human-input wait is pending", () => {
+    const policy = reviewOnlyPolicy();
+
+    const result = applyIssueExecutionPolicyTransition({
+      issue: {
+        status: "in_progress",
+        assigneeAgentId: coderAgentId,
+        assigneeUserId: null,
+        executionPolicy: policy,
+        executionState: null,
+      },
+      policy,
+      requestedStatus: "in_review",
+      requestedAssigneePatch: {},
+      actor: { agentId: coderAgentId },
+      hasPendingHumanInputWait: true,
+    });
+
+    expect(result).toEqual({ patch: {} });
+  });
+
+  it("starts the review stage on in_review when no human-input wait is pending and still starts on done", () => {
+    const policy = reviewOnlyPolicy();
+
+    const inReviewResult = applyIssueExecutionPolicyTransition({
+      issue: {
+        status: "in_progress",
+        assigneeAgentId: coderAgentId,
+        assigneeUserId: null,
+        executionPolicy: policy,
+        executionState: null,
+      },
+      policy,
+      requestedStatus: "in_review",
+      requestedAssigneePatch: {},
+      actor: { agentId: coderAgentId },
+      hasPendingHumanInputWait: false,
+    });
+
+    expect(inReviewResult.patch.assigneeAgentId).toBe(qaAgentId);
+    expect(inReviewResult.patch.executionState).toMatchObject({
+      status: "pending",
+      currentStageType: "review",
+    });
+
+    const doneResult = applyIssueExecutionPolicyTransition({
+      issue: {
+        status: "in_progress",
+        assigneeAgentId: coderAgentId,
+        assigneeUserId: null,
+        executionPolicy: policy,
+        executionState: null,
+      },
+      policy,
+      requestedStatus: "done",
+      requestedAssigneePatch: {},
+      actor: { agentId: coderAgentId },
+      hasPendingHumanInputWait: true,
+    });
+
+    expect(doneResult.patch.status).toBe("in_review");
+    expect(doneResult.patch.assigneeAgentId).toBe(qaAgentId);
+    expect(doneResult.patch.executionState).toMatchObject({
+      status: "pending",
+      currentStageType: "review",
+    });
+  });
 });
