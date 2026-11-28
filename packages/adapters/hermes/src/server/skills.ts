@@ -249,7 +249,14 @@ export async function reconcileHermesPaperclipSkills(
     const available = availableByRuntimeName.get(name);
     if (!available || desiredSet.has(available.key)) continue;
     if (installedEntry.targetPath !== available.source) continue;
-    await fs.unlink(path.join(skillsHome, name)).catch(() => {});
+    // Another run may have replaced or re-created this link since the snapshot
+    // was taken; only remove it when it still points at the same source.
+    const linkPath = path.join(skillsHome, name);
+    const currentLink = await fs.readlink(linkPath).catch(() => null);
+    if (currentLink && path.resolve(path.dirname(linkPath), currentLink) !== available.source) {
+      continue;
+    }
+    await fs.unlink(linkPath).catch(() => {});
   }
 
   return desiredSkills;
