@@ -2,6 +2,7 @@ import { githubFixture } from "./helpers/github-skills.js";
 import { fork } from 'node:child_process';
 import { once } from 'node:events';
 import { promises as fs } from 'node:fs';
+import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -488,7 +489,8 @@ describe('repository packages', () => {
     const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'skill-audit-deadline-'));
     try {
       const service = pathToFileURL(path.resolve(import.meta.dirname, '../services/company-skills.ts')).href;
-      const loader = path.resolve(import.meta.dirname, '../../../cli/node_modules/tsx/dist/loader.mjs');
+      const require = createRequire(new URL('../../../cli/package.json', import.meta.url));
+      const loader = require.resolve('tsx/esm');
       const script = `import { auditSkillSnapshot } from ${JSON.stringify(service)};
         process.once('message', async () => {
           try {

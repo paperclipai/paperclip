@@ -642,6 +642,59 @@ describe("openapi routes", () => {
     expect(properties).toHaveProperty("budgetMonthlyCents");
   });
 
+  it("documents server-generated comment authorization reasons for #16326", () => {
+    const spec = buildOpenApiSpec() as any;
+    const comments = spec.paths["/api/issues/{id}/comments"];
+    const requestMetadata =
+      comments.post.requestBody.content["application/json"].schema.properties
+        .metadata;
+    const authorizationReasonValues = [
+      "allow_low_trust_boundary",
+      "allow_explicit_grant",
+      "allow_issue_mention_grant",
+      "allow_direct_parent_report",
+      "allow_visible_issue_write",
+      "allow_self",
+      "allow_company_agent",
+      "allow_scoped_agent_write",
+      "allow_chat_run_presentation",
+      "internal_agent_write",
+      "paperclip_runner_protocol",
+      "execution_workspace_branch_reconcile",
+      "onboarding first-task greeting",
+    ];
+
+    expect(requestMetadata.properties).not.toHaveProperty("authorizationReason");
+
+    const responseSchemas = [
+      comments.get.responses["200"].content["application/json"].schema.items,
+      comments.post.responses["200"].content["application/json"].schema,
+      comments.post.responses["201"].content["application/json"].schema,
+      spec.paths["/api/issues/{id}/comments/{commentId}"].get.responses[
+        "200"
+      ].content["application/json"].schema,
+    ];
+    for (const responseSchema of responseSchemas) {
+      expect(responseSchema.properties.metadata.nullable).toBe(true);
+      const authorizationReason =
+        responseSchema.properties.metadata.properties.authorizationReason;
+      expect(authorizationReason).toMatchObject({
+        type: "string",
+        nullable: true,
+        readOnly: true,
+        enum: authorizationReasonValues,
+      });
+      expect(authorizationReason.description).toContain("allow_");
+      expect(authorizationReason["x-enum-descriptions"]).toHaveLength(
+        authorizationReasonValues.length,
+      );
+    }
+
+    expect(
+      spec.paths["/api/issues/{id}/documents/{key}"].put.description,
+    ).toContain("do not carry an authorizationReason");
+  });
+
   it("documents public Dot pairing capabilities while ordinary consent keeps board authentication", () => {
     const spec = buildOpenApiSpec() as any;
     for (const [method, path] of [
