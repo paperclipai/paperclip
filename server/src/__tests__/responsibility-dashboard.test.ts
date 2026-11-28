@@ -745,10 +745,8 @@ describeEmbeddedPostgres("dashboard conversations, change sets and versions", ()
       expect(areas.find((row) => row.id === seeded.areas.Hiring)).toMatchObject({ title: "Talent", status: "archived" });
     });
 
-    it.each([
-      { liveTitle: "équipe", shouldReuse: false },
-      { liveTitle: "ÉQUIPE", shouldReuse: true },
-    ])("restores a deleted Équipe area when $liveTitle is live", async ({ liveTitle, shouldReuse }) => {
+    it.each(["équipe", "ÉQUIPE", "Sales"])("restores a deleted Équipe area when %s is live", async (liveTitle) => {
+      const [match] = await db.$client<{ equivalent: boolean }[]>`select lower('Équipe') = lower(${liveTitle}) as equivalent`;
       const seeded = await seed({ populated: true });
       const hiring = `/api/responsibility-areas/${seeded.areas.Hiring}`;
       await request(seeded.app).patch(hiring).send({ title: "Équipe" }).expect(200);
@@ -761,8 +759,8 @@ describeEmbeddedPostgres("dashboard conversations, change sets and versions", ()
 
       const pipeline = (await ownRows(seeded)).find(row => row.id === seeded.items.pipeline)!;
       const restored = (await areaRows(seeded)).find(row => row.id === pipeline.areaId);
-      expect(restored).toMatchObject({ title: shouldReuse ? liveTitle : "Équipe", status: "active" });
-      expect(pipeline.areaId === live.body.id).toBe(shouldReuse);
+      expect(restored).toMatchObject({ title: match!.equivalent ? liveTitle : "Équipe", status: "active" });
+      expect(pipeline.areaId === live.body.id).toBe(match!.equivalent);
     });
 
     it("restores private area names and ordering without touching a teammate’s copy", async () => {
