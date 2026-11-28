@@ -8,6 +8,7 @@ import { resetOpenCodeModelsCacheForTests } from "@paperclipai/adapter-opencode-
 import { listAdapterModels, listServerAdapters, refreshAdapterModels, registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
 import { resetCodexModelsCacheForTests } from "../adapters/codex-models.js";
 import { resetCursorModelsCacheForTests, setCursorModelsRunnerForTests } from "../adapters/cursor-models.js";
+import { resetGeminiModelsCacheForTests, setGeminiModelsRunnerForTests } from "../adapters/gemini-models.js";
 
 vi.mock("acpx/runtime", () => ({
   createAcpRuntime: vi.fn(),
@@ -24,10 +25,14 @@ describe("adapter model listing", () => {
     delete process.env.ANTHROPIC_BEDROCK_BASE_URL;
     delete process.env.CLAUDE_CODE_USE_BEDROCK;
     delete process.env.PAPERCLIP_OPENCODE_COMMAND;
+    delete process.env.PAPERCLIP_ANTIGRAVITY_COMMAND;
+    delete process.env.ANTIGRAVITY_APP_DATA_DIR;
     resetClaudeModelsCacheForTests();
     resetCodexModelsCacheForTests();
     resetCursorModelsCacheForTests();
     setCursorModelsRunnerForTests(null);
+    resetGeminiModelsCacheForTests();
+    setGeminiModelsRunnerForTests(async () => ({ status: 1, stdout: "", stderr: "", hasError: true }));
     resetOpenCodeModelsCacheForTests();
     vi.restoreAllMocks();
   });
@@ -194,6 +199,7 @@ describe("adapter model listing", () => {
     expect(new Set(models.map((model) => model.id)).size).toBe(models.length);
     if (adapter === "gemini_local") {
       expect(models.some((model) => model.id.startsWith("gemini-2.0-"))).toBe(false);
+      expect(models.some((model) => model.id === "claude-sonnet-4-6" || model.id === "gpt-oss-120b-medium")).toBe(false);
     }
     if (adapter === "kimi_local") {
       expect(models).toContainEqual({ id: "kimi-code/kimi-for-coding", label: "K2.8 Preview" });
@@ -390,5 +396,90 @@ describe("adapter model listing", () => {
       const models = await listAdapterModels("codex_local");
       expect(models).toEqual(codexFallbackModels);
     });
+  });
+
+  it("discovers live Antigravity CLI models for gemini_local and merges curated fallbacks", async () => {
+    setGeminiModelsRunnerForTests(async () => ({
+      status: 0,
+      stdout: [
+        "\u001b[2K⠋ Fetching available models...",
+        "gemini-4-hydrogen-xhigh   Gemini 4 Hydrogen (XHigh)",
+        "gemini-4-hydrogen-high    Gemini 4 Hydrogen (High)",
+        "claude-opus-4-6-thinking  Claude Opus 4.6 (Thinking)",
+      ].join("\n"),
+      stderr: "",
+      hasError: false,
+    }));
+
+    const models = await refreshAdapterModels("gemini_local");
+    expect(models[0]).toEqual({ id: "auto", label: "Auto" });
+    expect(models.slice(1, 4)).toEqual([
+      { id: "gemini-4-hydrogen-xhigh", label: "Gemini 4 Hydrogen (XHigh)" },
+      { id: "gemini-4-hydrogen-high", label: "Gemini 4 Hydrogen (High)" },
+      { id: "claude-opus-4-6-thinking", label: "Claude Opus 4.6 (Thinking)" },
+    ]);
+    expect(models.some((m) => m.id === "gemini-3.8-flash")).toBe(true);
+  });
+
+  it("does not allow an older slow discovery request to overwrite a newer refresh", async () => {
+    let resolveSlow!: (value: { status: number | null; stdout: string; stderr: string; hasError: boolean }) => void;
+    const slowPromise = new Promise<{ status: number | null; stdout: string; stderr: string; hasError: boolean }>((resolve) => {
+      resolveSlow = resolve;
+    });
+
+    let call = 0;
+    setGeminiModelsRunnerForTests(async () => {
+      call += 1;
+      if (call === 1) return slowPromise;
+      return {
+        status: 0,
+        stdout: "gemini-4-hydrogen-xhigh   Gemini 4 Hydrogen (XHigh)\n",
+        stderr: "",
+        hasError: false,
+      };
+    });
+
+    const staleRequest = listAdapterModels("gemini_local");
+    const refreshed = await refreshAdapterModels("gemini_local");
+    expect(refreshed.some((m) => m.id === "gemini-4-hydrogen-xhigh")).toBe(true);
+
+    resolveSlow({ status: 1, stdout: "", stderr: "", hasError: true });
+    await staleRequest;
+
+    const cachedAfterStale = await listAdapterModels("gemini_local");
+    expect(cachedAfterStale.some((m) => m.id === "gemini-4-hydrogen-xhigh")).toBe(true);
+  });
+
+  it("coalesces concurrent discovery and enforces refresh cooldown on gemini_local", async () => {
+    let calls = 0;
+    setGeminiModelsRunnerForTests(async () => {
+      calls += 1;
+      return {
+        status: 0,
+        stdout: "gemini-4-hydrogen-high   Gemini 4 Hydrogen (High)\n",
+        stderr: "",
+        hasError: false,
+      };
+    });
+
+    const [a, b] = await Promise.all([
+      listAdapterModels("gemini_local"),
+      listAdapterModels("gemini_local"),
+    ]);
+    expect(calls).toBe(1);
+    expect(a.some((m) => m.id === "gemini-4-hydrogen-high")).toBe(true);
+    expect(b.some((m) => m.id === "gemini-4-hydrogen-high")).toBe(true);
+
+    const refreshedFirst = await refreshAdapterModels("gemini_local");
+    const refreshedSecond = await refreshAdapterModels("gemini_local");
+    expect(calls).toBe(2);
+    expect(refreshedSecond).toEqual(refreshedFirst);
+  });
+
+  it("keeps standard gemini_local catalog free of Antigravity discovery when opted out", async () => {
+    setGeminiModelsRunnerForTests(null);
+    const models = await listAdapterModels("gemini_local");
+    expect(models.some((m) => m.id === "claude-sonnet-4-6")).toBe(false);
+    expect(models.some((m) => m.id === "gemini-3.8-flash")).toBe(true);
   });
 });
