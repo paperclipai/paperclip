@@ -1,73 +1,63 @@
 import { createHash } from "node:crypto";
-import { lstat, realpath, symlink, readlink } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { verifyNativeAcpxInstallation } from "./installation-integrity.js";
+import { constants } from "node:fs";
+import { access, realpath, stat } from "node:fs/promises";
+import { delimiter, isAbsolute, join, resolve } from "node:path";
 
 export const LOCAL_PI_CONFIGURATION_ENV = "PAPERCLIP_RUNNER_LOCAL_PI";
 
-interface LocalPiConfiguration {
-  assets: string;
-  sha256: string;
-  profile: string;
+export interface LocalPiConfiguration {
+  executable: string;
+  environment: Partial<Record<"HOME" | "PATH" | "PI_CODING_AGENT_DIR" | "XDG_CONFIG_HOME" | "XDG_DATA_HOME" | "XDG_CACHE_HOME", string>>;
   identity: string;
 }
 
+const homeKeys = ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"] as const;
+
+/** The controller supplies host paths, never the task or its environment. */
 export async function resolveLocalPiConfiguration(raw: string | undefined): Promise<LocalPiConfiguration | undefined> {
   if (raw === undefined) return undefined;
   const invalid = () => new Error("Invalid operator configuration for the local Pi Runner");
   if (raw.length > 8192) throw invalid();
+
   let value: unknown;
   try { value = JSON.parse(raw); } catch { throw invalid(); }
   if (!value || typeof value !== "object" || Array.isArray(value)) throw invalid();
-  const { assets, sha256, profile, companyId, agentId } = value as Record<string, unknown>;
+  const binding = value as Record<string, unknown>;
+  const { companyId, agentId, home, path, profile } = binding;
   const guid = (id: unknown) => typeof id === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id);
-  if (!guid(companyId) || !guid(agentId)) throw invalid();
-  if (Object.keys(value).length !== 5 || typeof sha256 !== "string" || !/^[a-f0-9]{64}$/.test(sha256)) throw invalid();
-  async function directory(path: unknown): Promise<string> {
-    if (typeof path !== "string" || !isAbsolute(path) || resolve(path) !== path || /[\u0000-\u001f\u007f]/.test(path)) throw invalid();
-    if (await realpath(path) !== path || !(await lstat(path)).isDirectory()) throw invalid();
-    return path;
-  }
-  const roots = { assets: await directory(assets), profile: await directory(profile) };
-  const sameTree = (root: string, child: string) => {
-    const suffix = relative(root, child);
-    return suffix === "" || (!isAbsolute(suffix) && suffix !== ".." && !suffix.startsWith(`..${sep}`));
+  const absolute = (entry: unknown): entry is string => typeof entry === "string" && isAbsolute(entry) && !/[\u0000-\u001f\u007f]/.test(entry);
+  if (!guid(companyId) || !guid(agentId) || !absolute(home) || (profile !== undefined && !absolute(profile))
+    || typeof path !== "string" || /[\u0000-\u001f\u007f]/.test(path)) throw invalid();
+
+  const canonicalHome = await realpath(home);
+  if (!(await stat(canonicalHome)).isDirectory()) throw invalid();
+  const agentDirectory = await realpath(profile ?? join(canonicalHome, ".pi", "agent"));
+  if (!(await stat(agentDirectory)).isDirectory()) throw invalid();
+  // Ignore relative and empty PATH entries, which could resolve via a task cwd.
+  const directories = path.split(delimiter).filter(absolute);
+  const environment: LocalPiConfiguration["environment"] = {
+    HOME: canonicalHome,
+    PATH: directories.join(delimiter),
+    PI_CODING_AGENT_DIR: agentDirectory,
   };
-  if (sameTree(roots.assets, roots.profile) || sameTree(roots.profile, roots.assets)) throw invalid();
-  await privateAuthFile(roots.profile);
-  return { ...roots, sha256, identity: `sha256:${createHash("sha256").update(JSON.stringify({ ...roots, sha256, companyId, agentId })).digest("hex")}` };
-}
-
-export function verifyLocalPiInstallation(config: LocalPiConfiguration) {
-  return verifyNativeAcpxInstallation({
-    distributionRoot: join(config.assets, "runtime"),
-    manifestPath: join(config.assets, "native-closure.json"),
-    expectedClosureSha256: config.sha256,
-    executable: "node/bin/node",
-    entrypoint: "pi-entry.cjs",
-    fixedArguments: [],
-  });
-}
-
-async function privateAuthFile(profile: string): Promise<string> {
-  const source = join(profile, "auth.json");
-  const metadata = await lstat(source);
-  if (await realpath(source) !== source || !metadata.isFile() || metadata.nlink !== 1
-    || metadata.uid !== process.getuid?.() || (metadata.mode & 0o077) !== 0) {
-    throw new Error("Local Pi profile requires a private, user-owned auth.json");
+  for (const key of homeKeys) {
+    const entry = binding[key];
+    if (entry === undefined) continue;
+    if (!absolute(entry)) throw invalid();
+    environment[key] = resolve(entry);
   }
-  return source;
-}
 
-/** Pi owns the account lock and refresh. Runner owns the rest of the session directory. */
-export async function bindLocalPiProfile(profile: string, destination: string): Promise<void> {
-  const source = await privateAuthFile(profile);
-  const binding = join(destination, "auth.json");
-  try { await symlink(source, binding); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    if (!(await lstat(binding)).isSymbolicLink() || await readlink(binding) !== source) {
-      throw new Error("Local Pi authentication binding changed");
+  for (const directory of directories) {
+    const candidate = join(directory, "pi");
+    try {
+      const executable = await realpath(candidate);
+      if (!(await stat(executable)).isFile()) continue;
+      await access(executable, constants.X_OK);
+      const identity = createHash("sha256").update(JSON.stringify({ executable, agentDirectory })).digest("hex");
+      return { executable, environment, identity: `sha256:${identity}` };
+    } catch (error) {
+      if (!["ENOENT", "ENOTDIR", "EACCES", "ELOOP"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
     }
   }
+  throw new Error("Local Pi executable was not found on the Paperclip server's PATH");
 }

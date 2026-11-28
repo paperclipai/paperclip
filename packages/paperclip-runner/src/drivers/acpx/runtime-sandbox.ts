@@ -1,4 +1,3 @@
-import { bindLocalPiProfile } from "./local-pi-installation.js";
 import { kimiManagedConfiguration } from "./kimi-config.js";
 import { kimiInstructionBinding } from "./kimi-instructions.js";
 import { acpxInstructionsAdmissionError } from "./admission-diagnostics.js";
@@ -431,7 +430,6 @@ export async function prepareAcpxRuntimeSandbox(input: {
     await writePrivateFile(join(agentHomeDirectory, "config.toml"), kimiManagedConfiguration(input.binding.requestedModel));
   }
   if (input.agent === "pi") {
-    if (input.localPiProfile !== undefined) await bindLocalPiProfile(input.localPiProfile, agentHomeDirectory);
     const configuration = piProviderConfiguration(input.environment);
     if (configuration) await writePrivateFile(join(agentHomeDirectory, "models.json"), configuration.json);
   }

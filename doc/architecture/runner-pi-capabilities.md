@@ -1283,41 +1283,30 @@ that the Paperclip extension initialized and that Pi can select the requested
 model. A successful provider call, Runner admission, and session recovery
 require separate verification.
 
-## Operator-selected local Pi Runner
+## Use the locally installed Pi CLI
 
-On a trusted local execution host, an operator can opt one agent into an
-installed Pi distribution. Use a dedicated npm directory with Pi,
-`pi-acp@0.0.33`, `@agentclientprotocol/sdk@0.26.0`, `zod@3.25.76`, and
-the extensions you explicitly trust. Install exact versions with lifecycle
-scripts disabled. Sign in to Pi under the same OS account that runs the server.
-The profile needs an owner-only `auth.json`.
+For a single trusted local agent, set the following in the Paperclip server's
+environment and select Paperclip Runner, Pi, and an explicit `provider/model`
+on the saved agent:
 
 ```sh
-node packages/paperclip-runner/scripts/prepare-local-pi-runner.mjs \
-  --installation /absolute/path/to/npm-installation \
-  --output /absolute/path/to/new-runtime-pack \
-  --profile /absolute/path/to/pi/agent \
-  --company <company-uuid> --agent <agent-uuid> \
-  --extension node_modules/example-extension/index.js \
-  > local-pi-runner.json
+export PAPERCLIP_RUNNER_LOCAL_PI='{"companyId":"<company-uuid>","agentId":"<agent-uuid>"}'
 ```
 
-Set the server environment variable `PAPERCLIP_RUNNER_LOCAL_PI` to the JSON
-output. Select Paperclip Runner with the Pi ACP agent and an explicit
-`provider/model`. The native launcher verifies the runtime against the
-operator's digest before it uses the selected extension files. Use extensions
-from a trusted installation. They run inside Pi and can access provider state
-as the local OS user. Task repositories cannot choose the pack or its extensions.
+Run the server under the same OS account as Pi. Put `pi` on the server's
+`PATH` and sign in with `pi` and `/login` under that account. Runner starts
+that executable directly in RPC mode. Pi reads its normal settings and
+authentication from `~/.pi/agent` or the server's `PI_CODING_AGENT_DIR`. It
+automatically loads trusted user extensions, packages and skills. Package
+installation at startup and project-local Pi config stay disabled during
+headless runs. Install only extensions you trust to run under that OS account.
 
-The designated agent uses the profile's authentication file in place, so Pi
-owns credential refresh. Runner still owns task sessions, settings and bound
-provider configuration. Automatic extension discovery stays off. The
-Paperclip tool policy continues to govern native tools and assigned MCP.
-An extension that adds its own model-facing tools still needs a Runner policy
-that admits those tools. Hooks on existing tools can run.
+The Paperclip Pi ACP bridge remains required. It keeps Runner's tool policy,
+assigned MCP servers and skills in effect. Extensions' hooks can run, while
+unregistered model-facing tools remain outside that policy. Sessions stay in
+Runner's private state directory, separate from your interactive Pi sessions.
 
-The bundled distribution remains the default for the other agents and for
-remote execution. Change the installation or extension list by preparing a
-new pack and updating the server binding. Recovery checks the pack and profile
-identity and rejects state from a different binding. To return to the bundled
-distribution, remove the server setting and start a new Runner session.
+Agents without this setting and agents on remote execution hosts keep using the
+bundled Pi runtime. To return the selected agent to bundled Pi, remove the
+setting and start a new Runner session. A Runner bound to a different executable
+or profile path requires a new session.

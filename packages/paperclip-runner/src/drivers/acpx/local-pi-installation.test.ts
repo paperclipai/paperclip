@@ -1,36 +1,33 @@
-import { lstat, mkdir, mkdtemp, readlink, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { bindLocalPiProfile, resolveLocalPiConfiguration, verifyLocalPiInstallation } from "./local-pi-installation.js";
+import { resolveLocalPiConfiguration } from "./local-pi-installation.js";
 
 let root: string;
 afterEach(async () => {
   if (root) await rm(root, { recursive: true, force: true });
 });
 
-it("requires an explicit closure digest and reuses only the selected profile's private auth file", async () => {
+it("resolves a host PATH installation and normal profile without requiring credentials", async () => {
   root = await mkdtemp(join(tmpdir(), "paperclip-local-pi-"));
-  const assets = join(root, "assets");
-  const profile = join(root, "profile");
-  const session = join(root, "session");
-  const source = join(profile, "auth.json");
-  await Promise.all([mkdir(assets), mkdir(profile), mkdir(session)]);
-  await writeFile(source, "{}", { mode: 0o600 });
-  await writeFile(join(assets, "native-closure.json"), JSON.stringify({ entries: [
-    { path: "node/bin/node", sha256: "0".repeat(64), size: 1, executable: true },
-  ] }));
-  const config = { assets, profile, sha256: "a".repeat(64),
+  const home = join(root, "home");
+  const profile = join(home, ".pi", "agent");
+  const bin = join(home, "bin");
+  const fallback = join(root, "fallback");
+  await Promise.all([mkdir(profile, { recursive: true }), mkdir(bin, { recursive: true }), mkdir(fallback)]);
+  const executable = join(fallback, "pi-real");
+  await writeFile(executable, "#!/bin/sh\n", { mode: 0o700 });
+  await symlink(executable, join(bin, "pi"));
+  const path = [".", "", bin, fallback].join(delimiter);
+  const config = { home, path,
     companyId: "00000000-0000-4000-8000-000000000001", agentId: "00000000-0000-4000-8000-000000000002" };
-  const resolve = (value: typeof config) => resolveLocalPiConfiguration(JSON.stringify(value));
   expect(await resolveLocalPiConfiguration(undefined)).toBeUndefined();
-  await expect(resolve({ ...config, profile: assets })).rejects.toThrow("Invalid operator configuration");
-  await expect(resolve({ ...config, sha256: "../invalid" })).rejects.toThrow("Invalid operator configuration");
-  const resolved = (await resolve(config))!;
-  expect((await resolve({ ...config, sha256: "b".repeat(64) }))?.identity).not.toBe(resolved.identity);
-  await expect(verifyLocalPiInstallation(resolved)).rejects.toThrow("digest mismatch");
-  await bindLocalPiProfile(profile, session);
-  await bindLocalPiProfile(profile, session);
-  expect(await readlink(join(session, "auth.json"))).toBe(source);
-  expect((await lstat(source)).isSymbolicLink()).toBe(false);
+  const selected = await resolveLocalPiConfiguration(JSON.stringify(config));
+  expect(selected).toMatchObject({
+    executable,
+    environment: { HOME: home, PATH: [bin, fallback].join(delimiter), PI_CODING_AGENT_DIR: profile },
+  });
+  expect((await resolveLocalPiConfiguration(JSON.stringify({ ...config, profile: home })))?.identity).not.toBe(selected?.identity);
+  await expect(resolveLocalPiConfiguration(JSON.stringify({ ...config, path: "." }))).rejects.toThrow("not found");
 });
