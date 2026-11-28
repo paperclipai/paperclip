@@ -32,6 +32,7 @@ it.each(["source", "standalone", "vendored"] as const)("resolves the platform bi
     ["darwin", "arm64", "opencode-darwin-arm64"],
     ["darwin", "x64", "opencode-darwin-x64-baseline"],
     ["linux", "x64", "opencode-linux-x64-baseline"],
+    ["linux", "arm64", "opencode-linux-arm64"],
   ] as const) {
     const install = await installed(layout, platform, architecture, name);
     expect(resolvePinnedOpenCodeCommand(install.issuer, { platform, architecture })).toBe(install.executable);
