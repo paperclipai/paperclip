@@ -287,6 +287,57 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     expect(await readIssue(f.issue.id)).toMatchObject({ status: "blocked", monitorNextCheckAt: null, monitorAttemptCount: 1 });
   });
 
+  it("rejects a manual check on a future-scheduled monitor without consuming its schedule", async () => {
+    const f = await fixture();
+    const futureAt = new Date(now.getTime() + 60_000);
+    await db.update(issues).set({
+      monitorNextCheckAt: futureAt,
+      executionPolicy: { mode: "normal", commentRequired: true, stages: [], monitor: { nextCheckAt: futureAt.toISOString() } },
+    }).where(eq(issues.id, f.issue.id));
+    await expect(f.scheduler.triggerIssueMonitor(f.issue.id, { now, actorType: "user", actorId: "board-user" }))
+      .rejects.toThrow("scheduled for a future check");
+    expect(await readIssue(f.issue.id)).toMatchObject({
+      monitorNextCheckAt: futureAt, monitorAttemptCount: 0,
+      executionPolicy: { mode: "normal", commentRequired: true, stages: [], monitor: { nextCheckAt: futureAt.toISOString() } },
+    });
+    expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("runs a future-scheduled monitor only with an explicit consumeFutureSchedule opt-in", async () => {
+    const f = await fixture();
+    const futureAt = new Date(now.getTime() + 60_000);
+    await db.update(issues).set({ monitorNextCheckAt: futureAt }).where(eq(issues.id, f.issue.id));
+    await expect(f.scheduler.triggerIssueMonitor(f.issue.id, { now, actorType: "user", actorId: "board-user", consumeFutureSchedule: true }))
+      .resolves.toMatchObject({ outcome: "triggered" });
+    expect(f.deps.enqueueWakeup).toHaveBeenCalledExactlyOnceWith(f.agent.id, expect.objectContaining({
+      source: "on_demand", requestedByActorType: "user", requestedByActorId: "board-user",
+    }));
+    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: null, monitorAttemptCount: 1 });
+  });
+
+  it("refuses to consume a schedule moved into the future between read and claim", async () => {
+    const f = await fixture();
+    const futureAt = new Date(now.getTime() + 60_000);
+    let moved = false;
+    const racingDb = new Proxy(db, {
+      get(target, property, receiver) {
+        if (property !== "transaction") return Reflect.get(target, property, receiver);
+        return async (callback: Parameters<typeof db.transaction>[0]) => {
+          if (!moved) {
+            moved = true;
+            await db.update(issues).set({ monitorNextCheckAt: futureAt }).where(eq(issues.id, f.issue.id));
+          }
+          return db.transaction(callback);
+        };
+      },
+    });
+    const racingScheduler = createHeartbeatScheduling(racingDb, f.deps);
+    await expect(racingScheduler.triggerIssueMonitor(f.issue.id, { now, actorType: "user", actorId: "board-user" }))
+      .rejects.toThrow("already in progress");
+    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: futureAt, monitorAttemptCount: 0 });
+    expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
+  });
+
   it.each(["agent", "system"] as const)("does not let a %s check a blocked task", async (actorType) => {
     const f = await fixture();
     await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, f.issue.id));

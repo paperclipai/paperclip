@@ -14322,6 +14322,7 @@ export function issueRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId ?? null,
       runId: actor.runId ?? null,
+      consumeFutureSchedule: (req.body as { consumeFutureSchedule?: unknown } | undefined)?.consumeFutureSchedule === true,
     });
     if (result.outcome !== "triggered") {
       throw conflict(
