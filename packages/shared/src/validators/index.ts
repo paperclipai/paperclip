@@ -399,6 +399,7 @@ export {
   updateProjectWorkspaceSchema,
   projectExecutionWorkspacePolicySchema,
   projectWorkspaceRuntimeConfigSchema,
+  isRepositoryUrl,
   type CreateProject,
   type UpdateProject,
   type AddProjectAccessMember,
