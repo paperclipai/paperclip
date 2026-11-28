@@ -16,6 +16,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { findAggregatorApp } from "@paperclipai/shared/aggregator-app-catalog";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { resolveAuthorizationTarget } from "@/lib/authorizationUrl";
+import { focusPopupWindow, navigatePopupWindow } from "@/lib/popup-navigation";
 import { readOAuthWindowOutcome } from "@/lib/oauthWindowOutcome";
 import { queryKeys } from "@/lib/queryKeys";
 import { RemoteMcpConnectionSetup } from "./RemoteMcpConnectionSetup";
@@ -266,11 +267,13 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
         if (!target.ok) throw new Error(target.message);
         authorizationUrl.current = target.url;
         edit({ connectStatus: "sign_in", token: "", headers: [] });
-        try {
-          if (!popup.current || popup.current.closed) throw new Error("Sign-in window unavailable");
-          popup.current.location.assign(target.url);
-          popup.current.focus();
-        } catch {
+        const navigatedPopup = navigatePopupWindow(popup.current, target.url);
+        if (navigatedPopup) {
+          popup.current = navigatedPopup;
+          focusPopupWindow(navigatedPopup);
+        } else {
+          popup.current?.close();
+          popup.current = null;
           // The connection and OAuth session already exist. Preserve them and
           // let the native sign-in link recover a blocked browser handoff.
           edit({ notice: "Paperclip couldn’t open sign-in. Use the sign-in link below to continue." });
