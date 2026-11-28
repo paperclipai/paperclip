@@ -255,6 +255,38 @@ describe("legacy continuation persisted authority", () => {
     expect((await f.runs()).find(r => r.id === second.id)).toMatchObject({ status: "cancelled", errorCode: "issue_disposition_repair_superseded" });
   });
 
+  it("does not hold the task for a superseded disposition repair that never started", async () => {
+    const f = await fixture();
+    await f.createRecovery().reconcileLegacyContinuation(f.runId);
+    const first = (await f.runs()).find(r => r.id !== f.runId)!;
+    await f.finish(first);
+    await f.createRecovery().reconcileLegacyContinuation(first.id);
+    const second = (await f.runs()).find(r => r.status === "scheduled_retry")!;
+    const context = structuredClone(second.contextSnapshot!) as Record<string, any>;
+    context.legacyDispositionEpisode.id = randomUUID();
+    await db.update(heartbeatRuns).set({ contextSnapshot: context }).where(eq(heartbeatRuns.id, second.id));
+    await heartbeatService(db).promoteDueScheduledRetries(new Date(second.scheduledRetryAt!.getTime() + 1));
+    const run = (await f.runs()).find(r => r.id === second.id)!;
+    expect(run).toMatchObject({ status: "cancelled", errorCode: "issue_disposition_repair_superseded", startedAt: null });
+    expect(await legacyExecutionNeedsReconciliationWithEvidence(db, run)).toBe(false);
+    await terminalizeLegacyExecution({ db, run, status: "cancelled", fromStatuses: ["cancelled"], reconcileIfNeeded: true });
+    const holds = async () => (await f.actions()).filter(a => a.cause === "legacy_execution_requires_reconciliation");
+    expect(await holds()).toHaveLength(0);
+    const hold = (runId: string) => ({ companyId: f.companyId, sourceIssueId: f.issueId, kind: "active_run_watchdog",
+      cause: "legacy_execution_requires_reconciliation", ownerType: "board", fingerprint: `legacy-execution:${runId}`,
+      status: "resolved", outcome: "blocked", nextAction: "Reconcile",
+      evidence: { runId, automaticRecovery: { replay: "blocked" } } });
+    await db.insert(issueRecoveryActions).values(hold(run.id));
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+    await db.insert(issueRecoveryActions).values(hold(first.id));
+    expect(await legacyExecutionNeedsReconciliationWithEvidence(db, run)).toBe(true);
+    await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.fingerprint, `legacy-execution:${first.id}`));
+    await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: run.id, agentId: f.agentId, seq: 99,
+      eventType: "adapter.invoke" });
+    expect(await legacyExecutionNeedsReconciliationWithEvidence(db, run)).toBe(true);
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).not.toBeNull();
+  });
+
   it("persists the source identity while the second repair waits to dispatch", async () => {
     const f = await fixture();
     await f.createRecovery().reconcileLegacyContinuation(f.runId);

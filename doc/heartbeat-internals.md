@@ -416,6 +416,14 @@ release recorded for such a run no longer blocks execution, so the next wake or
 Retry starts normally. The failure-retry count of the chain does not change this,
 because the cancelled run did not make an attempt.
 
+The scheduled-retry gate uses the same rule for a disposition repair that a task
+change made obsolete. The gate cancels the repair with
+`errorCode = issue_disposition_repair_superseded` before anyone claims it, and it
+writes no cancellation receipt. If the repair has none of the retained execution
+evidence and its retry chain is settled as described above, it does not create a
+reconciliation hold, and a hold that an earlier release recorded for it no longer
+blocks execution.
+
 Scheduling is in `server/src/services/heartbeat/scheduling.ts`. It owns timer
 ticks, issue-monitor claims and dispatch, exhausted-monitor recovery, and
 session-goal recovery. `createHeartbeatScheduling` binds explicit dependencies

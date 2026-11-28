@@ -3,8 +3,8 @@ import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinaliza
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
 import { executionStartedEventPredicate, isUnclaimedControlPlaneCancellationCandidate, noRetainedExecutionPredicate,
-  unclaimedControlPlaneCancellationPredicate } from "./pre-dispatch-execution-evidence.js";
-import type { QueuedRunStalenessErrorCode } from "../modules/run-dispatch/index.js";
+  settledRetryPredecessorPredicate, unclaimedControlPlaneCancellationPredicate } from "./pre-dispatch-execution-evidence.js";
+import type { QueuedRunStalenessErrorCode, ScheduledRetryGateErrorCode } from "../modules/run-dispatch/index.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 type DispatchFields = "startedAt" | "runtimeModeResolvedAt" | "processPid" | "processGroupId" |
@@ -28,13 +28,15 @@ const staleDispatchReconciliationExemptions = {
 } satisfies Record<QueuedRunStalenessErrorCode, boolean>;
 const staleDispatchErrorCodes = Object.entries(staleDispatchReconciliationExemptions)
   .filter(([, exempt]) => exempt).map(([errorCode]) => errorCode);
+const suppressedRetryErrorCodes: ScheduledRetryGateErrorCode[] = ["issue_disposition_repair_superseded"];
 
 /** A dispatch cancellation is not an interrupted provider attempt. Historical
  * rows need no new receipt, but every retained execution reference must agree. */
 export function neverStartedDispatchCancellationPredicate() {
   return and(
     eq(heartbeatRuns.runtimeMode, "legacy"), eq(heartbeatRuns.status, "cancelled"),
-    or(inArray(heartbeatRuns.errorCode, staleDispatchErrorCodes), unclaimedControlPlaneCancellationPredicate()),
+    or(inArray(heartbeatRuns.errorCode, staleDispatchErrorCodes), unclaimedControlPlaneCancellationPredicate(),
+      and(inArray(heartbeatRuns.errorCode, suppressedRetryErrorCodes), settledRetryPredecessorPredicate())),
     isNotNull(heartbeatRuns.finishedAt),
     noRetainedExecutionPredicate(),
   );
@@ -72,7 +74,8 @@ export function isPreDispatchReviewWait(
  * checked against the same evidence that gates explicit user admission. */
 export async function isPreDispatchReviewWaitVerified(db: Db, run: Run): Promise<boolean> {
   if (run.runtimeMode === "legacy" && run.status === "cancelled" && run.finishedAt !== null &&
-      (staleDispatchErrorCodes.some(errorCode => errorCode === run.errorCode) || isUnclaimedControlPlaneCancellationCandidate(run)) &&
+      ([...staleDispatchErrorCodes, ...suppressedRetryErrorCodes].some(errorCode => errorCode === run.errorCode)
+        || isUnclaimedControlPlaneCancellationCandidate(run)) &&
       [run.startedAt, run.runtimeModeResolvedAt, run.processPid, run.processGroupId, run.processStartedAt,
         run.nativeIssueId, run.nativeSessionId, run.sessionIdAfter, run.controllerBootId,
         run.controllerLeaseExpiresAt, run.executionStage].every(value => value === null) &&
