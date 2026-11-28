@@ -309,19 +309,25 @@ describe("cursor resume recovery detection", () => {
   it("detects unknown session errors from cursor output", () => {
     expect(
       isCursorUnknownSessionError(
+        "Unknown session",
         "",
+      ),
+    ).toBe(true);
+    expect(
+      isCursorUnknownSessionError(
+        null,
         "Error: unknown session id abc",
       ),
     ).toBe(true);
     expect(
       isCursorUnknownSessionError(
-        "",
+        null,
         "chat abc not found",
       ),
     ).toBe(true);
     expect(
       isCursorUnknownSessionError(
-        "{\"type\":\"result\",\"subtype\":\"success\"}",
+        null,
         "",
       ),
     ).toBe(false);
