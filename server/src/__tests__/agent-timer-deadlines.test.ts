@@ -8,6 +8,7 @@ import { createHeartbeatQueueTestDependencies } from "./helpers/heartbeat-queue.
 import { createHeartbeatQueue } from "../services/heartbeat/queue.js";
 import { createHeartbeatRunPreparation } from "../services/heartbeat/run-preparation.js";
 import { createHeartbeatScheduling } from "../services/heartbeat/scheduling.js";
+import { createHeartbeatTimerPolicy, NO_PROVIDER_WORK_CANCEL_ERROR_CODES } from "../services/heartbeat/timer-policy.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { registerScheduledWork } from "../services/scheduled-work.js";
@@ -155,6 +156,38 @@ describe.skipIf(!support.supported)("agent timer owned deadlines", () => {
     expect(await f.queue.nextTimerHeartbeatAt(f.agent, now)).toBe(Date.parse("2026-10-28T00:00:00Z"));
     expect(await f.queue.nextTimerHeartbeatAt({ ...f.agent, runtimeConfig: { heartbeat: { enabled: true, intervalSec: 600, maxDailyRuns: 0 } } }, now)).toBeNull();
     expect(await f.queue.nextTimerHeartbeatAt(f.agent, new Date("2026-10-28T00:00:00Z"))).toBe(now.getTime() + 600_000);
+  });
+
+  it("does not count runs cancelled before provider work toward the daily run cap", async () => {
+    const f = await fixture({ enabled: true, intervalSec: 600, maxDailyRuns: 1 });
+    const policy = f.queue.parseHeartbeatPolicy(f.agent);
+    const { getHeartbeatDailyCapBlock } = createHeartbeatTimerPolicy(db);
+    const cancelled = { companyId: f.company.id, agentId: f.agent.id, status: "cancelled", startedAt: now, finishedAt: now };
+    await db.insert(heartbeatRuns).values([
+      ...NO_PROVIDER_WORK_CANCEL_ERROR_CODES.map(errorCode => ({ ...cancelled, errorCode })),
+      { ...cancelled, errorCode: "cancelled", resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } },
+    ]);
+    expect(await getHeartbeatDailyCapBlock(f.agent, policy, { now })).toBeNull();
+    expect(await f.queue.nextTimerHeartbeatAt(f.agent, now)).toBe(now.getTime() + 600_000);
+
+    await db.insert(heartbeatRuns).values({ ...cancelled, status: "failed", errorCode: "provider_limit_wait",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } });
+    expect(await getHeartbeatDailyCapBlock(f.agent, policy, { now }))
+      .toEqual({ reason: "heartbeat.daily_run_limit", observed: 1, limit: 1 });
+  });
+
+  it.each([
+    ["started provider work", "cancelled", { executionRecovery: { kind: "bootstrap", providerWorkStarted: true } }],
+    ["has no recovery marker", "cancelled", { cancellation: { actorType: "user" } }],
+    ["has no result", "cancelled", null],
+    ["has no error code or result", null, null],
+  ])("still counts a cancelled run that %s toward the daily run cap", async (_case, errorCode, resultJson) => {
+    const f = await fixture({ enabled: true, intervalSec: 600, maxDailyRuns: 1 });
+    const { getHeartbeatDailyCapBlock } = createHeartbeatTimerPolicy(db);
+    await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id, status: "cancelled",
+      startedAt: now, finishedAt: now, errorCode, resultJson });
+    expect(await getHeartbeatDailyCapBlock(f.agent, f.queue.parseHeartbeatPolicy(f.agent), { now }))
+      .toEqual({ reason: "heartbeat.daily_run_limit", observed: 1, limit: 1 });
   });
 
   it("defers a reached daily cost cap until UTC midnight", async () => {
