@@ -128,21 +128,58 @@ export async function readLinkedNestedCheckout(checkout: string, baseCandidates?
   return { checkout: real, base, gitDir, admin: path.basename(gitDir), branchPrefix: await nestedWorktreeBranchPrefix(real) };
 }
 
+export const NESTED_REPOSITORY_BASE_LOCK_WAIT_MS = NESTED_WORKTREE_GIT_TIMEOUT_MS;
+
+export class NestedRepositoryBaseBusy extends Error {
+  constructor(readonly base: string, readonly waitedMs: number, readonly holder: { site: string | null; heldMs: number } | null) {
+    super(`nested_repository_base_busy: waited ${Math.round(waitedMs / 1000)}s for ${base}`
+      + (holder ? ` held for ${Math.round(holder.heldMs / 1000)}s by ${holder.site ?? "an unknown caller"}` : ""));
+    this.name = "NestedRepositoryBaseBusy";
+  }
+}
+
+type BaseLockHolder = { site: string | null; since: number };
+
 const heldBaseLocks = new AsyncLocalStorage<ReadonlySet<string>>();
 const baseLocks = new Map<string, Promise<void>>();
+const baseLockHolders = new Map<string, BaseLockHolder>();
 
-export async function withNestedRepositoryBaseLock<T>(base: string, action: () => Promise<T>): Promise<T> {
+function baseLockCallSite(): string | null {
+  const frames = (new Error().stack ?? "").split("\n").slice(1).map(line => line.trim().replace(/^at /, ""));
+  return frames.find(frame => !frame.includes("nested-repository-worktrees") && !frame.startsWith("new Promise"))
+    ?? frames.find(frame => !frame.startsWith("baseLockCallSite") && !frame.includes("withNestedRepositoryBaseLock"))
+    ?? null;
+}
+
+export async function withNestedRepositoryBaseLock<T>(base: string, action: () => Promise<T>,
+  options: { waitMs?: number } = {}): Promise<T> {
   const key = await looseCanonicalPath(path.resolve(base));
   const held = heldBaseLocks.getStore() ?? new Set<string>();
   if (held.has(key)) return action();
   const previous = baseLocks.get(key) ?? Promise.resolve();
   let release!: () => void;
-  const current = previous.then(() => new Promise<void>(resolve => { release = resolve; }));
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const current = previous.then(() => gate);
   baseLocks.set(key, current);
-  await previous;
+  const holder: BaseLockHolder = { site: baseLockCallSite(), since: 0 };
+  const startedAt = Date.now();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const acquired = await Promise.race([
+    previous.then(() => true),
+    new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), options.waitMs ?? NESTED_REPOSITORY_BASE_LOCK_WAIT_MS); }),
+  ]).finally(() => clearTimeout(timer));
+  if (!acquired) {
+    release();
+    const blocking = baseLockHolders.get(key);
+    throw new NestedRepositoryBaseBusy(key, Date.now() - startedAt,
+      blocking ? { site: blocking.site, heldMs: Date.now() - blocking.since } : null);
+  }
+  holder.since = Date.now();
+  baseLockHolders.set(key, holder);
   try {
     return await heldBaseLocks.run(new Set([...held, key]), action);
   } finally {
+    if (baseLockHolders.get(key) === holder) baseLockHolders.delete(key);
     release();
     if (baseLocks.get(key) === current) baseLocks.delete(key);
   }
