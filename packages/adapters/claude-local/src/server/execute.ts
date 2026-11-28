@@ -895,10 +895,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
       if (effectiveEffort) args.push("--effort", effectiveEffort);
       if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
-      // On resumed sessions the instructions are already in the session cache;
-      // re-injecting them via --append-system-prompt-file wastes 5-10K tokens
-      // per heartbeat and the Claude CLI may reject the combination outright.
-      if (attemptInstructionsFilePath && !resumeSessionId) {
+      if (attemptInstructionsFilePath) {
         args.push("--append-system-prompt-file", attemptInstructionsFilePath);
       }
       if (runtimeMcpServers.length > 0) {
@@ -957,7 +954,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         taskContextChars: taskContextNote.length,
         heartbeatPromptChars: renderedPrompt.length,
       };
-      const attemptInstructionsFilePath = resumeSessionId ? undefined : effectiveInstructionsFilePath;
+      const attemptInstructionsFilePath = effectiveInstructionsFilePath;
       const args = buildClaudeArgs(resumeSessionId, attemptInstructionsFilePath);
       const commandNotes: string[] = [];
       if (!resumeSessionId) {
@@ -968,7 +965,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           "Using full Claude permission bypass for remote execution, including connected tools.",
         );
       }
-      if (attemptInstructionsFilePath && !resumeSessionId) {
+      if (attemptInstructionsFilePath) {
         commandNotes.push(
           `Injected agent instructions via --append-system-prompt-file ${instructionsFilePath} (with current file location in the run prompt)`,
         );
