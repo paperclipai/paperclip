@@ -51,7 +51,10 @@ test("Docker Hub mirrors apply to both image builders without widening publicati
   assert.match(docker, /platform: linux\/arm64/);
   assert.match(docker, /permissions:\n\s+contents: read\n\s+packages: write/);
   assert.match(docker, /outputs: type=image,name=ghcr\.io\/\$\{\{ github\.repository \}\},push-by-digest=true,name-canonical=true,push=true/);
-  assert.match(docker, /cache-to: type=registry,ref=ghcr\.io\/\$\{\{ github\.repository \}\}:buildcache-\$\{\{ matrix\.arch \}\},mode=max/);
+  assert.match(docker, /cache-from: type=registry,ref=ghcr\.io\/\$\{\{ github\.repository \}\}:buildcache-\$\{\{ matrix\.arch \}\}/);
+  assert.match(docker, /CACHE_REF: ghcr\.io\/\$\{\{ github\.repository \}\}:buildcache-\$\{\{ matrix\.arch \}\}/);
+  assert.match(docker, /run: node scripts\/docker-cache-export-policy\.mjs/);
+  assert.match(docker, /cache-to: \$\{\{ steps\.cache-policy\.outputs\.cache_to \}\}/);
   assert.match(preview, /permissions:\n\s+contents: read\n\s+steps:/);
   assert.match(preview, /platforms: linux\/amd64\n\s+push: false/);
   assert.match(preview, /outputs: type=docker,dest=\$\{\{ runner\.temp \}\}\/preview-image\.tar/);
@@ -547,14 +550,21 @@ test("release verify workflow covers the same split test surface as stable PR ve
   for (const group of ["general-server-without-chat-or-native-runner", "general-chat", "general-workspaces-a", "general-workspaces-b", "general-workspaces-c"]) {
     assert.match(verifyWorkflow, new RegExp(`group: ${group}`));
   }
-  for (const [group, count] of [["general-server-without-chat-or-native-runner", 10], ["general-chat", 3]]) {
+  for (const [group, count] of [["general-server-without-chat-or-native-runner", 20], ["general-chat", 3]]) {
     const rows = [...verifyWorkflow.matchAll(new RegExp(`group: ${group}\\n\\s+group_label: [^\\n]+\\n\\s+shard_index: (\\d+)\\n\\s+shard_count: (\\d+)`, "g"))];
     assert.deepEqual(rows.map((row) => [Number(row[1]), Number(row[2])]),
       Array.from({ length: count }, (_, index) => [index, count]));
   }
-  for (const shardIndex of [0, 1, 2, 3, 4]) {
-    assert.match(verifyWorkflow, new RegExp(`shard_index: ${shardIndex}[\\s\\S]*?shard_count: 5`));
-  }
+  const serializedJob = verifyWorkflow.match(/  serialized_tests:\n[\s\S]*?(?=\n  [A-Za-z0-9_-]+:|$)/)?.[0] ?? "";
+  const serializedRows = [
+    ...serializedJob.matchAll(
+      /shard_index: (\d+)\n\s+shard_count: (\d+)\n\s+shard_label: ([^\n]+)/g,
+    ),
+  ];
+  assert.deepEqual(
+    serializedRows.map((row) => [Number(row[1]), Number(row[2]), row[3].trim()]),
+    Array.from({ length: 16 }, (_, index) => [index, 16, `${index + 1}/16`]),
+  );
 
   // workspaces-a splits with Vitest native --shard in pr.yml; release
   // verification must keep the same two-shard coverage.
@@ -574,16 +584,24 @@ test("release verify workflow covers the same split test surface as stable PR ve
 test("release verification builds native test binaries in a required Rust-cached lane", () => {
   const workflow = readWorkflow("release-verify.yml");
   const runnerJob = workflow.match(/  verify_paperclip_runner:\n[\s\S]*?(?=\n  [A-Za-z0-9_-]+:|$)/)?.[0] ?? "";
-  assert.equal((runnerJob.match(/- lane: server-integration/g) ?? []).length, 1);
+  const integrationRows = [
+    ...runnerJob.matchAll(
+      /- lane: server-integration \((\d+)\/(\d+)\)\n\s+server_integration_shard_index: (\d+)\n\s+server_integration_shard_count: (\d+)/g,
+    ),
+  ];
+  assert.deepEqual(
+    integrationRows.map((row) => row.slice(1).map(Number)),
+    Array.from({ length: 3 }, (_, index) => [index + 1, 3, index, 3]),
+  );
   assert.doesNotMatch(runnerJob, /continue-on-error/);
   assert.match(runnerJob, /timeout-minutes: 20/);
   assert.match(runnerJob, /shared-key: release-runner-v2/);
   assert.match(runnerJob, /cache-workspace-crates: false/);
   assert.match(runnerJob, /cache-bin: false/);
   assert.match(runnerJob, /save-if: \$\{\{ matrix\.lane == 'rust'/);
-  assert.match(runnerJob, /Build native server test binaries\n\s+if: \$\{\{ matrix\.lane == 'server-integration' \}\}\n\s+timeout-minutes: 10/);
+  assert.match(runnerJob, /Build native server test binaries\n\s+if: \$\{\{ startsWith\(matrix\.lane, 'server-integration'\) \}\}\n\s+timeout-minutes: 10/);
   assert.match(runnerJob, /pnpm build:rust\n\s+cargo build --release --manifest-path runner\/Cargo\.toml --locked -p paperclip-runner-core --bin paperclip-runnerd --bin fake-codex-app-server/);
-  assert.match(runnerJob, /Run native server integration suites\n\s+if: \$\{\{ matrix\.lane == 'server-integration' \}\}\n\s+run: pnpm test:run:general -- --group general-server-native-runner/);
+  assert.match(runnerJob, /Run native server integration suites\n\s+if: \$\{\{ startsWith\(matrix\.lane, 'server-integration'\) \}\}\n\s+run: pnpm test:run:general -- --group general-server-native-runner --shard-index \$\{\{ matrix\.server_integration_shard_index \}\} --shard-count \$\{\{ matrix\.server_integration_shard_count \}\}/);
   assert.ok(runnerJob.indexOf("Cache Runner Rust dependencies") < runnerJob.indexOf("Build native server test binaries"));
   assert.ok(runnerJob.indexOf("Build native server test binaries") < runnerJob.indexOf("Run native server integration suites"));
 

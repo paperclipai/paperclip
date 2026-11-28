@@ -112,6 +112,17 @@ describe("attached clarification evidence", () => {
       expect(failures(f).length).toBeGreaterThan(0);
     }
   });
+  it.each([
+    ["Welcome to the club meetup this afternoon; reference: AMBERnonce.", true],
+    ["Welcome to the afternoon meetup. Use AMBERnonce.", true],
+    ["Welcome to the afternoon meetup, AMBERnonc.", false],
+    ["Welcome to the afternoon meetup, AMBERnonce2.", false],
+  ])("grades the saved reference by the complete submitted token: %s", (body, passes) => {
+    const f = recording(["semantic", "semantic"]), final = f.checkpoints.at(-1);
+    final.documents[0].body = body;
+    f.readback = { ...f.readback, body, visibleBody: body };
+    expect(failures(f).map(c => c.id)).toEqual(passes ? [] : ["question-resume.complete-evidence", "question-document-reloaded"]);
+  });
   it("requires reload evidence even for a correct API document", () => {
     const f = recording(["provider", "provider"]);
     expect(gradeClarificationEvidence(context, "task", "AMBERnonce", f.checkpoints).some(c => c.id === "question-document-reloaded" && !c.passed)).toBe(true);

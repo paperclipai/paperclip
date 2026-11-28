@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Environment } from "@paperclipai/shared";
 import {
+  resolveEffectiveAgentEnv,
   resolvePaperclipRunnerTransitionModel,
   supportsAdapterModelRefresh,
 } from "./AgentConfigForm";
@@ -87,5 +88,30 @@ describe("resolveForcedKubernetesEnvironment", () => {
     const result = resolveForcedKubernetesEnvironment("kubernetes", [localEnv, fakeSandbox]);
     expect(result.forced).toBe(true);
     expect(result.kubernetesEnvironment).toBeNull();
+  });
+});
+
+describe("resolveEffectiveAgentEnv", () => {
+  it("treats an explicit overlay env: undefined (all variables removed) as empty instead of restoring saved env", () => {
+    const savedAdapterConfig = {
+      env: { OLD_VAR: { type: "plain", value: "stale" } },
+    };
+    const clearedOverlay = { env: undefined };
+    expect(resolveEffectiveAgentEnv(clearedOverlay, savedAdapterConfig, null)).toEqual({});
+  });
+
+  it("falls back to saved env only when overlay does not own env", () => {
+    const savedAdapterConfig = {
+      env: { KEPT_VAR: { type: "plain", value: "kept" } },
+    };
+    expect(resolveEffectiveAgentEnv({}, savedAdapterConfig, null)).toEqual(savedAdapterConfig.env);
+  });
+
+  it("prefers freshly flushed env over both overlay and saved env", () => {
+    const savedAdapterConfig = {
+      env: { OLD_VAR: { type: "plain", value: "stale" } },
+    };
+    const flushed = { NEW_VAR: { type: "plain" as const, value: "fresh" } };
+    expect(resolveEffectiveAgentEnv({ env: undefined }, savedAdapterConfig, flushed)).toEqual(flushed);
   });
 });

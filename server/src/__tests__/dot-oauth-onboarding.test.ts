@@ -169,6 +169,8 @@ describe("Dot onboarding with an operator-issued pairing capability", () => {
     expect(new URL(approval.body.redirectUrl).searchParams.get("iss")).toBe(config.origin + "/mcp/runner/oauth");
     const device = await f.oauth.deviceAuthorize({ client_id: f.client.client_id, resource: config.resource, scope: "paperclip:agent" }, randomUUID());
     expect(device.verification_uri).toBe(browserOrigin + "/mcp-device");
+    const defaultDevice = await f.oauth.deviceAuthorize({ client_id: f.client.client_id, resource: config.resource }, randomUUID());
+    expect((await f.oauth.describeDevice(defaultDevice.user_code, { type: "none" })).offlineAccess).toBe(true);
   });
   it("validates a separately configured browser origin", () => {
     expect(publicMcpConfig({ PAPERCLIP_PUBLIC_URL: config.origin, PAPERCLIP_MCP_AUTHORIZATION_ORIGIN: "https://browser.example:10000" }))
@@ -188,6 +190,11 @@ describe("Dot onboarding with an operator-issued pairing capability", () => {
     const preview = await request(app).post(path + "/preview").set("Origin", config.origin).send({ pairingCode: f.pairing.pairingCode });
     expect(preview.status).toBe(200);
     expect(preview.body.accessDuration).toBe("Ongoing until revoked. This connection does not expire from inactivity.");
+    // An explicit agent-only request gets no refresh token, so the preview must not promise ongoing access.
+    const shortLived = await f.begin({ scope: "paperclip:agent" });
+    const shortPreview = await request(app).post(`/api/${prefix}/requests/${shortLived}/dot-pairing/preview`).set("Origin", config.origin).send({ pairingCode: f.pairing.pairingCode });
+    expect(shortPreview.status).toBe(200);
+    expect(shortPreview.body.accessDuration).toBe("15 minutes. This client did not ask for ongoing access, so Paperclip cannot renew it. Reconnect it from the Dot setup prompt.");
     expect(preview.body).toMatchObject({ company: { id: f.company.id, name: f.company.name }, agent: { id: f.agent.id, name: f.agent.name } });
     expect(JSON.stringify(preview.body)).not.toContain(f.pairing.pairingCode);
     expect(await db.select().from(mcpOauthGrants).where(eq(mcpOauthGrants.userId, f.userId))).toHaveLength(0);

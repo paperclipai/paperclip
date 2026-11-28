@@ -14,6 +14,7 @@ export const NATIVE_STATUS_ARBITER_POLICY_VERSION = "phase6-v14";
 /** The automatic continuation after a failed turn is used once per chain. */
 export const NATIVE_RUN_FAILED_RETRY_CAUSE = "native_run_failed";
 export const NATIVE_RESPONSE_WAKE_WAITING_REASON = "response_wake_waiting_for_input";
+export const EXTERNAL_CHAT_RESPONSE_WAIT_AUTHORIZATION_LOST = "external_chat_response_wait_authorization_lost";
 export const NATIVE_BLOCKER_SUPERSEDED_BY_QUEUED_REQUEST_CODE = "native_blocker_superseded_by_queued_request";
 export const NATIVE_RUN_FAILED_CONTINUATION_EXHAUSTED_ACTION =
   "The agent's turn failed again after Paperclip continued it automatically. The saved work is kept. Check the failed run, then Retry the task.";
@@ -105,10 +106,22 @@ export interface NativeStatusDecision {
   } | null;
   effects: NativeStatusEffect[];
   blockerOwnerKind?: string;
+  /** Hand the task to this agent when a blocked report names another agent owner. */
+  handoffAgentId?: string;
 }
 
 function humanBlockerOwner(blocker: NativeEvidenceAssessment["blocker"]): IssueUnblockDescriptor["owner"] {
   return blocker?.ownerUserId ? { userId: blocker.ownerUserId } : "board";
+}
+
+/** Resolve the saved unblock owner and optional handoff target for a blocker. */
+function resolveBlockerHandoff(blocker: NativeEvidenceAssessment["blocker"], agentId: string, handoffLocked?: boolean):
+  { owner: IssueUnblockDescriptor["owner"]; handoffAgentId?: string; namedOtherAgent: boolean } {
+  const raw = blocker?.ownerAgentId ? { agentId: blocker.ownerAgentId }
+    : blocker?.boardOwned ? humanBlockerOwner(blocker) : { agentId };
+  const namedOtherAgent = typeof raw === "object" && "agentId" in raw && raw.agentId !== agentId;
+  if (!namedOtherAgent) return { owner: raw, namedOtherAgent: false };
+  return handoffLocked ? { owner: "board", namedOtherAgent: true } : { owner: raw, handoffAgentId: raw.agentId, namedOtherAgent: true };
 }
 
 /**
@@ -199,7 +212,10 @@ export function supersedeHandedOffDecision(
     && !(effect.kind === "record_finalization_error" && effect.cause !== "workspace_finalization_failed"));
   const governed = effects.some(effect => effect.kind === "create_interaction");
   if (decision.statusAction === "preserve" || governed) {
-    return effects.length === decision.effects.length ? decision : { ...decision, effects };
+    const { handoffAgentId: _handoff, ...rest } = decision;
+    return effects.length === decision.effects.length && !decision.handoffAgentId
+      ? decision
+      : { ...rest, effects };
   }
   return {
     policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
@@ -274,6 +290,8 @@ export function arbitrateNativeStatus(input: {
   /** The current owner's blocked report names a system-owned environment or tool outage. */
   environmentBlocker?: boolean;
   agentBlockerRecoverable?: boolean;
+  /** The task cannot change agent assignee (conversation, external chat binding, non-owner run, or unassignable owner). */
+  blockerHandoffLocked?: boolean;
   /** A chat request for this task and agent is waiting as a deferred wake behind this run. */
   hasQueuedChatRequest?: boolean;
   failureRetryCount?: number;
@@ -526,22 +544,23 @@ export function arbitrateNativeStatus(input: {
     input.hasUnresolvedIssueBlockers === true &&
     (["done", "blocked"].includes(input.assessment.reportedDisposition) || unfinishedResponseWait || input.assessment.continuation?.kind === "monitor")
   ) {
-    const owner = input.assessment.blocker?.boardOwned
-      ? humanBlockerOwner(input.assessment.blocker)
-      : { agentId: input.agentId };
+    const { owner, handoffAgentId } = resolveBlockerHandoff(
+      input.assessment.blocker, input.agentId, input.blockerHandoffLocked,
+    );
     return {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
       statusAction: "blocked",
       toStatus: "blocked",
       reasonCode: "durable_dependency_blocker_bound",
+      ...(handoffAgentId ? { handoffAgentId } : {}),
       unblockDescriptor: {
         owner,
         action:
           input.assessment.blocker?.unblockAction ??
           "Wait for the issue's durable dependency blockers to complete.",
       },
-      // Dependency completion owns the wake. Do not immediately rerun the
-      // blocked issue merely because the provider mislabeled its scope/status.
+      // Dependency completion owns the wake (and wakes the current assignee,
+      // which becomes handoffAgentId when a named agent takes over).
       effects: [],
     };
   }
@@ -650,11 +669,12 @@ export function arbitrateNativeStatus(input: {
   // an external owner, or one whose automatic continuations are spent, is still
   // bound now.
   const blocker = input.assessment.blocker;
+  const namedOtherAgent = Boolean(blocker?.ownerAgentId && blocker.ownerAgentId !== input.agentId);
   const retries = input.failureRetryCount ?? 0;
   const continuesAutomatically = Boolean(blocker) && !input.isConversation && !input.hasActivePauseHold && (
     (input.environmentBlocker === true && retries < NATIVE_ENVIRONMENT_BLOCKER_MAX_RETRIES) ||
     (input.agentBlockerRecoverable === true && blocker!.scope === "task_wide" && !blocker!.boardOwned &&
-      blocker!.ownerKind === "agent" && retries < NATIVE_AGENT_BLOCKER_MAX_CONTINUATIONS));
+      !namedOtherAgent && blocker!.ownerKind === "agent" && retries < NATIVE_AGENT_BLOCKER_MAX_CONTINUATIONS));
   if (input.assessment.reportedDisposition === "blocked" && input.hasQueuedChatRequest && continuesAutomatically) {
     return {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
@@ -692,6 +712,7 @@ export function arbitrateNativeStatus(input: {
     input.assessment.reportedDisposition === "blocked" &&
     input.assessment.blocker?.scope === "task_wide" &&
     !input.assessment.blocker.boardOwned &&
+    !namedOtherAgent &&
     input.agentBlockerRecoverable &&
     !input.isConversation
   ) {
@@ -719,9 +740,10 @@ export function arbitrateNativeStatus(input: {
     input.assessment.reportedDisposition === "blocked" &&
     input.assessment.blocker
   ) {
-    const owner = input.assessment.blocker.boardOwned
-      ? humanBlockerOwner(input.assessment.blocker)
-      : { agentId: input.agentId };
+    const { owner, handoffAgentId, namedOtherAgent } = resolveBlockerHandoff(
+      input.assessment.blocker, input.agentId, input.blockerHandoffLocked,
+    );
+    const action = input.assessment.blocker.unblockAction;
     if (input.assessment.blocker.scope === "task_wide") {
       return {
         policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
@@ -729,44 +751,31 @@ export function arbitrateNativeStatus(input: {
         toStatus: "blocked",
         reasonCode: "task_wide_blocker_bound",
         blockerOwnerKind: input.assessment.blocker.ownerKind,
-        unblockDescriptor: {
-          owner,
-          action: input.assessment.blocker.unblockAction,
-        },
+        ...(handoffAgentId ? { handoffAgentId } : {}),
+        unblockDescriptor: { owner, action },
         effects: [
-          {
-            kind: "bind_blocker",
-            owner,
-            action: input.assessment.blocker.unblockAction,
-          },
-          ...(input.assessment.blocker.ownerUserId ? [] : [{
-            kind: "notify_owner",
-            agentId: input.agentId,
-            reason: "task_wide_blocker_bound",
-          } as const]),
+          { kind: "bind_blocker", owner, action },
+          // A named human or other-agent owner owns the next action; do not
+          // also wake the reporting agent to repeat the blocked work.
+          ...(input.assessment.blocker.ownerUserId || namedOtherAgent ? [] : [{
+            kind: "notify_owner" as const, agentId: input.agentId, reason: "task_wide_blocker_bound",
+          }]),
         ],
       };
     }
+    const currentTrackOwner = handoffAgentId ? owner : humanBlockerOwner(input.assessment.blocker);
     return {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
       statusAction: "blocked",
       toStatus: "blocked",
       reasonCode: "current_track_blocker_waiting",
       blockerOwnerKind: input.assessment.blocker.ownerKind,
+      ...(handoffAgentId ? { handoffAgentId } : {}),
       // A provider's current_track label is not evidence that another
       // authorized, productive track exists. Bind the actual unblock request
       // without waking the same agent to repeat the blocked work or old title.
-      unblockDescriptor: {
-        owner: humanBlockerOwner(input.assessment.blocker),
-        action: input.assessment.blocker.unblockAction,
-      },
-      effects: [
-        {
-          kind: "bind_blocker",
-          owner: humanBlockerOwner(input.assessment.blocker),
-          action: input.assessment.blocker.unblockAction,
-        },
-      ],
+      unblockDescriptor: { owner: currentTrackOwner, action },
+      effects: [{ kind: "bind_blocker", owner: currentTrackOwner, action }],
     };
   }
   if (input.assessment.reportedDisposition === "yielded" && input.assessment.continuation?.kind === "monitor") {
@@ -841,7 +850,7 @@ export function arbitrateNativeStatus(input: {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
       statusAction: "preserve",
       toStatus: input.priorIssueStatus,
-      reasonCode: "external_chat_response_wait_authorization_lost",
+      reasonCode: EXTERNAL_CHAT_RESPONSE_WAIT_AUTHORIZATION_LOST,
       unblockDescriptor: null,
       // Revocation cannot be converted into an unrequested background run.
       effects: [],

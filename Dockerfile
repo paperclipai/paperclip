@@ -396,10 +396,11 @@ COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # Installed dependencies are ~2.9 GB of /app and change only with the lockfile.
-# Copied from the deps stage as their own layer, a commit that leaves the
-# lockfile alone does not push or pull them again. The build stage writes
-# nothing under the root node_modules, so the rest of /app is copied without it.
-COPY --chown=node:node --from=deps /app/node_modules /app/node_modules
+# Copied from the deps stage as their own linked layer so a commit that leaves
+# the lockfile alone neither re-copies 2.9 GB onto the parent layer nor pushes
+# or pulls them again. The build stage writes nothing under the root
+# node_modules, so the rest of /app is copied without it.
+COPY --link --chown=${USER_UID}:${USER_GID} --from=deps /app/node_modules /app/node_modules
 COPY --chown=node:node --exclude=node_modules --from=build /app /app
 
 # Large provider binaries first, linked so the layer does not depend on the

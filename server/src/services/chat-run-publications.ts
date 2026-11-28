@@ -135,6 +135,8 @@ export async function githubLatestTaskResponseUrl(
     eq(chatActions.status, "processed"),
     sql`${chatActions.payload}->'session'->>'companyId' = ${input.companyId}`,
     sql`${chatActions.payload}->'session'->>'issueId' = ${input.issueId}`,
+    sql`${chatActions.payload}->'session'->>'agentId' = (select ${chatEndpoints.assignedAgentId}::text from ${chatEndpoints}
+      where ${chatEndpoints.id} = ${input.endpointId}::uuid and ${chatEndpoints.companyId} = ${input.companyId}::uuid)`,
     sql`${chatActions.payload}->>'operation' in ('comment', 'formal_review', 'assessment')`,
     sql`${url} like 'https://github.com/%'`,
     sql`${chatActions.updatedAt} > ${input.since.toISOString()}::timestamptz`,

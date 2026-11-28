@@ -64,7 +64,7 @@ function installPageFixtures() {
     if (path.endsWith("/budgets/overview")) return json({ companyId, policies: [], activeIncidents: [], pausedAgentCount: 0, pausedProjectCount: 0, pendingApprovalCount: 0 });
     if (path.includes("/heartbeat-runs/") && path.endsWith("/events")) return json([]);
     // Reuse the preview's auth, company, adapter, issue-list and environment fixtures.
-    if (path === "/api/companies" || path.startsWith("/api/auth/") || path.includes("/adapters") || path.includes("/environments") || path.endsWith("/issues") || path.endsWith("/projects") || path.endsWith("/approvals") || path.endsWith("/sidebar-badges") || path.endsWith("/user-directory")) return previous(input, init);
+    if (path === "/api/companies" || path.startsWith("/api/auth/") || path.includes("/adapters") || path.includes("/environments") || path.includes("/ai-connections") || path.endsWith("/secrets") || path.endsWith("/user-secrets") || path.endsWith("/issues") || path.endsWith("/projects") || path.endsWith("/approvals") || path.endsWith("/sidebar-badges") || path.endsWith("/user-directory")) return previous(input, init);
     if (path.includes("/settings")) return json({});
     return json([]);
   };
@@ -124,6 +124,16 @@ export default meta;
 type Story = StoryObj;
 export const AllAgents: Story = { render: () => <PersonaPage path="/PAP/agents/all" /> };
 export const AgentOverview: Story = { render: () => <PersonaPage path="/PAP/agents/codexcoder/overview" /> };
+export const AgentOverviewMobile: Story = {
+  render: () => <PersonaPage path="/PAP/agents/codexcoder/overview" />,
+  globals: { viewport: { value: "mobile", isRotated: false } },
+  parameters: { layout: "fullscreen", waitForViewport: true },
+};
+export const AgentRuntimeMobile: Story = {
+  render: () => <PersonaPage path="/PAP/agents/codexcoder/runtime" />,
+  globals: { viewport: { value: "mobile", isRotated: false } },
+  parameters: { layout: "fullscreen", waitForViewport: true },
+};
 export const Task: Story = { render: () => <PersonaPage path={`/PAP/issues/${issue.identifier}`} /> };
 export const CompanyDashboard: Story = { name: "Dashboard", render: () => <PersonaPage path="/PAP/dashboard" /> };
 export const MeetYourNextAgent: Story = { render: () => <PersonaPage path="/PAP/agents/all" meet /> };

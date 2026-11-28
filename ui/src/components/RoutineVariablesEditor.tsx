@@ -477,7 +477,7 @@ export function RoutineVariablesHint() {
                 These are filled in automatically — no setup needed and they will not appear in the
                 Variables list.
               </p>
-              <div className="overflow-hidden rounded-lg border border-border/70">
+              <div className="max-w-full overflow-x-auto rounded-lg border border-border/70">
                 <table className="w-full text-left text-xs">
                   <thead className="bg-muted/40 text-muted-foreground">
                     <tr>

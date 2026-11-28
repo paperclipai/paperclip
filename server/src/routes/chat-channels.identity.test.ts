@@ -54,29 +54,23 @@ function fixture(
 }
 
 describe("chat identity-link preview authority", () => {
-  it.each([false, undefined])("blocks every identity API when chat rollout is disabled (%s)", async (enabled) => {
+  it.each([false, undefined])("blocks experimental chat identity APIs when chat rollout is disabled (%s)", async (enabled) => {
     settings.getExperimental.mockResolvedValue({ enableChatConnectors: enabled });
     const f = fixture();
     await request(f.app).get("/api/chat-identity-links/preview").query({ token }).expect(403);
     await request(f.app).post("/api/chat-identity-links/confirm").send({ token }).expect(403);
     await request(f.app).post("/api/chat-identity-links/request-access").send({ token }).expect(403);
-    expect(f.previewIdentityLink).not.toHaveBeenCalled();
     expect(f.confirmIdentityLink).not.toHaveBeenCalled();
     expect(f.requestIdentityAccess).not.toHaveBeenCalled();
   });
 
-  it.each(["github", "slack"])("uses the token’s verified provider when only GitHub bots are enabled (%s)", async (provider) => {
-    settings.getExperimental.mockResolvedValue({ enableChatConnectors: false, enableGitHubReviewBots: true });
+  it.each(["github", "slack"])("admits GitHub identity links without experimental flags while gating Slack (%s)", async (provider) => {
+    settings.getExperimental.mockResolvedValue({ enableChatConnectors: false });
     const f = fixture();
     f.previewIdentityLink.mockResolvedValue({ ...preview, provider } as typeof preview);
     await request(f.app).get("/api/chat-identity-links/preview").query({ token }).expect(provider === "github" ? 200 : 403);
     await request(f.app).post("/api/chat-identity-links/confirm").send({ token }).expect(provider === "github" ? 200 : 403);
     expect(f.confirmIdentityLink.mock.calls.length).toBe(provider === "github" ? 1 : 0);
-  });
-  it("does not admit GitHub links under chat-only opt-in", async () => {
-    const f = fixture();
-    f.previewIdentityLink.mockResolvedValue({ ...preview, provider: "github" } as unknown as typeof preview);
-    await request(f.app).get("/api/chat-identity-links/preview").query({ token }).expect(403);
   });
   it("returns the preview to a Board member of its exact company", async () => {
     const { app, previewIdentityLink } = fixture();

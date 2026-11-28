@@ -5,6 +5,7 @@ import type { ResponsibilityArea, ResponsibilityWithRollup } from "@paperclipai/
 import { Plus } from "lucide-react";
 import { describeError } from "@/api/errors";
 import { responsibilitiesApi } from "@/api/responsibilities";
+import { FilterGroup, FilterRow, ToolbarFilterPopover } from "@/components/CollectionFilterOptions";
 import { PageSkeleton } from "@/components/PageSkeleton";
 import { QueryErrorState, QueryView, useQueryView } from "@/components/QueryView";
 import { ToolbarSearch } from "@/components/ToolbarSearch";
@@ -44,7 +45,13 @@ import {
   onboardingProvenance,
   type AttentionItem,
 } from "@/lib/responsibilities";
-import { outlineV2Counts, outlineV2CountsLabel, outlineV2Groups } from "@/lib/responsibility-outline-v2";
+import {
+  outlineV2Counts,
+  outlineV2CountsLabel,
+  outlineV2Groups,
+  outlineV2VisibleGroups,
+  type OutlineV2RoutineFilter,
+} from "@/lib/responsibility-outline-v2";
 import { DASHBOARD_DEFAULT_VIEW, DASHBOARD_VIEW_OPTIONS } from "@/lib/responsibility-views";
 import { cn, formatShortDate } from "@/lib/utils";
 
@@ -102,6 +109,8 @@ function OwnerDashboard({ selectedCompanyId, ownerUserId }: { selectedCompanyId:
   // One dashboard, no switch between views; reviewing proposals visits the full layout.
   const { view, visiting, visit, leave } = usePageView(DASHBOARD_VIEW_OPTIONS, DASHBOARD_DEFAULT_VIEW);
   const [search, setSearch] = useState("");
+  const [routineFilter, setRoutineFilter] = useState<OutlineV2RoutineFilter>("all");
+  const clearRoutineFilter = useCallback(() => setRoutineFilter("all"), []);
   const { agents, byId: agentsById, query: agentsQuery } = useAgentDirectory(selectedCompanyId);
   const agentsView = useQueryView(agentsQuery);
   // One clock per visit: day-level judgements, and a stable value keeps rows memoized.
@@ -130,13 +139,22 @@ function OwnerDashboard({ selectedCompanyId, ownerUserId }: { selectedCompanyId:
     return counts;
   }, [overview?.responsibilities]);
 
-  // Outline v2's one line of numbers, beside its search. Null on an empty dashboard.
+  const outlineGroups = useMemo(
+    () => (overview ? outlineV2Groups(overview.areas, overview.responsibilities, keepEmptyAreas) : null),
+    [overview, keepEmptyAreas],
+  );
+  const visibleOutlineGroups = useMemo(
+    () => (outlineGroups ? outlineV2VisibleGroups(outlineGroups, { search, routineFilter }) : null),
+    [outlineGroups, search, routineFilter],
+  );
+  // Outline v2's one line of numbers, beside its search and filter. Null on an empty dashboard.
   const outlineCounts = useMemo(() => {
-    if (!overview) return null;
-    const counts = outlineV2Counts(outlineV2Groups(overview.areas, overview.responsibilities, keepEmptyAreas));
+    if (!overview || !outlineGroups || !visibleOutlineGroups) return null;
+    const total = outlineV2Counts(outlineGroups);
     // The same rule as the view's empty state, which shows only the create module.
-    return counts.areas > 0 || counts.responsibilities > 0 || overview.proposed.length > 0 ? counts : null;
-  }, [overview, keepEmptyAreas]);
+    if (total.areas === 0 && total.responsibilities === 0 && overview.proposed.length === 0) return null;
+    return outlineV2Counts(visibleOutlineGroups);
+  }, [overview, outlineGroups, visibleOutlineGroups]);
 
   const openAdd = useCallback((areaId: string | null) => setAdding({ areaId }), []);
   const agentName = useCallback((id: string) => agentsById.get(id)?.name, [agentsById]);
@@ -168,16 +186,42 @@ function OwnerDashboard({ selectedCompanyId, ownerUserId }: { selectedCompanyId:
         )}
       >
         {view === "outline_v2" ? (
-          // The breadcrumb bar's heading already names the page: search and the counts take the headline's place.
+          // The breadcrumb bar's heading already names the page: search, filter and the counts take the headline's place.
           outlineCounts ? (
             <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2">
-              <ToolbarSearch
-                query={search}
-                onQueryChange={setSearch}
-                label="Search your dashboard"
-                placeholder="Search"
-                inputType="search"
-              />
+              <div className="design-page-toolbar gap-2">
+                <ToolbarSearch
+                  query={search}
+                  onQueryChange={setSearch}
+                  label="Search your dashboard"
+                  placeholder="Search"
+                  inputType="search"
+                />
+                <ToolbarFilterPopover
+                  activeCount={routineFilter === "all" ? 0 : 1}
+                  onClear={clearRoutineFilter}
+                  label="Filter responsibilities"
+                  contentLabel="Filter responsibilities"
+                  align="start"
+                  contentClassName="w-56"
+                  triggerDataAttr="data-outline-v2-filter"
+                >
+                  <div className="task-filters-grid">
+                    <FilterGroup title="Routines" optionsKey="routines">
+                      <FilterRow
+                        label="Has routines"
+                        checked={routineFilter === "has_routines"}
+                        onToggle={() => setRoutineFilter((current) => (current === "has_routines" ? "all" : "has_routines"))}
+                      />
+                      <FilterRow
+                        label="No routines"
+                        checked={routineFilter === "no_routines"}
+                        onToggle={() => setRoutineFilter((current) => (current === "no_routines" ? "all" : "no_routines"))}
+                      />
+                    </FilterGroup>
+                  </div>
+                </ToolbarFilterPopover>
+              </div>
               <p className="text-sm text-muted-foreground" data-dashboard-counts="">{outlineV2CountsLabel(outlineCounts)}</p>
             </div>
           ) : null
@@ -251,7 +295,17 @@ function OwnerDashboard({ selectedCompanyId, ownerUserId }: { selectedCompanyId:
           if (view === "full") return <ResponsibilitiesHomeLayout {...layoutProps} />;
           const viewProps = { ...layoutProps, onAddArea: () => setAddingArea(true), onReviewProposals: () => visit("full") };
           if (view === "outline") return <DashboardOutline {...viewProps} />;
-          if (view === "outline_v2") return <DashboardOutlineV2 {...viewProps} search={search} />;
+          if (view === "outline_v2") {
+            return (
+              <DashboardOutlineV2
+                {...viewProps}
+                search={search}
+                routineFilter={routineFilter}
+                visibleGroups={visibleOutlineGroups ?? undefined}
+                onClearFilter={clearRoutineFilter}
+              />
+            );
+          }
           if (view === "board") return <DashboardBoard {...viewProps} />;
           if (view === "automation") return <DashboardAutomation {...viewProps} />;
           if (view === "agent_status") return <DashboardAgentStatus {...viewProps} />;

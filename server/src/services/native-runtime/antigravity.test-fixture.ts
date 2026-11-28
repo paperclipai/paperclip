@@ -1,4 +1,5 @@
 import type { Db } from "@paperclipai/db";
+import { getTableName, type Table } from "drizzle-orm";
 import { QUALIFIED_ACPX_PROFILES, type NativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
 import { buildNativeExecutionInput } from "./native-execution-input.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
@@ -6,14 +7,45 @@ import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 export const ANTIGRAVITY_FIXTURE_COMPANY_ID = "10000000-0000-4000-8000-000000000001";
 export const ANTIGRAVITY_FIXTURE_MODEL = "gemini-3.8-flash-low";
 
-export function emptyDb(): Db {
-  const db: Db = new Proxy(() => undefined, {
-    get: (_target, key) => key === "then" ? (resolve: (rows: unknown[]) => unknown) => resolve([])
-      : key === "transaction" ? async (operation: (tx: Db) => unknown) => operation(db)
-      : () => db,
-    apply: () => db,
-  }) as unknown as Db;
-  return db;
+export type AntigravityDbRead = { table: string; locked: boolean };
+export type AntigravityFixtureDb = Db & { reads: AntigravityDbRead[] };
+
+function strict<T extends object>(target: T, label: string): T {
+  return new Proxy(target, {
+    get: (object, key) => {
+      if (typeof key === "symbol" || key in object) return Reflect.get(object, key);
+      throw new Error(`antigravity fixture: unexpected ${label}.${key}`);
+    },
+  });
+}
+
+export function emptyDb(): AntigravityFixtureDb {
+  const reads: AntigravityDbRead[] = [];
+  const select = () => strict({
+    from: (table: Table) => {
+      const read = { table: getTableName(table), locked: false };
+      reads.push(read);
+      const query = strict({
+        innerJoin: () => query,
+        where: () => query,
+        limit: () => query,
+        for: (mode: string) => {
+          if (mode !== "update") throw new Error(`antigravity fixture: unexpected lock ${mode}`);
+          read.locked = true;
+          return query;
+        },
+        then: (resolve: (rows: never[]) => unknown, reject?: (error: unknown) => unknown) =>
+          Promise.resolve([] as never[]).then(resolve, reject),
+      }, `select from ${read.table}`);
+      return query;
+    },
+  }, "select");
+  const db = strict({
+    reads,
+    select,
+    transaction: async (operation: (tx: Db) => unknown) => operation(strict({ select }, "transaction") as unknown as Db),
+  }, "db");
+  return db as unknown as AntigravityFixtureDb;
 }
 
 export function antigravityExecution(input: { runId?: string; issueId?: string; workspaceId?: string; sessionId?: string } = {}) {

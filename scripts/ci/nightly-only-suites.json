@@ -164,10 +164,28 @@
       "measuredMs": 223420
     },
     {
-      "path": "server/src/__tests__/heartbeat-process-recovery.test.ts",
+      "path": "server/src/__tests__/heartbeat-process-recovery-part-1.test.ts",
       "category": "recovery-idle-maintenance-soak",
-      "reason": "Heavy serialized heartbeat process-crash recovery soak (285 cases, 344s); core heartbeat/recovery.test.ts stays on PRs",
-      "measuredMs": 344017
+      "reason": "Heavy serialized heartbeat process-crash recovery soak (part 1/4, 116 cases); core heartbeat/recovery.test.ts stays on PRs",
+      "measuredMs": 88511
+    },
+    {
+      "path": "server/src/__tests__/heartbeat-process-recovery-part-2.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Heavy serialized heartbeat process-crash recovery soak (part 2/4, 103 cases); core heartbeat/recovery.test.ts stays on PRs",
+      "measuredMs": 102168
+    },
+    {
+      "path": "server/src/__tests__/heartbeat-process-recovery-part-3.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Heavy serialized heartbeat process-crash recovery soak (part 3/4, 87 cases); core heartbeat/recovery.test.ts stays on PRs",
+      "measuredMs": 72141
+    },
+    {
+      "path": "server/src/__tests__/heartbeat-process-recovery-part-4.test.ts",
+      "category": "recovery-idle-maintenance-soak",
+      "reason": "Heavy serialized heartbeat process-crash recovery soak (part 4/4, 160 cases); core heartbeat/recovery.test.ts stays on PRs",
+      "measuredMs": 81197
     },
     {
       "path": "server/src/__tests__/heartbeat-retry-scheduling.test.ts",
@@ -476,10 +494,16 @@
       "measuredMs": 187000
     },
     {
-      "path": "server/src/services/native-runtime/native-runner-restart-diskless.integration.test.ts",
+      "path": "server/src/services/native-runtime/native-runner-restart-diskless-direct.integration.test.ts",
       "category": "restart-lease-soak",
-      "reason": "Real-process diskless runner restart soak (172s)",
-      "measuredMs": 172000
+      "reason": "Real-process diskless runner restart soak (direct task slice)",
+      "measuredMs": 86000
+    },
+    {
+      "path": "server/src/services/native-runtime/native-runner-restart-diskless-prepared-task.integration.test.ts",
+      "category": "restart-lease-soak",
+      "reason": "Real-process diskless runner restart soak (prepared task slice)",
+      "measuredMs": 86000
     },
     {
       "path": "server/src/services/native-runtime/native-runner-restart-lease-renewal.integration.test.ts",
@@ -536,16 +560,40 @@
       "measuredMs": 43404
     },
     {
-      "path": "server/src/services/native-runtime/plugin-runner-eviction.integration.test.ts",
+      "path": "server/src/services/native-runtime/plugin-runner-eviction-claude-abrupt.integration.test.ts",
       "category": "restart-lease-soak",
-      "reason": "Real-process plugin runner eviction/release-resume soak (312.5s in run 45238253588)",
-      "measuredMs": 312473
+      "reason": "Real-process plugin runner eviction soak (Claude abrupt exit slice)",
+      "measuredMs": 78000
     },
     {
-      "path": "server/src/services/native-runtime/plugin-runner-release-resume.integration.test.ts",
+      "path": "server/src/services/native-runtime/plugin-runner-eviction-claude-retired.integration.test.ts",
       "category": "restart-lease-soak",
-      "reason": "Real-process plugin runner eviction/release-resume soak (205.8s in run 45238253588)",
-      "measuredMs": 205790
+      "reason": "Real-process plugin runner eviction soak (Claude retired exit slice)",
+      "measuredMs": 78000
+    },
+    {
+      "path": "server/src/services/native-runtime/plugin-runner-eviction-codex-abrupt.integration.test.ts",
+      "category": "restart-lease-soak",
+      "reason": "Real-process plugin runner eviction soak (Codex abrupt exit slice)",
+      "measuredMs": 78000
+    },
+    {
+      "path": "server/src/services/native-runtime/plugin-runner-eviction-codex-retired.integration.test.ts",
+      "category": "restart-lease-soak",
+      "reason": "Real-process plugin runner eviction soak (Codex retired exit slice)",
+      "measuredMs": 78000
+    },
+    {
+      "path": "server/src/services/native-runtime/plugin-runner-release-resume-adopted.integration.test.ts",
+      "category": "restart-lease-soak",
+      "reason": "Real-process plugin runner release-resume soak (adopted modes slice)",
+      "measuredMs": 120000
+    },
+    {
+      "path": "server/src/services/native-runtime/plugin-runner-release-resume-cached.integration.test.ts",
+      "category": "restart-lease-soak",
+      "reason": "Real-process plugin runner release-resume soak (cached modes slice)",
+      "measuredMs": 86000
     },
     {
       "path": "server/src/services/native-runtime/provider-pack-archive.test.ts",

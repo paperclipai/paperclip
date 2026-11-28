@@ -210,8 +210,8 @@ export function ProfilesIndex({
           <EmptyTemplatePicker onPick={(key) => navigate(newProfileHref(key))} />
         )
       ) : (
-        <div className="overflow-hidden rounded-lg border border-border">
-          <table className="w-full table-fixed text-sm">
+        <div className="max-w-full overflow-x-auto rounded-lg border border-border">
+          <table className="w-full min-w-(--sz-44rem) table-fixed text-sm">
             <colgroup>
               <col className="w-(--sz-30pct)" />
               <col className="w-(--sz-18pct)" />

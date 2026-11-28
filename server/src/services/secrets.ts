@@ -9,12 +9,14 @@ import {
   companySecrets,
   companySecretVersions,
   companyMemberships,
+  connectionGrants,
   environments,
   heartbeatRuns,
   issues,
   projects,
   routines,
   secretAccessEvents,
+  toolConnections,
   userSecretDeclarations,
   userSecretDefinitions,
 } from "@paperclipai/db";
@@ -40,9 +42,13 @@ import {
   CLASS3_STATIC_LEASE_ALLOWLIST,
   createSecretProviderConfigSchema,
   deriveProjectUrlKey,
+  ENV_VAR_NAME_RE,
   envBindingSchema,
   isUuidLike,
+  looksLikeCredentialToken,
   normalizeAgentUrlKey,
+  SECRET_SHAPED_ACCESS_ALIAS_ERROR,
+  SECRET_SHAPED_ENV_NAME_ERROR,
   secretProviderConfigPayloadSchema,
   secretProviderConfigDiscoveryPreviewSchema,
   updateSecretProviderConfigSchema,
@@ -94,7 +100,7 @@ function latestDate(a: Date | null, b: Date | null): Date | null {
   return a.getTime() >= b.getTime() ? a : b;
 }
 
-const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const ENV_KEY_RE = ENV_VAR_NAME_RE;
 const AGENT_ACCESS_CONFIG_PATH_PREFIX = "access.";
 // System consumer id for a durable orphan-sandbox teardown. The cleanup sweep
 // resolves the recorded connection secret under this id so the audit trail
@@ -886,6 +892,24 @@ function secretResolutionErrorCode(error: unknown): SecretResolutionErrorCode {
   return "provider_error";
 }
 
+function assertSafeEnvName(key: string) {
+  if (looksLikeCredentialToken(key)) {
+    throw unprocessable(SECRET_SHAPED_ENV_NAME_ERROR);
+  }
+  if (!ENV_KEY_RE.test(key)) {
+    throw unprocessable(`Invalid environment variable name: ${key}`);
+  }
+}
+
+function assertSafeAccessAlias(alias: string) {
+  if (looksLikeCredentialToken(alias)) {
+    throw unprocessable(SECRET_SHAPED_ACCESS_ALIAS_ERROR);
+  }
+  if (!ENV_KEY_RE.test(alias)) {
+    throw unprocessable(`Invalid agent secret access alias: ${alias || "(empty)"}`);
+  }
+}
+
 function assertSecretBindingConfigPath(input: {
   targetType: SecretBindingTargetType;
   configPath: string;
@@ -895,9 +919,7 @@ function assertSecretBindingConfigPath(input: {
     throw unprocessable("API-only secret access bindings must target an agent");
   }
   const alias = input.configPath.slice(AGENT_ACCESS_CONFIG_PATH_PREFIX.length);
-  if (!ENV_KEY_RE.test(alias)) {
-    throw unprocessable(`Invalid agent secret access alias: ${alias || "(empty)"}`);
-  }
+  assertSafeAccessAlias(alias);
 }
 
 function missingUserSecretDefinitionRuntimeBinding(
@@ -1966,9 +1988,7 @@ export function secretService(db: Db | DbTransaction) {
 
     const normalized: AgentEnvConfig = {};
     for (const [key, rawBinding] of Object.entries(record)) {
-      if (!ENV_KEY_RE.test(key)) {
-        throw unprocessable(`Invalid environment variable name: ${key}`);
-      }
+      assertSafeEnvName(key);
 
       const parsed = envBindingSchema.safeParse(rawBinding);
       if (!parsed.success) {
@@ -2011,6 +2031,10 @@ export function secretService(db: Db | DbTransaction) {
     opts?: NormalizeAdapterConfigOptions,
   ) {
     const normalized = { ...adapterConfig };
+    for (const [key, rawValue] of Object.entries(adapterConfig)) {
+      if (!key.startsWith(AGENT_ACCESS_CONFIG_PATH_PREFIX) || rawValue === undefined) continue;
+      assertSafeAccessAlias(key.slice(AGENT_ACCESS_CONFIG_PATH_PREFIX.length));
+    }
     if (Object.prototype.hasOwnProperty.call(adapterConfig, "env")) {
       normalized.env = await normalizeEnvConfig(companyId, adapterConfig.env, opts);
     }
@@ -3551,39 +3575,96 @@ export function secretService(db: Db | DbTransaction) {
     return secret;
   }
 
+  async function assertNoConnectionSignsInWith(
+    companyId: string,
+    target: { definitionId: string } | { secretId: string },
+    change: "deleting" | "disabling",
+  ) {
+    const values = await db
+      .select({ id: companySecrets.id })
+      .from(companySecrets)
+      .where(and(
+        eq(companySecrets.companyId, companyId),
+        "definitionId" in target
+          ? eq(companySecrets.userSecretDefinitionId, target.definitionId)
+          : eq(companySecrets.id, target.secretId),
+        ne(companySecrets.status, "deleted"),
+      ));
+    if (values.length === 0) return;
+    const valueIds = sql.join(values.map((value) => sql`${value.id}`), sql`, `);
+    const refersToValue = (refs: typeof toolConnections.credentialSecretRefs | typeof connectionGrants.credentialSecretRefs) =>
+      sql`exists (select 1 from jsonb_array_elements(${refs}) as ref where ref->>'secretId' in (${valueIds}))`;
+    const [connection] = await db
+      .select({ name: toolConnections.name })
+      .from(toolConnections)
+      .where(and(
+        eq(toolConnections.companyId, companyId),
+        ne(toolConnections.status, "archived"),
+        or(
+          refersToValue(toolConnections.credentialSecretRefs),
+          sql`exists (select 1 from ${connectionGrants}
+            where ${connectionGrants.companyId} = ${toolConnections.companyId}
+              and ${connectionGrants.connectionId} = ${toolConnections.id}
+              and ${connectionGrants.status} <> 'revoked'
+              and ${refersToValue(connectionGrants.credentialSecretRefs)})`,
+        ),
+      ))
+      .limit(1);
+    if (connection) {
+      throw conflict(
+        `This secret is the saved sign-in for "${connection.name}". Disconnect that account instead of ${change} its secret.`,
+        { code: "secret_used_by_connection" },
+      );
+    }
+  }
+
+  function withoutConnectionSignIn<T>(
+    companyId: string,
+    target: { definitionId: string } | { secretId: string },
+    change: "deleting" | "disabling",
+    apply: () => Promise<T>,
+  ) {
+    return withAccountHomeSecretMutationLock(undefined, companyId, async () => {
+      await assertNoConnectionSignsInWith(companyId, target, change);
+      return apply();
+    });
+  }
+
   async function removeUserSecretDefinitionInternal(
     companyId: string,
     definitionId: string,
     actor?: { userId?: string | null; agentId?: string | null },
   ) {
     const existing = await resolveUserSecretDefinition(companyId, { definitionId });
-    const values = await db
-      .select({ id: companySecrets.id })
-      .from(companySecrets)
-      .where(and(
-        eq(companySecrets.companyId, companyId),
-        eq(companySecrets.scope, "user"),
-        eq(companySecrets.userSecretDefinitionId, definitionId),
-      ));
-    for (const value of values) {
-      await removeSecretInternal(value.id);
-    }
-    return db
-      .update(userSecretDefinitions)
-      .set({
-        key: `${existing.key}__deleted__${existing.id}`,
-        status: "deleted",
-        deletedAt: existing.deletedAt ?? new Date(),
-        updatedByAgentId: actor?.agentId ?? null,
-        updatedByUserId: actor?.userId ?? null,
-        updatedAt: new Date(),
-      })
-      .where(and(
-        eq(userSecretDefinitions.companyId, companyId),
-        eq(userSecretDefinitions.id, definitionId),
-      ))
-      .returning()
-      .then((rows) => rows[0] ?? null);
+    return withoutConnectionSignIn(companyId, { definitionId }, "deleting", async () => {
+      const values = await db
+        .select({ id: companySecrets.id })
+        .from(companySecrets)
+        .where(and(
+          eq(companySecrets.companyId, companyId),
+          eq(companySecrets.scope, "user"),
+          eq(companySecrets.userSecretDefinitionId, definitionId),
+        ));
+      for (const value of values) {
+        await removeSecretInternal(value.id);
+      }
+      return db
+        .update(userSecretDefinitions)
+        .set({
+          key: `${existing.key}__deleted__${existing.id}`,
+          status: "deleted",
+          deletedAt: existing.deletedAt ?? new Date(),
+          updatedByAgentId: actor?.agentId ?? null,
+          updatedByUserId: actor?.userId ?? null,
+          updatedAt: new Date(),
+        })
+        .where(and(
+          eq(userSecretDefinitions.companyId, companyId),
+          eq(userSecretDefinitions.id, definitionId),
+        ))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+    });
   }
 
   const instanceSecrets = {
@@ -4046,7 +4127,7 @@ export function secretService(db: Db | DbTransaction) {
           patch.providerConfigId,
         );
       }
-      return db
+      const update = () => db
         .update(userSecretDefinitions)
         .set({
           key: nextKey,
@@ -4070,6 +4151,10 @@ export function secretService(db: Db | DbTransaction) {
         ))
         .returning()
         .then((rows) => rows[0] ?? null);
+      if (patch.status && patch.status !== "active" && patch.status !== existing.status) {
+        return withoutConnectionSignIn(companyId, { definitionId: existing.id }, "disabling", update);
+      }
+      return update();
     },
 
     removeUserSecretDefinition: async (
@@ -4209,7 +4294,7 @@ export function secretService(db: Db | DbTransaction) {
       if (patch.status === "deleted") {
         return await secretService(db).removeCurrentUserSecretValue(companyId, ownerUserId, secret.id);
       }
-      return db
+      const update = () => db
         .update(companySecrets)
         .set({
           status: patch.status ?? secret.status,
@@ -4218,11 +4303,16 @@ export function secretService(db: Db | DbTransaction) {
         .where(eq(companySecrets.id, secret.id))
         .returning()
         .then((rows) => rows[0] ?? null);
+      if (patch.status && patch.status !== "active" && patch.status !== secret.status) {
+        return withoutConnectionSignIn(companyId, { secretId: secret.id }, "disabling", update);
+      }
+      return update();
     },
 
     removeCurrentUserSecretValue: async (companyId: string, ownerUserId: string, secretId: string) => {
       const secret = await getUserSecretValueById(companyId, ownerUserId, secretId);
-      return await secretService(db).remove(secret.id);
+      return withoutConnectionSignIn(companyId, { secretId: secret.id }, "deleting",
+        () => secretService(db).remove(secret.id));
     },
 
     syncUserSecretDeclarationsForTarget: async (
@@ -5343,6 +5433,13 @@ export function secretService(db: Db | DbTransaction) {
       const manifest: RuntimeSecretManifestEntry[] = [];
 
       for (const [key, rawBinding] of Object.entries(record)) {
+        if (looksLikeCredentialToken(key)) {
+          logger.warn(
+            { companyId },
+            "skipping legacy credential-shaped environment variable name during runtime env resolution",
+          );
+          continue;
+        }
         if (!ENV_KEY_RE.test(key)) {
           throw unprocessable(`Invalid environment variable name: ${key}`);
         }
@@ -5746,6 +5843,13 @@ export function secretService(db: Db | DbTransaction) {
         } else {
           const env: Record<string, string> = {};
           for (const [key, rawBinding] of Object.entries(record)) {
+            if (looksLikeCredentialToken(key)) {
+              logger.warn(
+                { companyId },
+                "skipping legacy credential-shaped environment variable name during runtime adapter resolution",
+              );
+              continue;
+            }
             if (!ENV_KEY_RE.test(key)) {
               throw unprocessable(`Invalid environment variable name: ${key}`);
             }

@@ -234,9 +234,18 @@ export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies
       if (!company) throw notFound("Company not found");
       // A relative app route: the agent links it in chat, where it opens on
       // whichever host the person uses, never the server's own listen address.
-      const destination = `/${encodeURIComponent(company.prefix)}/apps/${connection.credentialSource === "vercel_connect" ? "vercel-connect" : "connect"}?${new URLSearchParams({
-        [connection.status === "draft" ? "resume" : "reconnect"]: connection.id,
-        ...(sourceTemplateKey ? { source: sourceTemplateKey } : {}), ...(intentLink ? { intent: intentLink.id } : {}) })}`;
+      // The connect wizard only opens for a known app source. A custom server
+      // has none, so send its user to the connection's own page, where they
+      // sign in as themselves.
+      const customServer = !sourceTemplateKey && connection.credentialSource !== "vercel_connect";
+      const query = new URLSearchParams(customServer
+        ? { ...(intentLink ? { intent: intentLink.id } : {}) }
+        : { [connection.status === "draft" ? "resume" : "reconnect"]: connection.id,
+          ...(sourceTemplateKey ? { source: sourceTemplateKey } : {}), ...(intentLink ? { intent: intentLink.id } : {}) }).toString();
+      const destination = (customServer
+        ? `/${encodeURIComponent(company.prefix)}/apps/${encodeURIComponent(connection.id)}/permissions`
+        : `/${encodeURIComponent(company.prefix)}/apps/${connection.credentialSource === "vercel_connect" ? "vercel-connect" : "connect"}`)
+        + (query ? `?${query}` : "");
       return { connectionId: connection.id, provider: sourceTemplateKey ?? "oauth",
         authorizationUrl: destination, expiresAt: null };
     }
