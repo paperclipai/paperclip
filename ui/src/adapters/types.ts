@@ -51,6 +51,8 @@ export interface AdapterConfigFieldsProps {
    * so a stored path never flashes before the policy resolves.
    */
   managedSandboxOnly?: boolean;
+  /** Operator-supplied selection policy; absent leaves existing choices intact. */
+  availableHarnesses?: readonly string[];
   /** Show Dot for new selections only when its experimental prerequisites are enabled. */
   openAiDotEnabled?: boolean;
   /** Personal Muse is offered only with its own flag and the native Runner enabled. */
@@ -63,7 +65,9 @@ export interface UIAdapterModule extends TranscriptParserSource {
   type: string;
   label: string;
   ConfigFields: ComponentType<AdapterConfigFieldsProps>;
-  buildAdapterConfig: (values: CreateConfigValues) => Record<string, unknown>;
+  buildAdapterConfig: (values: CreateConfigValues, context?: {
+    candidateHarnesses?: readonly { agent: "antigravity"; model: string }[];
+  }) => Record<string, unknown>;
   /**
    * Optional issue-chat transcript presentation hints. Shared rendering code
    * resolves these through the registry and never branches on adapter

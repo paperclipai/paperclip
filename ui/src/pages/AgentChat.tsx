@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { agentChatsApi } from "@/api/agentChats";
 import { agentsApi } from "@/api/agents";
@@ -8,10 +8,13 @@ import { useCompany } from "@/context/CompanyContext";
 import { useAgentChatEnabled } from "@/hooks/useAgentChatEnabled";
 import { recordAgentChatVisit } from "@/lib/recent-agent-chats";
 import { queryKeys } from "@/lib/queryKeys";
-import { useParams } from "@/lib/router";
+import { Link, useParams } from "@/lib/router";
 import { agentRouteRef } from "@/lib/utils";
 import { TaskDetailSurface } from "./IssueDetail";
 import { isUuidLike, type Issue } from "@paperclipai/shared";
+import { afterVisibleConversationPaint } from "@/lib/onboarding-chat";
+import { captureOnboardingStepFailed } from "@/lib/analytics/onboarding-analytics";
+import { Button } from "@/components/ui/button";
 
 export function AgentChat() {
   const { agentRef = "" } = useParams<{ agentRef: string }>();
@@ -44,12 +47,41 @@ export function AgentChat() {
   const chat = useQuery({
     queryKey: chatKey,
     queryFn: () => agentChatsApi.get(selectedCompanyId!, agent!.id),
+    initialData: () => enabled && agent && session.isSuccess
+      ? client.getQueryData<Issue[]>(queryKeys.agentChats.list(selectedCompanyId, userId))
+        ?.find(issue => issue.companyId === selectedCompanyId && issue.conversationAgentId === agent?.id)
+      : undefined,
+    initialDataUpdatedAt: () => {
+      const state = client.getQueryState(queryKeys.agentChats.list(selectedCompanyId, userId));
+      return state?.isInvalidated ? 0 : state?.dataUpdatedAt;
+    },
     enabled: enabled && !!agent && session.isFetched,
   });
   const sessionView = useQueryView(session);
   const historyView = useQueryView(historyAgent);
   const chatView = useQueryView(chat);
   const creating = useRef<Promise<Issue> | null>(null);
+  const [readyIssueId, setReadyIssueId] = useState<string | null>(null);
+  const [greetingError, setGreetingError] = useState<string | null>(null);
+  const [greetingAttempt, setGreetingAttempt] = useState(0);
+  const onReady = useCallback(() => setReadyIssueId(chat.data?.id ?? null), [chat.data?.id]);
+  useEffect(() => {
+    setGreetingError(null);
+    if (!enabled || !agent || !selectedCompanyId || !session.isSuccess
+      || readyIssueId !== chat.data?.id || chat.data?.originKind !== "onboarding_chat") return;
+    let cancelled = false;
+    const cancelPaint = afterVisibleConversationPaint(() => {
+      void agentChatsApi.greet(selectedCompanyId, agent.id).then(() => {
+        if (!cancelled) void client.invalidateQueries({ queryKey: queryKeys.issues.detail(chat.data!.id) });
+      }).catch(error => {
+        if (!cancelled) {
+          captureOnboardingStepFailed({ step: "launch", reason: "greeting_failed" });
+          setGreetingError(error instanceof Error ? error.message : "The welcome could not start.");
+        }
+      });
+    });
+    return () => { cancelled = true; cancelPaint(); };
+  }, [enabled, agent?.id, selectedCompanyId, userId, session.isSuccess, readyIssueId, chat.data?.id, chat.data?.originKind, greetingAttempt, client]);
   useEffect(() => {
     creating.current = null;
   }, [selectedCompanyId, userId, agent?.id]);
@@ -86,8 +118,9 @@ export function AgentChat() {
   if (!enabled && !chat.data)
     return (
       <p className="text-sm text-muted-foreground">
-        Agent Chat is disabled. Enable it in Experimental settings. Existing
-        history remains available through task links.
+        Agent Chat is disabled for this instance. An administrator can enable it in{" "}
+        <Link className="underline underline-offset-4" to="/company/settings/instance/experimental#experimental-enableAgentChat">Experimental settings</Link>.
+        {" "}Your workspace preference does not change Chat availability. Existing history remains available through task links.
       </p>
     );
   const failed = [agentsView, chatView, ...(rosterAgent ? [] : [historyView])].find((view) => view.kind === "error");
@@ -108,9 +141,15 @@ export function AgentChat() {
       <p className="text-sm text-muted-foreground">Loading conversation…</p>
     );
   return (
-    <TaskDetailSurface
-      key={`${agent.id}:${userId}`}
-      conversation={{ agent, issue: chat.data ?? null, ensureIssue }}
-    />
+    <>
+      {greetingError && <div role="alert" className="flex items-center gap-2 text-sm text-destructive">
+        <span>{greetingError}</span>
+        <Button variant="outline" size="sm" onClick={() => setGreetingAttempt(attempt => attempt + 1)}>Retry welcome</Button>
+      </div>}
+      <TaskDetailSurface
+        key={`${agent.id}:${userId}`}
+        conversation={{ agent, issue: chat.data ?? null, ensureIssue, onReady }}
+      />
+    </>
   );
 }

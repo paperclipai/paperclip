@@ -63,6 +63,20 @@ export async function resolveOAuthClientIdMetadataDocumentUrl(
  * registered). Only the callback for this deployment appears in it, so an
  * authorization server that fetches it can see exactly one legal redirect target.
  */
+/**
+ * OIDC registration `application_type` for a callback. Paperclip's callback is
+ * normally a server-side HTTPS endpoint (`web`); a local install calls back to
+ * localhost, which OIDC servers only accept for `native` clients.
+ */
+export function oauthApplicationType(redirectUri: string): "web" | "native" {
+  try {
+    const host = new URL(redirectUri).hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    return host === "localhost" || host.endsWith(".localhost") || host === "::1" || /^127(?:\.\d{1,3}){3}$/.test(host) ? "native" : "web";
+  } catch {
+    return "web";
+  }
+}
+
 export function oauthClientIdMetadataDocument(input: {
   clientId: string;
   redirectUri: string;
@@ -75,6 +89,6 @@ export function oauthClientIdMetadataDocument(input: {
     grant_types: ["authorization_code", "refresh_token"],
     response_types: ["code"],
     token_endpoint_auth_method: "none",
-    application_type: "web",
+    application_type: oauthApplicationType(input.redirectUri),
   };
 }

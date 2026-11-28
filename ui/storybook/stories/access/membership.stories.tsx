@@ -1,6 +1,9 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { Layout } from "@/components/Layout";
 import { ToastViewport } from "@/components/ToastViewport";
+import { Route, Routes } from "@/lib/router";
 import { CompanyAccess } from "@/pages/CompanyAccess";
+import { PluginLauncherProvider } from "@/plugins/launchers";
 import { expect, userEvent, within, waitFor } from "storybook/test";
 import {
   prepareFixtureApi,
@@ -119,5 +122,45 @@ export const SaveFailed: Story = {
     );
     await userEvent.click(c.getByRole("button", { name: "Save member" }));
     await c.findByText("The request failed. Please try again.");
+  },
+};
+export const MembersMobile: Story = {
+  globals: { viewport: { value: "mobile", isRotated: false } },
+  parameters: {
+    layout: "fullscreen",
+    waitForViewport: true,
+    initialEntries: ["/PAP/company/settings/members"],
+  },
+  render: () => (
+    <PluginLauncherProvider>
+      <Routes>
+        <Route path="/:companyPrefix" element={<Layout />}>
+          <Route path="company/settings/members" element={<CompanyAccess />} />
+        </Route>
+      </Routes>
+      <ToastViewport />
+    </PluginLauncherProvider>
+  ),
+  play: async () => {
+    const page = within(document.body);
+    await expect(await page.findByRole("heading", { name: "Organization Members" })).toBeVisible();
+    const table = await page.findByRole("table");
+    const scroller = table.parentElement as HTMLElement;
+    await waitFor(() => {
+      const rect = scroller.getBoundingClientRect();
+      expect(rect.width).toBeGreaterThan(0);
+      expect(rect.right).toBeLessThanOrEqual(window.innerWidth + 1);
+      expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
+    });
+    if (scroller.scrollWidth > scroller.clientWidth) {
+      scroller.scrollLeft = scroller.scrollWidth;
+      const headers = within(table).getAllByRole("columnheader");
+      const lastHeader = headers[headers.length - 1]!;
+      await waitFor(() => {
+        expect(lastHeader.getBoundingClientRect().right).toBeLessThanOrEqual(
+          scroller.getBoundingClientRect().right + 1,
+        );
+      });
+    }
   },
 };

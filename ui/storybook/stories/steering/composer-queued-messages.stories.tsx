@@ -1,9 +1,11 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, within } from "storybook/test";
 import type { IssueQueuedCommentEntry, IssueQueuedCommentQueue } from "@paperclipai/shared";
 import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
 import { TaskChatQueuedMessages } from "@/components/task-chat/TaskChatQueuedMessages";
+import { QUEUED_MESSAGE_AUTO_STEER_DELAY_MS } from "@/components/task-chat/queued-message-auto-steer";
+import { Button } from "@/components/ui/button";
 import { composerAgentAppearance, composerAgents } from "../../prototypes/composer-model-picker/fixtures";
 
 const agentMap = new Map(composerAgents.map((agent) => [agent.id, {
@@ -43,10 +45,15 @@ type QueueStoryProps = {
   steeringDisposition: IssueQueuedCommentQueue["steeringDisposition"];
   initialEdit: boolean;
   mobile: boolean;
+  /** Production delay before an eligible queued message is steered automatically. */
+  autoSteer: boolean;
+  screenshotSubmission: boolean;
 };
 
-function QueuedComposer({ protocol, steeringDisposition, initialEdit, mobile }: QueueStoryProps) {
-  const [entries, setEntries] = useState(initialEntries);
+function QueuedComposer({ protocol, steeringDisposition, initialEdit, mobile, autoSteer, screenshotSubmission }: QueueStoryProps) {
+  const [entries, setEntries] = useState(screenshotSubmission ? [] : initialEntries);
+  const [pendingSave, setPendingSave] = useState<{ resolve: () => void; reject: () => void } | null>(null);
+  const uploadIndex = useRef(0);
   const [editingId, setEditingId] = useState<string | null>(initialEdit ? "queued-1" : null);
   const [sent, setSent] = useState<string[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
@@ -73,6 +80,10 @@ function QueuedComposer({ protocol, steeringDisposition, initialEdit, mobile }: 
         <header className="border-b border-border pb-4">
           <p className="text-xs text-muted-foreground">PAP-204 · Codie is working</p>
           <h1 className="mt-1 text-base font-semibold">Steering and queued messages</h1>
+          {pendingSave ? <div className="mt-2 flex gap-2">
+            <Button size="sm" onClick={() => { pendingSave.resolve(); setPendingSave(null); }}>Complete save</Button>
+            <Button size="sm" variant="secondary" onClick={() => { pendingSave.reject(); setPendingSave(null); }}>Reject save</Button>
+          </div> : null}
         </header>
         <div className="flex-1 space-y-3 py-6 text-sm">
           <p className="rounded-lg bg-card px-4 py-3">I’m updating the composer and checking the responsive layout.</p>
@@ -89,18 +100,41 @@ function QueuedComposer({ protocol, steeringDisposition, initialEdit, mobile }: 
             onSteer={async (id) => { remove(id); setNotice("Message steered into the active turn."); }}
             onInterrupt={async () => { setRunning(false); setNotice("The active turn was interrupted."); }}
             onDiscard={async (id) => { remove(id); setNotice("Queued message discarded."); }}
+            editingCommentId={editingId}
+            autoSteerDelayMs={autoSteer ? QUEUED_MESSAGE_AUTO_STEER_DELAY_MS : null}
           /> : null}
-          <div className="relative z-10">
+          <div className="relative z-10" data-testid="queued-composer">
             <TaskChatComposer
               onAdd={async (body) => {
                 if (running) {
-                  setEntries((current) => [...current, queuedEntry(body, `queued-${Date.now()}`, current.length)]);
+                  const id = `queued-${Date.now()}`;
+                  setEntries((current) => [...current, queuedEntry(body, id, current.length)]);
                   setNotice("Message queued for the next turn.");
+                  if (screenshotSubmission) {
+                    try {
+                      await new Promise<void>((resolve, reject) => setPendingSave({ resolve, reject: () => reject(new Error("Save rejected")) }));
+                    } catch (error) {
+                      remove(id);
+                      setNotice("Save rejected. The draft is restored.");
+                      throw error;
+                    }
+                  }
                 } else {
                   setSent((current) => [...current, body]);
                 }
               }}
               workMode="standard"
+              draftKey={screenshotSubmission ? "storybook-screenshot-submit" : undefined}
+              onAttachImage={screenshotSubmission ? async (file) => {
+                const id = `00000000-0000-4000-8000-00000000000${uploadIndex.current++ % 7}`;
+                return {
+                  id, companyId: "storybook", issueId: queue.issueId, issueCommentId: null,
+                  assetId: id, provider: "storybook", objectKey: file.name, contentType: file.type,
+                  byteSize: file.size, sha256: "0".repeat(64), originalFilename: file.name,
+                  createdByAgentId: null, createdByUserId: "storybook-user", createdAt: new Date(), updatedAt: new Date(),
+                  contentPath: `/api/attachments/${id}/content`,
+                };
+              } : undefined}
               onStop={running ? async () => setRunning(false) : undefined}
               queuedEdit={editingId ? {
                 commentId: editingId,
@@ -108,7 +142,7 @@ function QueuedComposer({ protocol, steeringDisposition, initialEdit, mobile }: 
               } : null}
               onSaveQueuedEdit={async (id, body) => {
                 setEntries((current) => current.map((entry) => entry.comment.id === id
-                  ? { ...entry, comment: { ...entry.comment, body } }
+                  ? { ...entry, comment: { ...entry.comment, body, updatedAt: new Date() } }
                   : entry));
                 setEditingId(null);
               }}
@@ -142,16 +176,19 @@ const meta = {
       ],
       "status": "current",
       "implementation": "production",
-      "boundary": "fixtures"
+      "boundary": "fixtures",
+      "notes": "Production composer and queue. ScreenshotSubmission uses static attachment receipts and controls the simulated pending, accepted or rejected save. No backend or provider runs."
     },
   },
-  args: { protocol: "paperclip_runner_v1", steeringDisposition: "available", initialEdit: false, mobile: false },
+  args: { protocol: "paperclip_runner_v1", steeringDisposition: "available", initialEdit: false, mobile: false, autoSteer: false, screenshotSubmission: false },
 } satisfies Meta<typeof QueuedComposer>;
 
 export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const QueuedWhileRunning: Story = {};
+/** Production composer and queue; the buttons control only the simulated save response. */
+export const ScreenshotSubmission: Story = { args: { screenshotSubmission: true } };
 export const SteerIntoActiveTurn: Story = {
   play: async ({ canvasElement }) => {
     const page = within(canvasElement.ownerDocument.body);
@@ -165,5 +202,19 @@ export const LegacyInterrupt: Story = { args: { protocol: "legacy" } };
 export const SteeringUnavailable: Story = { args: { steeringDisposition: "unsupported" } };
 export const MobileQueue: Story = {
   args: { mobile: true },
+  globals: { viewport: { value: "mobile", isRotated: false } },
+};
+/** Codex and Pi: a queued follow-up counts down, then joins the live turn unless edited or cancelled. */
+export const AutoSteerCountdown: Story = {
+  args: { autoSteer: true },
+  play: async ({ canvasElement }) => {
+    const page = within(canvasElement.ownerDocument.body);
+    await expect(page.getByTestId("task-chat-queued-auto-steer-queued-2")).toHaveTextContent(/Sending in \ds/);
+    await userEvent.click(page.getByTestId("task-chat-queued-auto-steer-cancel-queued-2"));
+    await expect(page.getByTestId("task-chat-queued-steer-queued-2")).toBeVisible();
+  },
+};
+export const AutoSteerCountdownMobile: Story = {
+  args: { autoSteer: true, mobile: true },
   globals: { viewport: { value: "mobile", isRotated: false } },
 };

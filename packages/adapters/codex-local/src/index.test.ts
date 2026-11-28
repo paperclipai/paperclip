@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   CODEX_CHATGPT_MODEL_REJECTION_RE,
+  CODEX_LOCAL_COMPATIBILITY_FALLBACK_MODEL,
   codexChatGptRetirementForModel,
   codexCliVersionAtLeast,
   codexLocalReasoningEffortsForModel,
@@ -18,9 +19,17 @@ describe("codex model CLI floors", () => {
     expect(minimumCodexCliVersionForModel(" gpt-6.1-sol ")).toBe("0.159.0");
     expect(minimumCodexCliVersionForModel("gpt-6-sol")).toBe("0.157.0");
     expect(minimumCodexCliVersionForModel("gpt-6-luna")).toBe("0.157.0");
+    // 0.169.1 is the first stable release whose bundled catalog lists GPT-6.2.
+    expect(minimumCodexCliVersionForModel("gpt-6.2-sol")).toBe("0.169.1");
+    expect(minimumCodexCliVersionForModel("gpt-6.2-astra")).toBe("0.169.1");
   });
 
-  it.each([DEFAULT_CODEX_LOCAL_MODEL, "gpt-5.6", "gpt-6-astra", "gpt-5.5", "custom-model", "", null, undefined])(
+  it("gates the default model on its CLI floor and keeps the compatibility fallback floor-free", () => {
+    expect(minimumCodexCliVersionForModel(DEFAULT_CODEX_LOCAL_MODEL)).toBe("0.159.0");
+    expect(minimumCodexCliVersionForModel(CODEX_LOCAL_COMPATIBILITY_FALLBACK_MODEL)).toBeNull();
+  });
+
+  it.each([CODEX_LOCAL_COMPATIBILITY_FALLBACK_MODEL, "gpt-5.6", "gpt-6-astra", "gpt-5.5", "custom-model", "", null, undefined])(
     "has no floor for %s so callers skip the version probe", (model) => {
       expect(minimumCodexCliVersionForModel(model)).toBeNull();
     },
@@ -72,11 +81,14 @@ describe("codex local adapter metadata", () => {
   it("advertises current Codex-capable OpenAI models without changing the default", () => {
     const modelIds = models.map((model) => model.id);
 
-    // Default to the concrete gpt-5.6-sol slug — Codex ships no metadata for the bare gpt-5.6
-    // alias, so it must not be advertised or used as the default (it triggers a fallback warning).
-    expect(DEFAULT_CODEX_LOCAL_MODEL).toBe("gpt-5.6-sol");
+    // Default to gpt-6.1-sol, half the gpt-5.6-sol price on the reviewed rate card. Bare family
+    // aliases such as gpt-5.6 have no Codex metadata, so they are never advertised or the default.
+    expect(DEFAULT_CODEX_LOCAL_MODEL).toBe("gpt-6.1-sol");
+    expect(CODEX_LOCAL_COMPATIBILITY_FALLBACK_MODEL).toBe("gpt-5.6-sol");
     // Ordered like the ChatGPT app: newest version first, then by capability within a version (#14878).
-    expect(modelIds.slice(0, 13)).toEqual([
+    expect(modelIds.slice(0, 15)).toEqual([
+      "gpt-6.2-sol",
+      "gpt-6.2-astra",
       "gpt-6.1-sol",
       "gpt-6-astra",
       "gpt-6-sol",
@@ -96,11 +108,13 @@ describe("codex local adapter metadata", () => {
     expect(isCodexLocalFastModeSupported("gpt-6-astra")).toBe(true);
     expect(isCodexLocalFastModeSupported("gpt-6.1-sol")).toBe(true);
     expect(isCodexLocalFastModeSupported("gpt-6-sol")).toBe(true);
+    expect(isCodexLocalFastModeSupported("gpt-6.2-sol")).toBe(true);
+    expect(isCodexLocalFastModeSupported("gpt-6.2-astra")).toBe(true);
     expect(modelIds).not.toContain("gpt-5.3-codex");
     expect(modelIds).not.toContain("gpt-5.3-codex-spark");
   });
 
-  it.each(["gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", " gpt-6-sol ", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6"])("uses the reasoning efforts advertised for %s", (model) => {
+  it.each(["gpt-6.2-sol", "gpt-6.2-astra", "gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", " gpt-6-sol ", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6"])("uses the reasoning efforts advertised for %s", (model) => {
     expect(codexLocalReasoningEffortsForModel(model)).toEqual([
       "low",
       "medium",

@@ -163,3 +163,45 @@ export function createCopilotProtocolGuard(expectedModel: string): (direction: "
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
+
+export interface CopilotPolicyEnforcement {
+  readonly violation: CopilotPolicyViolationError | null;
+  /** Start fresh admission state for a new provider connection. */
+  connect(): void;
+  /** Observe one wire message. ACPX ignores observer errors, so a violation is recorded and enforced here. */
+  observe(direction: "inbound" | "outbound", message: unknown): void;
+  /** Throws the recorded violation; ACPX calls this before writing each prompt. */
+  assertActive(): void;
+}
+
+/**
+ * Enforce the Copilot policy with stock ACPX hooks. `onAcpMessage` sees each
+ * inbound message before ACPX dispatches it and each outbound message before
+ * its write. The first violation stops the provider, cancels later permission
+ * requests, and fails every later prompt admission with its typed error.
+ */
+export function createCopilotPolicyEnforcement(
+  expectedModel: string,
+  stopProvider: (violation: CopilotPolicyViolationError) => void,
+): CopilotPolicyEnforcement {
+  let guard = createCopilotProtocolGuard(expectedModel);
+  let violation: CopilotPolicyViolationError | null = null;
+  return {
+    get violation() { return violation; },
+    connect() {
+      if (!violation) guard = createCopilotProtocolGuard(expectedModel);
+    },
+    observe(direction, message) {
+      if (violation) return;
+      try {
+        guard(direction, message);
+      } catch (error) {
+        violation = error instanceof CopilotPolicyViolationError ? error : new CopilotPolicyViolationError();
+        stopProvider(violation);
+      }
+    },
+    assertActive() {
+      if (violation) throw violation;
+    },
+  };
+}

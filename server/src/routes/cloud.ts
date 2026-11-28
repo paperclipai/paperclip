@@ -9,11 +9,24 @@ import {
 
 const DEFAULT_PORTFOLIO_CACHE_TTL_MS = 30_000;
 const CLOUD_PORTFOLIO_PATH = "/v1/tenant/portfolio";
+const RETRYABLE_FETCH_RESET_CODES = new Set(["ECONNRESET", "UND_ERR_SOCKET"]);
+
+const MAX_RETRY_AFTER_SECONDS = 300;
 
 type PortfolioCacheEntry = {
   expiresAt: number;
   payload: unknown;
 };
+
+function retryAfterSeconds(value: string | null, currentTime: number): number | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  const seconds = /^\d+$/.test(trimmed)
+    ? Number(trimmed)
+    : Math.ceil((Date.parse(trimmed) - currentTime) / 1000);
+  if (!Number.isFinite(seconds)) return null;
+  return Math.min(Math.max(seconds, 1), MAX_RETRY_AFTER_SECONDS);
+}
 
 export function cloudRoutes(opts: {
   runtimeEnv?: CloudInstanceEnv;
@@ -86,18 +99,42 @@ export function cloudRoutes(opts: {
 
     try {
       upstreamSignal = AbortSignal.timeout(10_000);
-      const upstream = await fetchImpl(portfolioUrl, {
-        method: "GET",
-        headers: {
-          accept: "application/json",
-          authorization: `Bearer ${tenantToken}`,
-          "x-paperclip-cloud-user-id": actorUserId,
-          "x-paperclip-cloud-stack-id": context.stackId,
-        },
-        signal: upstreamSignal,
-      });
+      let upstream: Response;
+      for (let attempt = 1; ; attempt++) {
+        try {
+          upstream = await fetchImpl(portfolioUrl, {
+            method: "GET",
+            headers: {
+              accept: "application/json",
+              authorization: `Bearer ${tenantToken}`,
+              "x-paperclip-cloud-user-id": actorUserId,
+              "x-paperclip-cloud-stack-id": context.stackId,
+            },
+            signal: upstreamSignal,
+          });
+          break;
+        } catch (error) {
+          const { diagnostics } = portfolioError("upstream", error);
+          if (attempt > 1 || !RETRYABLE_FETCH_RESET_CODES.has(String(diagnostics.networkCode))) throw error;
+          logger.warn(
+            { cloudPortfolio: diagnostics },
+            "Paperclip Cloud portfolio connection reset; retrying once",
+          );
+        }
+      }
       phase = "http_response";
       upstreamStatus = upstream.status;
+      if (upstream.status === 429) {
+        logger.warn(
+          { cloudPortfolio: portfolioError("upstream").diagnostics },
+          "Paperclip Cloud portfolio request rate limited",
+        );
+        const retryAfter = retryAfterSeconds(upstream.headers.get("retry-after"), now());
+        if (retryAfter !== null) res.setHeader("Retry-After", String(retryAfter));
+        throw new HttpError(429, "Paperclip Cloud portfolio is rate limited", {
+          code: "cloud_portfolio_rate_limited",
+        });
+      }
       if (!upstream.ok) {
         const error = portfolioError("upstream");
         logger.warn(

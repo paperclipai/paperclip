@@ -12,6 +12,7 @@ import {
   saveDraftSubmission,
   clearDraftSubmission,
   settleDraftSubmission,
+  replayableRequest,
 } from "./composer-draft";
 
 describe("task draft upload receipts", () => {
@@ -24,7 +25,7 @@ describe("task draft upload receipts", () => {
     inline: false,
     contentPath: `/api/attachments/${id}/content`,
   };
-  beforeEach(() => localStorage.clear());
+  beforeEach(() => { localStorage.clear(); sessionStorage.clear(); });
   it("persists a tab recovery without touching shared text, receipts, or pending submission", () => {
     sessionStorage.clear();
     saveDraft(key, "Other tab text");
@@ -82,6 +83,19 @@ describe("task draft upload receipts", () => {
     expect(loadDraftAttachments(key)).toEqual([nextReceipt]);
     expect(loadDraftSubmission(key)).toBeNull();
   });
+  it.each([
+    { label: "long task comment", draftKey: key, body: "a".repeat(300_000) },
+    { label: "escaped task comment", draftKey: key, body: "\n".repeat(150_000) },
+    { label: "long chat comment", draftKey: "paperclip:agent-chat-draft:large", body: "a".repeat(300_000) },
+    { label: "escaped chat comment", draftKey: "paperclip:agent-chat-draft:large", body: "\n".repeat(150_000) },
+  ])("restores a large accepted request with its original key ($label)", ({ draftKey, body }) => {
+    const request = { body };
+    saveDraftSubmission(draftKey, { attemptId: id, reviewed: false, request, requestOwner: "user-1" });
+    const loaded = loadDraftSubmission(draftKey);
+    expect(loaded?.attemptId).toBe(id);
+    expect(loaded?.request?.body === body).toBe(true);
+  });
+
   it("keeps chat drafts and pending submission fences within the current tab", () => {
     sessionStorage.clear();
     const chatKey = "paperclip:agent-chat-draft:company:user:agent";
@@ -154,5 +168,53 @@ describe("task draft upload receipts", () => {
     expect(loadDraftAttachments(key)).toEqual([]);
     saveDraft(key, `[unbound](${receipt.contentPath})`);
     expect(loadDraftAttachments(key)).toEqual([]);
+  });
+});
+
+describe("replayable comment requests", () => {
+  const key = "paperclip:issue-comment-draft:task-two";
+  const id = "1c6ad4b0-7f55-4c1e-9d6a-2a3d2b1f4e10";
+  beforeEach(() => localStorage.clear());
+
+  it("replays a retained request only for the account that made it", () => {
+    saveDraft(key, "Sent during the outage");
+    saveDraftSubmission(key, { attemptId: id, reviewed: false, request: { body: "Sent during the outage" }, requestOwner: "user-1" });
+    const stored = loadDraftSubmission(key);
+    expect(stored?.requestOwner).toBe("user-1");
+    expect(replayableRequest(stored, "user-1")).toEqual({ body: "Sent during the outage" });
+    expect(replayableRequest(stored, "user-2")).toBeUndefined();
+    expect(replayableRequest(stored, undefined)).toBeUndefined();
+  });
+
+  it.each([
+    { reassignment: { assigneeAgentId: "old-agent", assigneeUserId: null } },
+    { runSettings: { model: "old-model" } },
+    { reopen: true },
+  ])("does not replay a composite mutation that can overwrite newer task changes: %j", (changes) => {
+    saveDraftSubmission(key, { attemptId: id, reviewed: false, request: { body: "Keep the comment", ...changes }, requestOwner: "user-1" });
+    expect(replayableRequest(loadDraftSubmission(key), "user-1")).toBeUndefined();
+    expect(loadDraftSubmission(key)?.request?.body).toBe("Keep the comment");
+  });
+
+  it("never replays a request with no recorded account", () => {
+    saveDraft(key, "Older record");
+    saveDraftSubmission(key, { attemptId: id, reviewed: false, request: { body: "Older record" } });
+    expect(replayableRequest(loadDraftSubmission(key), "user-1")).toBeUndefined();
+  });
+});
+
+describe("a pending /swarm request survives a reload", () => {
+  const key = "paperclip:issue-comment-draft:swarm-task";
+  const attemptId = "6f1c1b0e-5a52-4b0a-9a51-0d6c9c3b2f11";
+  beforeEach(() => { localStorage.clear(); sessionStorage.clear(); });
+  it("keeps the structured swarm request and its request id for a safe resend", () => {
+    saveDraftSubmission(key, { attemptId, reviewed: false, request: { body: "two helpers write a.txt", nativeCommand: "swarm" } });
+    const restored = loadDraftSubmission(key);
+    expect(restored?.attemptId).toBe(attemptId);
+    expect(restored?.request).toEqual({ body: "two helpers write a.txt", nativeCommand: "swarm" });
+  });
+  it("rejects any other native command value", () => {
+    saveDraftSubmission(key, { attemptId, reviewed: false, request: { body: "x", nativeCommand: "plan" as never } });
+    expect(loadDraftSubmission(key)?.request).toBeUndefined();
   });
 });

@@ -96,7 +96,7 @@ export interface BuildNativeExecutionInput {
     branchName: string | null;
   };
   normalizedSessionId: string | null;
-  provider?: "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx" | "openai_dot" | "grok_bot" | "muse";
+  provider?: "cursor_cloud" | "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx" | "openai_dot" | "grok_bot" | "muse";
   museBinding?: MuseBindingSnapshot;
   dotBinding?: DotBindingSnapshot;
   acpxAgent?: NativeAcpxAgent;
@@ -107,11 +107,19 @@ export interface BuildNativeExecutionInput {
   opencodePermissionMode?: NativeOpenCodePermissionMode;
   acpxPermissionMode?: NativeAcpxPermissionMode;
   acpxSessionMode?: "agent" | "plan" | "ask";
+  /**
+   * The verified /swarm request (services/antigravity-swarm.ts), set only for a
+   * run the signed-in user started with a trusted /swarm. It travels in its own
+   * provider field, apart from the rendered task prompt, and is the only text
+   * the swarm route sends.
+   */
+  antigravitySwarmRequest?: string;
   piThinkingLevel?: "off" | "low" | "high" | "max";
   claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
   grokEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
   grokDisableWebSearch?: boolean;
   model?: string | null;
+  cursorCloud?: import("../../vendor/paperclip-runner/index.js").NativeCursorCloudConfig;
   managedProfile?: Extract<
     NativeExecutionInputV5["provider"],
     { kind: "claude_managed" }
@@ -144,10 +152,12 @@ export function buildNativeExecutionInput(input: BuildNativeExecutionInput & { p
 export function buildNativeExecutionInput(input: BuildNativeExecutionInput & { provider?: Exclude<BuildNativeExecutionInput["provider"], "openai_dot" | "grok_bot" | "muse"> }): NativeExecutionInputV5 | NativeExecutionInputV7 | NativeExecutionInputV9 | NativeExecutionInputV10;
 export function buildNativeExecutionInput(input: BuildNativeExecutionInput): NativeExecutionInputV5 | NativeExecutionInputV6 | NativeExecutionInputV7 | NativeExecutionInputV8 | NativeExecutionInputV9 | NativeExecutionInputV10;
 export function buildNativeExecutionInput(input: BuildNativeExecutionInput): NativeExecutionInputV5 | NativeExecutionInputV6 | NativeExecutionInputV7 | NativeExecutionInputV8 | NativeExecutionInputV9 | NativeExecutionInputV10 {
-  if (input.issue.workMode !== "standard" && input.issue.workMode !== "planning" && input.issue.workMode !== "ask") {
-    throw new Error("native_execution_input_invalid: issue work mode must be standard, planning, or ask");
+  if (input.issue.workMode !== "standard" && input.issue.workMode !== "planning" && input.issue.workMode !== "ask" && input.issue.workMode !== "skill_test") {
+    throw new Error("native_execution_input_invalid: issue work mode must be standard, planning, ask, or skill_test");
   }
-  const mode = resolvePaperclipRunnerCursorMode(input.provider, input.acpxAgent, input.acpxSessionMode);
+  const swarmRequest = input.antigravitySwarmRequest !== undefined && input.provider === "acpx" && input.acpxAgent === "antigravity"
+    ? input.antigravitySwarmRequest : undefined;
+  const mode = swarmRequest !== undefined ? "swarm" : resolvePaperclipRunnerCursorMode(input.provider, input.acpxAgent, input.acpxSessionMode);
   const piThinkingLevel = resolvePaperclipRunnerPiThinkingLevel(input.provider, input.acpxAgent, input.piThinkingLevel);
   const executionMode = input.executionMode
     ?? (input.issue.workMode === "planning" ? "plan" : "default");
@@ -309,7 +319,7 @@ export function buildNativeExecutionInput(input: BuildNativeExecutionInput): Nat
     },
     session: {
       normalizedSessionId: input.normalizedSessionId,
-      driverKind: input.provider === "opencode"
+      driverKind: input.provider === "cursor_cloud" ? "cursor_cloud_api" : input.provider === "opencode"
         ? "opencode_server"
         : input.provider === "claude_managed"
           ? "claude_managed_agents_api"
@@ -321,7 +331,7 @@ export function buildNativeExecutionInput(input: BuildNativeExecutionInput): Nat
       protocolVersion: 1,
       lifecyclePolicy: input.lifecyclePolicy ?? { mode: "per_turn", idleTimeoutMs: null },
     },
-    provider: input.provider === "claude_managed"
+    provider: input.provider === "cursor_cloud" ? { kind: "cursor_cloud", model: input.model, cursorCloud: input.cursorCloud } : input.provider === "claude_managed"
       ? {
           kind: "claude_managed",
           model: input.model,
@@ -343,6 +353,7 @@ export function buildNativeExecutionInput(input: BuildNativeExecutionInput): Nat
           model: input.model,
           permissionMode: input.acpxPermissionMode ?? "approve-all",
           ...(mode === undefined ? {} : { mode }),
+          ...(swarmRequest === undefined ? {} : { swarmRequest }),
           ...(piThinkingLevel === undefined ? {} : { piThinkingLevel }),
           ...(input.claudeEffort === undefined ? {} : { claudeEffort: input.claudeEffort }),
           ...(input.grokEffort === undefined ? {} : { grokEffort: input.grokEffort }),

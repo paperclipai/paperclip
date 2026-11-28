@@ -49,7 +49,7 @@ test('repairs a missing branch without prompting for another connection', async 
 
 test('creating a project imports repository skills without another setup flow', async ({ page }) => {
   await page.goto(story('create-project'));
-  await page.getByRole('button', { name: 'Add Project', exact: true }).first().click();
+  await page.getByRole('button', { name: 'Create project', exact: true }).first().click();
   const dialog = page.getByRole('dialog', { name: 'Create project', exact: true });
   await dialog.getByRole('textbox', { name: 'Project name', exact: true }).fill('Repository project');
   await dialog.getByRole('button', { name: 'Add GitHub repo', exact: true }).click();
@@ -57,9 +57,8 @@ test('creating a project imports repository skills without another setup flow', 
   await dialog.getByRole('button', { name: 'Create project', exact: true }).click();
   await expect(dialog).toHaveCount(0);
   await page.getByRole('link', { name: 'Skills', exact: true }).click();
-  await page.getByLabel('Skills', { exact: true }).getByRole('link', { name: 'Sources', exact: true }).click();
-  const source = page.getByRole('region', { name: 'acme/team-skills', exact: true });
-  await expect(source.getByText('Code review', { exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Installed skills', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Code review by GitHub/ })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Import skills', exact: true })).toHaveCount(0);
 });
 
@@ -86,33 +85,34 @@ test('empty repositories explain automatic discovery of future skills', async ({
 
 test('routine instructions stay stable while new executions follow updated skill content', async ({ page }) => {
   await page.goto(story('routine-reference'));
-  const description = page.getByRole('region', { name: 'Description', exact: true });
+  const description = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Instructions', exact: true }) });
+  const tasks = page.getByRole('list', { name: 'Tasks created by this routine', exact: true });
   await expect(description.getByRole('link', { name: '/code-review', exact: true })).toBeVisible();
   const instructions = await description.innerText();
   await page.getByRole('button', { name: 'Run now', exact: true }).click();
   await page.getByRole('button', { name: 'Run routine', exact: true }).click();
-  await page.getByRole('link', { name: 'Open PAP-124: Review project changes', exact: true }).click();
+  await tasks.getByRole('link', { name: 'Open PAP-124: Review project changes', exact: true }).click();
   const outcome = page.getByText(/^Completed using code review version /);
   await expect(outcome).toContainText('version-entry-1 at commit a17d36');
   await expect(outcome).toBeVisible();
   const first = await outcome.textContent() ?? '';
   expect(first).toContain('version-entry-1 at commit a17d36');
   await expect(page.getByRole('alert')).toHaveCount(0);
+  await page.getByRole('button', { name: 'More workspace pages', exact: true }).click();
   await page.getByRole('link', { name: 'Skills', exact: true }).click();
   await page.getByLabel('Skills', { exact: true }).getByRole('link', { name: 'Sources', exact: true }).click();
   await page.getByRole('region', { name: 'acme/team-skills', exact: true }).getByRole('button', { name: 'Refresh', exact: true }).click();
   await expect(page.getByText('Security review', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'More workspace pages', exact: true }).click();
   await page.getByRole('link', { name: 'Routines', exact: true }).click();
   await page.getByRole('main').getByText('Review project changes', { exact: true }).click();
-  await page.getByLabel('Routine navigation', { exact: true }).getByRole('link', { name: 'Overview', exact: true }).click();
   await expect(description).toHaveText(instructions, { useInnerText: true });
   await page.getByRole('button', { name: 'Run now', exact: true }).click();
   await page.getByRole('button', { name: 'Run routine', exact: true }).click();
-  await page.getByRole('link', { name: 'Open PAP-125: Review project changes', exact: true }).click();
+  await tasks.getByRole('link', { name: 'Open PAP-125: Review project changes', exact: true }).click();
   await expect(outcome).toContainText('version-entry-1-updated at commit bbbbbbbb');
-  await page.getByRole('link', { name: 'Routine', exact: true }).click();
-  await page.getByLabel('Routine navigation', { exact: true }).getByRole('link', { name: 'Runs', exact: true }).click();
-  await page.getByRole('link', { name: 'Open PAP-124: Review project changes', exact: true }).click();
+  await page.goBack();
+  await tasks.getByRole('link', { name: 'Open PAP-124: Review project changes', exact: true }).click();
   await expect(outcome).toHaveText(first);
 });
 

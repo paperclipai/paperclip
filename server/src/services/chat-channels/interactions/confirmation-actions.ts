@@ -1,7 +1,13 @@
+import { notifyChatContinuationWork } from "../../chat-continuation-notifications.js";
 import { connectionIntentService } from "../../connection-intents.js";
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "../../issue-assignment-wakeup.js";
 import { chatInteractionPresentation } from "../../chat-interaction-presentation.js";
 import type { DbTransaction, RuntimeContext, LifecycleRuntimeFence } from "../runtime-types.js";
+
+import type { createDeliveryWorkCoordinator } from "../../delivery-work-coordinator.js";
+import { registerScopedDeadlineWork } from "../../scoped-deadline-work.js";
+import { DELIVERY_QUEUES } from "../../delivery-work-notifications.js";
+import { notifyChatConfirmationWork, type ChatConfirmationScope } from "../../chat-confirmation-notifications.js";
 
 import { notifyChatPublicationWork } from "../../chat-work-notifications.js";
 
@@ -9,6 +15,9 @@ import {
   and,
   asc,
   eq,
+  gt,
+  isNull,
+  or,
   inArray,
   ne,
   sql,
@@ -176,6 +185,7 @@ export function createChatConfirmationActions(db: Db, options: ChatConfirmationO
               });
             },
             afterResolveInTransaction: async (tx: DbTransaction, resolved: import("@paperclipai/shared").IssueThreadInteraction) => {
+              await notifyChatConfirmationWork(tx, { companyId: action.companyId, issueId: conversation.issueId });
               const [owned] = await tx
                 .update(chatActions)
                 .set({
@@ -286,8 +296,13 @@ export function createChatConfirmationActions(db: Db, options: ChatConfirmationO
       )
       .then((rows) => rows[0] ?? null);
     if (action?.status === "processed") return true;
-    if (!action || action.status !== "processing" || !action.conversationId)
+    if (!action || action.status !== "processing") return false;
+    if (!action.conversationId) {
+      await db.update(chatActions).set({
+        status: "failed", result: { code: "confirmation_action_binding_invalid" }, updatedAt: new Date(),
+      }).where(and(eq(chatActions.id, action.id), eq(chatActions.status, "processing")));
       return false;
+    }
     const token = action.payload;
     if (
       token.version !== 1 ||
@@ -566,6 +581,7 @@ export function createChatConfirmationActions(db: Db, options: ChatConfirmationO
         })
         .onConflictDoNothing();
       if (shouldWake && issue.assigneeAgentId) {
+        await notifyChatContinuationWork(tx, { companyId: issue.companyId, issueId: issue.id });
         await tx
           .insert(chatActions)
           .values({
@@ -647,5 +663,44 @@ export function createChatConfirmationActions(db: Db, options: ChatConfirmationO
     }
     return settled;
   }
-  return { settleTerminalConfirmationAction, reconcileTerminalConfirmationActions, handleChatConfirmation };
+  function registerTerminalConfirmationWork(
+    coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
+    canRun: () => boolean,
+  ) {
+    type Entry = { id: string; companyId: string; issueId: string | null; dueAt: number };
+    return registerScopedDeadlineWork(coordinator, {
+      queue: DELIVERY_QUEUES.chatTerminalConfirmations,
+      decodeScope: (hint: string): ChatConfirmationScope | undefined => hint === "*" ? undefined : JSON.parse(hint),
+      matches: (entry: Entry, scope?: ChatConfirmationScope) => !scope ||
+        (entry.companyId === scope.companyId && (!scope.issueId || !entry.issueId || entry.issueId === scope.issueId)),
+      load: async (scope?: ChatConfirmationScope, signal?: AbortSignal): Promise<Entry[]> => {
+        const entries: Entry[] = [];
+        let cursor: { companyId: string; id: string } | undefined;
+        while (!signal?.aborted) {
+          const rows = await db.select({
+            id: chatActions.id, companyId: chatActions.companyId, issueId: chatConversations.issueId,
+          }).from(chatActions).leftJoin(chatConversations, and(
+            eq(chatConversations.companyId, chatActions.companyId), eq(chatConversations.id, chatActions.conversationId),
+          )).where(and(
+            sql`${chatActions.kind} = 'confirmation_response' AND ${chatActions.status} = 'processing'`,
+            scope ? eq(chatActions.companyId, scope.companyId) : undefined,
+            scope?.issueId ? or(eq(chatConversations.issueId, scope.issueId), isNull(chatConversations.id)) : undefined,
+            cursor ? or(
+              gt(chatActions.companyId, cursor.companyId),
+              and(eq(chatActions.companyId, cursor.companyId), gt(chatActions.id, cursor.id)),
+            ) : undefined,
+          )).orderBy(asc(chatActions.companyId), asc(chatActions.id)).limit(100);
+          entries.push(...rows.map(row => ({ ...row, dueAt: 0 })));
+          if (rows.length < 100) return entries;
+          cursor = rows[rows.length - 1];
+        }
+        throw signal?.reason ?? new Error("Confirmation recovery stopped");
+      },
+      check: async (entry: Entry) => {
+        await settleTerminalConfirmationAction(entry.id);
+        return null;
+      },
+    }, canRun);
+  }
+  return { settleTerminalConfirmationAction, reconcileTerminalConfirmationActions, handleChatConfirmation, registerTerminalConfirmationWork };
 }

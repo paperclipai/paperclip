@@ -24,6 +24,9 @@ import {
   type Mutation,
   type MutationOptions,
   type QueryClientConfig,
+  type QueryKey,
+  type RefetchOptions,
+  type RefetchQueryFilters,
 } from "@tanstack/react-query";
 import { classifyError, describeError, errorRetryAfterMs, isTransientError } from "@/api/errors";
 import { MAX_PROBE_DELAY_MS, PROBE_BACKOFF_MS, type ConnectivityStore } from "./connectivity";
@@ -98,9 +101,12 @@ export function reconnectDelayFor(failureCount: number, error: unknown): number 
   return retryAfterMs === null ? base : Math.min(Math.max(base, retryAfterMs), MAX_PROBE_DELAY_MS);
 }
 
+/** A successful response whose expected state has not arrived yet. */
+export class QueryNotReadyError extends Error {}
+
 /** Query errors worth a Sentry event: not outages, not denials or missing items. */
 export function shouldReportQueryError(error: unknown): boolean {
-  return classifyError(error) === "unknown";
+  return !(error instanceof QueryNotReadyError) && classifyError(error) === "unknown";
 }
 
 export interface MutationErrorToast {
@@ -110,7 +116,8 @@ export interface MutationErrorToast {
 
 export interface AppQueryClientDeps {
   connectivity: Pick<ConnectivityStore, "reportError" | "getSnapshot">;
-  reportError?: (error: unknown) => void;
+  /** Report a final query error. The key lets the reporter group by query name. */
+  reportError?: (error: unknown, queryKey: QueryKey) => void;
   /** Show a toast for a failed opted-in mutation that has no handler of its own. */
   notifyMutationError?: (toast: MutationErrorToast) => void;
 }
@@ -144,6 +151,20 @@ class AppQueryClient extends QueryClient {
       retryDelay: options?.retryDelay ?? retryDelayFor,
     };
   }
+
+  override refetchQueries<TTaggedQueryKey extends QueryKey = QueryKey>(
+    filters?: RefetchQueryFilters<TTaggedQueryKey>,
+    options?: RefetchOptions,
+  ): Promise<void> {
+    const predicate = filters?.predicate;
+    return super.refetchQueries(
+      {
+        ...filters,
+        predicate: (query) => query.options.queryFn !== undefined && (predicate?.(query) ?? true),
+      },
+      options,
+    );
+  }
 }
 
 /** A polling query that keeps failing reports once per window, not on every poll. */
@@ -158,7 +179,7 @@ export function createAppQueryClient(deps: AppQueryClientDeps, config: QueryClie
       const last = lastReportedAt.get(query.queryHash);
       if (last !== undefined && now - last < QUERY_ERROR_REPORT_WINDOW_MS) return;
       lastReportedAt.set(query.queryHash, now);
-      deps.reportError(error);
+      deps.reportError(error, query.queryKey);
     },
   });
   const mutationCache = new MutationCache({

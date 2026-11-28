@@ -90,7 +90,7 @@ async function buildSandboxTarget(input: {
   if (target?.kind !== "remote" || target.transport !== "sandbox") {
     throw new Error("expected a sandbox target");
   }
-  return { target, execute };
+  return { target, execute, environmentRuntime };
 }
 
 describe("resolveEnvironmentExecutionTarget effective capability snapshot", () => {
@@ -218,6 +218,16 @@ describe("resolveEnvironmentExecutionTarget effective capability snapshot", () =
     expect(target.reusableLeaseConfigured).toBe(true);
   });
 
+  it("carries an inheriting environment's idle window for the remote warm default", async () => {
+    const { target } = await buildSandboxTarget({
+      snapshot: FULL_GRANT,
+      supportsSync: false,
+      config: { reuseLease: true, runnerIdleTimeoutMs: 900_000 },
+    });
+    expect(target.runnerLifecyclePolicy).toBeNull();
+    expect(target.runnerIdleTimeoutMs).toBe(900_000);
+  });
+
   it("carries host-owned sandbox acquisition provenance without persisting provider ids in metadata", async () => {
     mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
       driver: "sandbox",
@@ -266,6 +276,17 @@ describe("effective snapshot gates the sync decision", () => {
     const { target } = await buildSandboxTarget({ snapshot: FULL_GRANT, supportsSync: true });
     expect(target.runner?.syncIn).toBeTypeOf("function");
     expect(target.runner?.syncOut).toBeTypeOf("function");
+  });
+
+  it.each(["syncIn", "syncOut"] as const)("carries a %s deadline only on the requested transfer", async method => {
+    const { target, environmentRuntime } = await buildSandboxTarget({ snapshot: FULL_GRANT, supportsSync: true });
+    const operations = [{ operationId: "archive-deadline", files: [] }];
+    await target.runner![method]!(operations, { minimumTimeoutMs: 900_000 });
+    await target.runner![method]!(operations);
+    const calls = vi.mocked(environmentRuntime[method]).mock.calls;
+    expect(calls[0]?.[0]).toMatchObject({ operations, minimumTimeoutMs: 900_000 });
+    expect(calls[1]?.[0]).toMatchObject({ operations });
+    expect(calls[1]?.[0]).not.toHaveProperty("minimumTimeoutMs");
   });
 
   it("omits the native sync hooks when the snapshot removes a sync verb", async () => {

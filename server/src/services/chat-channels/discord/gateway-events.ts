@@ -165,7 +165,7 @@ export function createDiscordGatewayEvents(db: Db, options: DiscordGatewayEvents
           current.setup.step === "complete" ? "active" : "verifying";
         await notifyChatReceiver(tx, current);
         await notifyDiscordCommandRegistration(tx, { kind: "endpoint", id: current.id });
-        if (status !== current.status) await notifyChatEndpointWork(tx, current.connectionId);
+        if (status !== current.status) await notifyChatEndpointWork(tx, current.connectionId, current.companyId);
         await tx
           .update(chatEndpoints)
           .set({

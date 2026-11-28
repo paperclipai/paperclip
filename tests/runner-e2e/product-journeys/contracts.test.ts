@@ -13,10 +13,15 @@ import type { RunnerE2EResult } from "../types.js";
 import type { JourneyContext, JourneyEvidence, TargetSession } from "./types.js";
 import { createConnectionProof } from "../connection-evidence.js";
 import { retainOnboardingArtifact } from "./artifact-evidence.js";
+import { journeyRequiredChecks } from "./success-contract.js";
 import type { OnboardingConnectEvidence } from "./onboarding-connect.js";
 vi.mock("@playwright/test", () => ({
   expect: Object.assign(
-    (locator: { textContent(): Promise<string> }) => ({ async toContainText(value: string) { expect(await locator.textContent()).toContain(value); } }),
+    (locator: { textContent(): Promise<string>; isVisible?(): Promise<boolean> }) => ({
+      async toContainText(value: string) { expect(await locator.textContent()).toContain(value); },
+      async toBeVisible() { expect(await locator.isVisible?.()).toBe(true); },
+      async toBeInViewport() {},
+    }),
     { poll: (read: () => Promise<unknown>) => ({ async toBe(value: unknown) { expect(await read()).toBe(value); } }) },
   ),
 }));
@@ -38,6 +43,32 @@ function connectReceipt(): OnboardingConnectEvidence {
   };
 }
 describe("deployment journey contracts", () => {
+  it("discovers an ordinary assigned-skill journey without an experimental pin prerequisite", () => {
+    const discovered = productJourneys.find(journey => journey.id === "saved-skill-use")!;
+    expect(discovered).not.toHaveProperty("requiredSettings");
+    expect(journeyRequiredChecks[discovered.id]?.[0]).toBe("saved-skill-assignment-bound");
+    const config = parseTargetConfig({ ...local, journeys: ["saved-skill-use"],
+      limits: { durationMs: 600_000, modelBudgetCents: 100, maxRuns: 1 } });
+    expect(preparationPreview(config).journeys).toContainEqual(discovered);
+    expect(config.baseline.features).toEqual({});
+  });
+  it("requires one native saved-skill run and every closed source/use/result check", () => {
+    const config = { ...local, id: "qa", mode: "existing-cloud", adapterModule: "/private/provider.mjs",
+      executionEnvironment: "daytona", journeys: ["saved-skill-use"], limits: { durationMs: 600_000, modelBudgetCents: 100, maxRuns: 1 } };
+    expect(parseTargetConfig(config).journeys).toEqual(["saved-skill-use"]);
+    for (const maxRuns of [0, 2]) expect(() => parseTargetConfig({ ...config, limits: { ...config.limits, maxRuns } })).toThrow("agent_journeys_require_bounded_runs");
+    const retained = result();
+    Object.assign(retained, { caseId: "saved-skill-use", provider: "opencode", model: "configured-model", runtimeMode: "native", runIds: ["run"] });
+    retained.productJourney!.checks = journeyRequiredChecks[retained.caseId]!.map(id => ({ id, passed: true }));
+    expect(() => validateRetainedRunnerResult(retained)).not.toThrow();
+    for (const check of retained.productJourney!.checks) {
+      const missing = structuredClone(retained);
+      missing.productJourney!.checks = missing.productJourney!.checks.filter(row => row.id !== check.id);
+      expect(() => validateRetainedRunnerResult(missing)).toThrow("result.productJourney");
+    }
+    retained.runIds = [];
+    expect(() => validateRetainedRunnerResult(retained)).toThrow("result.agentJourneyRun");
+  });
   it("accepts historical results without Connect diagnostics and optional closed receipts", () => {
     const retained = result();
     retained.caseId = "cloud-onboarding";
@@ -162,10 +193,23 @@ describe("deployment journey contracts", () => {
     await fixtures.resolve(["backlog-task"]);
     api.post.mockImplementation(async () => { throw Error("task creation inside measured story"); });
     let assigned = false;
-    const locator = { filter: vi.fn(), first: vi.fn(), locator: vi.fn(), getByRole: vi.fn(), click: vi.fn(), isVisible: vi.fn(async () => false), textContent: vi.fn(async () => assigned ? "You" : "Unassigned") };
-    for (const method of [locator.filter, locator.first, locator.locator, locator.getByRole]) method.mockReturnValue(locator);
+    let panelOpen = false;
+    let propertiesSelected = false;
+    const chain = <T extends object>(target: T) => Object.assign(target, { filter: vi.fn(() => target), first: vi.fn(() => target) });
+    const hidden = chain({ isVisible: vi.fn(async () => false), click: vi.fn() });
+    const link = chain({ click: vi.fn() });
+    const opener = chain({ isVisible: vi.fn(async () => !panelOpen), click: vi.fn(async () => { panelOpen = true; }) });
+    const propertiesOption = chain({ isVisible: vi.fn(async () => panelOpen && !propertiesSelected), click: vi.fn(async () => { propertiesSelected = true; }) });
+    const valueButton = chain({ click: vi.fn() });
+    const value = chain({ getByRole: vi.fn(() => valueButton), textContent: vi.fn(async () => assigned ? "You" : "Unassigned") });
+    const assignee = chain({ isVisible: vi.fn(async () => propertiesSelected), locator: vi.fn(() => value),
+      scrollIntoViewIfNeeded: vi.fn() });
+    const locator = link;
     const assign = { click: vi.fn(async () => { assigned = true; }) };
-    const page = { goto: vi.fn(), reload: vi.fn(), locator: vi.fn(() => locator), getByRole: vi.fn((_role: string, options?: { name?: unknown }) => options?.name === "Assign to me" ? assign : locator) };
+    const page = { goto: vi.fn(), reload: vi.fn(async () => { panelOpen = false; propertiesSelected = false; }), locator: vi.fn(() => assignee),
+      getByRole: vi.fn((role: string, options?: { name?: unknown }) => options?.name === "Assign to me" ? assign
+        : role === "link" ? link : role === "option" ? propertiesOption : role === "tab" ? hidden
+        : options?.name === "Open a new tab" || options?.name === "Toggle side panel" ? hidden : opener) };
     const get = vi.fn(async (route: string) => route.endsWith("/runs") ? [] : { assigneeUserId: assigned ? context.user.id : null, assigneeAgentId: null, status: "backlog" });
     Object.assign(context.api, { get });
     context.page = page as unknown as JourneyContext["page"];
@@ -175,6 +219,8 @@ describe("deployment journey contracts", () => {
     expect(session.own).toHaveBeenCalledTimes(2);
     expect(page.goto).toHaveBeenCalledExactlyOnceWith("https://qa.example.test/QA/issues");
     expect(locator.filter).toHaveBeenCalledWith({ hasText: "Journey QA campaign-1" });
+    expect(opener.click).toHaveBeenCalledTimes(2);
+    expect(propertiesOption.click).toHaveBeenCalledTimes(2);
     expect(assign.click).toHaveBeenCalledOnce();
     expect(page.reload).toHaveBeenCalledOnce();
     expect(get.mock.calls.map(([route]) => route)).toEqual(["/api/issues/task-1", "/api/issues/task-1", "/api/issues/task-1/runs"]);
@@ -220,12 +266,28 @@ describe("deployment journey contracts", () => {
     onboarding.productJourney!.operations.modelCostUsd=null;
     expect(aggregateCampaignBilling([onboarding,result()]).observedAndEstimatedCostUsd).toBeNull();
   });
-  it("requires real pass evidence and forbids model work in browser-only passes", () => {
-    expect(()=>validateRetainedRunnerResult(result())).not.toThrow();
-    const missing = result(); missing.productJourney!.checks=[];
+  it.each(["inbox-triage", "task-properties", "task-create", "project-task-context"])("requires real pass evidence and forbids model work in browser-only %s passes", caseId => {
+    const browser = result();
+    browser.caseId = caseId;
+    browser.executionId = `product-journeys.local-qa.local.${caseId}`;
+    browser.productJourney!.checks = journeyRequiredChecks[caseId]!.map(id => ({ id, passed: true }));
+    expect(()=>validateRetainedRunnerResult(browser)).not.toThrow();
+    const missing = structuredClone(browser); missing.productJourney!.checks=[];
     expect(()=>validateRetainedRunnerResult(missing)).toThrow();
-    const paid = result(); paid.runIds=["unexpected"];
-    expect(()=>validateRetainedRunnerResult(paid)).toThrow();
+    const forbidden: Array<Partial<RunnerE2EResult>> = [{ runIds: ["unexpected"] }, { provider: "openai" }, { model: "unexpected" },
+      { runtimeMode: "native" }, { runtimeMode: "legacy" }];
+    for (const work of forbidden) expect(()=>validateRetainedRunnerResult({ ...browser, ...work })).toThrow("result.browserOnly");
+  });
+  it("rejects collected runs and nonempty usage on a saved passing access result", () => {
+    const browser = result(); browser.caseId = "company-access-isolation";
+    browser.executionId = "product-journeys.local-qa.local.company-access-isolation";
+    browser.productJourney!.checks = journeyRequiredChecks[browser.caseId]!.map(id => ({ id, passed: true }));
+    expect(() => validateRetainedRunnerResult(browser)).not.toThrow();
+    const collected = validateJourneyCollection({ journeyId: "company-access-isolation", runIds: ["collected-run"], usage: { runs: [{ runId: "collected-run", usage: { inputTokens: 1 } }] } });
+    expect(() => validateRetainedRunnerResult({ ...browser, runIds: collected.runIds, usage: collected.usage })).toThrow("result.browserOnly");
+    expect(() => validateRetainedRunnerResult({ ...browser, runIds: [], usage: collected.usage })).toThrow("result.browserOnly");
+    expect(() => validateRetainedRunnerResult({ ...browser, usage: { inputTokens: 1 } })).toThrow("result.browserOnly");
+    expect(() => validateRetainedRunnerResult({ ...browser, usage: { runs: [] } })).not.toThrow();
   });
   it("keeps browser-only reporting free of invented model calls and rejects public publication", () => {
     const value=result();

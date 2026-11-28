@@ -2,10 +2,11 @@ function object(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
-export function createAcpxConfigAdmission(expected: string, options: { label: string; configId: string; supportedValues: readonly string[]; restoring?: boolean; sessionMode?: boolean }) {
-  type State = { sessionId: string | null; mode: string | null; error: Error | null };
+export function createAcpxConfigAdmission(expected: string, options: { label: string; configId: string; supportedValues: readonly string[]; restoring?: boolean; sessionMode?: boolean; reselectsRestoredMode?: boolean }) {
+  type State = { sessionId: string | null; mode: string | null; error: Error | null; admitted: boolean };
   let current: State | null = null;
   let selectedOnce = options.restoring === true;
+  const drifts = (state: State, mode: unknown) => selectedOnce && mode !== expected && (state.admitted || options.reselectsRestoredMode !== true);
   const failure = (detail: string) => new Error(`${options.label} admission failed: ${detail}`);
   const assertReady = () => {
     if (current?.error) throw current.error;
@@ -23,7 +24,7 @@ export function createAcpxConfigAdmission(expected: string, options: { label: st
     assertReady,
     isReady() { assertNoError(); return selectedOnce && current?.sessionId != null && current.mode === expected; },
     createGuard() {
-      const state: State = { sessionId: null, mode: null, error: null };
+      const state: State = { sessionId: null, mode: null, error: null, admitted: false };
       current = state;
       const pending = new Map<string | number, { method: string; sessionId: unknown; selectsMode: boolean }>();
       return (direction: "inbound" | "outbound", value: unknown): void => {
@@ -61,13 +62,13 @@ export function createAcpxConfigAdmission(expected: string, options: { label: st
             if (Array.isArray(update.configOptions) && update.configOptions.some(value => object(value).id === options.configId)) {
               if (state.sessionId && params.sessionId !== state.sessionId) throw failure("mode update belongs to a different session");
               const observed = readMode(update, false);
-              if (selectedOnce && observed !== expected) throw failure("native mode drifted from the selected mode");
+              if (drifts(state, observed)) throw failure("native mode drifted from the selected mode");
             }
             return;
           }
           if (options.sessionMode && message.method === "session/update" && object(params.update).sessionUpdate === "current_mode_update") {
             if (state.sessionId && params.sessionId !== state.sessionId) throw failure("mode update belongs to a different session");
-            if (selectedOnce && object(params.update).currentModeId !== expected) throw failure("native mode drifted from the selected mode");
+            if (drifts(state, object(params.update).currentModeId)) throw failure("native mode drifted from the selected mode");
             return; // Notifications alone never admit a prompt.
           }
           if (message.method !== undefined || (typeof message.id !== "string" && typeof message.id !== "number")) return;
@@ -80,10 +81,11 @@ export function createAcpxConfigAdmission(expected: string, options: { label: st
           const sessionId = request.method === "session/new" ? result.sessionId : request.sessionId;
           if (typeof sessionId !== "string" || !sessionId.trim()) throw failure("mode acknowledgement has no session identity");
           const mode = readMode(result, session);
-          if (session && selectedOnce && mode !== expected) throw failure("restored native mode drifted from the selected mode");
-          if (!session && (request.selectsMode || selectedOnce) && mode !== expected) throw failure("configuration did not apply the selected mode");
+          if (session && drifts(state, mode)) throw failure("restored native mode drifted from the selected mode");
+          if (!session && mode !== expected && (request.selectsMode || drifts(state, mode))) throw failure("configuration did not apply the selected mode");
           if (!session && request.selectsMode) selectedOnce = true;
           state.sessionId = sessionId; state.mode = mode;
+          if (selectedOnce && mode === expected) state.admitted = true;
         } catch (error) {
           state.error = error instanceof Error ? error : failure("invalid mode acknowledgement");
           throw state.error;

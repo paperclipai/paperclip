@@ -1,9 +1,11 @@
-import type {
-  ConnectionGrantKind,
-  ConnectionAudienceMember,
-  ConnectionGrant,
-  ConnectionGrantStatus,
-  ToolConnectionCredentialPolicy,
+import {
+  isToolConnectionAttentionHealth,
+  type ConnectionGrantKind,
+  type ConnectionAudienceMember,
+  type ConnectionGrant,
+  type ConnectionGrantStatus,
+  type ToolConnection,
+  type ToolConnectionCredentialPolicy,
 } from "@paperclipai/shared";
 
 /**
@@ -159,4 +161,18 @@ export function memberLabel(
   const match = members.find((member) => member.userId === userId);
   if (!match) return null;
   return match.name?.trim() || match.email?.trim() || null;
+}
+
+/**
+ * Counted as available to agents when it is on and agents are offered its tools.
+ * A personal connection keeps its tools while its health is stale, unless a new sign-in is required.
+ */
+export function isConnectionAvailableToAgents(
+  connection: Pick<ToolConnection, "status" | "enabled" | "healthStatus" | "credentialPolicy" | "transport" | "lastError">,
+): boolean {
+  if (connection.status !== "active" || !connection.enabled) return false;
+  if (connection.lastError === "oauth_reauthorization_required") return false;
+  return !isToolConnectionAttentionHealth(connection.healthStatus)
+    || connection.credentialPolicy === "per_user"
+    || connection.transport === "plugin";
 }
