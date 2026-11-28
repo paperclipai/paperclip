@@ -145,6 +145,25 @@ describe.skipIf(!url)("remote workspace close and allocation cleanup", () => {
     expect(f.destroyProvider).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])("reaps shared remote sessions only after their work is saved (dirty: %s)", async dirty => {
+    const f = await fixture();
+    await db.update(executionWorkspaces).set({ mode: "shared_workspace",
+      metadata: { remoteWorkspace: { ...f.authority, dirty, writerRunId: dirty ? f.run.id : null } } })
+      .where(eq(executionWorkspaces.id, f.workspace.id));
+
+    const result = await f.service.sweepTerminalWorkspaces();
+
+    expect(result.cleanupFailed).toBe(0);
+    expect(result.archived).toBe(dirty ? 0 : 1);
+    const workspace = await current(f.workspace.id);
+    expect(workspace.status).toBe(dirty ? "active" : "archived");
+    expect(f.destroyProvider).toHaveBeenCalledTimes(dirty ? 0 : 1);
+    expect(readRemoteWorkspaceAuthority(workspace.metadata)?.location).toEqual(dirty ? f.authority.location : null);
+    expect((await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, f.snapshotId)))[0]!.status).toBe("committed");
+    expect(await readFile(join(f.cwd, "host-sentinel.txt"), "utf8")).toContain("never be cleaned");
+    expect(f.inspectLocal).not.toHaveBeenCalled();
+  });
+
   it("preserves the automatic delivery gate and retries an explicitly closed remote allocation", async () => {
     const f = await fixture();
     const active = await f.service.sweepTerminalWorkspaces();

@@ -2750,6 +2750,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       {
         acquireGitWorktreeCleanupLock,
         cleanupExecutionWorkspaceArtifacts,
+        stopIdleSessionRuntimeServicesForExecutionWorkspace,
         stopRuntimeServicesForExecutionWorkspace,
       },
       { workspaceOperationService },
@@ -2783,11 +2784,18 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       await assertTerminalCleanupGitStateUnchanged(workspace, expectedHeadSha);
       await opts.beforeTerminalWorkspaceCleanup?.(workspace);
       await assertTerminalCleanupGitStateUnchanged(workspace, expectedHeadSha);
-      await stopRuntimeServicesForExecutionWorkspace({
-        db,
-        executionWorkspaceId: workspace.id,
-        workspaceCwd: workspace.cwd,
-      });
+      if (workspace.mode === "shared_workspace" && workspace.providerType !== "git_worktree") {
+        // The cwd of a shared session without its own worktree is the project workspace
+        // directory, and services started under this session can be project-owned or
+        // leased by a later run. Stop only the idle services this session owns.
+        await stopIdleSessionRuntimeServicesForExecutionWorkspace({ db, executionWorkspaceId: workspace.id });
+      } else {
+        await stopRuntimeServicesForExecutionWorkspace({
+          db,
+          executionWorkspaceId: workspace.id,
+          workspaceCwd: workspace.cwd,
+        });
+      }
       const cleanup = await cleanupExecutionWorkspaceArtifacts({
         workspace,
         projectWorkspace,
@@ -4171,19 +4179,29 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         const readinessKey = workspace.providerType === "plugin" ? `plugin:${workspace.id}:${readExecutionWorkspaceLifecycleGeneration(workspace.metadata)}` : workspacePath
           ? JSON.stringify([workspace.companyId, workspacePath, workspace.baseRef, workspace.branchName, createdByRuntime])
           : `workspace:${workspace.id}`;
-        let inspection = readinessByWorkingTree.get(readinessKey);
+        const sharedSession = workspace.mode === "shared_workspace";
+        // A local shared session points at the project workspace
+        // directory. Archiving it changes no file on disk, so it needs no git inspection
+        // and no merge proof. Git worktrees and plugin-owned sessions retain both checks
+        // because cleanup removes their provider-owned workspace.
+        const skipGitChecks = sharedSession && workspace.providerType === "local_fs";
         const inspectionStartedAt = now().getTime();
-        if (!inspection) {
-          inspection = inspectWorkspace(toExecutionWorkspace(workspace), recoveryPullRequest);
-          readinessByWorkingTree.set(readinessKey, inspection);
-        }
-        const inspected = await inspection;
-        const { git, statusInspectionSucceeded } = inspected;
-        if (!statusInspectionSucceeded) {
-          if (remoteWorkspace) terminalWorkspaceDeadlines.delete(workspace.id);
-          if ("failure" in inspected) await backOffTerminalWorkspace(workspace, inspected.failure);
-          result.skippedUndelivered += 1;
-          continue;
+        let git: ExecutionWorkspaceCloseGitReadiness | null = null;
+        if (!skipGitChecks) {
+          let inspection = readinessByWorkingTree.get(readinessKey);
+          if (!inspection) {
+            inspection = inspectWorkspace(toExecutionWorkspace(workspace), recoveryPullRequest);
+            readinessByWorkingTree.set(readinessKey, inspection);
+          }
+          const inspected = await inspection;
+          const { statusInspectionSucceeded } = inspected;
+          if (!statusInspectionSucceeded) {
+            if (remoteWorkspace) terminalWorkspaceDeadlines.delete(workspace.id);
+            if ("failure" in inspected) await backOffTerminalWorkspace(workspace, inspected.failure);
+            result.skippedUndelivered += 1;
+            continue;
+          }
+          git = inspected.git;
         }
         if (workspace.metadata?.[TERMINAL_WORKSPACE_RETRY_KEY] !== undefined) {
           await settleTerminalWorkspaceRetry(workspace);
@@ -4213,8 +4231,11 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           result.skippedNonTerminalTree += 1;
           continue;
         }
-        const keepReason = assessment.workspaceDirty ? "local_data" as const
-          : assessment.deliveryState !== "merged_via_pr" && assessment.deliveryState !== "merged_by_ancestry" ? "unmerged" as const : null;
+        // Remote shared sessions prove saved-state readiness above, without a Git
+        // checkout. Their snapshot, rather than merge ancestry, preserves the work.
+        const requiresMergeProof = !skipGitChecks && !(sharedSession && remoteWorkspace);
+        const keepReason = !skipGitChecks && assessment.workspaceDirty ? "local_data" as const
+          : requiresMergeProof && assessment.deliveryState !== "merged_via_pr" && assessment.deliveryState !== "merged_by_ancestry" ? "unmerged" as const : null;
         if (keepReason && holdFingerprint) {
           const headSha = git?.headSha ?? null;
           const checks = priorHold?.reason === keepReason && priorHold.fingerprint === holdFingerprint && priorHold.headSha === headSha
@@ -4386,6 +4407,16 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
                   AND live_run.company_id = ${workspace.companyId}
                   AND live_run.status IN ('queued', 'running')
               )`,
+              // A shared session can be bound by another open issue. Its source
+              // tree being closed does not make the session unused.
+              ...(sharedSession ? [sql<boolean>`NOT EXISTS (
+                SELECT 1
+                FROM ${issues} other_issue
+                WHERE other_issue.company_id = ${workspace.companyId}
+                  AND other_issue.execution_workspace_id = ${workspace.id}
+                  AND other_issue.id IS DISTINCT FROM ${workspace.sourceIssueId}
+                  AND other_issue.status NOT IN ('done', 'cancelled')
+              )`] : []),
               sql<boolean>`NOT EXISTS (
                 WITH RECURSIVE issue_tree(id, status) AS (
                   SELECT root.id, root.status
