@@ -245,10 +245,9 @@ function notFoundSnapshot(identity: GitHubObjectIdentity, etag: string | null): 
  *   distinct state so a quota problem is not reported as a network failure.
  * - "uncertain": the probe itself failed (network/other) — retry later.
  */
-type RepoProbeOutcome = {
-  visibility: "visible" | "hidden" | "rate_limited" | "uncertain";
-  isPrivate: boolean | null;
-};
+type RepoProbeOutcome =
+  | { visibility: "visible" | "hidden" | "uncertain"; isPrivate: boolean | null }
+  | { visibility: "rate_limited"; isPrivate: null; retryAfterSeconds: number };
 
 async function probeRepoVisibility(
   identity: GitHubObjectIdentity,
@@ -264,13 +263,13 @@ async function probeRepoVisibility(
       return { visibility: "visible", isPrivate: typeof body?.private === "boolean" ? body.private : null };
     }
     if (probe.status === 404) return { visibility: "hidden", isPrivate: null };
-    if (probe.status === 429) return { visibility: "rate_limited", isPrivate: null };
+    if (probe.status === 429) return { visibility: "rate_limited", isPrivate: null, retryAfterSeconds: retryAfterSeconds(probe) };
     if (probe.status === 403) {
       // GitHub can return 403 for both "credentials lack access" and "rate limit
       // reached". A rate-limited probe cannot tell the two apart, so treat it as
       // a rate limit (retry later) instead of implying missing access.
       const rateLimitRemaining = probe.headers.get("x-ratelimit-remaining");
-      if (rateLimitRemaining === "0") return { visibility: "rate_limited", isPrivate: null };
+      if (rateLimitRemaining === "0") return { visibility: "rate_limited", isPrivate: null, retryAfterSeconds: retryAfterSeconds(probe) };
       return { visibility: "hidden", isPrivate: null };
     }
     return { visibility: "uncertain", isPrivate: null };
@@ -534,7 +533,7 @@ export function createGitHubExternalObjectProvider(
             };
           }
           if (probe.visibility === "rate_limited") {
-            return rateLimitedResult(authenticated, GITHUB_OBJECT_TTL_SECONDS);
+            return rateLimitedResult(authenticated, probe.retryAfterSeconds);
           }
           if (probe.visibility === "uncertain") {
             return {
@@ -601,7 +600,7 @@ export function createGitHubExternalObjectProvider(
             };
           }
           if (probe.visibility === "rate_limited") {
-            return rateLimitedResult(authenticated, GITHUB_OBJECT_TTL_SECONDS);
+            return rateLimitedResult(authenticated, probe.retryAfterSeconds);
           }
           return {
             ok: false,
