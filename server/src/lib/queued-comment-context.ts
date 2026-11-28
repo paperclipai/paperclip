@@ -1,3 +1,5 @@
+import { isUuidLike } from "@paperclipai/shared";
+
 export const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 export const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
 
@@ -11,9 +13,11 @@ function uniqueIds(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   const seen = new Set<string>();
   return value.flatMap((candidate) => {
-    if (typeof candidate !== "string" || !candidate || seen.has(candidate)) return [];
-    seen.add(candidate);
-    return [candidate];
+    if (typeof candidate !== "string") return [];
+    const trimmed = candidate.trim();
+    if (!isUuidLike(trimmed) || seen.has(trimmed)) return [];
+    seen.add(trimmed);
+    return [trimmed];
   });
 }
 
@@ -25,6 +29,16 @@ export function queuedCommentIdsFromWakePayload(payloadValue: unknown): string[]
 
 export function queuedCommentIdsFromRunContext(contextValue: unknown): string[] {
   return uniqueIds(parseObject(contextValue)[WAKE_COMMENT_IDS_KEY]);
+}
+
+export function messageIdsFromRunContext(
+  contextValue: unknown,
+  wakeCommentId: string | null,
+): string[] {
+  if (Array.isArray(parseObject(contextValue)[WAKE_COMMENT_IDS_KEY])) {
+    return queuedCommentIdsFromRunContext(contextValue);
+  }
+  return wakeCommentId !== null && isUuidLike(wakeCommentId) ? [wakeCommentId] : [];
 }
 
 export function withQueuedCommentIdsInWakePayload(

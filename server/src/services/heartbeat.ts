@@ -399,7 +399,7 @@ import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 
 import {
-  queuedCommentIdsFromRunContext,
+  messageIdsFromRunContext,
 } from "./issue-queued-comment-queue.js";
 
 import {
@@ -2634,15 +2634,7 @@ export function heartbeatService(
         messageIds:
           (run.retryOfRunId || context.retryOfRunId) && !isFailedChatRunRetry
             ? []
-            : queuedCommentIdsFromRunContext(context).length
-              ? queuedCommentIdsFromRunContext(context)
-              : Array.isArray(context.wakeCommentIds)
-                ? context.wakeCommentIds.filter(
-                    (id): id is string => typeof id === "string",
-                  )
-                : wakeCommentId
-                  ? [wakeCommentId]
-                  : [],
+            : messageIdsFromRunContext(context, wakeCommentId),
         parentContextId:
           run.retryOfRunId || context.retryOfRunId
             ? null

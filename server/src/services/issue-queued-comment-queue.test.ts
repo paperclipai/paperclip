@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildQueuedCommentQueueSnapshot, decideQueuedCommentQueueSteering, withQueuedCommentIdsInRunContext } from "./issue-queued-comment-queue.js";
+import { buildQueuedCommentQueueSnapshot, decideQueuedCommentQueueSteering, messageIdsFromRunContext, queuedCommentIdsFromWakePayload, withQueuedCommentIdsInRunContext } from "./issue-queued-comment-queue.js";
 
 describe("decideQueuedCommentQueueSteering", () => {
   it("answers unsupported on the legacy protocol", () => {
@@ -156,12 +156,12 @@ describe("withQueuedCommentIdsInRunContext", () => {
       paperclipTaskMarkdownAssignment: "assignment",
       paperclipTaskMarkdownAssignmentCompact: "assignment compact",
       paperclipTurnContext: { version: 1, events: { owner: "wake_prompt" } },
-    }, ["comment-2"], ["source-wake"]);
+    }, ["comment-2"], ["123e4567-e89b-12d3-a456-426614174001"]);
 
     expect(result).toMatchObject({
       issueId: "issue-1",
       preserved: "keep",
-      queuedCommentSourceWakeIds: ["source-wake"],
+      queuedCommentSourceWakeIds: ["123e4567-e89b-12d3-a456-426614174001"],
       wakeCommentIds: ["comment-2"],
       wakeCommentId: "comment-2",
       commentId: "comment-2",
@@ -173,6 +173,51 @@ describe("withQueuedCommentIdsInRunContext", () => {
     expect(result).not.toHaveProperty("paperclipTaskMarkdownAssignment");
     expect(result).not.toHaveProperty("paperclipTaskMarkdownAssignmentCompact");
     expect(result).not.toHaveProperty("paperclipTurnContext");
-    expect(withQueuedCommentIdsInRunContext(result, ["comment-3"]).queuedCommentSourceWakeIds).toEqual(["source-wake"]);
+    expect(withQueuedCommentIdsInRunContext(result, ["comment-3"]).queuedCommentSourceWakeIds).toEqual(["123e4567-e89b-12d3-a456-426614174001"]);
+  });
+});
+
+describe("messageIdsFromRunContext", () => {
+  const commentId = "123e4567-e89b-12d3-a456-426614174000";
+
+  it("returns an empty list when every wake comment id is malformed, without falling back to the raw array", () => {
+    expect(messageIdsFromRunContext({ wakeCommentIds: ["x"] }, "x")).toEqual([]);
+  });
+
+  it("keeps only UUIDs from a mixed wake comment id list", () => {
+    expect(messageIdsFromRunContext({ wakeCommentIds: ["x", commentId] }, commentId)).toEqual([commentId]);
+  });
+
+  it("returns the filtered wake comment ids when they are valid", () => {
+    expect(messageIdsFromRunContext({ wakeCommentIds: [commentId] }, commentId)).toEqual([commentId]);
+  });
+
+  it("falls back to a valid singular wake comment id when no id list is present", () => {
+    expect(messageIdsFromRunContext({}, commentId)).toEqual([commentId]);
+  });
+
+  it("does not pass a malformed singular wake comment id through", () => {
+    expect(messageIdsFromRunContext({}, "x")).toEqual([]);
+  });
+
+  it("returns an empty list when no ids are present at all", () => {
+    expect(messageIdsFromRunContext({}, null)).toEqual([]);
+  });
+});
+
+describe("queuedCommentIdsFromWakePayload", () => {
+  const commentId = "123e4567-e89b-12d3-a456-426614174000";
+  const payload = (wakeCommentIds: unknown) => ({ _paperclipWakeContext: { wakeCommentIds } });
+
+  it("drops ids that are not UUIDs instead of passing them to a uuid column query", () => {
+    expect(queuedCommentIdsFromWakePayload(payload(["x", commentId]))).toEqual([commentId]);
+  });
+
+  it("returns an empty list when every id is malformed", () => {
+    expect(queuedCommentIdsFromWakePayload(payload(["x"]))).toEqual([]);
+  });
+
+  it("trims padded ids and collapses duplicates after trimming", () => {
+    expect(queuedCommentIdsFromWakePayload(payload([`  ${commentId}  `, commentId]))).toEqual([commentId]);
   });
 });
