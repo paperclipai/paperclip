@@ -1180,6 +1180,270 @@ describe("agent permission routes", () => {
     expect(mockAgentService.rollbackConfigRevision).toHaveBeenCalledOnce();
   });
 
+  describe("agent sandbox and permission settings", () => {
+    const peerId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const revisionId = "33333333-3333-4333-8333-333333333333";
+    const agentActor = { type: "agent", agentId, companyId, source: "agent_key", runId: "run-1" };
+    const boardActor = { type: "board", userId: "board-user", source: "session", isInstanceAdmin: false, companyIds: [companyId] };
+
+    function useExisting(adapterConfig: Record<string, unknown>, adapterType = "claude_local") {
+      mockAgentService.getById.mockResolvedValue({ ...baseAgent, adapterType, adapterConfig });
+    }
+
+    function denyChangeGrant() {
+      mockAccessService.decide.mockImplementation(async (input: { action?: string; scope?: { requiresChangeGrant?: boolean } }) => {
+        const allowed = !input.scope?.requiresChangeGrant;
+        return {
+          allowed,
+          action: input.action,
+          reason: allowed ? "allow_explicit_grant" : "deny_missing_grant",
+          explanation: allowed ? "Allowed by test grant" : "Accepted consent is required for this suggested change.",
+        };
+      });
+    }
+
+    function patchAgent(actor: Record<string, unknown>, body: Record<string, unknown>) {
+      const app = createApp(actor);
+      return requestApp(app, (baseUrl) => request(baseUrl).patch(`/api/agents/${agentId}`).send(body));
+    }
+
+    function rollbackAgent(actor: Record<string, unknown>) {
+      const app = createApp(actor);
+      return requestApp(app, (baseUrl) => request(baseUrl)
+        .post(`/api/agents/${agentId}/config-revisions/${revisionId}/rollback`));
+    }
+
+    it("blocks an agent from changing its own runner permission mode", async () => {
+      useExisting({ provider: "acpx", acpxAgent: "claude", acpxPermissionMode: "approve-reads" }, "paperclip_runner");
+      const res = await patchAgent(agentActor, { adapterConfig: { acpxPermissionMode: "approve-all" } });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toContain("acpxPermissionMode");
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+    });
+
+    it("allows a runner model change when the stored config predates the permission default", async () => {
+      useExisting({ provider: "codex", model: "gpt-5.4" }, "paperclip_runner");
+      mockAgentService.update.mockResolvedValue({ ...baseAgent, adapterType: "paperclip_runner" });
+      const res = await patchAgent(agentActor, { adapterConfig: { model: "gpt-5.5" } });
+
+      expect(res.status, JSON.stringify(res.body)).not.toBe(403);
+    });
+
+    it("allows a Claude runner model change when the stored config has a legacy permission mode", async () => {
+      useExisting({ provider: "acpx", acpxAgent: "claude", permissionMode: "approve-all" }, "paperclip_runner");
+      mockAgentService.update.mockResolvedValue({ ...baseAgent, adapterType: "paperclip_runner" });
+      const res = await patchAgent(agentActor, { adapterConfig: { model: "claude-sonnet-4-5" } });
+
+      expect(res.status, JSON.stringify(res.body)).not.toBe(403);
+    });
+
+    it.each([
+      ["networkScope", {}, { networkScope: "open" }],
+      ["networkAllowlist", {}, { networkAllowlist: ["example.com"] }],
+      ["filesystemScope", {}, { filesystemScope: "host" }],
+      ["filesystemExtraPaths", {}, { filesystemExtraPaths: ["/etc"] }],
+      ["dangerouslySkipPermissions", { dangerouslySkipPermissions: false }, { dangerouslySkipPermissions: true }],
+      ["dangerouslyBypassApprovalsAndSandbox", {}, { dangerouslyBypassApprovalsAndSandbox: true }],
+      ["permissionMode", { permissionMode: "default" }, { permissionMode: "bypassPermissions" }],
+      ["sandbox", { sandbox: { enabled: true } }, { sandbox: { enabled: false } }],
+    ])("blocks an agent from changing its own %s", async (_key, existingConfig, patch) => {
+      useExisting(existingConfig);
+      const res = await patchAgent(agentActor, { adapterConfig: patch });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toContain("sandbox and permission settings");
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+    });
+
+    it("blocks an agent from removing a sandbox key with replaceAdapterConfig", async () => {
+      useExisting({ model: "claude-sonnet-4-5", sandbox: { enabled: true } });
+      const res = await patchAgent(agentActor, {
+        adapterConfig: { model: "claude-sonnet-4-5" },
+        replaceAdapterConfig: true,
+      });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toContain("sandbox and permission settings");
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+    });
+
+    it("allows an agent to change only the model when the config has a sandbox", async () => {
+      useExisting({ model: "claude-sonnet-4-5", sandbox: { enabled: true }, networkScope: "none" });
+      const res = await patchAgent(agentActor, { adapterConfig: { model: "claude-opus-4-1" } });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockAgentService.update).toHaveBeenCalledOnce();
+    });
+
+    it("allows an agent to resend an unchanged sandbox value", async () => {
+      useExisting({ model: "claude-sonnet-4-5", sandbox: { enabled: true } });
+      const res = await patchAgent(agentActor, {
+        adapterConfig: { model: "claude-opus-4-1", sandbox: { enabled: true } },
+      });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockAgentService.update).toHaveBeenCalledOnce();
+    });
+
+    it("allows an agent to send a null sandbox key that is already unset", async () => {
+      useExisting({ model: "claude-sonnet-4-5" });
+      const res = await patchAgent(agentActor, { adapterConfig: { networkScope: null } });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockAgentService.update).toHaveBeenCalledOnce();
+    });
+
+    it("blocks an agent from changing the adapter type while a sandbox key is set", async () => {
+      useExisting({ networkScope: "none" });
+      const res = await patchAgent(agentActor, {
+        adapterType: "codex_local",
+        adapterConfig: { networkScope: "none" },
+      });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toContain("sandbox and permission settings");
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+    });
+
+    it("blocks an agent from changing the runner harness while a sandbox key is set", async () => {
+      useExisting({ provider: "acpx", acpxAgent: "claude", networkScope: "none" }, "paperclip_runner");
+      const res = await patchAgent(agentActor, { adapterConfig: { acpxAgent: "codex" } });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toContain("adapter or harness");
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+    });
+
+    it("lets a board user change a sandbox key", async () => {
+      useExisting({ model: "claude-sonnet-4-5" });
+      const res = await patchAgent(boardActor, { adapterConfig: { networkScope: "open", sandbox: { enabled: false } } });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockAgentService.update).toHaveBeenCalledOnce();
+    });
+
+    it("blocks an agent rollback into a revision without the current sandbox", async () => {
+      useExisting({ model: "claude-sonnet-4-5", networkScope: "deny" });
+      mockAgentService.getConfigRevision.mockResolvedValue({
+        id: revisionId,
+        afterConfig: { adapterType: "claude_local", adapterConfig: { model: "claude-sonnet-4-5" }, runtimeConfig: {} },
+      });
+      mockAgentService.rollbackConfigRevision.mockResolvedValue({ ...baseAgent, adapterType: "claude_local" });
+      const res = await rollbackAgent(agentActor);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toContain("sandbox and permission settings");
+      expect(mockAgentService.rollbackConfigRevision).not.toHaveBeenCalled();
+    });
+
+    it("lets a board user roll back into a revision without the current sandbox", async () => {
+      useExisting({ model: "claude-sonnet-4-5", networkScope: "deny" });
+      mockAgentService.getConfigRevision.mockResolvedValue({
+        id: revisionId,
+        afterConfig: { adapterType: "claude_local", adapterConfig: { model: "claude-sonnet-4-5" }, runtimeConfig: {} },
+      });
+      mockAgentService.rollbackConfigRevision.mockResolvedValue({ ...baseAgent, adapterType: "claude_local" });
+      const res = await rollbackAgent(boardActor);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockAgentService.rollbackConfigRevision).toHaveBeenCalledOnce();
+    });
+
+    it("blocks an agent from moving itself to another adapter with permissive defaults", async () => {
+      useExisting({ model: "claude-sonnet-4-5" });
+      const res = await patchAgent(agentActor, { adapterType: "codex_local", adapterConfig: {} });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toContain("Only an operator");
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+    });
+
+    it("blocks an agent from changing its runner provider when no sandbox key is stored", async () => {
+      useExisting({ provider: "codex", model: "gpt-5.4" }, "paperclip_runner");
+      const res = await patchAgent(agentActor, { adapterConfig: { provider: "acpx", acpxAgent: "claude" } });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toContain("Only an operator");
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+    });
+
+    it("blocks an agent rollback into a revision with another adapter", async () => {
+      useExisting({ model: "claude-sonnet-4-5" });
+      mockAgentService.getConfigRevision.mockResolvedValue({
+        id: revisionId,
+        afterConfig: { adapterType: "codex_local", adapterConfig: { model: "gpt-5.4" }, runtimeConfig: {} },
+      });
+      mockAgentService.rollbackConfigRevision.mockResolvedValue({ ...baseAgent, adapterType: "codex_local" });
+      const res = await rollbackAgent(agentActor);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(mockAgentService.rollbackConfigRevision).not.toHaveBeenCalled();
+    });
+
+    it("allows an agent codex rollback to a revision saved before the bypass default", async () => {
+      useExisting({ model: "gpt-5.5", dangerouslyBypassApprovalsAndSandbox: true }, "codex_local");
+      mockAgentService.getConfigRevision.mockResolvedValue({
+        id: revisionId,
+        afterConfig: { adapterType: "codex_local", adapterConfig: { model: "gpt-5.4" }, runtimeConfig: {} },
+      });
+      mockAgentService.rollbackConfigRevision.mockResolvedValue({ ...baseAgent, adapterType: "codex_local" });
+      const res = await rollbackAgent(agentActor);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockAgentService.rollbackConfigRevision).toHaveBeenCalledOnce();
+    });
+
+    it("leaves sandbox changes by a granted peer agent to the grant", async () => {
+      useExisting({ model: "claude-sonnet-4-5", networkScope: "deny" });
+      mockAgentService.update.mockResolvedValue({ ...baseAgent });
+      const res = await patchAgent({ ...agentActor, agentId: peerId }, { adapterConfig: { networkScope: "allowlist", networkAllowlist: ["example.com"] } });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockAgentService.update).toHaveBeenCalledOnce();
+    });
+
+    it("asks for the profile change grant when an agent mixes a role change with other fields", async () => {
+      useExisting({});
+      denyChangeGrant();
+      const res = await patchAgent(agentActor, { role: "ceo", metadata: {} });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+        action: "agent_config:update",
+        scope: { requiresChangeGrant: true },
+      }));
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+    });
+
+    it("does not ask for the profile change grant when a mixed patch leaves the profile unchanged", async () => {
+      useExisting({ model: "claude-sonnet-4-5" });
+      denyChangeGrant();
+      const res = await patchAgent(agentActor, { name: baseAgent.name, adapterConfig: { model: "claude-opus-4-1" } });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockAccessService.decide).not.toHaveBeenCalledWith(expect.objectContaining({
+        scope: { requiresChangeGrant: true },
+      }));
+      expect(mockAgentService.update).toHaveBeenCalledOnce();
+    });
+
+    it("still lets the board creator of a setup draft mix a name and adapter config", async () => {
+      mockAgentService.getById.mockResolvedValue({
+        ...baseAgent,
+        adapterType: "claude_local",
+        createdByUserId: "board-user",
+        pauseReason: "setup",
+        lifecycleState: "preparing",
+      });
+      denyChangeGrant();
+      const res = await patchAgent(boardActor, { name: "Renamed", adapterConfig: { model: "claude-opus-4-1" } });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockAgentService.update).toHaveBeenCalledOnce();
+    });
+  });
+
   it("blocks agent-authenticated self-updates that set instructions bundle roots", async () => {
     const app = await createApp({
       type: "agent",
