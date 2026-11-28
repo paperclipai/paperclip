@@ -14,6 +14,8 @@ import {
   projectGoals,
   goals,
   issues,
+  approvals,
+  budgetIncidents,
   budgetPolicies,
   pluginManagedResources,
   plugins,
@@ -39,6 +41,7 @@ import {
   type PluginManagedProjectResolution,
 } from "@paperclipai/shared";
 import { conflict, unprocessable } from "../errors.js";
+import { resolvableApprovalStatuses } from "../lib/approval-records.js";
 import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runtime-read-model.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
@@ -1126,6 +1129,40 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       await recordProjectLifecycleEvent(tx as unknown as Db, project.companyId, id, "delete");
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
       await notifyStatusCardIssueChange(tx, project.companyId);
+      // Budget rows reference the project only by scope id; remove them
+      // with the project so they cannot orphan and break the budget
+      // overview. See #3060.
+      const incidentApprovals = await tx
+        .select({ approvalId: budgetIncidents.approvalId })
+        .from(budgetIncidents)
+        .where(and(
+          eq(budgetIncidents.companyId, project.companyId),
+          eq(budgetIncidents.scopeType, "project"),
+          eq(budgetIncidents.scopeId, id),
+        ));
+      const approvalIds = incidentApprovals
+        .map((row) => row.approvalId)
+        .filter((value): value is string => Boolean(value));
+      if (approvalIds.length > 0) {
+        const now = new Date();
+        await tx
+          .update(approvals)
+          .set({ status: "cancelled", decidedAt: now, updatedAt: now })
+          .where(and(
+            inArray(approvals.id, approvalIds),
+            inArray(approvals.status, resolvableApprovalStatuses),
+          ));
+      }
+      await tx.delete(budgetIncidents).where(and(
+        eq(budgetIncidents.companyId, project.companyId),
+        eq(budgetIncidents.scopeType, "project"),
+        eq(budgetIncidents.scopeId, id),
+      ));
+      await tx.delete(budgetPolicies).where(and(
+        eq(budgetPolicies.companyId, project.companyId),
+        eq(budgetPolicies.scopeType, "project"),
+        eq(budgetPolicies.scopeId, id),
+      ));
       const [row] = await tx.delete(projects).where(eq(projects.id, id)).returning();
       if (!row) return null;
       const { legacyEnvironmentId: _legacyEnvironmentId, ...publicProject } = row;

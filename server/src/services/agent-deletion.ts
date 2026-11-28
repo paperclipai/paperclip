@@ -8,11 +8,12 @@ import { notifyInstructionCollection } from "./instruction-collection-notificati
 import { notifyDirectoryCleanup } from "./directory-cleanup-notifications.js";
 import { notifyInstructionCommit } from "./instruction-commit-notifications.js";
 import { notifyScheduledRetryCancellation } from "./scheduled-retry-cancellation-notifications.js";
-import { and, eq, or, sql } from "drizzle-orm";
-import { agents, agentApiKeys, agentRuntimeState, agentTaskSessions, agentWakeupRequests, activityLog,
-  budgetReservations, costEvents, financeEvents, heartbeatRunEvents, heartbeatRuns, issueExecutionDecisions, issues, issueComments,
-  caseHandoffs, principalPermissionGrants, type Db } from "@paperclipai/db";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
+import { agents, agentApiKeys, agentRuntimeState, agentTaskSessions, agentWakeupRequests, activityLog, approvals,
+  budgetIncidents, budgetPolicies, budgetReservations, caseHandoffs, costEvents, financeEvents, heartbeatRunEvents, heartbeatRuns, issueExecutionDecisions, issues, issueComments,
+  principalPermissionGrants, type Db } from "@paperclipai/db";
 import { conflict } from "../errors.js";
+import { resolvableApprovalStatuses } from "../lib/approval-records.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import { deleteAgentAdmissionHistory } from "../modules/execution-admission/index.js";
 
@@ -97,5 +98,39 @@ export async function deleteAgentDependencies(tx: Db, companyId: string, id: str
     eq(principalPermissionGrants.companyId, companyId),
     eq(principalPermissionGrants.principalType, "agent"),
     eq(principalPermissionGrants.principalId, id),
+  ));
+  // Budget policies and incidents carry the agent id as an unkeyed scope
+  // reference; leaving them behind orphans the rows and breaks the budget
+  // overview for the whole company. See #3060.
+  const incidentApprovals = await tx
+    .select({ approvalId: budgetIncidents.approvalId })
+    .from(budgetIncidents)
+    .where(and(
+      eq(budgetIncidents.companyId, companyId),
+      eq(budgetIncidents.scopeType, "agent"),
+      eq(budgetIncidents.scopeId, id),
+    ));
+  const approvalIds = incidentApprovals
+    .map((row) => row.approvalId)
+    .filter((value): value is string => Boolean(value));
+  if (approvalIds.length > 0) {
+    const now = new Date();
+    await tx
+      .update(approvals)
+      .set({ status: "cancelled", decidedAt: now, updatedAt: now })
+      .where(and(
+        inArray(approvals.id, approvalIds),
+        inArray(approvals.status, resolvableApprovalStatuses),
+      ));
+  }
+  await tx.delete(budgetIncidents).where(and(
+    eq(budgetIncidents.companyId, companyId),
+    eq(budgetIncidents.scopeType, "agent"),
+    eq(budgetIncidents.scopeId, id),
+  ));
+  await tx.delete(budgetPolicies).where(and(
+    eq(budgetPolicies.companyId, companyId),
+    eq(budgetPolicies.scopeType, "agent"),
+    eq(budgetPolicies.scopeId, id),
   ));
 }
