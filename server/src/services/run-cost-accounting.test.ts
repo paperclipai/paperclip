@@ -795,6 +795,17 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect((await readCostAccountingWork(db, Date.now(), directory)).pending).toBe(true);
   });
 
+  it("settles the held reservation of an already-accounted run", async () => {
+    const { companyId, agentId, runId } = await seed({ costAccountedAt: new Date(), usageJson: { accountingReceiptReady: false } });
+    await db.insert(budgetReservations).values({ companyId, runId, agentId, amountCents: "0", state: "held" });
+    expect(await accountRunCost(db, runId)).toBe(false);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run.costAccountingPending).toBe(false);
+    const [reservation] = await db.select().from(budgetReservations).where(eq(budgetReservations.runId, runId));
+    expect(reservation).toMatchObject({ state: "settled", settledAt: expect.any(Date) });
+    expect(await db.select().from(costEvents)).toHaveLength(0);
+  });
+
   it("reconstructs the actual interrupted-service deadline and disarms after settlement", async () => {
     const { companyId } = await seed({ costAccountingPending: false });
     const startedAt = new Date();

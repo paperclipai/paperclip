@@ -288,6 +288,10 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
       await queueBudgetEvaluation(tx, { companyId: run.companyId, agentId: run.agentId, projectId });
     }
     if (run.costAccountedAt) {
+      // An acknowledged run holds no capacity. Settle a reservation that an
+      // earlier or out-of-band acknowledgement left held.
+      await tx.update(budgetReservations).set({ state: "settled", settledAt: new Date() })
+        .where(and(eq(budgetReservations.companyId, run.companyId), eq(budgetReservations.runId, run.id), eq(budgetReservations.state, "held")));
       if (object(run.usageJson).accountingLateReceiptPending === true) {
         // Clearing late debt can release an admission hold too.
         await notifyAccountingHoldRelease(tx, run.companyId, run.id);
