@@ -296,6 +296,30 @@ describe("isClaudeTransientUpstreamError", () => {
       }),
     ).toBe(false);
   });
+
+  it("classifies a dropped network connection as transient", () => {
+    const parsed = {
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      result: "API Error: Connection dropped (ECONNRESET)",
+    };
+    expect(
+      isClaudeTransientUpstreamError({ parsed, stdout: JSON.stringify(parsed), stderr: "" }),
+    ).toBe(true);
+    for (const errorMessage of [
+      "API Error: Connection error.",
+      "API Error: Request timed out.",
+      "Error: read ECONNRESET",
+      "Error: socket hang up",
+      "TypeError: fetch failed",
+      "SocketError: other side closed",
+      "Error: connect ETIMEDOUT 160.79.104.10:443",
+      "Error: getaddrinfo EAI_AGAIN api.anthropic.com",
+    ]) {
+      expect(isClaudeTransientUpstreamError({ errorMessage })).toBe(true);
+    }
+  });
 });
 
 describe("isClaudePoisonedPreviousMessageIdError", () => {
