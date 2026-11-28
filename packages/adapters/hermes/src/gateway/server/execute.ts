@@ -69,6 +69,7 @@ type GatewayRequestFailure = Extract<ConnectionFailure, { provider: "hermes_gate
 // Only errors observed at our outbound request boundary acquire this provenance.
 // A callback or remote payload cannot opt itself out of product error reporting.
 const requestConnectionFailures = new WeakMap<Error, GatewayRequestFailure>();
+const drainingAdmissionRefusals = new WeakSet<Error>();
 const NETWORK_FAILURE_REASONS: Readonly<Record<string, GatewayRequestFailure["reason"]>> = {
   ECONNREFUSED: "connection_refused",
   ENOTFOUND: "dns_failure",
@@ -119,6 +120,11 @@ function rememberNetworkFailure(target: Error, error: unknown): void {
   if (reason) requestConnectionFailures.set(target, {
     schemaVersion: 1, provider: "hermes_gateway", operation: "create_run", reason,
   });
+}
+
+function isDrainingAdmissionRefusal(response: Response, body: unknown): boolean {
+  return response.status === 503 && !response.redirected &&
+    asRecord(asRecord(body)?.error)?.code === "gateway_draining";
 }
 
 function httpFailureReason(status: number): GatewayRequestFailure["reason"] | null {
@@ -469,6 +475,7 @@ async function fetchJson(input: RequestInfo | URL, init: RequestInit): Promise<u
     if (reason) requestConnectionFailures.set(err, {
       schemaVersion: 1, provider: "hermes_gateway", operation: "create_run", reason,
     });
+    if (isDrainingAdmissionRefusal(response, body)) drainingAdmissionRefusals.add(err);
     throw err;
   }
   return body;
@@ -895,6 +902,9 @@ function errorResult(err: unknown, baseUrl: URL, redactText: TextRedactor = sani
     errorFamily: classified?.family ?? (code === "hermes_gateway_connect_failed" ? "transient_upstream" : null),
     retryNotBefore: hermesError.retryNotBefore ?? null,
     errorMessage,
+    ...(err instanceof Error && drainingAdmissionRefusals.has(err)
+      ? { executionRecovery: { kind: "bootstrap" as const, providerWorkStarted: false as const } }
+      : {}),
     ...(connectionFailure ? { resultJson: { connectionFailure } } : {}),
     errorMeta: {
       // Diagnosis only: a redirected request may have received a response

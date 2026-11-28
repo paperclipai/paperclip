@@ -827,6 +827,53 @@ describe("gateway connection failure reporting", () => {
     expect(Object.keys(result.resultJson ?? {})).toEqual(["connectionFailure"]);
   });
 
+  const drainingBody = () => JSON.stringify({ error: {
+    message: "Gateway is draining existing work; retry shortly.", type: "invalid_request_error", code: "gateway_draining",
+  } });
+
+  it("proves no provider work started when the create request is refused for a gateway drain", async () => {
+    const fetchMock = vi.fn(async () => new Response(drainingBody(), { status: 503, headers: { "retry-after": "1" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = makeCtx(config);
+    ctx.onDispatch = vi.fn();
+    const result = await execute(ctx);
+    expect(result).toMatchObject({ exitCode: 1, signal: null, timedOut: false,
+      errorCode: "hermes_gateway_upstream_error", errorFamily: "transient_upstream", retryNotBefore: "1",
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      resultJson: { connectionFailure: marker("create_run", "remote_unavailable") } });
+    expect(ctx.onDispatch).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["another 503 code", 503, JSON.stringify({ error: { code: "service_unavailable" } }), false],
+    ["a top-level drain code", 503, JSON.stringify({ code: "gateway_draining" }), false],
+    ["a drain code on another 5xx", 502, drainingBody(), false],
+    ["a drain code on a rate limit", 429, drainingBody(), false],
+    ["a drain code after a redirect", 503, drainingBody(), true],
+  ])("keeps the admission outcome unknown for %s", async (_label, status, body, redirected) => {
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      const response = new Response(body, { status });
+      if (redirected) Object.defineProperty(response, "redirected", { value: true });
+      return response;
+    }));
+    const result = await execute(makeCtx(config));
+    expect(result.exitCode).toBe(1);
+    expect(result.executionRecovery).toBeUndefined();
+  });
+
+  it("does not claim non-admission when a drain refusal arrives after the run was accepted", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("/v1/runs")) return new Response(JSON.stringify({ run_id: "run-accepted" }));
+      return new Response(drainingBody(), { status: 503 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await execute(makeCtx({ ...config, timeoutSec: 0.3, pollIntervalMs: 250, eventReconnectMs: 250 }));
+    expect(result).toMatchObject({ timedOut: true, errorCode: "hermes_gateway_timeout" });
+    expect(result.executionRecovery).toBeUndefined();
+    expect(result.resultJson?.run_id).toBe("run-accepted");
+  });
+
   it.each([
     ["ECONNREFUSED", "connection_refused"], ["ENOTFOUND", "dns_failure"], ["EAI_AGAIN", "dns_failure"],
     ["EHOSTUNREACH", "network_unreachable"], ["ENETUNREACH", "network_unreachable"],
@@ -928,6 +975,10 @@ describe("gateway connection failure reporting", () => {
     }); };
     const result = await execute(ctx);
     expect(result.resultJson).toBeUndefined();
+    ctx.onDispatch = () => { throw Object.assign(new Error("callback bug"), {
+      code: "hermes_gateway_upstream_error", status: 503, body: { error: { code: "gateway_draining" } },
+    }); };
+    expect((await execute(ctx)).executionRecovery).toBeUndefined();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
