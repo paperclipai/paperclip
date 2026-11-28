@@ -71,22 +71,31 @@ export async function serviceHealthChecks(
   }
 
   const results: CheckResult[] = [];
-  let definitionCurrent = false;
-  try {
-    definitionCurrent = (await fs.readFile(manager.definitionPath, "utf8")) === manager.renderDefinition();
-  } catch {
-    definitionCurrent = false;
+  const ownership = await manager.definitionOwnership?.();
+  if (ownership?.kind === "operator") {
+    results.push({
+      name: "Service definition",
+      status: "pass",
+      message: `System LaunchDaemon ${manager.serviceName} is managed by the operator (${ownership.path})`,
+    });
+  } else {
+    let definitionCurrent = false;
+    try {
+      definitionCurrent = (await fs.readFile(manager.definitionPath, "utf8")) === manager.renderDefinition();
+    } catch {
+      definitionCurrent = false;
+    }
+    results.push(
+      definitionCurrent
+        ? { name: "Service definition", status: "pass", message: manager.definitionPath }
+        : {
+            name: "Service definition",
+            status: "fail",
+            message: `Missing or drifted definition at ${manager.definitionPath}`,
+            repairHint: "Run `paperclipai service install` to regenerate the service definition",
+          },
+    );
   }
-  results.push(
-    definitionCurrent
-      ? { name: "Service definition", status: "pass", message: manager.definitionPath }
-      : {
-          name: "Service definition",
-          status: "fail",
-          message: `Missing or drifted definition at ${manager.definitionPath}`,
-          repairHint: "Run `paperclipai service install` to regenerate the service definition",
-        },
-  );
 
   const health = await deps.probe(config);
   // The installed definition is the truth about what the service executes;
