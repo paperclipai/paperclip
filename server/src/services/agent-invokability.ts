@@ -1,7 +1,7 @@
 import type { Db } from "@paperclipai/db";
 import { agents } from "@paperclipai/db";
-import { getAgentWorkEligibility, type AgentEligibilityAgent, type AgentOrgChainHealth } from "@paperclipai/shared";
-import { eq } from "drizzle-orm";
+import { getAgentWorkEligibility, isAgentStatusInvokable, type AgentEligibilityAgent, type AgentOrgChainHealth } from "@paperclipai/shared";
+import { readAgentReportingChain } from "../lib/agent-reporting-chain.js";
 
 type AgentStatus = (typeof agents.$inferSelect)["status"];
 
@@ -119,18 +119,8 @@ export async function evaluateAgentInvokabilityFromDb(
   db: Db,
   agent: AgentOrgRow | null | undefined,
 ): Promise<AgentInvokability> {
-  if (!agent) return evaluateAgentInvokability(agent, []);
-  const companyAgents = await db
-    .select({
-      id: agents.id,
-      companyId: agents.companyId,
-      name: agents.name,
-      reportsTo: agents.reportsTo,
-      status: agents.status,
-    })
-    .from(agents)
-    .where(eq(agents.companyId, agent.companyId));
-  return evaluateAgentInvokability(agent, companyAgents);
+  if (!agent || !isAgentStatusInvokable(agent.status)) return evaluateAgentInvokability(agent, []);
+  return evaluateAgentInvokability(agent, await readAgentReportingChain(db, agent));
 }
 
 export function listInvalidOrgChainDescendantIds(

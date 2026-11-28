@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { AgentCommentaryDetail, AgentCommentaryPage } from "../../packages/shared/src/validators/agent-commentary.js";
 import type { RunnerApi } from "./api.js";
+import { isProviderUnstartedWorkspaceDeferral } from "./product-journeys/workspace-deferral.js";
 
 type Row = Record<string, unknown>;
 const row = (value: unknown): Row => value && typeof value === "object" && !Array.isArray(value) ? value as Row : {};
@@ -23,11 +24,17 @@ interface FeedbackInvocation {
   kind: "complaint" | "suggestion";
   outcome: "completed" | "failed" | "unknown";
 }
+export interface FeedbackRunCoverage {
+  runId: string;
+  classification: "native_events" | "provider_not_started" | "incomplete";
+}
 export interface FeedbackEvidence {
   version: 1;
   companyId: string;
   entries: AgentCommentaryDetail[];
   invocations: FeedbackInvocation[];
+  /** Absent in historical evidence; no-provider coverage is not native execution. */
+  runCoverage?: FeedbackRunCoverage[];
   diagnostics: Array<"feedback_read_failed" | "feedback_detail_failed" | "feedback_pagination_incomplete" | "run_read_failed" | "run_detail_failed" | "run_limit_reached" | "events_read_failed" | "deadline_reached" | "evidence_limit_reached">;
   summary: FeedbackSummary;
 }
@@ -70,6 +77,15 @@ export function observeFeedbackInvocations(runId: string, events: readonly Row[]
     else if (status === "completed") call.outcome = "completed";
   }
   return [...calls.values()];
+}
+
+function onlyControlPlaneEvents(runId: string, events: readonly Row[]): boolean {
+  return events.every(event => event.stream === "system"
+    && (event.runId === undefined || event.runId === runId)
+    && ["lifecycle", "phase"].includes(String(event.eventType))
+    && row(event.payload).prpEvent === undefined
+    && [event.sourceInstanceId, event.sourceEventId, event.sourceSeq, event.protocolSchemaVersion]
+      .every(value => value === undefined || value === null));
 }
 
 export function feedbackReview(entries: readonly AgentCommentaryDetail[]): FeedbackSummary["review"] {
@@ -117,13 +133,14 @@ export async function collectAttemptFeedback(input: {
     ...(summary.collection !== "complete" ? { collection: summary.collection } : {}),
     ...(summary.invocationCollection !== "complete" ? { invocationCollection: summary.invocationCollection } : {}),
   });
-  const evidence: FeedbackEvidence = { version: 1, companyId: input.companyId, entries: [], invocations: [], diagnostics: [], summary };
+  const runCoverage: FeedbackRunCoverage[] = [];
+  const evidence: FeedbackEvidence = { version: 1, companyId: input.companyId, entries: [], invocations: [], runCoverage, diagnostics: [], summary };
   let retainedBytes = 0, checkpointBytes = 0, eventBytes = 0, eventCount = 0;
   const diagnose = (code: FeedbackEvidence["diagnostics"][number]) => { if (!evidence.diagnostics.includes(code)) evidence.diagnostics.push(code); };
-  const get = <T>(url: string) => {
+  const get = <T>(url: string, options?: { useRemainingBudget: boolean }) => {
     const remaining = readDeadlineAt - Date.now();
     if (remaining <= 0) { diagnose("deadline_reached"); throw new Error("Feedback collection deadline reached"); }
-    return input.api.get<T>(url, { timeout: Math.min(5_000, remaining) });
+    return input.api.get<T>(url, { timeout: options?.useRemainingBudget ? remaining : Math.min(5_000, remaining) });
   };
   const persist = async (force = false) => {
     summary.bodiesCollected = evidence.entries.length;
@@ -213,26 +230,29 @@ export async function collectAttemptFeedback(input: {
   summary.invocationCollection = runs.length < 1000 ? "complete" : "partial";
   if (runs.length >= 1000) diagnose("run_limit_reached");
   for (const listed of runs) {
-    let run: { id: string; status?: string; runtimeMode?: string } = listed;
+    let run: Row & { id: string; status?: string; runtimeMode?: string } = listed;
+    let detailRead = false;
     try {
       const detail = await get<typeof run>(`/api/heartbeat-runs/${encodeURIComponent(listed.id)}`);
       if (detail.id !== listed.id) throw new Error("Invalid run detail");
       run = detail;
+      detailRead = true;
     } catch {
       summary.invocationCollection = "partial";
       summary.collection = summary.collection === "complete" ? "partial" : summary.collection;
       diagnose("run_detail_failed");
     }
-    if (!["succeeded", "interrupted", "failed", "cancelled", "timed_out"].includes(run.status ?? "")) {
+    const terminal = ["succeeded", "interrupted", "failed", "cancelled", "timed_out"].includes(run.status ?? "");
+    if (!terminal) {
       summary.collection = summary.collection === "complete" ? "partial" : summary.collection;
       summary.invocationCollection = "partial";
     }
-    if (run.runtimeMode !== "native") summary.invocationCollection = "partial";
     const events: Row[] = [];
     let afterSeq = 0;
+    let eventsComplete = false;
     try {
       for (let pageNumber = 0; pageNumber < 100; pageNumber++) {
-        const page = await get<Row[]>(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=100`);
+        const page = await get<Row[]>(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=100`, { useRemainingBudget: true });
         if (!Array.isArray(page) || page.length > 100) throw new Error("Invalid events");
         for (const event of page) {
           if (!Number.isSafeInteger(event.seq) || Number(event.seq) <= afterSeq) throw new Error("Invalid event sequence");
@@ -248,10 +268,19 @@ export async function collectAttemptFeedback(input: {
         if (pageNumber === 99) { diagnose("evidence_limit_reached"); throw new Error("Event limit reached"); }
       }
       summary.runsInspected++;
+      eventsComplete = true;
     } catch {
       summary.invocationCollection = "partial";
       diagnose("events_read_failed");
     }
+    const workspaceWait = run.errorCode === "workspace_busy" || row(row(run.resultJson).executionRecovery).kind === "workspace_wait";
+    const classification: FeedbackRunCoverage["classification"] = detailRead && terminal && eventsComplete
+      ? isProviderUnstartedWorkspaceDeferral(run) && onlyControlPlaneEvents(run.id, events)
+        ? "provider_not_started"
+        : run.runtimeMode === "native" && !workspaceWait ? "native_events" : "incomplete"
+      : "incomplete";
+    runCoverage.push({ runId: run.id, classification });
+    if (classification === "incomplete") summary.invocationCollection = "partial";
     for (const invocation of observeFeedbackInvocations(run.id, events)) {
       const bytes = Buffer.byteLength(JSON.stringify(invocation)) + 1;
       if (retainedBytes + bytes + 4 > FEEDBACK_COLLECTION_LIMITS.retainedBytes) { diagnose("evidence_limit_reached"); break; }

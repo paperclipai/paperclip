@@ -164,6 +164,12 @@ manifest contains runtime artwork paths; this record retains source provenance.
   Raw provider error descriptions and tokens are not shown.
 - Insufficient API permissions: verify workspace access, reconnect, then refresh
   actions. Direct tools stay unavailable until the API probe succeeds.
+- Restricted environment (`railway_environment_restricted`): Railway Environment
+  RBAC lets non-admin members see a restricted environment but not read its
+  services, deployments or logs. When a target read is denied, the client checks
+  `canAccess` and reports this code instead of a consent error. Ask a project
+  admin for access; reconnecting does not help. `list-environments` returns
+  `canAccess` for each environment.
 - An older preview reported a generic deployment error immediately after consent:
   its API probe omitted the workspace ID. Refresh actions with the current server;
   reconnect is unnecessary when the selected workspace is already authorized.

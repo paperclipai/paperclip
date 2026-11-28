@@ -37,8 +37,6 @@ const EXTRA_SETTLE_MS: Record<string, number> = {
 // waiting. The affected element is masked (solid overlay in both baseline and
 // comparison) so the rest of the story still snapshot-verifies.
 const MASKED_SELECTORS: Record<string, string> = {
-  "agents-codex-runner-creation--experimental-native-harnesses":
-    '[role="dialog"] [data-slot="agent-avatar"]',
   // DocumentAnnotationLayer's ::highlight range over "two selectors" ends 1-2
   // characters short on ~half of renders (anchor offsets race). Mask only the
   // paragraph that carries that highlight.
@@ -91,8 +89,7 @@ async function renderStory(page: Page, storyId: string, theme: (typeof THEMES)[n
       const preview = (window as unknown as { __STORYBOOK_PREVIEW__?: { storyRenders?: Array<{ id: string; phase: string }> } }).__STORYBOOK_PREVIEW__;
       return preview?.storyRenders?.some(render => render.id === id && render.phase === "finished");
     }, storyId);
-    const expected = storyId.endsWith("--experimental-native-harnesses") ? page.getByRole("button", { name: "Experimental harness", exact: true })
-      : storyId.endsWith("--task-ready") ? page.getByRole("heading", { name: /is ready/ })
+    const expected = storyId.endsWith("--task-ready") ? page.getByRole("heading", { name: /is ready/ })
       : page.getByRole("button", { name: codexCreation || storyId.endsWith("--codex-legacy-advanced") ? "Runner" : "Harness", exact: true });
     await expect(expected).toBeVisible();
   }

@@ -137,5 +137,18 @@ the wiring is covered by tests.
   the default path unchanged, and the V1 path gets its own tests.
 - Pictures without known dimensions render at 4:3 until they load; the fitted print then
   resizes once. The stack frame's height is fixed, so nothing below it moves.
+- A picture whose file cannot be loaded (an attachment that returns 404, a file that is not
+  a picture after all) falls back to the icon sheet on the Artifacts page and to the document
+  icon in the panel and thread rows, from the element's own `error` event; nothing is
+  fetched to find out, and a front that moves on to another picture gets a fresh chance.
 - Token count grows by about thirty `--artifact-*` entries; they are namespaced and
   documented in the token block.
+
+## Update 2026-11-04: on for every instance
+
+Artifacts V1 now renders for every instance and the Experimental toggle is gone. `enableArtifactsV1`
+stays in the schema and catalog with a default of on. `resolveArtifactsV1Enabled` ignores a stored
+false, because every experimental write persists the whole normalized object, so a stored false only
+means an instance saved some other experiment. A value from `PAPERCLIP_MANAGED_CONFIG` is still
+honoured, which leaves operators an off switch outside Cloud staging. The previous cards remain in
+the code until that switch is retired.

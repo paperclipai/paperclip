@@ -4,8 +4,9 @@ import { usdToUnits } from "../../packages/shared/src/money.js";
 export const EVAL_OVERHEAD_COMPONENTS = ["ci_compute", "artifact_storage", "observability", "shared_subscription"] as const;
 export interface EvalOperatingOverhead {
   version: 1;
+  accountingReadiness?: "model_requests";
   reference: string;
-  runner: "github-hosted" | "aws-fleet";
+  runner: "github-hosted" | "aws-fleet" | "local";
   verifiedAt: string;
   expiresAt: string;
   components: Array<{ component: typeof EVAL_OVERHEAD_COMPONENTS[number]; maxUsd: string; reference: string; provisionalBound?: EvalCostBoundEvidence }>;
@@ -20,14 +21,16 @@ const reference = (value: unknown) => typeof value === "string" && /^[A-Za-z0-9]
 export function operatingReservationBound(allowance: EvalOperatingOverhead, component: EvalOperatingOverhead["components"][number]) {
   if (component.provisionalBound === undefined) return undefined;
   return reservationBound("operating_allowance", component.provisionalBound, {
+    ...(allowance.accountingReadiness ? { accountingReadiness: allowance.accountingReadiness } : {}),
     reference: allowance.reference, runner: allowance.runner, verifiedAt: allowance.verifiedAt, expiresAt: allowance.expiresAt,
     component: { component: component.component, maxUsd: component.maxUsd, reference: component.reference },
   });
 }
 
 export function validateOperatingOverhead(value: EvalOperatingOverhead, totalUsd: string): bigint {
-  object(value, ["version", "reference", "runner", "verifiedAt", "expiresAt", "components"]);
-  if (value.version !== 1 || !reference(value.reference) || !["github-hosted", "aws-fleet"].includes(value.runner)
+  object(value, ["version", "accountingReadiness", "reference", "runner", "verifiedAt", "expiresAt", "components"]);
+  if (value.accountingReadiness !== undefined && value.accountingReadiness !== "model_requests") throw new Error("Invalid accounting readiness policy");
+  if (value.version !== 1 || !reference(value.reference) || !["github-hosted", "aws-fleet", "local"].includes(value.runner)
       || typeof value.verifiedAt !== "string" || typeof value.expiresAt !== "string"
       || !Number.isFinite(Date.parse(value.verifiedAt)) || !Number.isFinite(Date.parse(value.expiresAt))
       || Date.parse(value.expiresAt) <= Date.parse(value.verifiedAt)
@@ -63,7 +66,7 @@ export function scheduledOperatingOverhead(raw: string | undefined, runner: stri
   validateOperatingOverhead(value, totalUsd);
   if (runner !== "ubuntu-latest" || value.runner !== "github-hosted") throw new Error("Bounded campaigns require the standard GitHub-hosted runner allowance");
   if (!Number.isFinite(now) || now < Date.parse(value.verifiedAt) || now + 4 * 3_600_000 >= Date.parse(value.expiresAt)) {
-    throw new Error("Operating overhead allowance needs review before paid admission");
+    throw new Error(`Operating overhead allowance needs review before paid admission: ${value.reference} is valid from ${value.verifiedAt} until ${value.expiresAt} less a 4-hour campaign margin; renew the reviewed RUNNER_E2E_OPERATING_OVERHEAD_JSON allowance`);
   }
   return value;
 }
