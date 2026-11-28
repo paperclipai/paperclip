@@ -96,6 +96,15 @@ export function splitWindowsAgentCommand(value: string): string[] {
 }
 
 /**
+ * Argv for a Windows agent override. A resolved built-in executable path is one
+ * argv entry as-is; splitting it would break a path containing spaces. A
+ * configured command line is split with Windows rules.
+ */
+export function windowsAgentOverrideArgv(command: string, options: { literalPath: boolean }): string[] {
+  return options.literalPath ? [command] : splitWindowsAgentCommand(command);
+}
+
+/**
  * ACPX reads `ACPX_AUTH_*` credentials from this process's environment for
  * agent authentication. In the shared server those would be host credentials
  * applied to every agent, so refuse to start rather than use them.

@@ -1669,6 +1669,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           : eff("adapterConfig", thinkingEffortKey, String(config[thinkingEffortKey] ?? ""));
   const showThinkingEffort = !(harnessType === "pi_local" && fieldsAdapterType === "paperclip_runner")
     && adapterType !== "gemini_local"
+    && adapterType !== "agy_local"
     && harnessType !== "cursor_cloud"
     && (adapterType !== "paperclip_runner" || isRunnerHarness);
   const codexSearchEnabled = adapterType === "codex_local"
@@ -2414,6 +2415,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       ({
                         claude_local: "claude",
                         codex_local: "codex",
+                        agy_local: "agy",
                         gemini_local: "gemini",
                         kimi_local: "kimi",
                         pi_local: "pi",

@@ -7,6 +7,7 @@ const brandMarks: Record<string, { src: string; dark?: string }> = {
   codex_local: { src: "/brands/codex-color.svg" },
   gemini_local: { src: "/brands/adapters/gemini-color.svg" },
   antigravity_runtime: { src: "/brands/apps/antigravity.svg" },
+  agy_local: { src: "/brands/apps/antigravity.svg" },
   copilot_runtime: {
     src: "/brands/apps/github-copilot.svg",
     dark: "/brands/apps/github-copilot-dark.svg",

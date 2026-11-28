@@ -60,7 +60,7 @@ import {
   type AcpxTerminalSessionFailure,
   type AcpxTerminalSessionFailureDiagnostic,
 } from "./terminal-session-failure.js";
-import { assertNoHostAcpxAuthEnvironment, splitWindowsAgentCommand, stockAcpRuntimeOptions, type AcpxAgentSpawnHooks } from "./stock-runtime-options.js";
+import { assertNoHostAcpxAuthEnvironment, windowsAgentOverrideArgv, stockAcpRuntimeOptions, type AcpxAgentSpawnHooks } from "./stock-runtime-options.js";
 export type { AcpxTerminalSessionFailure } from "./terminal-session-failure.js";
 import type { WorkspaceRestoreFailureCode, WorkspaceRestoreOutcome } from "../workspace-restore-merge.js";
 import type { WorkspaceRestoreDiagnostic } from "../workspace-restore-diagnostics.js";
@@ -2739,7 +2739,9 @@ async function buildRuntime(input: {
     : agentCommand;
   // ACPX launches only argv arrays on Windows; keep POSIX command identities unchanged.
   const overrides = overrideCommand
-    ? { [acpxAgent]: process.platform === "win32" ? relayArgv ?? splitWindowsAgentCommand(overrideCommand) : overrideCommand }
+    ? { [acpxAgent]: process.platform === "win32" ? relayArgv ?? windowsAgentOverrideArgv(overrideCommand, {
+        literalPath: !configuredCommand && agentCommand === builtInCommand?.command && path.isAbsolute(agentCommand),
+      }) : overrideCommand }
     : undefined;
   const agentRegistry = createAgentRegistry({ overrides });
   const loggedEnv = buildInvocationEnvForLogs(env, {
