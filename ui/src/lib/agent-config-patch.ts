@@ -1,6 +1,7 @@
 import { ADAPTER_AGNOSTIC_KEYS, type Agent } from "@paperclipai/shared";
 
 export interface AgentConfigOverlay {
+  runner?: import("@paperclipai/shared").AgentRunnerChoice;
   identity: Record<string, unknown>;
   adapterType?: string;
   adapterConfig: Record<string, unknown>;
@@ -17,6 +18,7 @@ export function omitUndefinedEntries(value: Record<string, unknown>) {
 
 export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay) {
   const patch: Record<string, unknown> = {};
+  if (overlay.runner !== undefined) patch.runner = overlay.runner;
 
   if (Object.keys(overlay.identity).length > 0) {
     Object.assign(patch, overlay.identity);
@@ -47,13 +49,14 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
     patch.replaceAdapterConfig = true;
   }
 
+  Object.assign(patch, overlay.runtime);
+
   if (
     Object.keys(overlay.heartbeat).length > 0
     || Object.keys(overlay.debug).length > 0
   ) {
-    const existingRc = (agent.runtimeConfig ?? {}) as Record<string, unknown>;
-    const nextRuntimeConfig: Record<string, unknown> = (patch.runtimeConfig as Record<string, unknown> | undefined)
-      ?? { ...existingRc };
+    const existingRc = (patch.runtimeConfig ?? agent.runtimeConfig ?? {}) as Record<string, unknown>;
+    const nextRuntimeConfig: Record<string, unknown> = { ...existingRc };
 
     if (Object.keys(overlay.heartbeat).length > 0) {
       const existingHb = (existingRc.heartbeat ?? {}) as Record<string, unknown>;
@@ -71,10 +74,6 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
     }
 
     patch.runtimeConfig = nextRuntimeConfig;
-  }
-
-  if (Object.keys(overlay.runtime).length > 0) {
-    Object.assign(patch, overlay.runtime);
   }
 
   return patch;

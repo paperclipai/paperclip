@@ -17,6 +17,20 @@ unchanged. See the [live-call push qualification](2026-10-09-speko-pr-qualificat
 for the real-provider text-input proof, timings, reproduction and remaining
 PSTN/interruption qualification.
 
+## Cloud caller authentication (2026-10-13)
+
+Private voice routes accept both local authenticated sessions and trusted Cloud
+user sessions. Cloud callers keep their authenticated user ID and current
+company scope. Cloud owners use current company membership even when temporary
+Cloud administrator access is enabled; they do not need a persisted local
+instance-admin role. Board API keys, MCP OAuth callers, Cloud control credentials,
+and raw Cloud user headers do not create private caller authority.
+
+On a Cloud workspace, verify that the signed-in operator can load call history
+and start a browser session. Repeat with a user outside the company and confirm
+access is denied. Provider configuration alone does not qualify conversation
+or spoken result delivery.
+
 ## October task-parity qualification
 
 Updated 2026-10-07: September's browser proof is historical. The current task-parity

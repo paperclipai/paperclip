@@ -42,9 +42,9 @@ vi.mock("../dev-server-status.js", () => ({
 
 function createApp(
   db?: Db,
-  serverInfo = testServerInfo,
-  databaseBackupHealth?: Parameters<typeof healthRoutes>[1]["databaseBackupHealth"],
-  runtimeEnv?: Parameters<typeof healthRoutes>[1]["runtimeEnv"],
+  serverInfo: NonNullable<Parameters<typeof healthRoutes>[1]>["serverInfo"] = testServerInfo,
+  databaseBackupHealth?: NonNullable<Parameters<typeof healthRoutes>[1]>["databaseBackupHealth"],
+  runtimeEnv?: NonNullable<Parameters<typeof healthRoutes>[1]>["runtimeEnv"],
 ) {
   const app = express();
   app.use(
@@ -116,6 +116,20 @@ describe("GET /health", () => {
     });
   });
 
+  it("publishes deployment harness policy and reflects configuration updates", async () => {
+    const env = {
+      PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "tenant-token",
+      PAPERCLIP_PRIMARY_HOST: "example.paperclip.app",
+      PAPERCLIP_AVAILABLE_HARNESSES: '["gemini_local","plugin:example"]',
+    };
+    const app = createApp(undefined, testServerInfo, undefined, env);
+    expect((await request(app).get("/health")).body.cloud.availableHarnesses).toEqual(["gemini_local", "plugin:example"]);
+    env.PAPERCLIP_AVAILABLE_HARNESSES = "[]";
+    expect((await request(app).get("/health")).body.cloud.availableHarnesses).toEqual([]);
+    env.PAPERCLIP_AVAILABLE_HARNESSES = "invalid";
+    expect((await request(app).get("/health")).body.cloud.availableHarnesses).toEqual([]);
+  });
+
   it("lists operator-hidden settings and drops unknown keys", async () => {
     const app = createApp(undefined, testServerInfo, undefined, {
       PAPERCLIP_HIDDEN_SETTINGS: "instance.plugins,instance.adapters,instance.bogus",
@@ -134,6 +148,29 @@ describe("GET /health", () => {
 
     expect(res.status).toBe(200);
     expect(Object.prototype.hasOwnProperty.call(res.body, "hiddenSettings")).toBe(false);
+  });
+
+  it("reveals staging experiments while retaining other Cloud settings restrictions", async () => {
+    const env = {
+      PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "tenant-token",
+      PAPERCLIP_PRIMARY_HOST: "team.paperclip.app",
+      PAPERCLIP_HIDDEN_SETTINGS: "instance.plugins,instance.experimental,instance.experimental.*",
+    };
+    const app = createApp(undefined, testServerInfo, undefined, env);
+    const production = await request(app).get("/health");
+    expect(production.body.hiddenSettings).toContain("instance.experimental");
+    expect(production.body.hiddenSettings).toContain("instance.experimental.enableChatConnectors");
+
+    env.PAPERCLIP_PRIMARY_HOST = "team.staging.paperclip.app";
+    const staging = await request(app).get("/health");
+    expect(staging.body.hiddenSettings).toContain("instance.plugins");
+    expect(staging.body.hiddenSettings).toContain("instance.experimental.enableManagedSandboxOnly");
+    expect(staging.body.hiddenSettings).toContain("instance.experimental.enableOwnerInstanceAdmin");
+    expect(staging.body.hiddenSettings).not.toContain("instance.experimental");
+    expect(staging.body.hiddenSettings).not.toContain("instance.experimental.enableChatConnectors");
+
+    env.PAPERCLIP_PRIMARY_HOST = "team.paperclip.app";
+    expect((await request(app).get("/health")).body.hiddenSettings).toEqual(production.body.hiddenSettings);
   });
 
   it("publishes concrete wildcard restrictions to the UI and refreshes changed exceptions", async () => {
@@ -360,6 +397,7 @@ describe("GET /health", () => {
       deploymentMode: "authenticated",
       deploymentExposure: "public",
       localAiLoginSupported: false,
+      hostedGoogleAiLoginSupported: true,
       commit: testServerInfo.git.fullSha,
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
@@ -384,7 +422,7 @@ describe("GET /health", () => {
 
   it("redacts detailed metadata for anonymous requests in authenticated mode", async () => {
     const devServerStatus = await import("../dev-server-status.js");
-    vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(undefined);
+    vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(null);
     const { healthRoutes } = await import("../routes/health.js");
     const db = {
       execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
@@ -418,6 +456,7 @@ describe("GET /health", () => {
       deploymentMode: "authenticated",
       deploymentExposure: "public",
       localAiLoginSupported: false,
+      hostedGoogleAiLoginSupported: true,
       commit: testServerInfo.git.fullSha,
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
@@ -427,7 +466,7 @@ describe("GET /health", () => {
 
   it("redacts detailed metadata when authenticated mode is reached without auth middleware", async () => {
     const devServerStatus = await import("../dev-server-status.js");
-    vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(undefined);
+    vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(null);
     const { healthRoutes } = await import("../routes/health.js");
     const db = {
       execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
@@ -457,6 +496,7 @@ describe("GET /health", () => {
       deploymentMode: "authenticated",
       deploymentExposure: "public",
       localAiLoginSupported: false,
+      hostedGoogleAiLoginSupported: true,
       commit: testServerInfo.git.fullSha,
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
@@ -466,7 +506,7 @@ describe("GET /health", () => {
 
   it("keeps detailed metadata for authenticated requests in authenticated mode", async () => {
     const devServerStatus = await import("../dev-server-status.js");
-    vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(undefined);
+    vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(null);
     const { healthRoutes } = await import("../routes/health.js");
     const db = {
       execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),

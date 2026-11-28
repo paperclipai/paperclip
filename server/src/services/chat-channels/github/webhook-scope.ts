@@ -1,4 +1,4 @@
-import type { LifecycleRuntimeFence } from "../runtime-types.js";
+import type { EndpointRow, LifecycleRuntimeFence } from "../runtime-types.js";
 import type { ChatSdkProvider } from "../../chat-sdk-runtime.js";
 export type GitHubIngressContext = { githubIngressActionId: string; githubIngressFence: LifecycleRuntimeFence; superseded?: boolean };
 export function createGitHubWebhookScope(provider: ChatSdkProvider, internalContext: GitHubIngressContext | undefined, responseBudgetMs: number | undefined, GITHUB_WEBHOOK_RESPONSE_BUDGET_MS: number) {
@@ -58,3 +58,12 @@ export function createGitHubWebhookScope(provider: ChatSdkProvider, internalCont
   return { replayingDurableGitHubIngress, ignoreSupersededIngress, matchesGitHubIngressFence, githubResponseDeadlineAt, completeGitHubPreflightBeforeDeadline };
 }
 export type GitHubWebhookScope = ReturnType<typeof createGitHubWebhookScope>;
+
+export function githubWebhookCanRecoverRevokedInstallation(
+  status: EndpointRow["status"] | undefined,
+  provider: ChatSdkProvider,
+  request: Pick<Request, "headers">,
+): boolean {
+  return status === "revoked" && provider === "github" &&
+    request.headers.get("x-github-event") === "installation";
+}

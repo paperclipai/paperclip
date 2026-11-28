@@ -35,11 +35,12 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { tracingInstanceHost } from "./tracing-instance-host.js";
 import { checkExactPeerVersions } from "./peer-version-check.js";
 
 export { checkExactPeerVersions } from "./peer-version-check.js";
 
-const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim();
 
 let sdkShutdown: (() => Promise<void>) | null = null;
 let shutdownPromise: Promise<void> | null = null;
@@ -96,6 +97,7 @@ let tracerApiLoadFailed = false;
  * local no-op tracer (fail open).
  */
 export function getStartupTracer(name = "paperclip.startup"): StartupTracerHandle {
+  if (!process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim()) return NOOP_TRACER;
   try {
     const require = createRequire(import.meta.url);
     const api = require("@opentelemetry/api") as {
@@ -151,6 +153,7 @@ let traceContextApiLoadFailed = false;
  * local no-op trace context (fail open).
  */
 export function getStartupTraceContext(name = "paperclip.startup"): StartupTraceContextHandle {
+  if (!process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim()) return NOOP_TRACE_CONTEXT;
   try {
     const require = createRequire(import.meta.url);
     const api = require("@opentelemetry/api") as {
@@ -233,6 +236,7 @@ export function traceparentFromContextToken(contextToken: unknown): string | und
  */
 export function recordProviderPluginSpan(input: {
   name: string;
+  linked?: boolean;
   parent: ParsedTraceparent;
   attributes: Record<string, string | number | boolean>;
   status?: { code: number; message?: string };
@@ -242,7 +246,7 @@ export function recordProviderPluginSpan(input: {
   startTimeMs?: number;
   /** The optional span end time as an epoch-millisecond number. */
   endTimeMs?: number;
-}): void {
+}): ParsedTraceparent | undefined {
   try {
     const require = createRequire(import.meta.url);
     const api = require("@opentelemetry/api") as {
@@ -251,6 +255,7 @@ export function recordProviderPluginSpan(input: {
         setSpanContext(context: unknown, spanContext: unknown): unknown;
       };
       context?: { active(): unknown };
+      ROOT_CONTEXT?: unknown;
     };
     const trace = api.trace;
     const context = api.context;
@@ -261,22 +266,26 @@ export function recordProviderPluginSpan(input: {
       traceFlags: input.parent.traceFlags,
       isRemote: true,
     };
-    const parentContext = trace.setSpanContext(context.active(), remoteSpanContext);
+    if (input.linked && (!api.ROOT_CONTEXT || (input.parent.traceFlags & 1) === 0)) return;
+    const parentContext = input.linked ? api.ROOT_CONTEXT : trace.setSpanContext(context.active(), remoteSpanContext);
     const tracer = trace.getTracer("paperclip.startup");
     // Pass the true start time as the OpenTelemetry `startTime` option, so the
     // span opens at its real wall-clock start. An epoch-millisecond number is a
     // valid OpenTelemetry `TimeInput`.
-    const startSpanOptions =
-      input.startTimeMs !== undefined
-        ? { attributes: input.attributes, startTime: input.startTimeMs }
-        : { attributes: input.attributes };
+    const startSpanOptions = {
+      attributes: input.attributes,
+      ...(input.startTimeMs !== undefined ? { startTime: input.startTimeMs } : {}),
+      ...(input.linked ? { links: [{ context: remoteSpanContext }] } : {}),
+    };
     const span = tracer.startSpan(input.name, startSpanOptions, parentContext);
+    const childParent = (span as typeof span & { spanContext?(): ParsedTraceparent }).spanContext?.();
     if (input.status) span.setStatus(input.status);
     // Pass the true end time to `span.end`, so the span ends at its real
     // wall-clock end and shows its true native width. When the end time is
     // absent, the span ends now, so its native width is near zero.
     if (input.endTimeMs !== undefined) span.end(input.endTimeMs);
     else span.end();
+    return childParent;
   } catch {
     // Observability must not change control flow.
   }
@@ -490,24 +499,32 @@ async function bootstrapOtel(endpoint: string): Promise<void> {
     // eslint-disable-next-line no-console
     console.log(`[paperclip] OpenTelemetry service.version=${serviceVersion}`);
 
+    const exporter = (protocol === "grpc"
+      ? new OTLPTraceExporter({ url: endpoint })
+      : new OTLPTraceExporter()) as never;
     const sdk = new NodeSDK({
+      // This integration exports traces only. NodeSDK otherwise creates
+      // default OTLP metric/log exporters even when none were configured.
+      metricReaders: [],
+      logRecordProcessors: [],
       resource: resourceFromAttributes({
         [ATTR_SERVICE_NAME]: process.env.OTEL_SERVICE_NAME || "paperclip",
         [ATTR_SERVICE_VERSION]: serviceVersion,
       }),
-      // For the HTTP protocols OTEL_EXPORTER_OTLP_ENDPOINT is a *base* URL
-      // and the exporter appends /v1/traces only when it reads the env var
-      // itself — an explicit `url` is used verbatim and would silently POST
-      // to the wrong path. Pass `url` only for gRPC, which has no path.
-      // `importExporter` types `OTLPTraceExporter` as `=> unknown` so the
-      // module graph stays free of the optional OTLP/SDK packages. Without
-      // that type, `traceExporter` needs `SpanExporter`, and an import of
-      // `SpanExporter` breaks the compile when the optional packages are
-      // absent. Cast to `never` instead: `never` is assignable to
-      // `SpanExporter` and needs no import.
-      traceExporter: (protocol === "grpc"
-        ? new OTLPTraceExporter({ url: endpoint })
-        : new OTLPTraceExporter()) as never,
+      ...(process.env.PAPERCLIP_TRACING_INSTANCE_HOST === "true" ? {
+        spanProcessors: [
+          {
+            onStart(span: { setAttribute(name: string, value: string): unknown }) {
+              const host = tracingInstanceHost(process.env);
+              if (host) span.setAttribute("paperclip.instance.host", host);
+            },
+            onEnd() {},
+            async forceFlush() {},
+            async shutdown() {},
+          },
+          new sdkNode.tracing.BatchSpanProcessor(exporter),
+        ],
+      } : { traceExporter: exporter }),
       instrumentations: [
         getNodeAutoInstrumentations({
           // Too chatty for this workload.

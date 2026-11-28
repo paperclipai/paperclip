@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { createIsolatedTestHome } from "./helpers/isolated-test-home.js";
+import { beforeEach } from "vitest";
 import { createRequire } from "node:module";
 import type { AddressInfo, Server as NetServer } from "node:net";
 import os from "node:os";
@@ -29,6 +30,8 @@ process.env.PAPERCLIP_TEST_HOST_HOME ??= process.env.PAPERCLIP_HOME?.trim() || p
 // Receipt-spool recovery must never scan a developer's instance during tests.
 const { home: paperclipTestHome, cleanup: cleanupPaperclipTestHome } = createIsolatedTestHome();
 process.env.PAPERCLIP_HOME = paperclipTestHome;
+process.env.PAPERCLIP_CONFIG = path.join(paperclipTestHome, "config.json");
+process.env.PAPERCLIP_INSTANCE_ID = `vt-${process.pid}`;
 // Setup-file afterAll hooks run before suites drain asynchronous heartbeats.
 // Cleanup at worker exit, after all suite teardown, avoids deleting live state.
 process.once("exit", cleanupPaperclipTestHome);
@@ -74,3 +77,8 @@ if (!SupertestTest.prototype.__paperclipLoopbackPatched) {
 
   SupertestTest.prototype.__paperclipLoopbackPatched = true;
 }
+
+beforeEach(async () => {
+  const { invalidateInstanceSettingsCache } = await import("../services/instance-settings-cache.js");
+  invalidateInstanceSettingsCache();
+});

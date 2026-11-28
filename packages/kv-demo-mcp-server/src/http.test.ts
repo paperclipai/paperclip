@@ -83,4 +83,26 @@ describe("kv demo HTTP server", () => {
     expect(state.count).toBe(1);
     await client.close();
   });
+
+  it("streams progress for slow_with_progress on the call's response, before the result", async () => {
+    const { base } = await startServer();
+    const client = await mcpClient(base);
+    const updates: Array<{ progress: number; total?: number; message?: string }> = [];
+    const result = await client.callTool(
+      { name: "slow_with_progress", arguments: { steps: 3, stepMs: 5 } },
+      undefined,
+      { onprogress: (update) => { updates.push(update); } },
+    );
+    expect(updates).toEqual([
+      { progress: 1, total: 3, message: "Finished step 1 of 3" },
+      { progress: 2, total: 3, message: "Finished step 2 of 3" },
+      { progress: 3, total: 3, message: "Finished step 3 of 3" },
+    ]);
+    expect(JSON.stringify(result.content)).toContain("completed");
+    const indeterminate: Array<{ total?: number }> = [];
+    await client.callTool({ name: "slow_with_progress", arguments: { steps: 1, stepMs: 0, withTotal: false } }, undefined,
+      { onprogress: (update) => { indeterminate.push(update); } });
+    expect(indeterminate[0]?.total).toBeUndefined();
+    await client.close();
+  });
 });

@@ -158,6 +158,39 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     return root;
   }
 
+  it("pages plugin issues past the first page instead of silently returning an empty tail", async () => {
+    const { companyId } = await seedCompanyAndAgent();
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+    for (let index = 0; index < 5; index += 1) {
+      await services.issues.create({
+        companyId,
+        title: `Issue ${index}`,
+        originKind: "plugin:paperclip.missions:page",
+      });
+    }
+
+    const params = { companyId, originKind: "plugin:paperclip.missions:page" };
+    const all = await services.issues.list(params);
+    expect(all).toHaveLength(5);
+
+    const page0 = await services.issues.list({ ...params, limit: 2, offset: 0 });
+    const page1 = await services.issues.list({ ...params, limit: 2, offset: 2 });
+    const page2 = await services.issues.list({ ...params, limit: 2, offset: 4 });
+    expect(page0).toEqual(all.slice(0, 2));
+    expect(page1).toEqual(all.slice(2, 4));
+    expect(page2).toEqual(all.slice(4, 5));
+
+    expect(await services.issues.list({ ...params, limit: 0 })).toEqual([]);
+    expect(await services.issues.list({ ...params, limit: 1, offset: 5 })).toEqual([]);
+
+    await expect(
+      services.issues.list({ ...params, limit: 0, assigneeAgentId: "invalid-id" }),
+    ).rejects.toThrow("assigneeAgentId must be a UUID or 'null'");
+    await expect(
+      services.issues.list({ ...params, limit: 1, assigneeAgentId: "invalid-id" }),
+    ).rejects.toThrow("assigneeAgentId must be a UUID or 'null'");
+  });
+
   it("returns plugin-safe execution workspace metadata scoped to the company", async () => {
     const { companyId } = await seedCompanyAndAgent();
     const otherCompanyId = randomUUID();

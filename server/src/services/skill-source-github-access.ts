@@ -99,7 +99,9 @@ export function skillSourceGitHubReader(db: Db, companyId: string, actor: Reques
       });
       if (!response.ok) {
         const limited = response.status === 429 || (response.status === 403 && response.headers.get('x-ratelimit-remaining') === '0');
-        const message = limited ? 'GitHub request limit reached. Try again after the limit resets or use another GitHub connection.'
+        const missingRef = response.status === 422 && /^\/repos\/[^/]+\/[^/]+\/commits\/[^/]+$/.test(apiPath);
+        const message = missingRef ? 'The tracked GitHub branch or revision is unavailable. Use the repository’s default branch or update its configured ref.'
+          : limited ? 'GitHub request limit reached. Try again after the limit resets or use another GitHub connection.'
           : response.status === 404 ? 'Repository, branch, or file is unavailable. Check the URL and GitHub repository access.'
           : [401, 403].includes(response.status) ? 'GitHub denied repository access. Reconnect GitHub or choose an authorized connection.'
           : 'GitHub could not complete the read. Try again.';
@@ -108,7 +110,7 @@ export function skillSourceGitHubReader(db: Db, companyId: string, actor: Reques
         const retryAfterMs = retryAfter && /^\d+$/.test(retryAfter)
           ? Number(retryAfter) * 1_000
           : retryAfter ? Date.parse(retryAfter) - Date.now() : resetAt - Date.now();
-        throw unprocessable(message, { code: limited ? 'skill_source_github_rate_limited' : 'skill_source_github_read_failed', status: response.status,
+        throw unprocessable(message, { code: missingRef ? 'skill_source_ref_unavailable' : limited ? 'skill_source_github_rate_limited' : 'skill_source_github_read_failed', status: response.status,
           ...(limited && Number.isFinite(retryAfterMs) && retryAfterMs > 0 ? { retryAfterMs } : {}) });
       }
       return response.json();
