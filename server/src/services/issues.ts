@@ -3191,7 +3191,10 @@ export function inboxVisibleForUserCondition(companyId: string, userId: string) 
                   AND ${issueComments.authorAgentId} IS NULL
                   AND ${issueComments.derivedAuthorAgentId} IS NULL
                 )
-                OR POSITION(${`](user://${userId})`} IN ${issueComments.body}) > 0
+                OR (
+                  ${issueComments.authorUserId} IS DISTINCT FROM ${userId}
+                  AND POSITION(${`](user://${userId})`} IN ${issueComments.body}) > 0
+                )
               )
           )
         )
