@@ -4381,4 +4381,28 @@ describe("wake continuation comment ownership", () => {
     }, { suppressIssueDescription: true });
     expect(legacy).toContain(`"objective":"${objective}"`);
   });
+
+  it("bounds a long fresh-session history to fit one runner turn and says how to read the rest", () => {
+    const messages = Array.from({ length: 140 }, (_, index) => message(`comment-${index}`, `Message ${index} ${"x".repeat(1_200)}`));
+    const completedActions = Array.from({ length: 160 }, (_, index) => ({
+      runId: "run-old", receiptId: `receipt-${index}`, operationId: "write_document",
+      result: { ok: true, data: { body: "y".repeat(2_000) } },
+    }));
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_blockers_resolved",
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Task", description: null },
+      comments: [],
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      fallbackFetchNeeded: false,
+      executionContinuation: { ...continuation(messages), originCommentIds: ["comment-0"], completedActions },
+    }, { boundContinuationForRunnerTurn: true });
+    // The runner journals one turn command in about 510 KiB.
+    expect(Buffer.byteLength(prompt)).toBeLessThan(250_000);
+    expect(prompt).toContain("comment-0");
+    expect(prompt).toContain("comment-139");
+    expect(prompt).toContain("receipt-159");
+    expect(prompt).toContain("get_task_context with view=full");
+    expect(prompt).toContain("An omitted action or result is still completed: do not repeat it.");
+    expect(prompt).not.toContain("History is complete through the coverage cursor.");
+  });
 });

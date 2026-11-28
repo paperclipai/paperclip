@@ -1,3 +1,4 @@
+import { taskHistoryReadsForRun } from "../queued-comment-delivery.js";
 import * as connectorRuntime from "../connector-runtime.js";
 import * as cloudIdentity from "../cloud-runtime-identity.js";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -42,6 +43,7 @@ import { NativeChatAttachmentReadScope, READ_CHAT_ATTACHMENT_TOOL_NAME } from ".
 import { buildLowTrustSourceTrust, buildPromotedSourceTrust, LOW_TRUST_QUARANTINED_BODY } from "../source-trust.js";
 import { CAPABILITY_SEMANTIC_TOOL_CATALOG, runnerCodexDynamicToolsFit } from "../../vendor/paperclip-runner/index.js";
 import { resolveLocalRuntimeApiUrl } from "../../runtime-api.js";
+import { RUNNER_TOOL_RESULT_MAX_BYTES } from "./runner-tool-results.js";
 
 describe("PaperclipRunnerToolAuthority", () => {
   const credentialDocumentBody = "Use a secret manager for credential handling.\nAuthorization: Bearer intentional-document-credential";
@@ -641,6 +643,101 @@ describe("PaperclipRunnerToolAuthority", () => {
       await db.delete(issues).where(inArray(issues.id, [completedChildId, activeChildId, unrelatedId, foreignChildId, ...hiddenChildIds]));
       await db.delete(companies).where(eq(companies.id, otherCompanyId));
     }
+  });
+
+  it("bounds child task context below its native delivery budget without losing task identities", async () => {
+    const ids = Array.from({ length: 21 }, () => randomUUID());
+    const description = '💊"\\\n'.repeat(4500);
+    const [original] = await db.select({ description: issues.description }).from(issues).where(eq(issues.id, issueId));
+    const activeDescription = "Keep the complete business scope and its approval gates.";
+    await db.update(issues).set({ description: activeDescription }).where(eq(issues.id, issueId));
+    await db.insert(issues).values(ids.map((id, index) => ({ id, companyId, parentId: issueId,
+      title: `Existing deliverable ${index}`, description, status: "done", assigneeAgentId: agentId })));
+    try {
+      const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+      const context = await authority.execute({ tool: "get_task_context", callId: "large-child-context", arguments: {} }) as {
+        activeTask: { description: string }; childTasks: Array<{ id: string; description: string; descriptionTruncated?: boolean }>;
+        childTasksTruncated: boolean; delegationGuidance: string;
+      };
+      expect(Buffer.byteLength(JSON.stringify(context))).toBeLessThanOrEqual(RUNNER_TOOL_RESULT_MAX_BYTES);
+      expect(context.activeTask.description).toBe(activeDescription);
+      expect(new Set(context.childTasks.map(task => task.id))).toEqual(new Set(ids));
+      expect(context.childTasks.every(task => task.descriptionTruncated === true && !task.description.includes("�"))).toBe(true);
+      expect(context.delegationGuidance).toContain("get_task");
+      const first = await authority.execute({ tool: "get_task_context", callId: "full-child-context", arguments: { view: "full" } }) as { jsonText: string; contextDigest: string; nextOffset: number | null };
+      expect(first.jsonText).toBeTypeOf("string");
+      let text = first.jsonText;
+      let offset = first.nextOffset;
+      while (offset !== null) {
+        const page = await authority.execute({ tool: "get_task_context", callId: `full-child-${offset}`,
+          arguments: { view: "full", offset, contextDigest: first.contextDigest } }) as typeof first;
+        expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(RUNNER_TOOL_RESULT_MAX_BYTES);
+        expect(page.contextDigest).toBe(first.contextDigest);
+        text += page.jsonText;
+        offset = page.nextOffset;
+      }
+      const complete = JSON.parse(text);
+      expect(complete.childTasks.every((task: { description: string }) => task.description === description)).toBe(true);
+      expect(new Set(complete.childTasks.map((task: { id: string }) => task.id))).toEqual(new Set(ids));
+      const [saved] = await db.select({ description: issues.description }).from(issues).where(eq(issues.id, ids[0]!));
+      expect(saved.description).toBe(description);
+    } finally {
+      await db.delete(issues).where(inArray(issues.id, ids));
+      await db.update(issues).set({ description: original.description }).where(eq(issues.id, issueId));
+    }
+  });
+
+  it("pages the complete saved continuation of the run's own task in the full view", async () => {
+    const [saved] = await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const messages = Array.from({ length: 120 }, (_, index) => ({ id: `m-${index}`, body: `Message ${index} ${"x".repeat(4_000)}`,
+      updatedAt: "2026-11-24T00:00:00.000Z", deleted: false }));
+    const continuation = { version: 1, companyId, issueId, messages };
+    await db.update(heartbeatRuns).set({ contextSnapshot: { ...(saved?.contextSnapshot ?? {}), executionContinuation: continuation } })
+      .where(eq(heartbeatRuns.id, runId));
+    try {
+      const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+      const bounded = await authority.execute({ tool: "get_task_context", callId: "bounded-context", arguments: {} });
+      expect(JSON.stringify(bounded)).not.toContain("executionContinuation");
+      const first = await authority.execute({ tool: "get_task_context", callId: "full-continuation", arguments: { view: "full" } }) as { jsonText: string; contextDigest: string; nextOffset: number | null };
+      // Jumping past the saved progress reaches the end without having read the whole history.
+      const skipping = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+      for (let offset: number | null = first.nextOffset! + 1; offset !== null;) {
+        const page = await skipping.execute({ tool: "get_task_context", callId: `skip-${offset}`,
+          arguments: { view: "full", offset, contextDigest: first.contextDigest } }) as typeof first;
+        offset = page.nextOffset;
+      }
+      // Other tests in this file share the run and record their own history reads.
+      const continuationReads = async () => (await taskHistoryReadsForRun(db, { companyId, runId }))
+        .map((read) => read.commentId).filter((id) => id.startsWith("m-"));
+      expect(await continuationReads()).toEqual([]);
+      // A restarted controller continues from the progress the first page saved.
+      const restarted = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+      let text = first.jsonText;
+      let offset = first.nextOffset;
+      while (offset !== null) {
+        const page = await restarted.execute({ tool: "get_task_context", callId: `full-continuation-${offset}`,
+          arguments: { view: "full", offset, contextDigest: first.contextDigest } }) as typeof first;
+        text += page.jsonText;
+        offset = page.nextOffset;
+      }
+      expect(JSON.parse(text).executionContinuation).toEqual(continuation);
+      // Reading the final page records the recovered messages like get_task_history.
+      expect(await continuationReads()).toEqual(expect.arrayContaining(["m-0", "m-119"]));
+    } finally {
+      await db.update(heartbeatRuns).set({ contextSnapshot: saved?.contextSnapshot ?? {} }).where(eq(heartbeatRuns.id, runId));
+    }
+  });
+
+  it("advertises context paging to reviewers without adding task or API access", () => {
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId,
+      nativeReview: { nativeReviewInteractionId: randomUUID(), nativeReviewDecisionId: randomUUID() } });
+    const definitions = authority.definitions();
+    expect(definitions.find(tool => tool.name === "get_task_context")).toMatchObject({
+      inputSchema: { properties: { view: { enum: ["full"] }, contextDigest: expect.any(Object) } },
+    });
+    expect(definitions.map(tool => tool.name)).not.toContain("get_task");
+    expect(definitions.map(tool => tool.name)).not.toContain("search_tasks");
+    expect(definitions.map(tool => tool.name)).not.toContain("call_api");
   });
 
   it("advertises API tools by default and preserves direct-chat file tools when disabled", () => {

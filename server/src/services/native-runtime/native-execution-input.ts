@@ -34,10 +34,22 @@ import {
   resolveQualifiedAcpxProfile,
 } from "../../vendor/paperclip-runner/index.js";
 import {
+  continuationMessageRevisions,
   isPaperclipExternalChatContractTurn,
   isPaperclipExternalChatQuestionResponseTurn,
   selectPaperclipPromptSections,
 } from "@paperclipai/adapter-utils/server-utils";
+import type { ExecutionContinuationEnvelope } from "@paperclipai/shared";
+
+// One runner turn travels in a ~510 KiB PRP command. Keep the task prompt below
+// 400 KB, reserve room for the rest of the wake, and give history what remains.
+const RUNNER_TURN_PROMPT_MAX_BYTES = 400_000;
+// The rest of the wake includes the inline wake comments, which run
+// preparation caps at 8 comments and 12,000 characters in total
+// (MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS). Even at 6 bytes per character
+// after escaping they need 72 KB; the remainder covers the other wake text.
+const RUNNER_TURN_WAKE_RESERVE_BYTES = 96_000;
+const RUNNER_TURN_HISTORY_MIN_BYTES = 32_000;
 
 const NATIVE_GITHUB_ATTACHMENT_RECOVERY_GUIDANCE = [
   "## GitHub attachment recovery navigation",
@@ -47,6 +59,13 @@ const NATIVE_GITHUB_ATTACHMENT_RECOVERY_GUIDANCE = [
 
 /** Closed constructor: callers cannot spread legacy context or environment data. */
 export interface BuildNativeExecutionInput {
+  /** Receives the task prompt and the continuation messages it delivers whole. */
+  /**
+   * Receives the task prompt, the continuation messages the turn delivers whole,
+   * and those the bootstrap prompt delivers whole. The runner can still replace
+   * a failed resume with the bootstrap envelope after this point.
+   */
+  onDeliveredContinuationMessages?: (prompt: string, delivered: Record<string, string>, bootstrapDelivered: Record<string, string>) => void;
   companyId: string;
   runId: string;
   issue: {
@@ -220,6 +239,8 @@ export function buildNativeExecutionInput(input: BuildNativeExecutionInput): Nat
   const caseMarkdown = caseExecutionMarkdown(input.caseContext ?? null);
   const assignmentPrompt = caseMarkdown && !input.taskPrompt.includes(caseMarkdown)
     ? caseMarkdown + input.taskPrompt : input.taskPrompt;
+  // The bounded continuation the bootstrap prompt actually renders.
+  let renderedContinuation: ExecutionContinuationEnvelope | null = null;
   const { taskContextNote, wakePrompt } = selectPaperclipPromptSections({
     paperclipTaskMarkdownAssignment: assignmentPrompt,
     paperclipWake: bootstrapWakePayload,
@@ -228,6 +249,12 @@ export function buildNativeExecutionInput(input: BuildNativeExecutionInput): Nat
     resumedSession: false,
     includeCommunicationGuidance: false,
     nativeWakeReaderAvailable: true,
+    // The history gets what remains of the runner turn after the task text.
+    boundContinuationForRunnerTurn: {
+      maxBytes: Math.max(RUNNER_TURN_HISTORY_MIN_BYTES,
+        RUNNER_TURN_PROMPT_MAX_BYTES - Buffer.byteLength(assignmentPrompt, "utf8") - RUNNER_TURN_WAKE_RESERVE_BYTES),
+      onBound: (continuation) => { renderedContinuation = continuation; },
+    },
   });
   const externalChatTurn =
     isPaperclipExternalChatContractTurn(wakePayload) ||
@@ -399,6 +426,25 @@ export function buildNativeExecutionInput(input: BuildNativeExecutionInput): Nat
     credentialBindings: [],
     runtimeContext: input.runtimeContext,
   };
+  // Report the messages this turn delivers whole, from the structures it sends:
+  // the compact resume delta when present, else the bounded bootstrap history.
+  if (input.onDeliveredContinuationMessages) {
+    const resumePrompt = (prepared as { continuationPrompt?: string | null }).continuationPrompt;
+    const bootstrapDelivered = renderedContinuation
+      ? continuationMessageRevisions((renderedContinuation as ExecutionContinuationEnvelope).messages ?? []) : {};
+    let delivered: Record<string, string> = {};
+    if (typeof resumePrompt === "string" && resumePrompt) {
+      try {
+        const events = JSON.parse(resumePrompt) as { messages?: unknown };
+        delivered = Array.isArray(events.messages) ? continuationMessageRevisions(events.messages) : {};
+      } catch {
+        delivered = {};
+      }
+    } else {
+      delivered = bootstrapDelivered;
+    }
+    input.onDeliveredContinuationMessages(prepared.task.prompt, delivered, bootstrapDelivered);
+  }
   return parseNativeExecutionInput(input.provider === "muse" ? { ...prepared,
     schema: "paperclip.native-execution-input.v8", provider: { kind: "muse", model: null, binding: input.museBinding, bridgeRevision: "muse-v1" },
     workspace: { access: "none", cwd: null, repoUrl: null, repoRef: null, branchName: null },

@@ -5,6 +5,9 @@ import { caseInstructionAlreadyRepresented } from "../case-context.js";
 /** Only new, authorized events belong in an already retained provider conversation.
  * Full bootstrap input is kept separately for an actual provider resume failure.
  */
+/** Above this size a resumed turn falls back to the bounded bootstrap prompt. */
+export const NATIVE_CONTINUATION_PROMPT_MAX_BYTES = 256_000;
+
 export function buildNativeContinuationPrompt(input: {
   wakePayload: unknown;
   previousRunId: string;
@@ -92,5 +95,11 @@ export function buildNativeContinuationPrompt(input: {
     && events.messages.some((message) => message.id === comment.id)).map((comment) => comment.id!);
   if (earlierRead.length > 0) Object.assign(events, { readByEarlierTurn: { messageIds: earlierRead, note: PAPERCLIP_EARLIER_READ_COMMENT_NOTE } });
   if (!events.messages.length && !humanResponses.length && !wake.childIssueSummaries.length && !Object.keys(taskChanges).length && !input.workflowCase) return null;
-  return JSON.stringify(events);
+  const compact = JSON.stringify(events);
+  // One turn travels in a ~510 KiB PRP command. A delta too large for it uses
+  // the bootstrap prompt instead, whose continuation history is bounded. The
+  // delta is serialized twice more (model envelope, then the PRP command), and
+  // each layer escapes quotes and backslashes again, so measure that form.
+  if (Buffer.byteLength(JSON.stringify(JSON.stringify(compact)), "utf8") > NATIVE_CONTINUATION_PROMPT_MAX_BYTES) return null;
+  return compact;
 }

@@ -27,6 +27,8 @@ export interface ExecutionContinuationEnvelope {
     updatedAt: string;
     deleted: boolean;
     sourceTrust: unknown;
+    /** Set when the prompt shows only the start and end of a long body. */
+    bodyTruncated?: boolean;
   }>;
   /** Only direct human resolutions, projected from server-owned resolver columns. */
   humanResponses?: Array<{
@@ -79,5 +81,22 @@ export interface ExecutionContinuationEnvelope {
     baseRunId?: string;
     throughCommentId: string | null;
     summaryThroughCommentId: null;
+    /** Set only on the prompt copy when the inline history was bounded to fit
+     * one turn. The run keeps the complete envelope. */
+    omitted?: {
+      messages: number;
+      clippedMessages: number;
+      oldestIncludedMessageId: string | null;
+      completedActions: number;
+      completedActionResults: number;
+      /** Interaction outcomes shown only as references or left out. */
+      interactionOutcomes?: number;
+      /** Older human answers shown without their result. */
+      humanResponses?: number;
+      /** Recovery decisions shown only as references or left out. */
+      recoveryOutcomes?: number;
+      /** 1 when the completed-work summary was shortened. */
+      completedWork?: number;
+    };
   };
 }
