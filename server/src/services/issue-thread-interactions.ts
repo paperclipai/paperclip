@@ -427,6 +427,22 @@ type ResolvedInteractionResult = {
 type IssueThreadInteractionRow = typeof issueThreadInteractions.$inferSelect;
 type IssueTouchDb = Pick<Db, "update" | "transaction">;
 
+function isExemptFromSiblingSupersede(
+  row: Pick<IssueThreadInteractionRow, "payload">,
+) {
+  const payload =
+    row.payload &&
+    typeof row.payload === "object" &&
+    !Array.isArray(row.payload)
+      ? (row.payload as unknown as Record<string, unknown>)
+      : {};
+  return (
+    payload.toolAction !== undefined ||
+    payload.secretProposal !== undefined ||
+    payload.qualityReview !== undefined
+  );
+}
+
 function isNativeCompletionReview(
   row: Pick<IssueThreadInteractionRow, "kind" | "payload">,
 ) {
@@ -4844,7 +4860,7 @@ export function issueThreadInteractionService(
         replacementInteractionId: string;
       }> = [];
       for (const row of rows) {
-        if (!row.createdByAgentId || isNativeCompletionReview(row)) continue;
+        if (!row.createdByAgentId || isNativeCompletionReview(row) || isExemptFromSiblingSupersede(row)) continue;
         const groupKey = `${row.companyId}:${row.issueId}:${row.kind}:${row.createdByAgentId}`;
         const newest = newestByGroup.get(groupKey);
         if (!newest) {
