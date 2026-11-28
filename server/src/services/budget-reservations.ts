@@ -11,6 +11,89 @@ import type { ActivityPublication } from "./activity-log.js";
 import { readClaimedNativeStopRecovery } from "./native-runtime/native-cancellation-request.js";
 import { extendOwnNativeRecoveryClaimInTransaction, readOwnNativeRecoveryClaimLease } from "./native-runtime/native-execution-lease.js";
 
+// ─── DACS-Standard Guardrail (§9.5.7 & §14.4) ─────────────────────────────
+
+export interface DacsMandateMeta {
+  /** Signed DACS mandate identifier or URI. */
+  dacsMandate?: string;
+  /** Active DACS session identifier. */
+  dacsSessionId?: string;
+  /** Hard authorized spend ceiling in atomic units (cents). */
+  dacsMaxAmount?: bigint | string | number;
+  /** Optional parent manager mandate ceiling for hierarchical swarm delegation attenuation. */
+  dacsParentMaxAmount?: bigint | string | number;
+}
+
+export function assertDacsSpendMandate(
+  requestedAmount: bigint | string | number,
+  meta?: DacsMandateMeta,
+): void {
+  if (!meta || (!meta.dacsMandate && !meta.dacsSessionId)) {
+    return;
+  }
+
+  let requested: bigint;
+  try {
+    requested = BigInt(requestedAmount);
+  } catch {
+    throw conflict(`[DACS-Standard §9.5.7] Invalid numeric reservation amount.`);
+  }
+
+  if (meta.dacsMaxAmount !== undefined) {
+    let ceiling: bigint;
+    try {
+      ceiling = BigInt(meta.dacsMaxAmount);
+    } catch {
+      throw conflict(`[DACS-Standard §9.5.7] Invalid numeric dacsMaxAmount ceiling.`);
+    }
+
+    if (ceiling < 0n) {
+      throw conflict(`[DACS-Standard §9.5.7] Invalid negative dacsMaxAmount ceiling: "${meta.dacsMaxAmount}".`);
+    }
+
+    if (meta.dacsParentMaxAmount !== undefined) {
+      let parentCeiling: bigint;
+      try {
+        parentCeiling = BigInt(meta.dacsParentMaxAmount);
+      } catch {
+        throw conflict(`[DACS-Standard §9.5.7] Invalid numeric dacsParentMaxAmount ceiling.`);
+      }
+      if (parentCeiling < 0n || ceiling > parentCeiling) {
+        throw conflict(
+          `[DACS-Standard §9.5.7] Hierarchical sub-mandate ceiling (${ceiling}) exceeds parent mandate ceiling (${parentCeiling}).`,
+        );
+      }
+    }
+
+    if (requested > ceiling) {
+      throw conflict(
+        `[DACS-Standard §9.5.7] Budget admission aborted: requested reservation (${requested}) exceeds authorized mandate ceiling (${ceiling}).`,
+      );
+    }
+  }
+}
+
+function extractDacsMandateMeta(scope?: Record<string, unknown> | null): DacsMandateMeta | undefined {
+  if (!scope) return undefined;
+  const dacsMandate = typeof scope.dacsMandate === "string" ? scope.dacsMandate : undefined;
+  const dacsSessionId = typeof scope.dacsSessionId === "string" ? scope.dacsSessionId : undefined;
+  if (!dacsMandate && !dacsSessionId) return undefined;
+  const rawMax = scope.dacsMaxAmount;
+  const rawParentMax = scope.dacsParentMaxAmount;
+  return {
+    dacsMandate,
+    dacsSessionId,
+    dacsMaxAmount:
+      typeof rawMax === "bigint" || typeof rawMax === "string" || typeof rawMax === "number"
+        ? rawMax
+        : undefined,
+    dacsParentMaxAmount:
+      typeof rawParentMax === "bigint" || typeof rawParentMax === "string" || typeof rawParentMax === "number"
+        ? rawParentMax
+        : undefined,
+  };
+}
+
 /** Native finalization takes its coordinator before issue/run locks. Recovery
  * admission uses the same order after the company accounting lock, so its
  * later ownership checks never wait for a coordinator while holding a run. */
@@ -47,6 +130,15 @@ export async function recheckRunBudgetReservationInTransaction(
     eq(budgetReservations.state, "held"),
   )).for("update");
   if (!reservation) return "Provider dispatch no longer owns a held budget reservation";
+  const runLedgerScope = (run.usageJson?.ledgerScope as Record<string, unknown> | undefined) ?? undefined;
+  const dacsMeta = extractDacsMandateMeta(runLedgerScope);
+  if (dacsMeta) {
+    try {
+      assertDacsSpendMandate(centsToUnits(reservation.amountCents), dacsMeta);
+    } catch (error) {
+      return error instanceof Error ? error.message : "DACS spend mandate ceiling exceeded";
+    }
+  }
   if (recoveryLeaseOwner && (run.runtimeMode !== "native" || await readOwnNativeRecoveryClaimLease(tx,
     { companyId: run.companyId, runId: run.id, leaseOwner: recoveryLeaseOwner }) === "lost"))
     return "Native recovery no longer owns provider dispatch";
@@ -140,7 +232,7 @@ export async function reserveRunBudget(db: Db, companyId: string, runId: string,
         const block = await budgetServiceInTransaction(tx, publications).getInvocationBlock(companyId, run.agentId, { projectId, runId, admittedRecovery: true });
         if (block) return { admissionBlockReason: block.reason };
         const [agent] = await tx.select({ status: agents.status, lifecycleState: agents.lifecycleState }).from(agents)
-          .where(and(eq(agents.companyId, companyId), eq(agents.id, run.agentId)));
+          .where(and(eq(agents.companyId, run.companyId), eq(agents.id, run.agentId)));
         if (!agent || agent.lifecycleState !== "ready" || ["paused", "terminated", "pending_approval"].includes(agent.status))
           return { admissionBlockReason: "Agent is paused and cannot start new work" };
         await keepRecoveryClaim();
@@ -158,6 +250,15 @@ export async function reserveRunBudget(db: Db, companyId: string, runId: string,
     if (!agent || agent.lifecycleState !== "ready" || ["paused", "terminated", "pending_approval"].includes(agent.status))
       return { admissionBlockReason: "Agent is paused or its lifecycle is not ready for new work" };
     const amount = policies.reduce((max, policy) => { const next = centsToUnits(policy.reservationCents); return next > max ? next : max; }, 0n);
+    const effectiveScope = { ...(run.usageJson?.ledgerScope as Record<string, unknown> ?? {}), ...ledgerScope };
+    const dacsMeta = extractDacsMandateMeta(effectiveScope);
+    if (dacsMeta) {
+      try {
+        assertDacsSpendMandate(amount, dacsMeta);
+      } catch (error) {
+        return { admissionBlockReason: error instanceof Error ? error.message : "DACS spend mandate ceiling exceeded" };
+      }
+    }
     for (const [index, policy] of policies.entries()) {
       const observed = observations[index];
       // Even zero-estimate runs cannot enter a scope whose available capacity
