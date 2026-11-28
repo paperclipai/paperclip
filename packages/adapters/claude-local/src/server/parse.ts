@@ -23,11 +23,11 @@ const URL_RE = /(https?:\/\/[^\s'"`<>()[\]{};,!?]+[^\s'"`<>()[\]{};,!.?:]+)/gi;
 const CLAUDE_TRANSIENT_UPSTREAM_RE =
   /(?:rate[-\s]?limit(?:ed)?|rate_limit_error|too\s+many\s+requests|\b429\b|overloaded(?:_error)?|server\s+overloaded|service\s+unavailable|\b503\b|\b529\b|high\s+demand|try\s+again\s+later|temporarily\s+unavailable|throttl(?:ed|ing)|throttlingexception|servicequotaexceededexception|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached)/i;
 const CLAUDE_PROVIDER_QUOTA_RE =
-  /(?:you(?:'|’)ve\s+hit\s+your\s+(?:\w+\s+)?limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached|servicequotaexceededexception)/i;
+  /(?:you(?:'|’)ve\s+(?:hit|reached)\s+your\s+(?:[\w-]+\s+){0,3}limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached|servicequotaexceededexception)/i;
 const CLAUDE_MODEL_NOT_FOUND_RE =
   /(?:\b404\b[\s\S]{0,120})?(?:model[\s_-]*(?:not[\s_-]*found|does not exist|unknown|invalid)|unknown[\s_-]*model)/i;
 const CLAUDE_EXTRA_USAGE_RESET_RE =
-  /(?:you(?:'|’)ve\s+hit\s+your\s+(?:\w+\s+)?limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,120}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
+  /(?:you(?:'|’)ve\s+(?:hit|reached)\s+your\s+(?:[\w-]+\s+){0,3}limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,120}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
 
 /**
  * Sum the per-model usage ledger from a Claude CLI result event. The result
@@ -503,18 +503,63 @@ function nextClockTimeInTimeZone(input: {
   return retryAt;
 }
 
+const CLAUDE_RESET_MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+
+function calendarDateTime(input: {
+  now: Date;
+  year: number | null;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  timeZoneHint?: string | null;
+}): Date | null {
+  const timeZone = normalizeResetTimeZone(input.timeZoneHint);
+  const atYear = (year: number): Date | null => {
+    if (timeZone) {
+      return dateFromTimeZoneWallClock({ year, month: input.month, day: input.day, hour: input.hour, minute: input.minute, timeZone });
+    }
+    const local = new Date(year, input.month - 1, input.day, input.hour, input.minute, 0, 0);
+    return local.getMonth() === input.month - 1 && local.getDate() === input.day ? local : null;
+  };
+  if (input.year !== null) return atYear(input.year);
+
+  const currentYear = timeZone ? readTimeZoneParts(input.now, timeZone).year : input.now.getFullYear();
+  const retryAt = atYear(currentYear);
+  if (retryAt && retryAt.getTime() > input.now.getTime()) return retryAt;
+  return atYear(currentYear + 1);
+}
+
 function parseClaudeResetClockTime(clockText: string, now: Date, timeZoneHint?: string | null): Date | null {
   const normalized = clockText.trim().replace(/\s+/g, " ");
-  const match = normalized.match(/^(\d{1,2})(?::(\d{2}))?\s*([ap])\.?\s*m\.?/i);
-  if (!match) return null;
+  // A reset more than 24 hours away starts with a date: "Oct 14, 5pm",
+  // "Oct 14, 2027, 5:30pm", or "Oct 14" alone for midnight.
+  const dateMatch = normalized.match(/^([a-z]{3})[a-z]*\.?\s+(\d{1,2})(?:,\s*(\d{4}))?(?:,\s*|\s+|$)/i);
+  const clockPart = dateMatch ? normalized.slice(dateMatch[0].length) : normalized;
+  const match = clockPart.match(/^(\d{1,2})(?::(\d{2}))?\s*([ap])\.?\s*m\.?/i);
+  if (!match && !(dateMatch && clockPart === "")) return null;
 
-  const hour12 = Number.parseInt(match[1] ?? "", 10);
-  const minute = Number.parseInt(match[2] ?? "0", 10);
+  const hour12 = Number.parseInt(match?.[1] ?? "12", 10);
+  const minute = Number.parseInt(match?.[2] ?? "0", 10);
   if (!Number.isInteger(hour12) || hour12 < 1 || hour12 > 12) return null;
   if (!Number.isInteger(minute) || minute < 0 || minute > 59) return null;
 
   let hour24 = hour12 % 12;
-  if ((match[3] ?? "").toLowerCase() === "p") hour24 += 12;
+  if ((match?.[3] ?? "").toLowerCase() === "p") hour24 += 12;
+
+  if (dateMatch) {
+    const month = CLAUDE_RESET_MONTHS.indexOf((dateMatch[1] ?? "").toLowerCase()) + 1;
+    if (month === 0) return null;
+    return calendarDateTime({
+      now,
+      year: dateMatch[3] ? Number.parseInt(dateMatch[3], 10) : null,
+      month,
+      day: Number.parseInt(dateMatch[2] ?? "", 10),
+      hour: hour24,
+      minute,
+      timeZoneHint,
+    });
+  }
 
   if (timeZoneHint) {
     const explicitRetryAt = nextClockTimeInTimeZone({
