@@ -1,0 +1,13 @@
+diff --git a/server/src/adapters/registry.ts b/server/src/adapters/registry.ts
+index 8512db5a..29b0cc9f 100644
+--- a/server/src/adapters/registry.ts
++++ b/server/src/adapters/registry.ts
+@@ -859,7 +859,7 @@ const cursorCloudAdapter: ServerAdapterModule = {
+   sessionCodec: cursorCloudSessionCodec,
+   sessionManagement: getAdapterSessionManagement("cursor_cloud") ?? undefined,
+   models: [],
+-  supportsLocalAgentJwt: false,
++  supportsLocalAgentJwt: true,
+   supportsInstructionsBundle: true,
+   instructionsPathKey: "instructionsFilePath",
+   requiresMaterializedRuntimeSkills: false,

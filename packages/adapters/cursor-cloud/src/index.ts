@@ -29,6 +29,8 @@ Core fields:
 Notes:
 - Paperclip reuses the durable Cursor agent across heartbeats when the repo/runtime identity still matches.
 - Each Paperclip heartbeat maps to a Cursor run on that durable agent.
-- Paperclip injects PAPERCLIP_* runtime env vars into the cloud agent shell through Cursor SDK cloud envVars.
+- Paperclip mints a run JWT as PAPERCLIP_API_KEY and PAPERCLIP_TOKEN, and sets PAPERCLIP_API_URL to a public origin (PAPERCLIP_PUBLIC_URL / PAPERCLIP_API_URL). Loopback callback URLs are omitted because Cursor Cloud cannot reach them. PAPERCLIP_TOKEN is the fallback name if Cursor Cloud strips *_API_KEY from envVars.
+- Sessions created before JWT injection are not reused. Recovery resumes create a new Cursor cloud agent so the key lands in envVars.
+- Paperclip injects PAPERCLIP_* runtime env vars into the cloud agent shell through Cursor SDK cloud envVars, including on Agent.resume.
 - Paperclip remains the source of truth for issue/task state; Cursor provides the remote execution surface.
 `;

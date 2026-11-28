@@ -1,0 +1,64 @@
+diff --git a/server/src/services/recovery/service.ts b/server/src/services/recovery/service.ts
+index ffb7302c..427f8d9e 100644
+--- a/server/src/services/recovery/service.ts
++++ b/server/src/services/recovery/service.ts
+@@ -1,4 +1,5 @@
+ import { wakeWaitersOfStalledIssues, type BlockerStallWakeup } from "./blocker-stall-wakeups.js";
++import { loadCompanyOperatorMentions } from "./operator-alert.js";
+ import { ANTIGRAVITY_SWARM_UNAVAILABLE } from "../antigravity-swarm-refusal.js";
+ import { DEPENDENCY_WAKE_REPEATED_FAILURE_STREAK, readDependencyWakeCircuit } from "./dependency-wake-circuit-breaker.js";
+ import { INTERACTION_DELIVERY_DENIED, isInteractionDeliveryDeniedRun } from "../agent-interaction-delivery.js";
+@@ -3880,6 +3881,7 @@ export function recoveryService(
+       legacyEpisode: input.legacyEpisode,
+     });
+     const now = new Date();
++    const operatorMentions = await loadCompanyOperatorMentions(db, input.issue.companyId);
+     await db
+       .update(issueRecoveryActions)
+       .set({
+@@ -3897,9 +3899,10 @@ export function recoveryService(
+           sourceAttemptCount: input.attemptCount,
+           sourceMaxAttempts: input.legacyEpisode?.maxAttempts ?? DISPOSITION_REPAIR_MAX_ATTEMPTS,
+           routingPolicy: STRANDED_BOARD_ESCALATION_POLICY,
++          operatorAlert: true,
+         },
+         nextAction:
+-          "The agent stopped without saying what happens next with this task. Mark the task done if it is, or press Retry to let the agent continue from the saved work.",
++          "The agent finished without a durable status change. This is often an API write failure. Alert operators, then mark the task done if it is, or press Retry. Do not silently board-block the card.",
+         wakePolicy: {
+           type: "board_escalation",
+           reason: input.terminalReason,
+@@ -3916,10 +3919,9 @@ export function recoveryService(
+         ),
+       );
+ 
+-    const updated = await issuesSvc.update(input.issue.id, {
+-      status: "blocked",
+-    });
+-    if (!updated) return null;
++    // Keep the source status. A completed run that could not PATCH the card
++    // (typical 401) must alert operators instead of silently board-blocking.
++    const updated = input.issue;
+     const sourceAssigneePreserved =
+       updated.assigneeAgentId === input.issue.assigneeAgentId &&
+       updated.assigneeUserId === input.issue.assigneeUserId;
+@@ -3933,6 +3935,10 @@ export function recoveryService(
+         `- Terminal reason: \`${input.terminalReason}\``,
+         "- Recovery owner: board",
+         "- Source ownership: unchanged; reassignment requires an explicit decision or a policy-defined serious failure.",
++        `- Task status: unchanged (\`${updated.status}\`). This card is not silently board-blocked.`,
++        operatorMentions
++          ? `- Operator alert: ${operatorMentions}`
++          : "- Operator alert: company operators (CEO and owners) could not be resolved by id.",
+         "",
+         "Next action: mark the task done if it is, or press Retry to let the agent continue from the saved work.",
+       ].join("\n"),
+@@ -3973,7 +3979,7 @@ export function recoveryService(
+       entityId: input.issue.id,
+       details: {
+         identifier: input.issue.identifier,
+-        status: "blocked",
++        status: updated.status,
+         previousStatus: input.issue.status,
+         sourceStateFingerprint: input.fingerprint,
+         attemptCount: input.attemptCount,

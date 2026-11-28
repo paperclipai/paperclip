@@ -41,6 +41,7 @@ function normalize(raw: unknown): Record<string, unknown> | null {
   const envType = readString(record.envType);
   const envName = readString(record.envName);
   const repos = readRepos(record.repos);
+  const paperclipJwt = record.paperclipJwt === true;
   return {
     cursorAgentId,
     ...(latestRunId ? { latestRunId } : {}),
@@ -48,6 +49,7 @@ function normalize(raw: unknown): Record<string, unknown> | null {
     ...(envType ? { envType } : {}),
     ...(envName ? { envName } : {}),
     ...(repos.length > 0 ? { repos } : {}),
+    ...(paperclipJwt ? { paperclipJwt: true } : {}),
   };
 }
 
