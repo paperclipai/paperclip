@@ -39,4 +39,12 @@ for (const [file, service] of [
       rmSync(temporary, { recursive: true, force: true });
     }
   });
+
+  test(`${file} builds the production image target`, () => {
+    const result = spawnSync("docker", ["compose", "-f", file, "config", "--format", "json"], {
+      cwd: repoRoot, env: { ...baseEnv, BETTER_AUTH_SECRET: "test-session-secret" }, encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).services[service].build.target, "production");
+  });
 }
