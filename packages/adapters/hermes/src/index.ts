@@ -88,6 +88,7 @@ tools, persistent memory, session persistence, skills, and MCP support.
 | provider | string | (auto) | API provider: auto, openrouter, nous, openai-codex, zai, kimi-coding, minimax, minimax-cn. Usually not needed — Hermes auto-detects from model name. |
 | timeoutSec | number | 300 | Execution timeout in seconds |
 | graceSec | number | 10 | Grace period after SIGTERM before SIGKILL |
+| effort | string | (Hermes configured default) | Thinking effort passed as \`--reasoning\`: none, minimal, low, medium, high, xhigh, max, or ultra |
 
 ## Tool Configuration
 

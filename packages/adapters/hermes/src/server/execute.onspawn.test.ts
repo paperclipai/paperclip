@@ -125,6 +125,114 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     expect(vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)![3].cwd).toBe("/private/qa/configured-workspace");
   });
 
+  it("passes the configured thinking effort as --reasoning", async () => {
+    const { ctx } = makeCtx({ effort: "High" });
+    await execute(ctx as any);
+    const args = vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)![2] as string[];
+    expect(args.slice(args.indexOf("--reasoning"), args.indexOf("--reasoning") + 2)).toEqual(["--reasoning", "high"]);
+    expect(args).not.toContain("--reasoning-effort");
+  });
+
+  it("skips an unsupported effort and defers to an explicit --reasoning extra arg", async () => {
+    const { ctx } = makeCtx({ effort: "turbo" });
+    await execute(ctx as any);
+    expect(vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)![2]).not.toContain("--reasoning");
+    expect(ctx.onLog).toHaveBeenCalledWith("stderr", expect.stringContaining("unsupported thinking effort"));
+    const explicit = makeCtx({ effort: "high", extraArgs: ["--reasoning", "low"] });
+    await execute(explicit.ctx as any);
+    const args = vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)![2] as string[];
+    expect(args.filter((arg) => arg === "--reasoning")).toHaveLength(1);
+    expect(args[args.indexOf("--reasoning") + 1]).toBe("low");
+  });
+
+  it("repairs a saved --reasoning-effort extra arg from older agent configs", async () => {
+    const { ctx } = makeCtx({ extraArgs: ["--reasoning-effort", "medium", "--checkpoints"] });
+    await execute(ctx as any);
+    const args = vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)![2] as string[];
+    expect(args).not.toContain("--reasoning-effort");
+    expect(args[args.indexOf("--reasoning") + 1]).toBe("medium");
+    expect(args).toContain("--checkpoints");
+    const both = makeCtx({ effort: "high", extraArgs: ["--reasoning-effort=low"] });
+    await execute(both.ctx as any);
+    const bothArgs = vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)![2] as string[];
+    expect(bothArgs.some((arg) => arg.startsWith("--reasoning-effort"))).toBe(false);
+    expect(bothArgs[bothArgs.indexOf("--reasoning") + 1]).toBe("high");
+  });
+
+  describe("resuming a session with a thinking effort", () => {
+    function withSession(overrides: Record<string, unknown>, sessionParams: Record<string, unknown>) {
+      const { ctx } = makeCtx(overrides);
+      return { ...ctx, runtime: { ...ctx.runtime, sessionId: "s-old", sessionParams } };
+    }
+    function returnSession(id: string) {
+      vi.mocked(serverUtils.runChildProcess).mockResolvedValueOnce({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: `ok\n\nsession_id: ${id}\n`,
+        stderr: "",
+      } as any);
+    }
+    const lastArgs = () => vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)![2] as string[];
+
+    it("starts a new session when the saved session was launched without --reasoning", async () => {
+      returnSession("s-new");
+      const result = await execute(withSession({ effort: "high" }, { sessionId: "s-old" }) as any);
+      const args = lastArgs();
+      expect(args).not.toContain("--resume");
+      expect(args[args.indexOf("--reasoning") + 1]).toBe("high");
+      expect(result.sessionParams).toEqual({ sessionId: "s-new", reasoning: "high" });
+    });
+
+    it("loads the fresh-session handoff only when it starts a new session", async () => {
+      const handoff = vi.fn(async () => "EARLIER TASK HISTORY");
+      returnSession("s-new");
+      const taskContext = { issueId: "issue-1", wakeReason: "manual", paperclipWake: null, paperclipTaskMarkdown: "Task brief" };
+      await execute({
+        ...withSession({ effort: "high" }, { sessionId: "s-old" }),
+        context: { ...taskContext },
+        getFreshSessionHandoff: handoff,
+      } as any);
+      expect(handoff).toHaveBeenCalledTimes(1);
+      expect(lastArgs()[lastArgs().indexOf("-q") + 1]).toContain("EARLIER TASK HISTORY");
+
+      handoff.mockClear();
+      returnSession("s-old");
+      await execute({
+        ...withSession({ effort: "high" }, { sessionId: "s-old", reasoning: "high" }),
+        context: { ...taskContext },
+        getFreshSessionHandoff: handoff,
+      } as any);
+      expect(handoff).not.toHaveBeenCalled();
+      expect(lastArgs()[lastArgs().indexOf("-q") + 1]).not.toContain("EARLIER TASK HISTORY");
+    });
+
+    it("starts a new session when the saved launch level differs", async () => {
+      returnSession("s-new");
+      const result = await execute(withSession({ effort: "low" }, { sessionId: "s-old", reasoning: "high" }) as any);
+      expect(lastArgs()).not.toContain("--resume");
+      expect(result.sessionParams).toEqual({ sessionId: "s-new", reasoning: "low" });
+    });
+
+    it("resumes when the saved launch level matches", async () => {
+      returnSession("s-old");
+      const result = await execute(withSession({ effort: "high" }, { sessionId: "s-old", reasoning: "high" }) as any);
+      const args = lastArgs();
+      expect(args[args.indexOf("--resume") + 1]).toBe("s-old");
+      expect(args[args.indexOf("--reasoning") + 1]).toBe("high");
+      expect(result.sessionParams).toEqual({ sessionId: "s-old", reasoning: "high" });
+    });
+
+    it("resumes without --reasoning and keeps the saved level when no effort is set", async () => {
+      returnSession("s-old");
+      const result = await execute(withSession({}, { sessionId: "s-old", reasoning: "high" }) as any);
+      const args = lastArgs();
+      expect(args[args.indexOf("--resume") + 1]).toBe("s-old");
+      expect(args).not.toContain("--reasoning");
+      expect(result.sessionParams).toEqual({ sessionId: "s-old", reasoning: "high" });
+    });
+  });
+
   it("runChildProcess opts type includes onSpawn", () => {
     // Type-level assertion: if onSpawn were removed from the type,
     // this file would fail to compile. The runtime test above catches
