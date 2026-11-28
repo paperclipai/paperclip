@@ -109,6 +109,8 @@ export function AnnotationPanelBody(props: AnnotationPanelProps) {
   const copyAnnotationLink = useCopyAnnotationLink();
   const [composerValue, setComposerValue] = useState("");
   const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
+  const [includeDetached, setIncludeDetached] = useState(false);
+  const detachedThreads = props.threads.filter((thread) => thread.anchorState === "orphaned");
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const bodyTestId = props.isMobile ? "document-annotation-panel" : undefined;
   const annotationTarget = useMemo<DocumentAnnotationTarget>(() => {
@@ -135,12 +137,12 @@ export function AnnotationPanelBody(props: AnnotationPanelProps) {
   const visibleThreads = useMemo(
     () =>
       props.threads
-        .filter((thread) => thread.anchorState !== "orphaned" || thread.id === props.focusedThreadId)
+        .filter((thread) => includeDetached || thread.anchorState !== "orphaned" || thread.id === props.focusedThreadId)
         .sort((a, b) =>
           (a.normalizedStart - b.normalizedStart)
           || (a.markdownStart - b.markdownStart)
           || (new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())),
-    [props.threads, props.focusedThreadId],
+    [props.threads, props.focusedThreadId, includeDetached],
   );
 
 
@@ -212,6 +214,22 @@ export function AnnotationPanelBody(props: AnnotationPanelProps) {
         </p>
       ) : null}
       <div ref={listScrollRef} className="min-h-0 flex-1 overflow-y-auto bg-popover px-3 py-2">
+        {detachedThreads.length > 0 && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            aria-pressed={includeDetached}
+            onClick={() => {
+              if (includeDetached && detachedThreads.some((thread) => thread.id === props.focusedThreadId)) {
+                props.onFocusThread(null);
+              }
+              setIncludeDetached(!includeDetached);
+            }}
+          >
+            Include detached comments ({detachedThreads.length})
+          </Button>
+        )}
         {visibleThreads.length === 0 ? null : (
           <ul className="space-y-2">
             {visibleThreads.map((thread) => (
@@ -359,6 +377,9 @@ export function ThreadCard(props: {
         tabIndex={0}
         onClick={props.onFocus}
       >
+        {thread.anchorState === "orphaned" && (
+          <p className="mx-3 mt-2 text-xs text-muted-foreground">Detached · selected in revision {thread.originalRevisionNumber}</p>
+        )}
         <blockquote
           id={`thread-quote-${thread.id}`}
           className={cn(
